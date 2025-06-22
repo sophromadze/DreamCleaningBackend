@@ -59,7 +59,6 @@ namespace DreamCleaningBackend.DTOs
         public string? PromoCode { get; set; }
         public string? GiftCardCode { get; set; }
         public decimal GiftCardAmountToUse { get; set; }
-        public int? SpecialOfferId { get; set; }
 
         [Range(0, double.MaxValue)]
         public decimal Tips { get; set; }
