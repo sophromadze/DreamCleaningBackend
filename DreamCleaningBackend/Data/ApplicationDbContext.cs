@@ -68,13 +68,25 @@ namespace DreamCleaningBackend.Data
                 .HasForeignKey(o => o.SubscriptionId)
                 .OnDelete(DeleteBehavior.Restrict);
 
-			// SpecialOffer configuration
-			modelBuilder.Entity<UserSpecialOffer>()
-	            .HasIndex(u => new { u.UserId, u.SpecialOfferId })
-	            .IsUnique();
+            // SpecialOffer configuration
+            modelBuilder.Entity<UserSpecialOffer>()
+                .HasIndex(u => new { u.UserId, u.SpecialOfferId })
+                .IsUnique();
 
-			// Order configuration
-			modelBuilder.Entity<Order>()
+            modelBuilder.Entity<UserSpecialOffer>()
+                .HasOne(uso => uso.UsedOnOrder)
+                .WithMany()
+                .HasForeignKey(uso => uso.UsedOnOrderId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .IsRequired(false);
+
+            // This tells EF that the relationship is optional and prevents conflicts
+            modelBuilder.Entity<UserSpecialOffer>()
+                .Property(uso => uso.UsedOnOrderId)
+                .IsRequired(false);
+
+            // Order configuration
+            modelBuilder.Entity<Order>()
                 .HasOne(o => o.User)
                 .WithMany(u => u.Orders)
                 .HasForeignKey(o => o.UserId)

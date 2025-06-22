@@ -471,29 +471,34 @@ namespace DreamCleaningBackend.Services
         public async Task<bool> CancelOrder(int orderId, int userId, CancelOrderDto cancelOrderDto)
         {
             var order = await _orderRepository.GetByIdAsync(orderId);
-
             if (order == null || order.UserId != userId)
                 throw new Exception("Order not found");
-
             if (order.Status == "Cancelled")
                 throw new Exception("Order is already cancelled");
-
             if (order.Status == "Done")
                 throw new Exception("Cannot cancel a completed order");
-
             // Check if service date is not too close (e.g., within 24 hours)
             if (order.ServiceDate <= DateTime.Now.AddHours(24))
                 throw new Exception("Cannot cancel order within 24 hours of service date");
-
             order.Status = "Cancelled";
             order.CancellationReason = cancelOrderDto.Reason;
             order.UpdatedAt = DateTime.Now;
-
             // In a real system, you would initiate a refund process here
             // For now, we'll just mark it as cancelled
-
             await _orderRepository.UpdateAsync(order);
             await _orderRepository.SaveChangesAsync();
+
+            // Restore special offer if one was used
+            var userSpecialOffer = await _context.UserSpecialOffers
+                .FirstOrDefaultAsync(uso => uso.UsedOnOrderId == orderId);
+
+            if (userSpecialOffer != null)
+            {
+                userSpecialOffer.IsUsed = false;
+                userSpecialOffer.UsedAt = null;
+                userSpecialOffer.UsedOnOrderId = null;
+                await _context.SaveChangesAsync();
+            }
 
             return true;
         }
@@ -760,6 +765,48 @@ namespace DreamCleaningBackend.Services
             };
         }
 
+        private string? GetSpecialOfferName(string? promoCode)
+        {
+            if (string.IsNullOrEmpty(promoCode)) return null;
+
+            // Check if it's a special offer
+            if (promoCode.StartsWith("SPECIAL_OFFER:"))
+            {
+                return promoCode.Substring("SPECIAL_OFFER:".Length);
+            }
+
+            return null;
+        }
+
+        private string? GetPromoCodeDetails(string? promoCode)
+        {
+            if (string.IsNullOrEmpty(promoCode)) return null;
+
+            // If it's a special offer, return null (handled by SpecialOfferName)
+            if (promoCode.StartsWith("SPECIAL_OFFER:"))
+            {
+                return null;
+            }
+
+            // For legacy first-time discount
+            if (promoCode == "firstUse")
+            {
+                return "First-Time Customer Discount";
+            }
+
+            // For regular promo codes, return the code
+            return promoCode;
+        }
+
+        private string MaskGiftCardCode(string code)
+        {
+            if (code.Length >= 4)
+            {
+                return $"****-****-{code.Substring(code.Length - 4)}";
+            }
+            return "****";
+        }
+
         private OrderDto MapOrderToDto(Order order)
         {
             return new OrderDto
@@ -779,6 +826,10 @@ namespace DreamCleaningBackend.Services
                 DiscountAmount = order.DiscountAmount,
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 PromoCode = order.PromoCode,
+                SpecialOfferName = GetSpecialOfferName(order.PromoCode),
+                PromoCodeDetails = GetPromoCodeDetails(order.PromoCode),
+                GiftCardDetails = order.GiftCardCode != null ?
+                $"{MaskGiftCardCode(order.GiftCardCode)} (${order.GiftCardAmountUsed:F2})" : null,
                 SubscriptionId = order.SubscriptionId,
                 SubscriptionName = order.Subscription?.Name ?? "",
                 GiftCardCode = order.GiftCardCode,

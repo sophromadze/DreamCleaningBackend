@@ -1842,6 +1842,12 @@ namespace DreamCleaningBackend.Controllers
                     DiscountAmount = order.DiscountAmount,
                     SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                     PromoCode = order.PromoCode,
+                    GiftCardCode = order.GiftCardCode,
+                    GiftCardAmountUsed = order.GiftCardAmountUsed,
+                    SpecialOfferName = GetSpecialOfferName(order.PromoCode),
+                    PromoCodeDetails = GetPromoCodeDetails(order.PromoCode),
+                    GiftCardDetails = order.GiftCardCode != null ?
+                    $"{MaskGiftCardCode(order.GiftCardCode)} (${order.GiftCardAmountUsed:F2})" : null,
                     SubscriptionId = order.SubscriptionId,
                     SubscriptionName = order.Subscription?.Name ?? "",
                     EntryMethod = order.EntryMethod,
@@ -1886,6 +1892,44 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        private string? GetSpecialOfferName(string? promoCode)
+        {
+            if (string.IsNullOrEmpty(promoCode)) return null;
+
+            if (promoCode.StartsWith("SPECIAL_OFFER:"))
+            {
+                return promoCode.Substring("SPECIAL_OFFER:".Length);
+            }
+
+            return null;
+        }
+
+        private string? GetPromoCodeDetails(string? promoCode)
+        {
+            if (string.IsNullOrEmpty(promoCode)) return null;
+
+            if (promoCode.StartsWith("SPECIAL_OFFER:"))
+            {
+                return null;
+            }
+
+            if (promoCode == "firstUse")
+            {
+                return "First-Time Customer Discount";
+            }
+
+            return promoCode;
+        }
+
+        private string MaskGiftCardCode(string code)
+        {
+            if (code.Length >= 4)
+            {
+                return $"****-****-{code.Substring(code.Length - 4)}";
+            }
+            return "****";
+        }
+
         [HttpPut("orders/{orderId}/status")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult> UpdateOrderStatus(int orderId, [FromBody] UpdateOrderStatusDto dto)
@@ -1912,12 +1956,46 @@ namespace DreamCleaningBackend.Controllers
                     UpdatedAt = order.UpdatedAt
                 };
 
+                // Store the previous status for checking
+                var previousStatus = order.Status;
+
                 // Update the status
                 order.Status = dto.Status;
                 order.UpdatedAt = DateTime.Now; // Use UTC for consistency
 
                 // Save changes FIRST
                 await _context.SaveChangesAsync();
+
+                // Handle special offer re-marking when reactivating from cancelled status
+                if (previousStatus == "Cancelled" && dto.Status == "Active")
+                {
+                    // Check if order had a discount amount (indicating a special offer was used)
+                    if (order.DiscountAmount > 0)
+                    {
+                        // Find any special offer for this user that might have been the one used
+                        var userSpecialOffers = await _context.UserSpecialOffers
+                            .Where(uso => uso.UserId == order.UserId && !uso.IsUsed)
+                            .Include(uso => uso.SpecialOffer)
+                            .ToListAsync();
+
+                        // Try to find a special offer that matches the discount amount
+                        var matchingOffer = userSpecialOffers.FirstOrDefault(uso =>
+                            (uso.SpecialOffer.IsPercentage &&
+                             Math.Round(order.SubTotal * (uso.SpecialOffer.DiscountValue / 100), 2) == order.DiscountAmount) ||
+                            (!uso.SpecialOffer.IsPercentage &&
+                             uso.SpecialOffer.DiscountValue == order.DiscountAmount));
+
+                        if (matchingOffer != null)
+                        {
+                            matchingOffer.IsUsed = true;
+                            matchingOffer.UsedAt = DateTime.Now;
+                            matchingOffer.UsedOnOrderId = orderId;
+                            await _context.SaveChangesAsync();
+
+                            Console.WriteLine($"Re-marked special offer {matchingOffer.SpecialOfferId} as used for user {matchingOffer.UserId} after reactivating order {orderId}");
+                        }
+                    }
+                }
 
                 // Create a copy of the updated order for auditing
                 var updatedOrder = new Order
@@ -1990,6 +2068,21 @@ namespace DreamCleaningBackend.Controllers
                 order.UpdatedAt = DateTime.Now;
 
                 await _context.SaveChangesAsync();
+
+                // Restore special offer if one was used
+                var userSpecialOffer = await _context.UserSpecialOffers
+                    .FirstOrDefaultAsync(uso => uso.UsedOnOrderId == orderId);
+
+                if (userSpecialOffer != null)
+                {
+                    userSpecialOffer.IsUsed = false;
+                    userSpecialOffer.UsedAt = null;
+                    userSpecialOffer.UsedOnOrderId = null;
+                    await _context.SaveChangesAsync();
+
+                    // Log that we restored the special offer
+                    Console.WriteLine($"Restored special offer {userSpecialOffer.SpecialOfferId} for user {userSpecialOffer.UserId} after admin cancelled order {orderId}");
+                }
 
                 // Create updated copy for auditing
                 var updatedOrder = new Order

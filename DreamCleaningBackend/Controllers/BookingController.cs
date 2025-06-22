@@ -631,10 +631,6 @@ namespace DreamCleaningBackend.Controllers
                 Console.WriteLine($"- Maids Count: {order.MaidsCount}");
                 Console.WriteLine($"=== BOOKING CREATION END ===\n");
 
-                // REMOVED: This line was causing the duplicate save issue
-                // _context.Orders.Add(order);
-                // await _context.SaveChangesAsync();
-
                 // Use a transaction to ensure both order and gift card usage are saved together
                 using (var transaction = await _context.Database.BeginTransactionAsync())
                 {
@@ -643,6 +639,41 @@ namespace DreamCleaningBackend.Controllers
                         // Add order to database
                         _context.Orders.Add(order);
                         await _context.SaveChangesAsync();
+
+                        if (dto.UserSpecialOfferId.HasValue && dto.UserSpecialOfferId.Value > 0)
+                        {
+                            var userSpecialOffer = await _context.UserSpecialOffers
+                                .FirstOrDefaultAsync(uso =>
+                                    uso.Id == dto.UserSpecialOfferId.Value &&
+                                    uso.UserId == userId &&
+                                    !uso.IsUsed);
+
+                            if (userSpecialOffer != null)
+                            {
+                                userSpecialOffer.IsUsed = true;
+                                userSpecialOffer.UsedAt = DateTime.Now;
+                                userSpecialOffer.UsedOnOrderId = order.Id;
+
+                                await _context.SaveChangesAsync();
+                            }
+                        }
+
+                        // Store special offer details in the order
+                        if (dto.UserSpecialOfferId.HasValue && dto.UserSpecialOfferId.Value > 0)
+                        {
+                            var specialOfferDetails = await _context.UserSpecialOffers
+                                .Include(uso => uso.SpecialOffer)
+                                .FirstOrDefaultAsync(uso => uso.Id == dto.UserSpecialOfferId.Value);
+
+                            if (specialOfferDetails != null)
+                            {
+                                // Store the special offer name in PromoCode field with a prefix
+                                // This way we can identify it's a special offer, not a regular promo code
+                                order.PromoCode = $"SPECIAL_OFFER:{specialOfferDetails.SpecialOffer.Name}";
+                                await _context.SaveChangesAsync();
+                            }
+                        }
+
 
                         // Apply gift card if one was provided
                         if (!string.IsNullOrEmpty(giftCardCode) && giftCardAmountUsed > 0)

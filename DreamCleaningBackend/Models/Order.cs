@@ -69,6 +69,11 @@ namespace DreamCleaningBackend.Models
         [StringLength(14)]
         public string? GiftCardCode { get; set; }
 
+        public int? UserSpecialOfferId { get; set; }
+
+        [StringLength(100)]
+        public string? SpecialOfferName { get; set; }
+
         // Subscription
         public int SubscriptionId { get; set; }
         public virtual Subscription Subscription { get; set; }
