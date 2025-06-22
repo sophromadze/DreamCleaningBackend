@@ -5,6 +5,8 @@ using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Attributes;
 using System.Security.Claims;
 using DreamCleaningBackend.Models;
+using Microsoft.EntityFrameworkCore;
+using DreamCleaningBackend.Data;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -14,10 +16,12 @@ namespace DreamCleaningBackend.Controllers
     public class SpecialOffersAdminController : ControllerBase
     {
         private readonly ISpecialOfferService _specialOfferService;
+        private readonly ApplicationDbContext _context;
 
-        public SpecialOffersAdminController(ISpecialOfferService specialOfferService)
+        public SpecialOffersAdminController(ISpecialOfferService specialOfferService, ApplicationDbContext context)
         {
             _specialOfferService = specialOfferService;
+            _context = context;
         }
 
         [HttpGet]
@@ -114,6 +118,42 @@ namespace DreamCleaningBackend.Controllers
                     return BadRequest(new { message = "Could not grant offer to user" });
 
                 return Ok(new { message = "Offer granted successfully" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("{id}/enable")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> EnableSpecialOffer(int id)
+        {
+            try
+            {
+                var result = await _specialOfferService.EnableSpecialOffer(id);
+                if (!result)
+                    return NotFound();
+
+                return Ok(new { message = "Special offer enabled successfully" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("{id}/disable")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> DisableSpecialOffer(int id)
+        {
+            try
+            {
+                var result = await _specialOfferService.DisableSpecialOffer(id);
+                if (!result)
+                    return NotFound();
+
+                return Ok(new { message = "Special offer disabled successfully" });
             }
             catch (Exception ex)
             {

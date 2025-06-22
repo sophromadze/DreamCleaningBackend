@@ -287,10 +287,6 @@ namespace DreamCleaningBackend.Controllers
             return Ok(calculation);
         }
 
-        // In BookingController.cs, update the CreateBooking method:
-
-        // In the CreateBooking method of BookingController.cs, add these Console.WriteLine statements:
-
         [HttpPost("create")]
         [Authorize]
         public async Task<ActionResult<BookingResponseDto>> CreateBooking(CreateBookingDto dto)
@@ -332,16 +328,6 @@ namespace DreamCleaningBackend.Controllers
                     // This is a gift card
                     giftCardCode = dto.PromoCode;
                     promoCode = null;
-
-                    //// Calculate gift card amount to be used
-                    //// Note: We'll apply the actual gift card after order creation
-                    //var giftCardValidation = await _giftCardService.ValidateGiftCard(giftCardCode);
-                    //if (giftCardValidation.IsValid)
-                    //{
-                    //    // Calculate the order total to determine gift card usage
-                    //    var orderTotal = dto.SubTotal - dto.DiscountAmount + (dto.SubTotal - dto.DiscountAmount) * 0.088m + dto.Tips;
-                    //    giftCardAmountUsed = Math.Min(giftCardValidation.AvailableBalance, orderTotal);
-                    //}
                 }
 
                 // Create order
@@ -747,7 +733,6 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        // Add this method to BookingController.cs after the CreateBooking method:
         [HttpPost("simulate-payment/{orderId}")]
         [Authorize]
         public async Task<ActionResult> SimulatePayment(int orderId)

@@ -24,5 +24,9 @@ namespace DreamCleaningBackend.Services.Interfaces
 
         // Get first-time discount percentage
         Task<decimal> GetFirstTimeDiscountPercentage();
+        Task<bool> EnableSpecialOffer(int id);
+        Task<bool> DisableSpecialOffer(int id);
+
+        Task GrantAllActiveOffersToNewUser(int userId);
     }
 }

@@ -33,23 +33,55 @@ namespace DreamCleaningBackend.Services
                 MinimumOrderAmount = dto.MinimumOrderAmount,
                 RequiresFirstTimeCustomer = dto.RequiresFirstTimeCustomer,
                 IsActive = true,
-                CreatedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.Now,
                 CreatedByUserId = createdByUserId
             };
 
             _context.SpecialOffers.Add(offer);
             await _context.SaveChangesAsync();
 
-            // Log creation
+            // Log creation only once
             await _auditService.LogCreateAsync(offer);
 
-            // If it's not a first-time offer, grant it to eligible users
+            // Store the ID to return data later
+            var offerId = offer.Id;
+
+            // If it's not a first-time offer, grant it to all eligible existing users
             if (offer.Type != OfferType.FirstTime)
             {
-                await GrantOfferToAllEligibleUsers(offer.Id);
+                // Grant to existing users without triggering an audit log
+                await GrantOfferToAllEligibleUsers(offerId);
             }
 
-            return await GetSpecialOfferById(offer.Id);
+            // Return the offer data using a fresh query to get updated stats
+            return await GetSpecialOfferByIdWithoutTracking(offerId);
+        }
+
+        private async Task<SpecialOfferAdminDto> GetSpecialOfferByIdWithoutTracking(int id)
+        {
+            return await _context.SpecialOffers
+                .AsNoTracking()  // This prevents EF from tracking changes
+                .Where(o => o.Id == id)
+                .Select(o => new SpecialOfferAdminDto
+                {
+                    Id = o.Id,
+                    Name = o.Name,
+                    Description = o.Description,
+                    IsPercentage = o.IsPercentage,
+                    DiscountValue = o.DiscountValue,
+                    Type = o.Type.ToString(),
+                    ValidFrom = o.ValidFrom,
+                    ValidTo = o.ValidTo,
+                    IsActive = o.IsActive,
+                    Icon = o.Icon ?? string.Empty,
+                    BadgeColor = o.BadgeColor ?? "#28a745",
+                    CreatedAt = o.CreatedAt,
+                    MinimumOrderAmount = o.MinimumOrderAmount,
+                    RequiresFirstTimeCustomer = o.RequiresFirstTimeCustomer,
+                    TotalUsersGranted = o.UserSpecialOffers.Count,
+                    TimesUsed = o.UserSpecialOffers.Count(uso => uso.IsUsed)
+                })
+                .FirstOrDefaultAsync();
         }
 
         public async Task<SpecialOfferAdminDto> UpdateSpecialOffer(int id, UpdateSpecialOfferDto dto)
@@ -65,7 +97,18 @@ namespace DreamCleaningBackend.Services
                 Description = offer.Description,
                 IsPercentage = offer.IsPercentage,
                 DiscountValue = offer.DiscountValue,
-                IsActive = offer.IsActive
+                IsActive = offer.IsActive,
+                Type = offer.Type,
+                ValidFrom = offer.ValidFrom,
+                ValidTo = offer.ValidTo,
+                Icon = offer.Icon,
+                BadgeColor = offer.BadgeColor,
+                MinimumOrderAmount = offer.MinimumOrderAmount,
+                RequiresFirstTimeCustomer = offer.RequiresFirstTimeCustomer,
+                DisplayOrder = offer.DisplayOrder,
+                CreatedAt = offer.CreatedAt,
+                UpdatedAt = offer.UpdatedAt,
+                CreatedByUserId = offer.CreatedByUserId
             };
 
             offer.Name = dto.Name;
@@ -78,7 +121,7 @@ namespace DreamCleaningBackend.Services
             offer.BadgeColor = dto.BadgeColor;
             offer.MinimumOrderAmount = dto.MinimumOrderAmount;
             offer.IsActive = dto.IsActive;
-            offer.UpdatedAt = DateTime.UtcNow;
+            offer.UpdatedAt = DateTime.Now;
 
             await _context.SaveChangesAsync();
 
@@ -162,6 +205,142 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        public async Task GrantAllActiveOffersToNewUser(int userId)
+        {
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+                return;
+
+            // Get all active special offers
+            var activeOffers = await _context.SpecialOffers
+                .Where(o => o.IsActive)
+                .ToListAsync();
+
+            foreach (var offer in activeOffers)
+            {
+                // Check if user already has this offer
+                var exists = await _context.UserSpecialOffers
+                    .AnyAsync(uso => uso.UserId == userId && uso.SpecialOfferId == offer.Id);
+
+                if (!exists)
+                {
+                    // Check if offer has specific requirements
+                    bool shouldGrant = true;
+
+                    // Check if offer requires first-time customer
+                    if (offer.RequiresFirstTimeCustomer && !user.FirstTimeOrder)
+                    {
+                        shouldGrant = false;
+                    }
+
+                    // Check if offer is within valid date range
+                    var now = DateTime.Now;
+                    if (offer.ValidFrom.HasValue && offer.ValidFrom > now)
+                    {
+                        shouldGrant = false;
+                    }
+                    if (offer.ValidTo.HasValue && offer.ValidTo < now)
+                    {
+                        shouldGrant = false;
+                    }
+
+                    if (shouldGrant)
+                    {
+                        var userOffer = new UserSpecialOffer
+                        {
+                            UserId = userId,
+                            SpecialOfferId = offer.Id,
+                            GrantedAt = DateTime.Now,
+                            ExpiresAt = offer.ValidTo
+                        };
+
+                        _context.UserSpecialOffers.Add(userOffer);
+                    }
+                }
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task<bool> EnableSpecialOffer(int id)
+        {
+            var offer = await _context.SpecialOffers.FindAsync(id);
+            if (offer == null)
+                return false;
+
+            // Create a copy of the original state for audit
+            var originalOffer = new SpecialOffer
+            {
+                Id = offer.Id,
+                Name = offer.Name,
+                Description = offer.Description,
+                IsPercentage = offer.IsPercentage,
+                DiscountValue = offer.DiscountValue,
+                IsActive = offer.IsActive,
+                Type = offer.Type,
+                ValidFrom = offer.ValidFrom,
+                ValidTo = offer.ValidTo,
+                Icon = offer.Icon,
+                BadgeColor = offer.BadgeColor,
+                MinimumOrderAmount = offer.MinimumOrderAmount,
+                RequiresFirstTimeCustomer = offer.RequiresFirstTimeCustomer,
+                DisplayOrder = offer.DisplayOrder,
+                CreatedAt = offer.CreatedAt,
+                UpdatedAt = offer.UpdatedAt,
+                CreatedByUserId = offer.CreatedByUserId
+            };
+
+            offer.IsActive = true;
+            offer.UpdatedAt = DateTime.Now;
+
+            await _context.SaveChangesAsync();
+
+            // Log the update using LogUpdateAsync
+            await _auditService.LogUpdateAsync(originalOffer, offer);
+
+            return true;
+        }
+
+        public async Task<bool> DisableSpecialOffer(int id)
+        {
+            var offer = await _context.SpecialOffers.FindAsync(id);
+            if (offer == null)
+                return false;
+
+            // Create a copy of the original state for audit
+            var originalOffer = new SpecialOffer
+            {
+                Id = offer.Id,
+                Name = offer.Name,
+                Description = offer.Description,
+                IsPercentage = offer.IsPercentage,
+                DiscountValue = offer.DiscountValue,
+                IsActive = offer.IsActive,
+                Type = offer.Type,
+                ValidFrom = offer.ValidFrom,
+                ValidTo = offer.ValidTo,
+                Icon = offer.Icon,
+                BadgeColor = offer.BadgeColor,
+                MinimumOrderAmount = offer.MinimumOrderAmount,
+                RequiresFirstTimeCustomer = offer.RequiresFirstTimeCustomer,
+                DisplayOrder = offer.DisplayOrder,
+                CreatedAt = offer.CreatedAt,
+                UpdatedAt = offer.UpdatedAt,
+                CreatedByUserId = offer.CreatedByUserId
+            };
+
+            offer.IsActive = false;
+            offer.UpdatedAt = DateTime.Now;
+
+            await _context.SaveChangesAsync();
+
+            // Log the update using LogUpdateAsync
+            await _auditService.LogUpdateAsync(originalOffer, offer);
+
+            return true;
+        }
+
+
         public async Task<SpecialOfferAdminDto> GetSpecialOfferById(int id)
         {
             return await _context.SpecialOffers
@@ -188,7 +367,10 @@ namespace DreamCleaningBackend.Services
 
         public async Task<int> GrantOfferToAllEligibleUsers(int offerId)
         {
-            var offer = await _context.SpecialOffers.FindAsync(offerId);
+            var offer = await _context.SpecialOffers
+        .AsNoTracking()  // Prevent tracking to avoid update audit
+        .FirstOrDefaultAsync(o => o.Id == offerId);
+
             if (offer == null || !offer.IsActive)
                 return 0;
 
@@ -211,7 +393,7 @@ namespace DreamCleaningBackend.Services
                 {
                     UserId = user.Id,
                     SpecialOfferId = offerId,
-                    GrantedAt = DateTime.UtcNow,
+                    GrantedAt = DateTime.Now,
                     ExpiresAt = offer.ValidTo
                 };
 
@@ -240,7 +422,7 @@ namespace DreamCleaningBackend.Services
             {
                 UserId = userId,
                 SpecialOfferId = offerId,
-                GrantedAt = DateTime.UtcNow,
+                GrantedAt = DateTime.Now,
                 ExpiresAt = offer.ValidTo
             };
 
@@ -252,7 +434,7 @@ namespace DreamCleaningBackend.Services
 
         public async Task<List<UserSpecialOfferDto>> GetUserAvailableOffers(int userId)
         {
-            var now = DateTime.UtcNow;
+            var now = DateTime.Now;
 
             return await _context.UserSpecialOffers
                 .Where(uso => uso.UserId == userId &&
@@ -288,7 +470,7 @@ namespace DreamCleaningBackend.Services
                 return false;
 
             userOffer.IsUsed = true;
-            userOffer.UsedAt = DateTime.UtcNow;
+            userOffer.UsedAt = DateTime.Now;
             userOffer.UsedOnOrderId = orderId;
 
             await _context.SaveChangesAsync();
@@ -298,7 +480,7 @@ namespace DreamCleaningBackend.Services
 
         public async Task<UserSpecialOfferDto?> ValidateSpecialOffer(int userId, int offerId)
         {
-            var now = DateTime.UtcNow;
+            var now = DateTime.Now;
 
             return await _context.UserSpecialOffers
                 .Where(uso => uso.UserId == userId &&

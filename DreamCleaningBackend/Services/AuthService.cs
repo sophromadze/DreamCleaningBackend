@@ -62,7 +62,7 @@ namespace DreamCleaningBackend.Services
 
                 try
                 {
-                    await _specialOfferService.GrantFirstTimeOfferIfEligible(user.Id);
+                    await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
                 }
                 catch (Exception ex)
                 {
@@ -190,7 +190,7 @@ namespace DreamCleaningBackend.Services
 
                 try
                 {
-                    await _specialOfferService.GrantFirstTimeOfferIfEligible(user.Id);
+                    await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
                 }
                 catch (Exception ex)
                 {
@@ -604,7 +604,7 @@ namespace DreamCleaningBackend.Services
 
                 try
                 {
-                    await _specialOfferService.GrantFirstTimeOfferIfEligible(user.Id);
+                    await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
                 }
                 catch (Exception ex)
                 {
