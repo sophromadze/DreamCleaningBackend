@@ -1064,7 +1064,8 @@ namespace DreamCleaningBackend.Controllers
                 Name = subscription.Name,
                 Description = subscription.Description,
                 DiscountPercentage = subscription.DiscountPercentage,
-                SubscriptionDays = subscription.SubscriptionDays
+                SubscriptionDays = subscription.SubscriptionDays,
+                IsActive = subscription.IsActive
             });
         }
 
@@ -1106,7 +1107,8 @@ namespace DreamCleaningBackend.Controllers
                 Name = subscription.Name,
                 Description = subscription.Description,
                 DiscountPercentage = subscription.DiscountPercentage,
-                SubscriptionDays = subscription.SubscriptionDays
+                SubscriptionDays = subscription.SubscriptionDays,
+                IsActive = subscription.IsActive
             });
         }
 

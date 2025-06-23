@@ -42,6 +42,7 @@ namespace DreamCleaningBackend.DTOs
 
         public bool IsPercentage { get; set; }
         public decimal DiscountValue { get; set; }
+        public int? Type { get; set; }
         public DateTime? ValidFrom { get; set; }
         public DateTime? ValidTo { get; set; }
         public string? Icon { get; set; }

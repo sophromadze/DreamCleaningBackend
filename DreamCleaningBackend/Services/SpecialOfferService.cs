@@ -115,6 +115,10 @@ namespace DreamCleaningBackend.Services
             offer.Description = dto.Description;
             offer.IsPercentage = dto.IsPercentage;
             offer.DiscountValue = dto.DiscountValue;
+            if (dto.Type.HasValue && offer.Type != OfferType.FirstTime)
+            {
+                offer.Type = (OfferType)dto.Type.Value;
+            }
             offer.ValidFrom = dto.ValidFrom;
             offer.ValidTo = dto.ValidTo;
             offer.Icon = dto.Icon;
