@@ -137,6 +137,17 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceTypeDto>> CreateServiceType(CreateServiceTypeDto dto)
         {
+            // If no display order specified, get the next available
+            if (dto.DisplayOrder == 0)
+            {
+                dto.DisplayOrder = await DisplayOrderHelper.GetNextDisplayOrder(_context, "ServiceType");
+            }
+            else
+            {
+                // Reorder existing items if inserting at specific position
+                await DisplayOrderHelper.ReorderForInsert(_context, "ServiceType", dto.DisplayOrder);
+            }
+
             var serviceType = new ServiceType
             {
                 Name = dto.Name,
