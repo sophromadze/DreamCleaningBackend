@@ -74,23 +74,27 @@ namespace DreamCleaningBackend.Controllers
                     BasePrice = st.BasePrice,
                     Description = st.Description,
                     IsActive = st.IsActive,
-                    Services = st.Services.Select(s => new ServiceDto
-                    {
-                        Id = s.Id,
-                        Name = s.Name,
-                        ServiceKey = s.ServiceKey,
-                        Cost = s.Cost,
-                        TimeDuration = s.TimeDuration,
-                        ServiceTypeId = s.ServiceTypeId,
-                        InputType = s.InputType,
-                        MinValue = s.MinValue,
-                        MaxValue = s.MaxValue,
-                        StepValue = s.StepValue,
-                        IsRangeInput = s.IsRangeInput,
-                        Unit = s.Unit,
-                        ServiceRelationType = s.ServiceRelationType,
-                        IsActive = s.IsActive
-                    }).ToList(),
+                    DisplayOrder = st.DisplayOrder,
+                    Services = st.Services
+                        .OrderBy(s => s.DisplayOrder)
+                        .Select(s => new ServiceDto
+                        {
+                            Id = s.Id,
+                            Name = s.Name,
+                            ServiceKey = s.ServiceKey,
+                            Cost = s.Cost,
+                            TimeDuration = s.TimeDuration,
+                            ServiceTypeId = s.ServiceTypeId,
+                            InputType = s.InputType,
+                            MinValue = s.MinValue,
+                            MaxValue = s.MaxValue,
+                            StepValue = s.StepValue,
+                            IsRangeInput = s.IsRangeInput,
+                            Unit = s.Unit,
+                            ServiceRelationType = s.ServiceRelationType,
+                            IsActive = s.IsActive,
+                            DisplayOrder = s.DisplayOrder
+                        }).ToList(),
                     ExtraServices = new List<ExtraServiceDto>()
                 };
 
@@ -110,7 +114,8 @@ namespace DreamCleaningBackend.Controllers
                     IsSameDayService = es.IsSameDayService,
                     PriceMultiplier = es.PriceMultiplier,
                     IsAvailableForAll = es.IsAvailableForAll,
-                    IsActive = es.IsActive
+                    IsActive = es.IsActive,
+                    DisplayOrder = es.DisplayOrder
                 }));
 
                 // Add universal extra services
@@ -129,12 +134,17 @@ namespace DreamCleaningBackend.Controllers
                     IsSameDayService = es.IsSameDayService,
                     PriceMultiplier = es.PriceMultiplier,
                     IsAvailableForAll = es.IsAvailableForAll,
-                    IsActive = es.IsActive
+                    IsActive = es.IsActive,
+                    DisplayOrder = es.DisplayOrder
                 }));
+
+                // Sort the combined extra services by display order
+                serviceTypeDto.ExtraServices = serviceTypeDto.ExtraServices
+                    .OrderBy(es => es.DisplayOrder)
+                    .ToList();
 
                 result.Add(serviceTypeDto);
             }
-
             return Ok(result);
         }
 
@@ -142,30 +152,63 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceTypeDto>> CreateServiceType(CreateServiceTypeDto dto)
         {
-            var serviceType = new ServiceType
+            using (var transaction = await _context.Database.BeginTransactionAsync())
             {
-                Name = dto.Name,
-                BasePrice = dto.BasePrice,
-                Description = dto.Description,
-                DisplayOrder = dto.DisplayOrder,
-                IsActive = true,
-                CreatedAt = DateTime.Now
-            };
+                try
+                {
+                    // If display order is not provided or is 0, assign it to the end
+                    if (dto.DisplayOrder <= 0)
+                    {
+                        var maxDisplayOrder = await _context.ServiceTypes
+                            .MaxAsync(s => (int?)s.DisplayOrder) ?? 0;
+                        dto.DisplayOrder = maxDisplayOrder + 1;
+                    }
+                    else
+                    {
+                        // If a specific display order is provided, shift existing service types
+                        var existingServiceTypes = await _context.ServiceTypes
+                            .Where(s => s.DisplayOrder >= dto.DisplayOrder)
+                            .ToListAsync();
 
-            _context.ServiceTypes.Add(serviceType);
-            await _context.SaveChangesAsync();
+                        foreach (var st in existingServiceTypes)
+                        {
+                            st.DisplayOrder++;
+                            st.UpdatedAt = DateTime.Now;
+                        }
+                    }
 
-            // LOG THE CREATION (after save to get the ID)
-            await _auditService.LogCreateAsync(serviceType);
+                    var serviceType = new ServiceType
+                    {
+                        Name = dto.Name,
+                        BasePrice = dto.BasePrice,
+                        Description = dto.Description,
+                        DisplayOrder = dto.DisplayOrder,
+                        IsActive = true,
+                        CreatedAt = DateTime.Now
+                    };
+                    _context.ServiceTypes.Add(serviceType);
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
 
-            return Ok(new ServiceTypeDto
-            {
-                Id = serviceType.Id,
-                Name = serviceType.Name,
-                BasePrice = serviceType.BasePrice,
-                Description = serviceType.Description,
-                IsActive = serviceType.IsActive
-            });
+                    // LOG THE CREATION (after save to get the ID)
+                    await _auditService.LogCreateAsync(serviceType);
+
+                    return Ok(new ServiceTypeDto
+                    {
+                        Id = serviceType.Id,
+                        Name = serviceType.Name,
+                        BasePrice = serviceType.BasePrice,
+                        Description = serviceType.Description,
+                        DisplayOrder = serviceType.DisplayOrder,
+                        IsActive = serviceType.IsActive
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, new { message = "Error creating service type", error = ex.Message });
+                }
+            }
         }
 
         [HttpPut("service-types/{id}")]
@@ -187,25 +230,70 @@ namespace DreamCleaningBackend.Controllers
                 IsActive = serviceType.IsActive
             };
 
-            serviceType.Name = dto.Name;
-            serviceType.BasePrice = dto.BasePrice;
-            serviceType.Description = dto.Description;
-            serviceType.DisplayOrder = dto.DisplayOrder;
-            serviceType.UpdatedAt = DateTime.Now;
+            // Check if display order is changing
+            bool isDisplayOrderChanging = serviceType.DisplayOrder != dto.DisplayOrder;
+            int oldDisplayOrder = serviceType.DisplayOrder;
+            int newDisplayOrder = dto.DisplayOrder;
 
-            // LOG THE UPDATE
-            await _auditService.LogUpdateAsync(originalServiceType, serviceType);
-
-            await _context.SaveChangesAsync();
-
-            return Ok(new ServiceTypeDto
+            using (var transaction = await _context.Database.BeginTransactionAsync())
             {
-                Id = serviceType.Id,
-                Name = serviceType.Name,
-                BasePrice = serviceType.BasePrice,
-                Description = serviceType.Description,
-                IsActive = serviceType.IsActive
-            });
+                try
+                {
+                    // Handle display order changes
+                    if (isDisplayOrderChanging && newDisplayOrder > 0)
+                    {
+                        var allServiceTypes = await _context.ServiceTypes
+                            .Where(s => s.Id != id)
+                            .ToListAsync();
+
+                        if (oldDisplayOrder < newDisplayOrder)
+                        {
+                            // Moving down: shift items between old and new position up
+                            foreach (var st in allServiceTypes.Where(s => s.DisplayOrder > oldDisplayOrder && s.DisplayOrder <= newDisplayOrder))
+                            {
+                                st.DisplayOrder--;
+                                st.UpdatedAt = DateTime.Now;
+                            }
+                        }
+                        else if (oldDisplayOrder > newDisplayOrder)
+                        {
+                            // Moving up: shift items between new and old position down
+                            foreach (var st in allServiceTypes.Where(s => s.DisplayOrder >= newDisplayOrder && s.DisplayOrder < oldDisplayOrder))
+                            {
+                                st.DisplayOrder++;
+                                st.UpdatedAt = DateTime.Now;
+                            }
+                        }
+                    }
+
+                    serviceType.Name = dto.Name;
+                    serviceType.BasePrice = dto.BasePrice;
+                    serviceType.Description = dto.Description;
+                    serviceType.DisplayOrder = dto.DisplayOrder;
+                    serviceType.UpdatedAt = DateTime.Now;
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    // LOG THE UPDATE
+                    await _auditService.LogUpdateAsync(originalServiceType, serviceType);
+
+                    return Ok(new ServiceTypeDto
+                    {
+                        Id = serviceType.Id,
+                        Name = serviceType.Name,
+                        BasePrice = serviceType.BasePrice,
+                        Description = serviceType.Description,
+                        DisplayOrder = serviceType.DisplayOrder,
+                        IsActive = serviceType.IsActive
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, new { message = "Error updating service type", error = ex.Message });
+                }
+            }
         }
 
         [HttpPut("service-types/{id}/deactivate")]
@@ -317,7 +405,8 @@ namespace DreamCleaningBackend.Controllers
                     StepValue = s.StepValue,
                     IsRangeInput = s.IsRangeInput,
                     Unit = s.Unit,
-                    IsActive = s.IsActive
+                    IsActive = s.IsActive,
+                    DisplayOrder = s.DisplayOrder
                 })
                 .ToListAsync();
 
@@ -328,47 +417,81 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceDto>> CreateService(CreateServiceDto dto)
         {
-            var service = new Service
+            using (var transaction = await _context.Database.BeginTransactionAsync())
             {
-                Name = dto.Name,
-                ServiceKey = dto.ServiceKey,
-                Cost = dto.Cost,
-                TimeDuration = dto.TimeDuration,
-                ServiceTypeId = dto.ServiceTypeId,
-                InputType = dto.InputType,
-                MinValue = dto.MinValue,
-                MaxValue = dto.MaxValue,
-                StepValue = dto.StepValue,
-                IsRangeInput = dto.IsRangeInput,
-                Unit = dto.Unit,
-                ServiceRelationType = dto.ServiceRelationType, // ADD THIS
-                DisplayOrder = dto.DisplayOrder,
-                IsActive = true,
-                CreatedAt = DateTime.Now
-            };
+                try
+                {
+                    // If display order is not provided or is 0, assign it to the end within the service type
+                    if (dto.DisplayOrder <= 0)
+                    {
+                        var maxDisplayOrder = await _context.Services
+                            .Where(s => s.ServiceTypeId == dto.ServiceTypeId)
+                            .MaxAsync(s => (int?)s.DisplayOrder) ?? 0;
+                        dto.DisplayOrder = maxDisplayOrder + 1;
+                    }
+                    else
+                    {
+                        // If a specific display order is provided, shift existing services within the same service type
+                        var existingServices = await _context.Services
+                            .Where(s => s.ServiceTypeId == dto.ServiceTypeId && s.DisplayOrder >= dto.DisplayOrder)
+                            .ToListAsync();
 
-            _context.Services.Add(service);
-            await _context.SaveChangesAsync();
+                        foreach (var svc in existingServices)
+                        {
+                            svc.DisplayOrder++;
+                            svc.UpdatedAt = DateTime.Now;
+                        }
+                    }
 
-            await _auditService.LogCreateAsync(service);
+                    var service = new Service
+                    {
+                        Name = dto.Name,
+                        ServiceKey = dto.ServiceKey,
+                        Cost = dto.Cost,
+                        TimeDuration = dto.TimeDuration,
+                        ServiceTypeId = dto.ServiceTypeId,
+                        InputType = dto.InputType,
+                        MinValue = dto.MinValue,
+                        MaxValue = dto.MaxValue,
+                        StepValue = dto.StepValue,
+                        IsRangeInput = dto.IsRangeInput,
+                        Unit = dto.Unit,
+                        ServiceRelationType = dto.ServiceRelationType, // ADD THIS
+                        DisplayOrder = dto.DisplayOrder,
+                        IsActive = true,
+                        CreatedAt = DateTime.Now
+                    };
+                    _context.Services.Add(service);
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
 
-            return Ok(new ServiceDto
-            {
-                Id = service.Id,
-                Name = service.Name,
-                ServiceKey = service.ServiceKey,
-                Cost = service.Cost,
-                TimeDuration = service.TimeDuration,
-                ServiceTypeId = service.ServiceTypeId,
-                InputType = service.InputType,
-                MinValue = service.MinValue,
-                MaxValue = service.MaxValue,
-                StepValue = service.StepValue,
-                IsRangeInput = service.IsRangeInput,
-                Unit = service.Unit,
-                ServiceRelationType = service.ServiceRelationType, // ADD THIS
-                IsActive = service.IsActive
-            });
+                    await _auditService.LogCreateAsync(service);
+
+                    return Ok(new ServiceDto
+                    {
+                        Id = service.Id,
+                        Name = service.Name,
+                        ServiceKey = service.ServiceKey,
+                        Cost = service.Cost,
+                        TimeDuration = service.TimeDuration,
+                        ServiceTypeId = service.ServiceTypeId,
+                        InputType = service.InputType,
+                        MinValue = service.MinValue,
+                        MaxValue = service.MaxValue,
+                        StepValue = service.StepValue,
+                        IsRangeInput = service.IsRangeInput,
+                        Unit = service.Unit,
+                        ServiceRelationType = service.ServiceRelationType, // ADD THIS
+                        DisplayOrder = service.DisplayOrder,
+                        IsActive = service.IsActive
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, new { message = "Error creating service", error = ex.Message });
+                }
+            }
         }
 
         [HttpPost("services/copy")]
@@ -448,44 +571,89 @@ namespace DreamCleaningBackend.Controllers
                 IsActive = service.IsActive
             };
 
-            // Update all fields
-            service.Name = dto.Name;
-            service.ServiceKey = dto.ServiceKey;
-            service.Cost = dto.Cost;
-            service.TimeDuration = dto.TimeDuration;
-            service.ServiceTypeId = dto.ServiceTypeId;
-            service.InputType = dto.InputType;
-            service.MinValue = dto.MinValue;
-            service.MaxValue = dto.MaxValue;
-            service.StepValue = dto.StepValue;
-            service.IsRangeInput = dto.IsRangeInput;
-            service.Unit = dto.Unit;
-            service.ServiceRelationType = dto.ServiceRelationType;
-            service.DisplayOrder = dto.DisplayOrder;
-            service.UpdatedAt = DateTime.Now;
+            // Check if display order is changing
+            bool isDisplayOrderChanging = service.DisplayOrder != dto.DisplayOrder;
+            int oldDisplayOrder = service.DisplayOrder;
+            int newDisplayOrder = dto.DisplayOrder;
 
-            // LOG THE UPDATE
-            await _auditService.LogUpdateAsync(originalService, service);
-
-            await _context.SaveChangesAsync();
-
-            return Ok(new ServiceDto
+            using (var transaction = await _context.Database.BeginTransactionAsync())
             {
-                Id = service.Id,
-                Name = service.Name,
-                ServiceKey = service.ServiceKey,
-                Cost = service.Cost,
-                TimeDuration = service.TimeDuration,
-                ServiceTypeId = service.ServiceTypeId,
-                InputType = service.InputType,
-                MinValue = service.MinValue,
-                MaxValue = service.MaxValue,
-                StepValue = service.StepValue,
-                IsRangeInput = service.IsRangeInput,
-                Unit = service.Unit,
-                ServiceRelationType = service.ServiceRelationType, // ADD THIS
-                IsActive = service.IsActive
-            });
+                try
+                {
+                    // Handle display order changes within the same service type
+                    if (isDisplayOrderChanging && newDisplayOrder > 0)
+                    {
+                        var allServices = await _context.Services
+                            .Where(s => s.Id != id && s.ServiceTypeId == dto.ServiceTypeId)
+                            .ToListAsync();
+
+                        if (oldDisplayOrder < newDisplayOrder)
+                        {
+                            // Moving down: shift items between old and new position up
+                            foreach (var svc in allServices.Where(s => s.DisplayOrder > oldDisplayOrder && s.DisplayOrder <= newDisplayOrder))
+                            {
+                                svc.DisplayOrder--;
+                                svc.UpdatedAt = DateTime.Now;
+                            }
+                        }
+                        else if (oldDisplayOrder > newDisplayOrder)
+                        {
+                            // Moving up: shift items between new and old position down
+                            foreach (var svc in allServices.Where(s => s.DisplayOrder >= newDisplayOrder && s.DisplayOrder < oldDisplayOrder))
+                            {
+                                svc.DisplayOrder++;
+                                svc.UpdatedAt = DateTime.Now;
+                            }
+                        }
+                    }
+
+                    // Update all fields
+                    service.Name = dto.Name;
+                    service.ServiceKey = dto.ServiceKey;
+                    service.Cost = dto.Cost;
+                    service.TimeDuration = dto.TimeDuration;
+                    service.ServiceTypeId = dto.ServiceTypeId;
+                    service.InputType = dto.InputType;
+                    service.MinValue = dto.MinValue;
+                    service.MaxValue = dto.MaxValue;
+                    service.StepValue = dto.StepValue;
+                    service.IsRangeInput = dto.IsRangeInput;
+                    service.Unit = dto.Unit;
+                    service.ServiceRelationType = dto.ServiceRelationType;
+                    service.DisplayOrder = dto.DisplayOrder;
+                    service.UpdatedAt = DateTime.Now;
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    // LOG THE UPDATE
+                    await _auditService.LogUpdateAsync(originalService, service);
+
+                    return Ok(new ServiceDto
+                    {
+                        Id = service.Id,
+                        Name = service.Name,
+                        ServiceKey = service.ServiceKey,
+                        Cost = service.Cost,
+                        TimeDuration = service.TimeDuration,
+                        ServiceTypeId = service.ServiceTypeId,
+                        InputType = service.InputType,
+                        MinValue = service.MinValue,
+                        MaxValue = service.MaxValue,
+                        StepValue = service.StepValue,
+                        IsRangeInput = service.IsRangeInput,
+                        Unit = service.Unit,
+                        ServiceRelationType = service.ServiceRelationType, // ADD THIS
+                        DisplayOrder = service.DisplayOrder,
+                        IsActive = service.IsActive
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, new { message = "Error updating service", error = ex.Message });
+                }
+            }
         }
 
         [HttpPut("services/{id}/deactivate")]
@@ -677,7 +845,8 @@ namespace DreamCleaningBackend.Controllers
                     IsSameDayService = es.IsSameDayService,
                     PriceMultiplier = es.PriceMultiplier,
                     IsAvailableForAll = es.IsAvailableForAll,
-                    IsActive = es.IsActive
+                    IsActive = es.IsActive,
+                    DisplayOrder = es.DisplayOrder
                 })
                 .ToListAsync();
 
@@ -688,48 +857,94 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ExtraServiceDto>> CreateExtraService(CreateExtraServiceDto dto)
         {
-            var extraService = new ExtraService
+            using (var transaction = await _context.Database.BeginTransactionAsync())
             {
-                Name = dto.Name,
-                Description = dto.Description,
-                Price = dto.Price,
-                Duration = dto.Duration,
-                Icon = dto.Icon,
-                HasQuantity = dto.HasQuantity,
-                HasHours = dto.HasHours,
-                IsDeepCleaning = dto.IsDeepCleaning,
-                IsSuperDeepCleaning = dto.IsSuperDeepCleaning,
-                IsSameDayService = dto.IsSameDayService,
-                PriceMultiplier = dto.PriceMultiplier,
-                ServiceTypeId = dto.ServiceTypeId,
-                IsAvailableForAll = dto.IsAvailableForAll,
-                DisplayOrder = dto.DisplayOrder,
-                IsActive = true,
-                CreatedAt = DateTime.Now
-            };
+                try
+                {
+                    // If display order is not provided or is 0, assign it to the end
+                    if (dto.DisplayOrder <= 0)
+                    {
+                        var query = _context.ExtraServices.AsQueryable();
 
-            _context.ExtraServices.Add(extraService);
-            await _context.SaveChangesAsync();
+                        // If specific to a service type, order within that type
+                        if (dto.ServiceTypeId.HasValue && !dto.IsAvailableForAll)
+                        {
+                            query = query.Where(es => es.ServiceTypeId == dto.ServiceTypeId);
+                        }
 
-            await _auditService.LogCreateAsync(extraService);
+                        var maxDisplayOrder = await query.MaxAsync(es => (int?)es.DisplayOrder) ?? 0;
+                        dto.DisplayOrder = maxDisplayOrder + 1;
+                    }
+                    else
+                    {
+                        // If a specific display order is provided, shift existing extra services
+                        var query = _context.ExtraServices.Where(es => es.DisplayOrder >= dto.DisplayOrder);
 
-            return Ok(new ExtraServiceDto
-            {
-                Id = extraService.Id,
-                Name = extraService.Name,
-                Description = extraService.Description,
-                Price = extraService.Price,
-                Duration = extraService.Duration,
-                Icon = extraService.Icon,
-                HasQuantity = extraService.HasQuantity,
-                HasHours = extraService.HasHours,
-                IsDeepCleaning = extraService.IsDeepCleaning,
-                IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
-                IsSameDayService = extraService.IsSameDayService,
-                PriceMultiplier = extraService.PriceMultiplier,
-                IsAvailableForAll = extraService.IsAvailableForAll,
-                IsActive = extraService.IsActive
-            });
+                        // If specific to a service type, only shift within that type
+                        if (dto.ServiceTypeId.HasValue && !dto.IsAvailableForAll)
+                        {
+                            query = query.Where(es => es.ServiceTypeId == dto.ServiceTypeId || es.IsAvailableForAll);
+                        }
+
+                        var existingExtraServices = await query.ToListAsync();
+
+                        foreach (var es in existingExtraServices)
+                        {
+                            es.DisplayOrder++;
+                            es.UpdatedAt = DateTime.Now;
+                        }
+                    }
+
+                    var extraService = new ExtraService
+                    {
+                        Name = dto.Name,
+                        Description = dto.Description,
+                        Price = dto.Price,
+                        Duration = dto.Duration,
+                        Icon = dto.Icon,
+                        HasQuantity = dto.HasQuantity,
+                        HasHours = dto.HasHours,
+                        IsDeepCleaning = dto.IsDeepCleaning,
+                        IsSuperDeepCleaning = dto.IsSuperDeepCleaning,
+                        IsSameDayService = dto.IsSameDayService,
+                        PriceMultiplier = dto.PriceMultiplier,
+                        ServiceTypeId = dto.ServiceTypeId,
+                        IsAvailableForAll = dto.IsAvailableForAll,
+                        DisplayOrder = dto.DisplayOrder,
+                        IsActive = true,
+                        CreatedAt = DateTime.Now
+                    };
+                    _context.ExtraServices.Add(extraService);
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    await _auditService.LogCreateAsync(extraService);
+
+                    return Ok(new ExtraServiceDto
+                    {
+                        Id = extraService.Id,
+                        Name = extraService.Name,
+                        Description = extraService.Description,
+                        Price = extraService.Price,
+                        Duration = extraService.Duration,
+                        Icon = extraService.Icon,
+                        HasQuantity = extraService.HasQuantity,
+                        HasHours = extraService.HasHours,
+                        IsDeepCleaning = extraService.IsDeepCleaning,
+                        IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
+                        IsSameDayService = extraService.IsSameDayService,
+                        PriceMultiplier = extraService.PriceMultiplier,
+                        IsAvailableForAll = extraService.IsAvailableForAll,
+                        DisplayOrder = extraService.DisplayOrder,
+                        IsActive = extraService.IsActive
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, new { message = "Error creating extra service", error = ex.Message });
+                }
+            }
         }
 
         [HttpPost("extra-services/copy")]
@@ -811,45 +1026,96 @@ namespace DreamCleaningBackend.Controllers
                 IsActive = extraService.IsActive
             };
 
-            // Update fields
-            extraService.Name = dto.Name;
-            extraService.Description = dto.Description;
-            extraService.Price = dto.Price;
-            extraService.Duration = dto.Duration;
-            extraService.Icon = dto.Icon;
-            extraService.HasQuantity = dto.HasQuantity;
-            extraService.HasHours = dto.HasHours;
-            extraService.IsDeepCleaning = dto.IsDeepCleaning;
-            extraService.IsSuperDeepCleaning = dto.IsSuperDeepCleaning;
-            extraService.IsSameDayService = dto.IsSameDayService;
-            extraService.PriceMultiplier = dto.PriceMultiplier;
-            extraService.ServiceTypeId = dto.ServiceTypeId;
-            extraService.IsAvailableForAll = dto.IsAvailableForAll;
-            extraService.DisplayOrder = dto.DisplayOrder;
-            extraService.UpdatedAt = DateTime.Now;
+            // Check if display order is changing
+            bool isDisplayOrderChanging = extraService.DisplayOrder != dto.DisplayOrder;
+            int oldDisplayOrder = extraService.DisplayOrder;
+            int newDisplayOrder = dto.DisplayOrder;
 
-            // LOG THE UPDATE
-            await _auditService.LogUpdateAsync(originalExtraService, extraService);
-
-            await _context.SaveChangesAsync();
-
-            return Ok(new ExtraServiceDto
+            using (var transaction = await _context.Database.BeginTransactionAsync())
             {
-                Id = extraService.Id,
-                Name = extraService.Name,
-                Description = extraService.Description,
-                Price = extraService.Price,
-                Duration = extraService.Duration,
-                Icon = extraService.Icon,
-                HasQuantity = extraService.HasQuantity,
-                HasHours = extraService.HasHours,
-                IsDeepCleaning = extraService.IsDeepCleaning,
-                IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
-                IsSameDayService = extraService.IsSameDayService,
-                PriceMultiplier = extraService.PriceMultiplier,
-                IsAvailableForAll = extraService.IsAvailableForAll,
-                IsActive = extraService.IsActive
-            });
+                try
+                {
+                    // Handle display order changes
+                    if (isDisplayOrderChanging && newDisplayOrder > 0)
+                    {
+                        var query = _context.ExtraServices.Where(es => es.Id != id);
+
+                        // If specific to a service type, only reorder within that context
+                        if (dto.ServiceTypeId.HasValue && !dto.IsAvailableForAll)
+                        {
+                            query = query.Where(es => es.ServiceTypeId == dto.ServiceTypeId || es.IsAvailableForAll);
+                        }
+
+                        var allExtraServices = await query.ToListAsync();
+
+                        if (oldDisplayOrder < newDisplayOrder)
+                        {
+                            // Moving down: shift items between old and new position up
+                            foreach (var es in allExtraServices.Where(s => s.DisplayOrder > oldDisplayOrder && s.DisplayOrder <= newDisplayOrder))
+                            {
+                                es.DisplayOrder--;
+                                es.UpdatedAt = DateTime.Now;
+                            }
+                        }
+                        else if (oldDisplayOrder > newDisplayOrder)
+                        {
+                            // Moving up: shift items between new and old position down
+                            foreach (var es in allExtraServices.Where(s => s.DisplayOrder >= newDisplayOrder && s.DisplayOrder < oldDisplayOrder))
+                            {
+                                es.DisplayOrder++;
+                                es.UpdatedAt = DateTime.Now;
+                            }
+                        }
+                    }
+
+                    // Update fields
+                    extraService.Name = dto.Name;
+                    extraService.Description = dto.Description;
+                    extraService.Price = dto.Price;
+                    extraService.Duration = dto.Duration;
+                    extraService.Icon = dto.Icon;
+                    extraService.HasQuantity = dto.HasQuantity;
+                    extraService.HasHours = dto.HasHours;
+                    extraService.IsDeepCleaning = dto.IsDeepCleaning;
+                    extraService.IsSuperDeepCleaning = dto.IsSuperDeepCleaning;
+                    extraService.IsSameDayService = dto.IsSameDayService;
+                    extraService.PriceMultiplier = dto.PriceMultiplier;
+                    extraService.ServiceTypeId = dto.ServiceTypeId;
+                    extraService.IsAvailableForAll = dto.IsAvailableForAll;
+                    extraService.DisplayOrder = dto.DisplayOrder;
+                    extraService.UpdatedAt = DateTime.Now;
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    // LOG THE UPDATE
+                    await _auditService.LogUpdateAsync(originalExtraService, extraService);
+
+                    return Ok(new ExtraServiceDto
+                    {
+                        Id = extraService.Id,
+                        Name = extraService.Name,
+                        Description = extraService.Description,
+                        Price = extraService.Price,
+                        Duration = extraService.Duration,
+                        Icon = extraService.Icon,
+                        HasQuantity = extraService.HasQuantity,
+                        HasHours = extraService.HasHours,
+                        IsDeepCleaning = extraService.IsDeepCleaning,
+                        IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
+                        IsSameDayService = extraService.IsSameDayService,
+                        PriceMultiplier = extraService.PriceMultiplier,
+                        IsAvailableForAll = extraService.IsAvailableForAll,
+                        DisplayOrder = extraService.DisplayOrder,
+                        IsActive = extraService.IsActive
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, new { message = "Error updating extra service", error = ex.Message });
+                }
+            }
         }
 
         [HttpPut("extra-services/{id}/deactivate")]
@@ -1038,7 +1304,8 @@ namespace DreamCleaningBackend.Controllers
                     Description = s.Description,
                     DiscountPercentage = s.DiscountPercentage,
                     SubscriptionDays = s.SubscriptionDays,
-                    IsActive = s.IsActive
+                    IsActive = s.IsActive,
+                    DisplayOrder = s.DisplayOrder
                 })
                 .ToListAsync();
             return Ok(subscriptions);
@@ -1048,30 +1315,65 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<SubscriptionDto>> CreateSubscription(CreateSubscriptionDto dto)
         {
-            var subscription = new Subscription
+            using (var transaction = await _context.Database.BeginTransactionAsync())
             {
-                Name = dto.Name,
-                Description = dto.Description,
-                DiscountPercentage = dto.DiscountPercentage,
-                SubscriptionDays = dto.SubscriptionDays,
-                DisplayOrder = dto.DisplayOrder,
-                IsActive = true,
-                CreatedAt = DateTime.Now
-            };
-            _context.Subscriptions.Add(subscription);
-            await _context.SaveChangesAsync();
+                try
+                {
+                    // If display order is not provided or is 0, assign it to the end
+                    if (dto.DisplayOrder <= 0)
+                    {
+                        var maxDisplayOrder = await _context.Subscriptions
+                            .MaxAsync(s => (int?)s.DisplayOrder) ?? 0;
+                        dto.DisplayOrder = maxDisplayOrder + 1;
+                    }
+                    else
+                    {
+                        // If a specific display order is provided, shift existing subscriptions
+                        var existingSubscriptions = await _context.Subscriptions
+                            .Where(s => s.DisplayOrder >= dto.DisplayOrder)
+                            .ToListAsync();
 
-            await _auditService.LogCreateAsync(subscription);
+                        foreach (var sub in existingSubscriptions)
+                        {
+                            sub.DisplayOrder++;
+                            sub.UpdatedAt = DateTime.Now;
+                        }
+                    }
 
-            return Ok(new SubscriptionDto
-            {
-                Id = subscription.Id,
-                Name = subscription.Name,
-                Description = subscription.Description,
-                DiscountPercentage = subscription.DiscountPercentage,
-                SubscriptionDays = subscription.SubscriptionDays,
-                IsActive = subscription.IsActive
-            });
+                    var subscription = new Subscription
+                    {
+                        Name = dto.Name,
+                        Description = dto.Description,
+                        DiscountPercentage = dto.DiscountPercentage,
+                        SubscriptionDays = dto.SubscriptionDays,
+                        DisplayOrder = dto.DisplayOrder,
+                        IsActive = true,
+                        CreatedAt = DateTime.Now
+                    };
+
+                    _context.Subscriptions.Add(subscription);
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    await _auditService.LogCreateAsync(subscription);
+
+                    return Ok(new SubscriptionDto
+                    {
+                        Id = subscription.Id,
+                        Name = subscription.Name,
+                        Description = subscription.Description,
+                        DiscountPercentage = subscription.DiscountPercentage,
+                        SubscriptionDays = subscription.SubscriptionDays,
+                        DisplayOrder = subscription.DisplayOrder,
+                        IsActive = subscription.IsActive
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, new { message = "Error creating subscription", error = ex.Message });
+                }
+            }
         }
 
         [HttpPut("subscriptions/{id}")]
@@ -1080,9 +1382,11 @@ namespace DreamCleaningBackend.Controllers
         {
             var subscription = await _context.Subscriptions.FindAsync(id);
             if (subscription == null)
+            {
                 return NotFound();
+            }
 
-            // CREATE A COPY FOR AUDITING
+            // Store original values for audit
             var originalSubscription = new Subscription
             {
                 Id = subscription.Id,
@@ -1091,30 +1395,80 @@ namespace DreamCleaningBackend.Controllers
                 DiscountPercentage = subscription.DiscountPercentage,
                 SubscriptionDays = subscription.SubscriptionDays,
                 DisplayOrder = subscription.DisplayOrder,
-                IsActive = subscription.IsActive
+                IsActive = subscription.IsActive,
+                CreatedAt = subscription.CreatedAt,
+                UpdatedAt = subscription.UpdatedAt
             };
 
-            subscription.Name = dto.Name;
-            subscription.Description = dto.Description;
-            subscription.DiscountPercentage = dto.DiscountPercentage;
-            subscription.SubscriptionDays = dto.SubscriptionDays;
-            subscription.DisplayOrder = dto.DisplayOrder;
-            subscription.UpdatedAt = DateTime.Now;
+            // Check if display order is changing
+            bool isDisplayOrderChanging = subscription.DisplayOrder != dto.DisplayOrder;
+            int oldDisplayOrder = subscription.DisplayOrder;
+            int newDisplayOrder = dto.DisplayOrder;
 
-            // LOG THE UPDATE
-            await _auditService.LogUpdateAsync(originalSubscription, subscription);
-
-            await _context.SaveChangesAsync();
-
-            return Ok(new SubscriptionDto
+            // Start a transaction for display order changes
+            using (var transaction = await _context.Database.BeginTransactionAsync())
             {
-                Id = subscription.Id,
-                Name = subscription.Name,
-                Description = subscription.Description,
-                DiscountPercentage = subscription.DiscountPercentage,
-                SubscriptionDays = subscription.SubscriptionDays,
-                IsActive = subscription.IsActive
-            });
+                try
+                {
+                    // Handle display order changes
+                    if (isDisplayOrderChanging && newDisplayOrder > 0)
+                    {
+                        // Get all subscriptions except the one being updated
+                        var allSubscriptions = await _context.Subscriptions
+                            .Where(s => s.Id != id)
+                            .ToListAsync();
+
+                        if (oldDisplayOrder < newDisplayOrder)
+                        {
+                            // Moving down: shift items between old and new position up
+                            foreach (var sub in allSubscriptions.Where(s => s.DisplayOrder > oldDisplayOrder && s.DisplayOrder <= newDisplayOrder))
+                            {
+                                sub.DisplayOrder--;
+                                sub.UpdatedAt = DateTime.Now;
+                            }
+                        }
+                        else if (oldDisplayOrder > newDisplayOrder)
+                        {
+                            // Moving up: shift items between new and old position down
+                            foreach (var sub in allSubscriptions.Where(s => s.DisplayOrder >= newDisplayOrder && s.DisplayOrder < oldDisplayOrder))
+                            {
+                                sub.DisplayOrder++;
+                                sub.UpdatedAt = DateTime.Now;
+                            }
+                        }
+                    }
+
+                    // Update the subscription
+                    subscription.Name = dto.Name;
+                    subscription.Description = dto.Description;
+                    subscription.DiscountPercentage = dto.DiscountPercentage;
+                    subscription.SubscriptionDays = dto.SubscriptionDays;
+                    subscription.DisplayOrder = dto.DisplayOrder;
+                    subscription.UpdatedAt = DateTime.Now;
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    // Log the update
+                    await _auditService.LogUpdateAsync(originalSubscription, subscription);
+
+                    return Ok(new SubscriptionDto
+                    {
+                        Id = subscription.Id,
+                        Name = subscription.Name,
+                        Description = subscription.Description,
+                        DiscountPercentage = subscription.DiscountPercentage,
+                        SubscriptionDays = subscription.SubscriptionDays,
+                        DisplayOrder = subscription.DisplayOrder,
+                        IsActive = subscription.IsActive
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(500, new { message = "Error updating subscription", error = ex.Message });
+                }
+            }
         }
 
         [HttpDelete("subscriptions/{id}")]
@@ -1125,12 +1479,22 @@ namespace DreamCleaningBackend.Controllers
             if (subscription == null)
                 return NotFound();
 
-            subscription.IsActive = false;
-            subscription.UpdatedAt = DateTime.Now;
+            // Check if subscription is being used by any orders or users
+            var isUsedInOrders = await _context.Orders.AnyAsync(o => o.SubscriptionId == id);
+            var isUsedByUsers = await _context.Users.AnyAsync(u => u.SubscriptionId == id);
 
+            if (isUsedInOrders || isUsedByUsers)
+            {
+                return BadRequest(new { message = "Cannot delete subscription because it is being used by existing orders or users. Please deactivate it instead." });
+            }
+
+            // Log before deletion
             await _auditService.LogDeleteAsync(subscription);
 
+            // Actually delete the subscription
+            _context.Subscriptions.Remove(subscription);
             await _context.SaveChangesAsync();
+
             return Ok();
         }
 

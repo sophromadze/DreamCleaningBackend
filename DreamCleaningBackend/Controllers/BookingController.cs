@@ -57,23 +57,27 @@ namespace DreamCleaningBackend.Controllers
                     Name = st.Name,
                     BasePrice = st.BasePrice,
                     Description = st.Description,
-                    Services = st.Services.Select(s => new ServiceDto
-                    {
-                        Id = s.Id,
-                        Name = s.Name,
-                        ServiceKey = s.ServiceKey,
-                        Cost = s.Cost,
-                        TimeDuration = s.TimeDuration,
-                        ServiceTypeId = s.ServiceTypeId,
-                        InputType = s.InputType,
-                        MinValue = s.MinValue,
-                        MaxValue = s.MaxValue,
-                        StepValue = s.StepValue,
-                        IsRangeInput = s.IsRangeInput,
-                        Unit = s.Unit,
-                        ServiceRelationType = s.ServiceRelationType,
-                        IsActive = s.IsActive
-                    }).ToList(),
+                    DisplayOrder = st.DisplayOrder,
+                    Services = st.Services
+                        .OrderBy(s => s.DisplayOrder)
+                        .Select(s => new ServiceDto
+                        {
+                            Id = s.Id,
+                            Name = s.Name,
+                            ServiceKey = s.ServiceKey,
+                            Cost = s.Cost,
+                            TimeDuration = s.TimeDuration,
+                            ServiceTypeId = s.ServiceTypeId,
+                            InputType = s.InputType,
+                            MinValue = s.MinValue,
+                            MaxValue = s.MaxValue,
+                            StepValue = s.StepValue,
+                            IsRangeInput = s.IsRangeInput,
+                            Unit = s.Unit,
+                            ServiceRelationType = s.ServiceRelationType,
+                            IsActive = s.IsActive,
+                            DisplayOrder = s.DisplayOrder
+                        }).ToList(),
                     ExtraServices = new List<ExtraServiceDto>()
                 };
 
@@ -92,7 +96,8 @@ namespace DreamCleaningBackend.Controllers
                     IsSuperDeepCleaning = es.IsSuperDeepCleaning,
                     IsSameDayService = es.IsSameDayService,
                     PriceMultiplier = es.PriceMultiplier,
-                    IsAvailableForAll = es.IsAvailableForAll
+                    IsAvailableForAll = es.IsAvailableForAll,
+                    DisplayOrder = es.DisplayOrder
                 }));
 
                 // Add universal extra services
@@ -110,8 +115,13 @@ namespace DreamCleaningBackend.Controllers
                     IsSuperDeepCleaning = es.IsSuperDeepCleaning,
                     IsSameDayService = es.IsSameDayService,
                     PriceMultiplier = es.PriceMultiplier,
-                    IsAvailableForAll = es.IsAvailableForAll
+                    IsAvailableForAll = es.IsAvailableForAll,
+                    DisplayOrder = es.DisplayOrder
                 }));
+
+                serviceTypeDto.ExtraServices = serviceTypeDto.ExtraServices
+                    .OrderBy(es => es.DisplayOrder)
+                    .ToList();
 
                 result.Add(serviceTypeDto);
             }
