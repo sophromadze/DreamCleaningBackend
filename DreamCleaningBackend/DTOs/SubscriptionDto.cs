@@ -8,5 +8,6 @@
         public decimal DiscountPercentage { get; set; }
         public int SubscriptionDays { get; set; }
         public bool IsActive { get; set; }
+        public int DisplayOrder { get; set; }
     }
 }

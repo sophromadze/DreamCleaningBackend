@@ -7,8 +7,9 @@ using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Hubs;
-using DreamCleaningBackend.Services;
 using Newtonsoft.Json;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Webp;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -22,18 +23,21 @@ namespace DreamCleaningBackend.Controllers
         private readonly IOrderService _orderService;
         private readonly IGiftCardService _giftCardService;
         private readonly IAuditService _auditService;
+        private readonly IConfiguration _configuration;
 
-        public AdminController(ApplicationDbContext context, 
-            IPermissionService permissionService, 
-            IOrderService orderService, 
-            IGiftCardService giftCardService, 
-            IAuditService auditService)
+        public AdminController(ApplicationDbContext context,
+            IPermissionService permissionService,
+            IOrderService orderService,
+            IGiftCardService giftCardService,
+            IAuditService auditService,
+            IConfiguration configuration)
         {
             _context = context;
             _permissionService = permissionService;
             _orderService = orderService;
             _giftCardService = giftCardService;
             _auditService = auditService;
+            _configuration = configuration;
         }
 
         // Service Types Management
@@ -137,17 +141,6 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceTypeDto>> CreateServiceType(CreateServiceTypeDto dto)
         {
-            // If no display order specified, get the next available
-            if (dto.DisplayOrder == 0)
-            {
-                dto.DisplayOrder = await DisplayOrderHelper.GetNextDisplayOrder(_context, "ServiceType");
-            }
-            else
-            {
-                // Reorder existing items if inserting at specific position
-                await DisplayOrderHelper.ReorderForInsert(_context, "ServiceType", dto.DisplayOrder);
-            }
-
             var serviceType = new ServiceType
             {
                 Name = dto.Name,
@@ -1557,7 +1550,7 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        // Users Management (keeping existing)
+        // Users Management
         [HttpGet("users")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<UserAdminDto>>> GetUsers()
@@ -2567,6 +2560,112 @@ namespace DreamCleaningBackend.Controllers
                 });
 
             return Ok(allLogs);
+        }
+
+        [HttpGet("gift-card-config")]
+        public async Task<ActionResult> GetGiftCardConfig()
+        {
+            var config = await _context.GiftCardConfigs.FirstOrDefaultAsync();
+
+            return Ok(new
+            {
+                backgroundImagePath = config?.BackgroundImagePath ?? "",
+                lastUpdated = config?.LastUpdated,
+                hasBackground = !string.IsNullOrEmpty(config?.BackgroundImagePath)
+            });
+        }
+
+        [HttpPost("upload-gift-card-background")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> UploadGiftCardBackground(IFormFile file)
+        {
+            try
+            {
+                if (file == null || file.Length == 0)
+                    return BadRequest(new { message = "No file uploaded" });
+
+                // Validate file type
+                var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".webp" };
+                var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+
+                if (!allowedExtensions.Contains(extension))
+                    return BadRequest(new { message = "Invalid file type. Only JPG, PNG, GIF, and WebP are allowed." });
+
+                // Validate file size (e.g., 5MB limit)
+                if (file.Length > 5 * 1024 * 1024)
+                    return BadRequest(new { message = "File size must be less than 5MB" });
+
+                // Generate unique filename (always .webp)
+                var baseFileName = $"gift-card-bg-{DateTime.Now:yyyyMMddHHmmss}";
+                var fileName = $"{baseFileName}.webp";
+
+                // Define the path where frontend serves static files
+                var uploadPath = Path.Combine(_configuration["FileUpload:Path"], "images");
+
+                // Create directory if it doesn't exist
+                Directory.CreateDirectory(uploadPath);
+
+                var filePath = Path.Combine(uploadPath, fileName);
+
+                // Convert to WebP and save
+                using (var inputStream = file.OpenReadStream())
+                using (var image = await Image.LoadAsync(inputStream))
+                {
+                    // Save as WebP with good quality
+                    var encoder = new WebpEncoder
+                    {
+                        Quality = 85, // 0-100, higher is better quality but larger file
+                        Method = WebpEncodingMethod.BestQuality
+                    };
+
+                    await image.SaveAsync(filePath, encoder);
+                }
+
+                // Update database with new image path
+                var relativePath = $"/images/{fileName}";
+
+                var config = await _context.GiftCardConfigs.FirstOrDefaultAsync();
+                if (config == null)
+                {
+                    config = new GiftCardConfig
+                    {
+                        BackgroundImagePath = relativePath,
+                        LastUpdated = DateTime.Now
+                    };
+                    _context.GiftCardConfigs.Add(config);
+                }
+                else
+                {
+                    // Delete old image if exists
+                    if (!string.IsNullOrEmpty(config.BackgroundImagePath) &&
+                        config.BackgroundImagePath != "/images/mainImage.png")
+                    {
+                        var oldFileName = Path.GetFileName(config.BackgroundImagePath);
+                        var oldImagePath = Path.Combine(uploadPath, oldFileName);
+                        if (System.IO.File.Exists(oldImagePath))
+                        {
+                            System.IO.File.Delete(oldImagePath);
+                        }
+                    }
+
+                    config.BackgroundImagePath = relativePath;
+                    config.LastUpdated = DateTime.Now;
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message = "Image uploaded and converted to WebP successfully",
+                    imagePath = relativePath,
+                    originalFormat = extension,
+                    convertedFormat = ".webp"
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = $"Upload failed: {ex.Message}" });
+            }
         }
     }
 }

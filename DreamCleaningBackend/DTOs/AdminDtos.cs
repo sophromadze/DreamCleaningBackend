@@ -10,6 +10,7 @@ namespace DreamCleaningBackend.DTOs
         public decimal BasePrice { get; set; }
         public string? Description { get; set; }
         public bool IsActive { get; set; }
+        public int DisplayOrder { get; set; }
         public List<ServiceDto> Services { get; set; } = new List<ServiceDto>();
         public List<ExtraServiceDto> ExtraServices { get; set; } = new List<ExtraServiceDto>();
     }
@@ -30,6 +31,7 @@ namespace DreamCleaningBackend.DTOs
         public string? Unit { get; set; }
         public string? ServiceRelationType { get; set; }
         public bool IsActive { get; set; }
+        public int DisplayOrder { get; set; }
     }
 
     public class ExtraServiceDto
@@ -48,6 +50,7 @@ namespace DreamCleaningBackend.DTOs
         public decimal PriceMultiplier { get; set; }
         public bool IsAvailableForAll { get; set; }
         public bool IsActive { get; set; }
+        public int DisplayOrder { get; set; }
     }
     public class CreateServiceTypeDto
     {
@@ -89,7 +92,7 @@ namespace DreamCleaningBackend.DTOs
         public int? StepValue { get; set; }
         public bool IsRangeInput { get; set; } = false;
         public string? Unit { get; set; }
-        public string? ServiceRelationType { get; set; } // ADD THIS
+        public string? ServiceRelationType { get; set; } 
         public int DisplayOrder { get; set; }
     }
 
@@ -112,7 +115,7 @@ namespace DreamCleaningBackend.DTOs
         public int? StepValue { get; set; }
         public bool IsRangeInput { get; set; }
         public string? Unit { get; set; }
-        public string? ServiceRelationType { get; set; } // ADD THIS
+        public string? ServiceRelationType { get; set; } 
         public int DisplayOrder { get; set; }
     }
 

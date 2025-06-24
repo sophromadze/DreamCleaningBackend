@@ -1,6 +1,8 @@
-﻿using DreamCleaningBackend.Services.Interfaces;
+﻿using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Services.Interfaces;
 using MailKit.Net.Smtp;
 using MailKit.Security;
+using Microsoft.EntityFrameworkCore;
 using MimeKit;
 using MimeKit.Text;
 
@@ -11,11 +13,13 @@ namespace DreamCleaningBackend.Services
     {
         private readonly IConfiguration _configuration;
         private readonly ILogger<EmailService> _logger;
+        private readonly ApplicationDbContext _context;
 
-        public EmailService(IConfiguration configuration, ILogger<EmailService> logger)
+        public EmailService(IConfiguration configuration, ILogger<EmailService> logger, ApplicationDbContext context)
         {
             _configuration = configuration;
             _logger = logger;
+            _context = context;
         }
 
         public async Task SendEmailVerificationAsync(string email, string firstName, string verificationLink)
@@ -129,10 +133,17 @@ namespace DreamCleaningBackend.Services
         public async Task SendGiftCardNotificationAsync(string recipientEmail, string recipientName,
     string senderName, string giftCardCode, decimal amount, string message, string senderEmail)
         {
+            // Keep the subject line - don't remove it!
             var subject = $"You've received a Dream Cleaning gift card from {senderName}!";
 
-            // You'll need to host the background image online or embed it as base64
-            var backgroundImageUrl = $"{_configuration["Frontend:Url"]}/images/mainImage.png";
+            // Get gift card configuration
+            var giftCardConfig = await _context.GiftCardConfigs.FirstOrDefaultAsync();
+            var backgroundPath = giftCardConfig?.BackgroundImagePath;
+
+            // Use the configured background or fall back to default
+            var backgroundImageUrl = !string.IsNullOrEmpty(backgroundPath)
+                ? $"{_configuration["Frontend:Url"]}{backgroundPath}"
+                : $"{_configuration["Frontend:Url"]}/images/mainImage.png";
 
             var body = $@"
     <!DOCTYPE html>

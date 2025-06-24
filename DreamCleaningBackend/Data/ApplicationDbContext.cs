@@ -26,9 +26,10 @@ namespace DreamCleaningBackend.Data
         public DbSet<GiftCardUsage> GiftCardUsages { get; set; }
         public DbSet<AuditLog> AuditLogs { get; set; }
 		public DbSet<SpecialOffer> SpecialOffers { get; set; }
-		public DbSet<UserSpecialOffer> UserSpecialOffers { get; set; }
+        public DbSet<UserSpecialOffer> UserSpecialOffers { get; set; }
+        public DbSet<GiftCardConfig> GiftCardConfigs { get; set; }
 
-		protected override void OnModelCreating(ModelBuilder modelBuilder)
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 

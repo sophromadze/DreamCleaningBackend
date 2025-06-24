@@ -92,4 +92,9 @@ namespace DreamCleaningBackend.DTOs
         public decimal OrderAmount { get; set; }
         public int OrderId { get; set; }
     }
+
+    public class UpdateGiftCardBackgroundDto
+    {
+        public string BackgroundImagePath { get; set; }
+    }
 }

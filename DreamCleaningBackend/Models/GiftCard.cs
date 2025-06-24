@@ -91,4 +91,11 @@ namespace DreamCleaningBackend.Models
         public virtual Order Order { get; set; }
         public virtual User User { get; set; } // ADD: Navigation to user
     }
+
+    public class GiftCardConfig
+    {
+        public int Id { get; set; } = 1; // Only one record needed
+        public string BackgroundImagePath { get; set; }
+        public DateTime? LastUpdated { get; set; }
+    }
 }
