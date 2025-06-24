@@ -11,6 +11,7 @@ using DreamCleaningBackend.Hubs;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using MySqlConnector;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -166,6 +167,19 @@ if (app.Environment.IsDevelopment())
 
 // REMOVE THIS FIRST HTTPS REDIRECTION - Nginx handles SSL
 // app.UseHttpsRedirection();
+
+var fileUploadPath = builder.Configuration["FileUpload:Path"];
+if (!string.IsNullOrEmpty(fileUploadPath))
+{
+    var fullPath = Path.GetFullPath(fileUploadPath);
+    Directory.CreateDirectory(fullPath); // Ensure directory exists
+
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(fullPath),
+        RequestPath = "" // Serve from root, so /images/file.jpg works
+    });
+}
 
 app.UseCors(app.Environment.IsDevelopment() ? "AllowAngularApp" : "ProductionPolicy");
 

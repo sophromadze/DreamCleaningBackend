@@ -10,6 +10,7 @@ using DreamCleaningBackend.Hubs;
 using Newtonsoft.Json;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
+using SixLabors.ImageSharp.Processing;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -2607,14 +2608,39 @@ namespace DreamCleaningBackend.Controllers
 
                 var filePath = Path.Combine(uploadPath, fileName);
 
-                // Convert to WebP and save
+                // Convert to WebP and save with smart resizing
                 using (var inputStream = file.OpenReadStream())
                 using (var image = await Image.LoadAsync(inputStream))
                 {
+                    // Define minimum dimensions
+                    const int minWidth = 400;
+                    const int minHeight = 280;
+
+                    // Calculate if resizing is needed
+                    if (image.Width > minWidth || image.Height > minHeight)
+                    {
+                        // Calculate scale factors
+                        var widthScale = (double)minWidth / image.Width;
+                        var heightScale = (double)minHeight / image.Height;
+
+                        // Use the larger scale factor to ensure both dimensions meet minimums
+                        var scale = Math.Max(widthScale, heightScale);
+
+                        // Only scale down, never up
+                        if (scale < 1)
+                        {
+                            var newWidth = (int)(image.Width * scale);
+                            var newHeight = (int)(image.Height * scale);
+
+                            // Resize the image
+                            image.Mutate(x => x.Resize(newWidth, newHeight));
+                        }
+                    }
+
                     // Save as WebP with good quality
                     var encoder = new WebpEncoder
                     {
-                        Quality = 85, // 0-100, higher is better quality but larger file
+                        Quality = 85,
                         Method = WebpEncodingMethod.BestQuality
                     };
 
