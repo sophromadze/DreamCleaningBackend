@@ -290,7 +290,8 @@ namespace DreamCleaningBackend.Controllers
                 Tax = 13.20m,
                 DiscountAmount = 0,
                 Tips = dto.Tips,
-                Total = 163.20m + dto.Tips,
+                CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
+                Total = 163.20m + dto.Tips + dto.CompanyDevelopmentTips,
                 TotalDuration = 120
             };
 
@@ -364,6 +365,7 @@ namespace DreamCleaningBackend.Controllers
                     GiftCardCode = giftCardCode,
                     GiftCardAmountUsed = 0,  // Set to 0 initially, will update after actual application
                     Tips = dto.Tips,
+                    CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                     Status = "Pending",
                     OrderDate = DateTime.Now,
                     SubscriptionId = dto.SubscriptionId,
@@ -624,7 +626,7 @@ namespace DreamCleaningBackend.Controllers
                 // Complete order calculations
                 order.SubTotal = subTotal;
                 order.Tax = (subTotal - order.DiscountAmount - order.SubscriptionDiscountAmount) * 0.088m;
-                var totalBeforeGiftCard = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount + order.Tax + order.Tips;
+                var totalBeforeGiftCard = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount + order.Tax + order.Tips + order.CompanyDevelopmentTips;
                 order.Total = totalBeforeGiftCard - giftCardAmountUsed; // Subtract gift card amount
                 order.TotalDuration = totalDuration;
 
@@ -634,6 +636,7 @@ namespace DreamCleaningBackend.Controllers
                 Console.WriteLine($"- SubscriptionDiscountAmount: ${order.SubscriptionDiscountAmount}");
                 Console.WriteLine($"- Tax: ${order.Tax}");
                 Console.WriteLine($"- Tips: ${order.Tips}");
+                Console.WriteLine($"- CompanyDevelopmentTips: ${order.CompanyDevelopmentTips}");
                 Console.WriteLine($"- GiftCardCode: {order.GiftCardCode}");
                 Console.WriteLine($"- GiftCardAmountUsed: ${order.GiftCardAmountUsed}");
                 Console.WriteLine($"- Total: ${order.Total}");

@@ -16,6 +16,7 @@ namespace DreamCleaningBackend.DTOs
         public decimal SubTotal { get; set; }
         public decimal Tax { get; set; }
         public decimal Tips { get; set; }
+        public decimal CompanyDevelopmentTips { get; set; }
         public decimal Total { get; set; }
         public decimal DiscountAmount { get; set; }
         public decimal SubscriptionDiscountAmount { get; set; }
@@ -89,6 +90,7 @@ namespace DreamCleaningBackend.DTOs
         public List<BookingServiceDto> Services { get; set; } = new List<BookingServiceDto>();
         public List<BookingExtraServiceDto> ExtraServices { get; set; } = new List<BookingExtraServiceDto>();
         public decimal Tips { get; set; }
+        public decimal CompanyDevelopmentTips { get; set; }
     }
 
     public class OrderListDto

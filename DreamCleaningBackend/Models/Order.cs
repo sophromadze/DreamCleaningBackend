@@ -53,6 +53,9 @@ namespace DreamCleaningBackend.Models
         public decimal Tips { get; set; }
 
         [Column(TypeName = "decimal(18,2)")]
+        public decimal CompanyDevelopmentTips { get; set; }
+
+        [Column(TypeName = "decimal(18,2)")]
         public decimal Total { get; set; }
 
         // Discount applied (if any)

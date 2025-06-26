@@ -63,6 +63,9 @@ namespace DreamCleaningBackend.DTOs
 
         [Range(0, double.MaxValue)]
         public decimal Tips { get; set; }
+
+        [Range(0, double.MaxValue)]
+        public decimal CompanyDevelopmentTips { get; set; }
         public int MaidsCount { get; set; }
         public int TotalDuration { get; set; }
         public decimal DiscountAmount { get; set; }

@@ -2209,6 +2209,7 @@ namespace DreamCleaningBackend.Controllers
                     SubTotal = order.SubTotal,
                     Tax = order.Tax,
                     Tips = order.Tips,
+                    CompanyDevelopmentTips = order.CompanyDevelopmentTips,
                     Total = order.Total,
                     DiscountAmount = order.DiscountAmount,
                     SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,

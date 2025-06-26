@@ -6,6 +6,7 @@
         public decimal Tax { get; set; }
         public decimal DiscountAmount { get; set; }
         public decimal Tips { get; set; }
+        public decimal CompanyDevelopmentTips { get; set; }
         public decimal Total { get; set; }
         public int TotalDuration { get; set; }
     }

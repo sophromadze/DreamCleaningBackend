@@ -132,6 +132,7 @@ namespace DreamCleaningBackend.Services
             order.State = updateOrderDto.State;
             order.ZipCode = updateOrderDto.ZipCode;
             order.Tips = updateOrderDto.Tips;
+            order.CompanyDevelopmentTips = updateOrderDto.CompanyDevelopmentTips;
             order.UpdatedAt = DateTime.Now;
 
             // Update user's phone number if they don't have one
@@ -371,7 +372,7 @@ namespace DreamCleaningBackend.Services
             order.Tax = discountedSubTotal * 0.088m; // 8.8% tax
 
             // Calculate total BEFORE gift card
-            var totalBeforeGiftCard = discountedSubTotal + order.Tax + order.Tips;
+            var totalBeforeGiftCard = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
 
             // Handle gift card adjustment if there was a gift card applied
             if (!string.IsNullOrEmpty(order.GiftCardCode) && originalGiftCardAmountUsed > 0)
@@ -627,14 +628,14 @@ namespace DreamCleaningBackend.Services
             // Reapply original discount
             var discountedSubTotal = newSubTotal - order.DiscountAmount;
             order.Tax = discountedSubTotal * 0.088m; // 8.8% tax
-            order.Total = discountedSubTotal + order.Tax + order.Tips;
+            order.Total = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
 
             // Calculate additional amount
             var additionalAmount = order.Total - order.Total; // This will be recalculated properly
 
             // Calculate new total with tips from DTO
             var newTax = discountedSubTotal * 0.088m;
-            var newTotal = discountedSubTotal + newTax + updateOrderDto.Tips;
+            var newTotal = discountedSubTotal + newTax + updateOrderDto.Tips + updateOrderDto.CompanyDevelopmentTips;
 
             // Log for debugging
             Console.WriteLine($"CalculateAdditionalAmount Debug:");
@@ -737,6 +738,7 @@ namespace DreamCleaningBackend.Services
                 DiscountAmount = order.DiscountAmount,
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 Tips = order.Tips,
+                CompanyDevelopmentTips = order.CompanyDevelopmentTips,
                 Total = order.Total,
                 Status = order.Status,
                 OrderDate = order.OrderDate,
@@ -822,6 +824,7 @@ namespace DreamCleaningBackend.Services
                 SubTotal = order.SubTotal,
                 Tax = order.Tax,
                 Tips = order.Tips,
+                CompanyDevelopmentTips = order.CompanyDevelopmentTips,
                 Total = order.Total,
                 DiscountAmount = order.DiscountAmount,
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
