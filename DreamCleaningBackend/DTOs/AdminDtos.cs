@@ -11,6 +11,7 @@ namespace DreamCleaningBackend.DTOs
         public string? Description { get; set; }
         public bool IsActive { get; set; }
         public int DisplayOrder { get; set; }
+        public int TimeDuration { get; set; }
         public List<ServiceDto> Services { get; set; } = new List<ServiceDto>();
         public List<ExtraServiceDto> ExtraServices { get; set; } = new List<ExtraServiceDto>();
     }
@@ -60,6 +61,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal BasePrice { get; set; }
         public string? Description { get; set; }
         public int DisplayOrder { get; set; }
+        [Required]
+        public int TimeDuration { get; set; } = 90;
     }
 
     public class UpdateServiceTypeDto
@@ -70,6 +73,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal BasePrice { get; set; }
         public string? Description { get; set; }
         public int DisplayOrder { get; set; }
+        [Required]
+        public int TimeDuration { get; set; }
     }
 
     // Service DTOs

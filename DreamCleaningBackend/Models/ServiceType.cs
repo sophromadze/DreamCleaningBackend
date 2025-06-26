@@ -16,6 +16,7 @@ namespace DreamCleaningBackend.Models
 
         [StringLength(500)]
         public string? Description { get; set; }
+        public int TimeDuration { get; set; } = 90;
 
         public bool IsActive { get; set; } = true;
 

@@ -58,6 +58,7 @@ namespace DreamCleaningBackend.Controllers
                     BasePrice = st.BasePrice,
                     Description = st.Description,
                     DisplayOrder = st.DisplayOrder,
+                    TimeDuration = st.TimeDuration,
                     Services = st.Services
                         .OrderBy(s => s.DisplayOrder)
                         .Select(s => new ServiceDto
@@ -405,6 +406,9 @@ namespace DreamCleaningBackend.Controllers
                 // Add base price
                 subTotal += serviceType.BasePrice * priceMultiplier;
                 Console.WriteLine($"Base Price: {serviceType.BasePrice} x {priceMultiplier} = {serviceType.BasePrice * priceMultiplier}");
+
+                totalDuration += serviceType.TimeDuration;
+                Console.WriteLine($"Service Type Base Duration: {serviceType.TimeDuration} minutes");
 
                 // Add services
                 Console.WriteLine($"\n--- SERVICES CALCULATION ---");

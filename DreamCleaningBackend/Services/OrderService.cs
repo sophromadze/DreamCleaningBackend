@@ -175,6 +175,11 @@ namespace DreamCleaningBackend.Services
 
             Console.WriteLine($"\nStarting backend duration calculation...");
 
+            if (order.ServiceType != null && order.ServiceType.TimeDuration > 0)
+            {
+                newTotalDuration += order.ServiceType.TimeDuration;
+            }
+
             // Get the original hours for office cleaning
             var originalCleanerService = order.OrderServices.FirstOrDefault(os =>
             {
@@ -537,6 +542,11 @@ namespace DreamCleaningBackend.Services
             // Calculate new subtotal
             decimal newSubTotal = order.ServiceType.BasePrice * priceMultiplier;
             int newTotalDuration = 0;
+
+            if (order.ServiceType != null && order.ServiceType.TimeDuration > 0)
+            {
+                newTotalDuration += order.ServiceType.TimeDuration;
+            }
 
             // Process services
             foreach (var serviceDto in updateOrderDto.Services)

@@ -207,6 +207,7 @@ namespace DreamCleaningBackend.Data
                     Description = "Complete home cleaning service",
                     DisplayOrder = 1,
                     IsActive = true,
+                    TimeDuration = 90,
                     CreatedAt = DateTime.Now
                 },
                 new ServiceType
@@ -217,6 +218,7 @@ namespace DreamCleaningBackend.Data
                     Description = "Professional office cleaning service",
                     DisplayOrder = 2,
                     IsActive = true,
+                    TimeDuration = 120,
                     CreatedAt = DateTime.Now
                 }
             );

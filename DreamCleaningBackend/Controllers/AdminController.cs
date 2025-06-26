@@ -75,6 +75,7 @@ namespace DreamCleaningBackend.Controllers
                     Description = st.Description,
                     IsActive = st.IsActive,
                     DisplayOrder = st.DisplayOrder,
+                    TimeDuration = st.TimeDuration,
                     Services = st.Services
                         .OrderBy(s => s.DisplayOrder)
                         .Select(s => new ServiceDto
@@ -184,6 +185,7 @@ namespace DreamCleaningBackend.Controllers
                         Description = dto.Description,
                         DisplayOrder = dto.DisplayOrder,
                         IsActive = true,
+                        TimeDuration = dto.TimeDuration,
                         CreatedAt = DateTime.Now
                     };
                     _context.ServiceTypes.Add(serviceType);
@@ -200,7 +202,8 @@ namespace DreamCleaningBackend.Controllers
                         BasePrice = serviceType.BasePrice,
                         Description = serviceType.Description,
                         DisplayOrder = serviceType.DisplayOrder,
-                        IsActive = serviceType.IsActive
+                        IsActive = serviceType.IsActive,
+                        TimeDuration = serviceType.TimeDuration
                     });
                 }
                 catch (Exception ex)
@@ -227,7 +230,8 @@ namespace DreamCleaningBackend.Controllers
                 BasePrice = serviceType.BasePrice,
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
-                IsActive = serviceType.IsActive
+                IsActive = serviceType.IsActive,
+                TimeDuration = serviceType.TimeDuration
             };
 
             // Check if display order is changing
@@ -270,6 +274,7 @@ namespace DreamCleaningBackend.Controllers
                     serviceType.BasePrice = dto.BasePrice;
                     serviceType.Description = dto.Description;
                     serviceType.DisplayOrder = dto.DisplayOrder;
+                    serviceType.TimeDuration = dto.TimeDuration;
                     serviceType.UpdatedAt = DateTime.Now;
 
                     await _context.SaveChangesAsync();
@@ -285,7 +290,8 @@ namespace DreamCleaningBackend.Controllers
                         BasePrice = serviceType.BasePrice,
                         Description = serviceType.Description,
                         DisplayOrder = serviceType.DisplayOrder,
-                        IsActive = serviceType.IsActive
+                        IsActive = serviceType.IsActive,
+                        TimeDuration = serviceType.TimeDuration
                     });
                 }
                 catch (Exception ex)
@@ -312,7 +318,8 @@ namespace DreamCleaningBackend.Controllers
                 BasePrice = serviceType.BasePrice,
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
-                IsActive = serviceType.IsActive  // This will be true
+                IsActive = serviceType.IsActive,
+                TimeDuration = serviceType.TimeDuration
             };
 
             serviceType.IsActive = false;
@@ -342,7 +349,8 @@ namespace DreamCleaningBackend.Controllers
                 BasePrice = serviceType.BasePrice,
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
-                IsActive = serviceType.IsActive  // This will be false
+                IsActive = serviceType.IsActive,
+                TimeDuration = serviceType.TimeDuration
             };
 
             serviceType.IsActive = true;
