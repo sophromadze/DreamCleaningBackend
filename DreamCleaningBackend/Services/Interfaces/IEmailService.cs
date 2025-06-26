@@ -7,5 +7,6 @@
         Task SendWelcomeEmailAsync(string email, string firstName);
         Task SendGiftCardNotificationAsync(string recipientEmail, string recipientName,
             string senderName, string giftCardCode, decimal amount, string message, string senderEmail);
+        Task SendContactFormEmailAsync(string to, string subject, string html);
     }
 }

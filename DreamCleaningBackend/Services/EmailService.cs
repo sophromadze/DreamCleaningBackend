@@ -304,5 +304,10 @@ namespace DreamCleaningBackend.Services
 
             await SendEmailAsync(recipientEmail, subject, body);
         }
+
+        public async Task SendContactFormEmailAsync(string to, string subject, string html)
+        {
+            await SendEmailAsync(to, subject, html);
+        }
     }
 }

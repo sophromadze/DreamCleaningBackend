@@ -31,7 +31,6 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 {
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
     var serverVersion = new MariaDbServerVersion(new Version(10, 9, 8));
-
     options.UseMySql(connectionString, serverVersion);
 });
 
