@@ -86,6 +86,8 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddHostedService<UnverifiedUserCleanupService>();
 builder.Services.AddScoped<ISpecialOfferService, SpecialOfferService>();
+builder.Services.AddScoped<ICleanerService, CleanerService>();
+builder.Services.AddHostedService<CleanerNotificationService>();
 
 builder.Services.AddHttpClient();
 

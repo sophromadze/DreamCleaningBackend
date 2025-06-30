@@ -6,5 +6,6 @@
         SuperAdmin = 1,
         Admin = 2,
         Moderator = 3,
+        Cleaner = 4,
     }
 }

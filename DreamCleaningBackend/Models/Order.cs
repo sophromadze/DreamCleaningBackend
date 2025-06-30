@@ -145,5 +145,8 @@ namespace DreamCleaningBackend.Models
         // Audit fields
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
+
+        // Add to existing Order model
+        public virtual ICollection<OrderCleaner> OrderCleaners { get; set; } = new List<OrderCleaner>();
     }
 }

@@ -128,10 +128,8 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        // Update this method in your EmailService.cs
-
         public async Task SendGiftCardNotificationAsync(string recipientEmail, string recipientName,
-    string senderName, string giftCardCode, decimal amount, string message, string senderEmail)
+                string senderName, string giftCardCode, decimal amount, string message, string senderEmail)
         {
             // Keep the subject line - don't remove it!
             var subject = $"You've received a Dream Cleaning gift card from {senderName}!";
@@ -308,6 +306,261 @@ namespace DreamCleaningBackend.Services
         public async Task SendContactFormEmailAsync(string to, string subject, string html)
         {
             await SendEmailAsync(to, subject, html);
+        }
+
+        public async Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName,
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address)
+        {
+            // Find the order
+            var order = await _context.Orders
+                .Include(o => o.ServiceType)
+                .Include(o => o.OrderServices)
+                    .ThenInclude(os => os.Service)
+                .Include(o => o.OrderExtraServices)
+                    .ThenInclude(oes => oes.ExtraService)
+                .Include(o => o.OrderCleaners)
+                    .ThenInclude(oc => oc.Cleaner)
+                .Where(o => o.ServiceDate.Date == serviceDate.Date &&
+                       o.ServiceType.Name == serviceTypeName)
+                .FirstOrDefaultAsync();
+
+            // Get cleaner-specific additional instructions
+            var cleanerAdditionalInstructions = order?.OrderCleaners
+                .FirstOrDefault(oc => oc.Cleaner.Email == email)?.TipsForCleaner;
+
+            // Check if there's a cleaners service to determine if we should divide duration
+            bool hasCleanersService = order?.OrderServices.Any(os =>
+                os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner")) ?? false;
+
+            // Calculate duration per cleaner
+            decimal durationPerCleaner = 0;
+            string formattedDuration = "";
+
+            if (order != null)
+            {
+                if (hasCleanersService)
+                {
+                    // If there's a cleaners service, show the total duration (it's already calculated correctly)
+                    durationPerCleaner = order.TotalDuration;
+                }
+                else
+                {
+                    // If no cleaners service, divide by number of maids
+                    durationPerCleaner = (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
+                }
+
+                formattedDuration = FormatDurationRounded((int)durationPerCleaner);
+            }
+
+            var subject = "New Cleaning Job Assignment - Dream Cleaning";
+            var body = $@"
+        <h2>Hi {cleanerName},</h2>
+        <p>You have been assigned to a new cleaning job with complete details below:</p>
+        
+        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
+            <h3>📋 Job Overview</h3>
+            <p><strong>Service Type:</strong> {(order?.ServiceType.Name ?? serviceTypeName)}</p>
+            <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
+            <p><strong>Time:</strong> {FormatTimeForEmail(TimeSpan.Parse(serviceTime))}</p>
+            <p><strong>Duration:</strong> {formattedDuration}{(hasCleanersService ? "" : " per cleaner")}</p>
+            <p><strong>Team Size:</strong> {(order?.MaidsCount ?? 1)} cleaner(s)</p>
+        </div>
+        
+        <div style='background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
+            <h3>👥 Client Information</h3>
+            <p><strong>Client Name:</strong> {(order?.ContactFirstName ?? "")} {(order?.ContactLastName ?? "")}</p>
+            <p><strong>Phone:</strong> {(order?.ContactPhone ?? "")}</p>
+            <p><strong>Email:</strong> {(order?.ContactEmail ?? "")}</p>
+            <p><strong>Entry Method:</strong> {(order?.EntryMethod ?? "To be confirmed")}</p>
+        </div>
+        
+        <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
+            <h3>📍 Complete Service Address</h3>
+            <p><strong>Address:</strong> {(order?.ServiceAddress ?? address)}</p>
+            {(!string.IsNullOrEmpty(order?.AptSuite) ? $"<p><strong>Apt/Suite:</strong> {order.AptSuite}</p>" : "")}
+            <p><strong>City:</strong> {(order?.City ?? "")}</p>
+            <p><strong>State:</strong> {(order?.State ?? "")}</p>
+            <p><strong>Postal Code:</strong> {(order?.ZipCode ?? "")}</p>
+        </div>
+        
+        {(order?.OrderServices.Any() == true ? $@"
+        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;'>
+            <h3>🧹 Services to Perform</h3>
+            <ul style='margin: 10px 0; padding-left: 20px;'>
+                {string.Join("", order.OrderServices.Select(os => $"<li style='margin: 5px 0;'>{FormatServiceForEmail(os, order.Id)}</li>"))}
+            </ul>
+        </div>" : "")}
+        
+        {(order?.OrderExtraServices.Any() == true ? $@"
+        <div style='background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0;'>
+            <h3>✨ Extra Services</h3>
+            <ul style='margin: 10px 0; padding-left: 20px;'>
+                {string.Join("", order.OrderExtraServices.Select(oes =>
+                            $"<li style='margin: 5px 0;'>{oes.ExtraService.Name} - Quantity: {oes.Quantity}" +
+                            (oes.Hours > 0 ? $", Hours: {oes.Hours:0.#}" : "") + "</li>"))}
+            </ul>
+        </div>" : "")}
+
+        {(order?.Tips > 0 ? $@"
+        <div style='background: #d4edda; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
+            <h3>💰 Tips for Cleaning Team</h3>
+            <p style='margin: 0; font-size: 1.2em; font-weight: bold; color: #155724; text-align: center;'>${order.Tips:F2}</p>
+        </div>" : "")}
+        
+        {(!string.IsNullOrEmpty(order?.SpecialInstructions) ? $@"
+        <div style='background: #ffe6e6; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc3545;'>
+            <h3>⚠️ Special Instructions from Client</h3>
+            <p style='margin: 0; font-style: italic; color: #721c24;'>{order.SpecialInstructions}</p>
+        </div>" : "")}
+        
+        {(!string.IsNullOrEmpty(cleanerAdditionalInstructions) ? $@"
+        <div style='background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
+            <h3>💡 Additional Instructions for You</h3>
+            <p style='margin: 0; font-style: italic; color: #155724;'>{cleanerAdditionalInstructions}</p>
+        </div>" : "")}
+        
+        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;'>
+            <p><strong>📱 Next Steps:</strong></p>
+            <p>1. Log in to your cleaner dashboard for any updates</p>
+            <p>2. Arrive on time and prepared</p>
+            <p>3. Contact support if you have any questions</p>
+        </div>
+        
+        <p>If you have any questions or concerns about this assignment, please contact our support team immediately.</p>
+        
+        <br/>
+        <p>Best regards,<br/>Dream Cleaning Team</p>
+    ";
+
+            await SendEmailAsync(email, subject, body);
+        }
+
+        private string FormatTimeForEmail(TimeSpan time)
+        {
+            var hours = time.Hours;
+            var minutes = time.Minutes;
+            var ampm = hours >= 12 ? "PM" : "AM";
+            var displayHour = hours % 12;
+            if (displayHour == 0) displayHour = 12;
+
+            return $"{displayHour}:{minutes:D2} {ampm}";
+        }
+
+        private string FormatDurationRounded(int minutes)
+        {
+            var hours = minutes / 60;
+            var mins = minutes % 60;
+
+            // Rounding logic: if mins >= 45, round up to next hour
+            // if mins >= 15, round to 30; if less, round to 0
+            if (mins >= 45)
+            {
+                hours += 1;
+                mins = 0;
+            }
+            else if (mins >= 15)
+            {
+                mins = 30;
+            }
+            else
+            {
+                mins = 0;
+            }
+
+            if (hours == 0 && mins == 0)
+            {
+                return "0 minutes";
+            }
+            else if (hours == 0)
+            {
+                return $"{mins} minutes";
+            }
+            else if (mins == 0)
+            {
+                return $"{hours}h";
+            }
+            else
+            {
+                return $"{hours}h {mins}min";
+            }
+        }
+
+        private string FormatServiceForEmail(Models.OrderService orderService, int orderId)
+        {
+            // Handle special cases like bedroom = 0 for studio
+            if (orderService.Service.ServiceKey == "bedrooms" && orderService.Quantity == 0)
+            {
+                return "Studio";
+            }
+
+            // Handle cleaners service with hours
+            if (orderService.Service.ServiceKey != null && orderService.Service.ServiceKey.ToLower().Contains("cleaner"))
+            {
+                // Check if there's an hours service to get the hours
+                var hoursService = _context.OrderServices
+                    .Where(os => os.OrderId == orderId &&
+                                os.Service.ServiceKey != null &&
+                                os.Service.ServiceKey.ToLower().Contains("hour"))
+                    .FirstOrDefault();
+
+                if (hoursService != null)
+                {
+                    return $"{orderService.Service.Name} - Quantity: {orderService.Quantity}, Hours: {hoursService.Quantity}";
+                }
+            }
+
+            return $"{orderService.Service.Name} - Quantity: {orderService.Quantity}";
+        }
+
+        public async Task SendCleanerReminderNotificationAsync(string email, string cleanerName,
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDayBefore)
+        {
+            var timeFrame = isDayBefore ? "tomorrow" : "in 4 hours";
+            var subject = $"Cleaning Job Reminder - Service {timeFrame}";
+
+            var body = $@"
+        <h2>Hi {cleanerName},</h2>
+        <p>This is a reminder that you have a cleaning job scheduled for <strong>{timeFrame}</strong>:</p>
+        
+        <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
+            <h3>Job Details:</h3>
+            <p><strong>Service Type:</strong> {serviceTypeName}</p>
+            <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
+            <p><strong>Time:</strong> {serviceTime}</p>
+            <p><strong>Address:</strong> {address}</p>
+        </div>
+        
+        <p>Please make sure you're prepared and arrive on time. Check your cleaner dashboard for any special instructions.</p>
+        
+        <br/>
+        <p>Best regards,<br/>Dream Cleaning Team</p>
+    ";
+
+            await SendEmailAsync(email, subject, body);
+        }
+
+        public async Task SendCleanerRemovalNotificationAsync(string email, string cleanerName,
+            DateTime serviceDate, string serviceTime, string serviceTypeName)
+        {
+            var subject = "Cleaning Job Assignment Removed - Dream Cleaning";
+            var body = $@"
+        <h2>Hi {cleanerName},</h2>
+        <p>You have been removed from a cleaning job assignment:</p>
+        
+        <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
+            <h3>Job Details:</h3>
+            <p><strong>Service Type:</strong> {serviceTypeName}</p>
+            <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
+            <p><strong>Time:</strong> {serviceTime}</p>
+        </div>
+        
+        <p>If you have any questions, please contact our support team.</p>
+        
+        <br/>
+        <p>Best regards,<br/>Dream Cleaning Team</p>
+    ";
+
+            await SendEmailAsync(email, subject, body);
         }
     }
 }

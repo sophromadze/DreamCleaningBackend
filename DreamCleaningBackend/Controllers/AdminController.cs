@@ -11,6 +11,8 @@ using Newtonsoft.Json;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.Processing;
+using DreamCleaningBackend.Services;
+using System.Security.Claims;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -25,13 +27,15 @@ namespace DreamCleaningBackend.Controllers
         private readonly IGiftCardService _giftCardService;
         private readonly IAuditService _auditService;
         private readonly IConfiguration _configuration;
+        private readonly ICleanerService _cleanerService;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
             IOrderService orderService,
             IGiftCardService giftCardService,
             IAuditService auditService,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            ICleanerService cleanerService)
         {
             _context = context;
             _permissionService = permissionService;
@@ -39,6 +43,7 @@ namespace DreamCleaningBackend.Controllers
             _giftCardService = giftCardService;
             _auditService = auditService;
             _configuration = configuration;
+            _cleanerService = cleanerService;
         }
 
         // Service Types Management
@@ -3065,6 +3070,77 @@ namespace DreamCleaningBackend.Controllers
             {
                 return BadRequest(new { message = $"Upload failed: {ex.Message}" });
             }
+        }
+
+        [HttpGet("orders/{orderId}/available-cleaners")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<List<AvailableCleanerDto>>> GetAvailableCleaners(int orderId)
+        {
+            var order = await _context.Orders
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null)
+                return NotFound();
+
+            var availableCleaners = await _cleanerService.GetAvailableCleanersAsync(order.ServiceDate, order.ServiceTime.ToString());
+
+            return Ok(availableCleaners);
+        }
+
+        [HttpPost("orders/{orderId}/assign-cleaners")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> AssignCleaners(int orderId, AssignCleanersDto dto)
+        {
+            dto.OrderId = orderId;
+            var assignedBy = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+
+            var success = await _cleanerService.AssignCleanersToOrderAsync(dto, assignedBy);
+
+            if (success)
+                return Ok(new { message = "Cleaners assigned successfully" });
+
+            return BadRequest(new { message = "Failed to assign cleaners" });
+        }
+
+        [HttpGet("orders/{orderId}/assigned-cleaners")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<string>>> GetAssignedCleaners(int orderId)
+        {
+            var assignedCleaners = await _context.OrderCleaners
+                .Where(oc => oc.OrderId == orderId)
+                .Include(oc => oc.Cleaner)
+                .Select(oc => $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}")
+                .ToListAsync();
+
+            return Ok(assignedCleaners);
+        }
+
+        [HttpGet("orders/{orderId}/assigned-cleaners-with-ids")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<object>>> GetAssignedCleanersWithIds(int orderId)
+        {
+            var assignedCleaners = await _context.OrderCleaners
+                .Where(oc => oc.OrderId == orderId)
+                .Include(oc => oc.Cleaner)
+                .Select(oc => new {
+                    id = oc.CleanerId,
+                    name = $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}"
+                })
+                .ToListAsync();
+
+            return Ok(assignedCleaners);
+        }
+
+        [HttpDelete("orders/{orderId}/cleaners/{cleanerId}")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> RemoveCleanerFromOrder(int orderId, int cleanerId)
+        {
+            var success = await _cleanerService.UnassignCleanerFromOrderAsync(orderId, cleanerId);
+
+            if (success)
+                return Ok(new { message = "Cleaner removed successfully and notified via email" });
+
+            return NotFound(new { message = "Cleaner assignment not found" });
         }
     }
 }

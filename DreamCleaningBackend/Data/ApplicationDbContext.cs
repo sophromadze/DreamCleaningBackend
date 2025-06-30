@@ -28,6 +28,8 @@ namespace DreamCleaningBackend.Data
 		public DbSet<SpecialOffer> SpecialOffers { get; set; }
         public DbSet<UserSpecialOffer> UserSpecialOffers { get; set; }
         public DbSet<GiftCardConfig> GiftCardConfigs { get; set; }
+        public DbSet<OrderCleaner> OrderCleaners { get; set; }
+        public DbSet<NotificationLog> NotificationLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -104,6 +106,27 @@ namespace DreamCleaningBackend.Data
                 .WithMany(st => st.Orders)
                 .HasForeignKey(o => o.ServiceTypeId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            // OrderCleaner configuration
+            modelBuilder.Entity<OrderCleaner>(entity =>
+            {
+                entity.HasKey(oc => oc.Id);
+
+                entity.HasOne(oc => oc.Order)
+                      .WithMany(o => o.OrderCleaners)
+                      .HasForeignKey(oc => oc.OrderId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(oc => oc.Cleaner)
+                      .WithMany()
+                      .HasForeignKey(oc => oc.CleanerId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(oc => oc.AssignedByUser)
+                      .WithMany()
+                      .HasForeignKey(oc => oc.AssignedBy)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
 
             // Service configuration
             modelBuilder.Entity<Service>()
