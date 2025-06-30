@@ -108,10 +108,10 @@ builder.Services.AddCors(options =>
         {
             policy.WithOrigins(
                     builder.Configuration["Frontend:Url"],
-                    "https://themarvelouscleaning.com",
-                    "http://themarvelouscleaning.com",
-                    "https://www.themarvelouscleaning.com",
-                    "http://www.themarvelouscleaning.com"
+                    "https://dreamcleaningnearme.com",
+                    "http://dreamcleaningnearme.com",
+                    "https://www.dreamcleaningnearme.com",
+                    "http://www.dreamcleaningnearme.com"
                 )
                 .AllowAnyHeader()
                 .AllowAnyMethod()
