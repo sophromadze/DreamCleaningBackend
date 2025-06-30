@@ -3073,7 +3073,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpGet("orders/{orderId}/available-cleaners")]
-        [RequirePermission(Permission.Update)]
+        [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<AvailableCleanerDto>>> GetAvailableCleaners(int orderId)
         {
             var order = await _context.Orders
@@ -3088,7 +3088,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("orders/{orderId}/assign-cleaners")]
-        [RequirePermission(Permission.Update)]
+        [RequirePermission(Permission.View)]
         public async Task<ActionResult> AssignCleaners(int orderId, AssignCleanersDto dto)
         {
             dto.OrderId = orderId;
@@ -3132,7 +3132,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpDelete("orders/{orderId}/cleaners/{cleanerId}")]
-        [RequirePermission(Permission.Update)]
+        [RequirePermission(Permission.View)]
         public async Task<ActionResult> RemoveCleanerFromOrder(int orderId, int cleanerId)
         {
             var success = await _cleanerService.UnassignCleanerFromOrderAsync(orderId, cleanerId);
