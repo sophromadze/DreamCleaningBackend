@@ -9,7 +9,6 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<bool> UserExists(string email);
         // Add these for OAuth and refresh token support
         Task<AuthResponseDto> GoogleLogin(GoogleLoginDto googleLoginDto);
-        Task<AuthResponseDto> FacebookLogin(FacebookLoginDto facebookLoginDto);
         Task<AuthResponseDto> RefreshToken(RefreshTokenDto refreshTokenDto);
         Task<AuthResponseDto> RefreshUserToken(int userId);
         Task<bool> ChangePassword(int userId, ChangePasswordDto changePasswordDto);
@@ -17,5 +16,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<bool> ResendVerificationEmail(string email);
         Task<bool> InitiatePasswordReset(string email);
         Task<bool> ResetPassword(ResetPasswordDto resetDto);
+        Task<EmailChangeResponseDto> InitiateEmailChange(int userId, InitiateEmailChangeDto dto);
+        Task<bool> ConfirmEmailChange(string token);
     }
 }

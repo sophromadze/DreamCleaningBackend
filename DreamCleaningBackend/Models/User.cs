@@ -66,5 +66,10 @@ namespace DreamCleaningBackend.Models
         // Password recovery
         public string? PasswordResetToken { get; set; }
         public DateTime? PasswordResetTokenExpiry { get; set; }
+
+        // Email change verification
+        public string? PendingEmail { get; set; }
+        public string? EmailChangeToken { get; set; }
+        public DateTime? EmailChangeTokenExpiry { get; set; }
     }
 }

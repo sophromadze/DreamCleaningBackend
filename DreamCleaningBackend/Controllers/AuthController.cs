@@ -110,8 +110,6 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        // 1. Update your AuthController.cs - Replace the refresh-user-token method with this:
-
         [HttpPost("refresh-user-token")]
         [Authorize]
         public async Task<ActionResult<AuthResponseDto>> RefreshUserToken()
@@ -192,13 +190,34 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        [HttpPost("facebook-login")]
-        public async Task<ActionResult<AuthResponseDto>> FacebookLogin(FacebookLoginDto facebookLoginDto)
+        [HttpPost("initiate-email-change")]
+        [Authorize]
+        public async Task<ActionResult<EmailChangeResponseDto>> InitiateEmailChange(InitiateEmailChangeDto dto)
         {
             try
             {
-                var response = await _authService.FacebookLogin(facebookLoginDto);
+                // Get user ID from JWT token
+                var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+
+                if (userId == 0)
+                    return Unauthorized(new { message = "User not found" });
+
+                var response = await _authService.InitiateEmailChange(userId, dto);
                 return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("confirm-email-change")]
+        public async Task<ActionResult> ConfirmEmailChange(ConfirmEmailChangeDto dto)
+        {
+            try
+            {
+                await _authService.ConfirmEmailChange(dto.Token);
+                return Ok(new { message = "Email changed successfully! You can now use your new email address to log in." });
             }
             catch (Exception ex)
             {

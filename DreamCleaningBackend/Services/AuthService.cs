@@ -580,78 +580,6 @@ namespace DreamCleaningBackend.Services
             return true;
         }
 
-        public async Task<AuthResponseDto> FacebookLogin(FacebookLoginDto facebookLoginDto)
-        {
-            try
-            {
-                // Validate Facebook token
-                var fbUser = await ValidateFacebookToken(facebookLoginDto.AccessToken);
-
-                if (fbUser == null)
-                    throw new Exception("Invalid Facebook token");
-
-                var email = fbUser.Email?.ToLower();
-                if (string.IsNullOrEmpty(email))
-                    throw new Exception("Email not provided by Facebook");
-
-                // Check if user exists
-                var user = await _context.Users
-                    .Include(u => u.Subscription)
-                    .FirstOrDefaultAsync(u => u.Email == email);
-
-                if (user == null)
-                {
-                    // Create new user
-                    user = new User
-                    {
-                        Email = email,
-                        FirstName = fbUser.FirstName ?? "User",
-                        LastName = fbUser.LastName ?? "",
-                        AuthProvider = "Facebook",
-                        ExternalAuthId = fbUser.Id,
-                        CreatedAt = DateTime.Now,
-                        FirstTimeOrder = true,
-                        IsActive = true,
-                        IsEmailVerified = true // Facebook emails are pre-verified
-                    };
-
-                    _context.Users.Add(user);
-                }
-                else if (user.AuthProvider != "Facebook")
-                {
-                    throw new Exception("Email already registered with different provider");
-                }
-
-                // Update refresh token
-                user.RefreshToken = GenerateRefreshToken();
-                user.RefreshTokenExpiryTime = DateTime.Now.AddDays(30);
-                await _context.SaveChangesAsync();
-
-                try
-                {
-                    await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to grant first-time offer to user {UserId}", user.Id);
-                    // Don't fail registration if special offer fails
-                }
-
-                return new AuthResponseDto
-                {
-                    User = MapUserToDto(user),
-                    Token = CreateToken(user),
-                    RefreshToken = user.RefreshToken
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Facebook login failed");
-                throw new Exception($"Facebook login failed: {ex.Message}");
-            }
-        }
-
-        // Add helper method to generate verification tokens
         private string GenerateVerificationToken()
         {
             var randomNumber = new byte[32];
@@ -665,24 +593,105 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        // Add helper method to validate Facebook token
-        private async Task<FacebookUserInfo> ValidateFacebookToken(string accessToken)
+        public async Task<EmailChangeResponseDto> InitiateEmailChange(int userId, InitiateEmailChangeDto dto)
         {
-            using var client = new HttpClient();
-            var response = await client.GetAsync(
-                $"https://graph.facebook.com/me?fields=id,email,first_name,last_name&access_token={accessToken}"
-            );
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId && u.IsActive);
 
-            if (response.IsSuccessStatusCode)
+            if (user == null)
+                throw new Exception("User not found");
+
+            if (user.AuthProvider != "Local")
+                throw new Exception("Email change is only available for local accounts");
+
+            // Verify current password
+            if (!VerifyPasswordHash(dto.CurrentPassword, user.PasswordHash, user.PasswordSalt))
+                throw new Exception("Current password is incorrect");
+
+            // Check if new email already exists
+            var emailExists = await _context.Users
+                .AnyAsync(u => u.Email == dto.NewEmail.ToLower() && u.Id != userId);
+
+            if (emailExists)
+                throw new Exception("This email address is already in use");
+
+            // Check if it's the same as current email
+            if (user.Email.ToLower() == dto.NewEmail.ToLower())
+                throw new Exception("New email must be different from current email");
+
+            // Generate email change token
+            user.PendingEmail = dto.NewEmail.ToLower();
+            user.EmailChangeToken = GenerateVerificationToken();
+            user.EmailChangeTokenExpiry = DateTime.Now.AddHours(1); // 1 hour expiry
+            user.UpdatedAt = DateTime.Now;
+
+            await _context.SaveChangesAsync();
+
+            // Send verification email to NEW email address
+            // Updated to use the same /change-email route with token parameter
+            var verificationLink = $"{_configuration["Frontend:Url"]}/change-email?token={user.EmailChangeToken}";
+
+            try
             {
-                var content = await response.Content.ReadAsStringAsync();
-                return JsonSerializer.Deserialize<FacebookUserInfo>(content, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
+                await _emailService.SendEmailChangeVerificationAsync(dto.NewEmail, user.FirstName, verificationLink, user.Email);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send email change verification to {Email}", dto.NewEmail);
+
+                // Clear the pending change if email fails
+                user.PendingEmail = null;
+                user.EmailChangeToken = null;
+                user.EmailChangeTokenExpiry = null;
+                await _context.SaveChangesAsync();
+
+                throw new Exception("Failed to send verification email. Please check the email address and try again.");
             }
 
-            return null;
+            return new EmailChangeResponseDto
+            {
+                Message = "A verification email has been sent to your new email address. Please check your inbox and click the verification link to complete the email change.",
+                RequiresVerification = true
+            };
+        }
+
+        public async Task<bool> ConfirmEmailChange(string token)
+        {
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.EmailChangeToken == token
+                    && u.EmailChangeTokenExpiry > DateTime.Now
+                    && !string.IsNullOrEmpty(u.PendingEmail));
+
+            if (user == null)
+                throw new Exception("Invalid or expired email change token");
+
+            // Check if the pending email is still available
+            var emailExists = await _context.Users
+                .AnyAsync(u => u.Email == user.PendingEmail && u.Id != user.Id);
+
+            if (emailExists)
+                throw new Exception("This email address is no longer available");
+
+            // Update the email
+            user.Email = user.PendingEmail;
+            user.PendingEmail = null;
+            user.EmailChangeToken = null;
+            user.EmailChangeTokenExpiry = null;
+            user.UpdatedAt = DateTime.Now;
+
+            await _context.SaveChangesAsync();
+
+            // Send confirmation email to the new email address
+            try
+            {
+                await _emailService.SendEmailChangeConfirmationAsync(user.Email, user.FirstName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send email change confirmation to {Email}", user.Email);
+                // Don't fail the email change if confirmation email fails
+            }
+
+            return true;
         }
     }
 }

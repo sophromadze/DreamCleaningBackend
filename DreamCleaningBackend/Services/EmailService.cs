@@ -575,5 +575,49 @@ namespace DreamCleaningBackend.Services
 
             await SendEmailAsync(email, subject, body);
         }
+
+        public async Task SendEmailChangeVerificationAsync(string newEmail, string firstName, string verificationLink, string currentEmail)
+        {
+            var subject = "Verify Your New Email Address - Dream Cleaning";
+            var body = $@"
+        <h2>Hi {firstName},</h2>
+        <p>You have requested to change your email address for your Dream Cleaning account.</p>
+        <p><strong>Current email:</strong> {currentEmail}</p>
+        <p><strong>New email:</strong> {newEmail}</p>
+        <p>To complete this change, please click the button below to verify your new email address:</p>
+        <p style='margin: 30px 0;'>
+            <a href='{verificationLink}' 
+               style='background-color: #4CAF50; color: white; padding: 14px 20px; 
+                      text-decoration: none; border-radius: 4px; display: inline-block;'>
+                Verify New Email
+            </a>
+        </p>
+        <p>Or copy and paste this link into your browser:</p>
+        <p>{verificationLink}</p>
+        <p><strong>Important:</strong> This link will expire in 1 hour for security reasons.</p>
+        <p>If you didn't request this email change, please ignore this email and contact our support team immediately.</p>
+        <br/>
+        <p>Best regards,<br/>Dream Cleaning Team</p>
+    ";
+
+            await SendEmailAsync(newEmail, subject, body);
+        }
+
+        public async Task SendEmailChangeConfirmationAsync(string email, string firstName)
+        {
+            var subject = "Email Address Successfully Changed - Dream Cleaning";
+            var body = $@"
+        <h2>Hi {firstName},</h2>
+        <p>Your email address has been successfully changed!</p>
+        <p>You can now use this email address (<strong>{email}</strong>) to log in to your Dream Cleaning account.</p>
+        <p>If you didn't make this change, please contact our support team immediately.</p>
+        <br/>
+        <p>For security reasons, all active sessions have been logged out. Please log in again with your new email address.</p>
+        <br/>
+        <p>Best regards,<br/>Dream Cleaning Team</p>
+    ";
+
+            await SendEmailAsync(email, subject, body);
+        }
     }
 }

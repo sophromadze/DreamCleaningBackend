@@ -33,25 +33,4 @@ namespace DreamCleaningBackend.DTOs
         [MinLength(8)]
         public string NewPassword { get; set; }
     }
-
-    public class FacebookLoginDto
-    {
-        [Required]
-        public string AccessToken { get; set; }
-    }
-
-    public class FacebookUserInfo
-    {
-        [JsonPropertyName("id")]
-        public string Id { get; set; }
-
-        [JsonPropertyName("email")]
-        public string Email { get; set; }
-
-        [JsonPropertyName("first_name")]
-        public string FirstName { get; set; }
-
-        [JsonPropertyName("last_name")]
-        public string LastName { get; set; }
-    }
 }

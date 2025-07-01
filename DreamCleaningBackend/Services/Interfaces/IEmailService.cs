@@ -14,5 +14,7 @@
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDayBefore);
         Task SendCleanerRemovalNotificationAsync(string email, string cleanerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName);
+        Task SendEmailChangeVerificationAsync(string newEmail, string firstName, string verificationLink, string currentEmail);
+        Task SendEmailChangeConfirmationAsync(string email, string firstName);
     }
 }
