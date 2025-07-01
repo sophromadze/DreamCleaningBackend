@@ -506,9 +506,21 @@ namespace DreamCleaningBackend.Services
 
             await _context.SaveChangesAsync();
 
-            // Send verification email
             var verificationLink = $"{_configuration["Frontend:Url"]}/auth/verify-email?token={user.EmailVerificationToken}";
-            await _emailService.SendEmailVerificationAsync(user.Email, user.FirstName, verificationLink);
+
+            // SEND EMAIL IN BACKGROUND
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _emailService.SendEmailVerificationAsync(user.Email, user.FirstName, verificationLink);
+                    _logger.LogInformation($"Verification email sent successfully to {user.Email}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to send verification email to {user.Email}");
+                }
+            });
 
             return true;
         }
@@ -528,7 +540,20 @@ namespace DreamCleaningBackend.Services
             await _context.SaveChangesAsync();
 
             var resetLink = $"{_configuration["Frontend:Url"]}/auth/reset-password?token={user.PasswordResetToken}";
-            await _emailService.SendPasswordResetAsync(user.Email, user.FirstName, resetLink);
+
+            // SEND EMAIL IN BACKGROUND - This makes the response instant!
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _emailService.SendPasswordResetAsync(user.Email, user.FirstName, resetLink);
+                    _logger.LogInformation($"Password reset email sent successfully to {user.Email}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to send password reset email to {user.Email}");
+                }
+            });
 
             return true;
         }

@@ -95,6 +95,8 @@ namespace DreamCleaningBackend.Services
 
         private async Task SendEmailAsync(string to, string subject, string html)
         {
+            const int timeoutMs = 30000; // 30 second timeout
+
             try
             {
                 var email = new MimeMessage();
@@ -107,17 +109,27 @@ namespace DreamCleaningBackend.Services
                 email.Body = new TextPart(TextFormat.Html) { Text = html };
 
                 using var smtp = new SmtpClient();
+
+                // Add timeout to prevent hanging
+                smtp.Timeout = timeoutMs;
+
+                using var cts = new CancellationTokenSource(timeoutMs);
+
                 await smtp.ConnectAsync(
                     _configuration["Email:SmtpHost"],
                     int.Parse(_configuration["Email:SmtpPort"]),
-                    SecureSocketOptions.StartTls
+                    SecureSocketOptions.StartTls,
+                    cts.Token
                 );
+
                 await smtp.AuthenticateAsync(
                     _configuration["Email:SmtpUser"],
-                    _configuration["Email:SmtpPassword"]
+                    _configuration["Email:SmtpPassword"],
+                    cts.Token
                 );
-                await smtp.SendAsync(email);
-                await smtp.DisconnectAsync(true);
+
+                await smtp.SendAsync(email, cts.Token);
+                await smtp.DisconnectAsync(true, cts.Token);
 
                 _logger.LogInformation($"Email sent successfully to {to}");
             }
