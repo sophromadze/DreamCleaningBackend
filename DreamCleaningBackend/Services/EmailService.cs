@@ -619,5 +619,93 @@ namespace DreamCleaningBackend.Services
 
             await SendEmailAsync(email, subject, body);
         }
+
+        public async Task SendCustomerReminderNotificationAsync(string email, string customerName,
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDaysBefore)
+        {
+            var timeFrame = isDaysBefore ? "in 2 days" : "in 2 hours";
+            var subject = $"Upcoming Cleaning Service Reminder - Service {timeFrame}";
+
+            var body = $@"
+        <h2>Hi {customerName},</h2>
+        <p>This is a friendly reminder that your cleaning service is scheduled for <strong>{timeFrame}</strong>:</p>
+        
+        <div style='background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #4caf50;'>
+            <h3>Service Details:</h3>
+            <p><strong>Service Type:</strong> {serviceTypeName}</p>
+            <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
+            <p><strong>Time:</strong> {serviceTime}</p>
+            <p><strong>Address:</strong> {address}</p>
+        </div>
+        
+        {(isDaysBefore ?
+                    @"<p>Please ensure that your home is ready for our cleaning team:</p>
+            <ul style='margin-left: 20px;'>
+                <li>Clear any personal items from surfaces that need cleaning</li>
+                <li>Secure any fragile or valuable items</li>
+                <li>Ensure our team has access to the property</li>
+                <li>Have any special instructions ready</li>
+            </ul>" :
+                    @"<p>Our cleaning team will arrive soon! Please make sure:</p>
+            <ul style='margin-left: 20px;'>
+                <li>Someone is available to let the team in (if required)</li>
+                <li>The property is accessible</li>
+                <li>Any pets are secured</li>
+            </ul>")}
+        
+        <p>If you need to make any changes or have questions, please contact us as soon as possible.</p>
+        
+        <div style='background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;'>
+            <p><strong>Need to make changes?</strong></p>
+            <p>Log in to your account to view or modify your order, or contact our support team.</p>
+        </div>
+        
+        <br/>
+        <p>Thank you for choosing Dream Cleaning!</p>
+        <p>Best regards,<br/>Dream Cleaning Team</p>
+    ";
+
+            await SendEmailAsync(email, subject, body);
+        }
+
+        public async Task SendCustomerBookingConfirmationAsync(string email, string customerName,
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId)
+        {
+            var subject = "Booking Confirmed - Dream Cleaning Service Scheduled";
+
+            var body = $@"
+        <h2>Hi {customerName},</h2>
+        <p>Thank you for choosing Dream Cleaning! Your booking has been confirmed and payment processed successfully.</p>
+        
+        <div style='background: #e3f2fd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2196f3;'>
+            <h3>Booking Details:</h3>
+            <p><strong>Order Number:</strong> #{orderId}</p>
+            <p><strong>Service Type:</strong> {serviceTypeName}</p>
+            <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
+            <p><strong>Time:</strong> {serviceTime}</p>
+            <p><strong>Address:</strong> {address}</p>
+        </div>
+        
+        <div style='background: #fff3e0; padding: 15px; border-radius: 8px; margin: 20px 0;'>
+            <h3>What's Next?</h3>
+            <ul style='margin-left: 20px;'>
+                <li>You'll receive reminder emails 2 days and 2 hours before your service</li>
+                <li>Our professional cleaning team will be assigned to your order</li>
+                <li>You can view and manage your booking in your account</li>
+            </ul>
+        </div>
+        
+        <div style='background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;'>
+            <p><strong>Questions or need to make changes?</strong></p>
+            <p>Log in to your account to view your order details or contact our support team.</p>
+        </div>
+        
+        <br/>
+        <p>We're excited to serve you!</p>
+        <p>Best regards,<br/>Dream Cleaning Team</p>
+    ";
+
+            await SendEmailAsync(email, subject, body);
+        }
     }
 }

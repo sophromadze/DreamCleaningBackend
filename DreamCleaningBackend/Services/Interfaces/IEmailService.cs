@@ -16,5 +16,9 @@
             DateTime serviceDate, string serviceTime, string serviceTypeName);
         Task SendEmailChangeVerificationAsync(string newEmail, string firstName, string verificationLink, string currentEmail);
         Task SendEmailChangeConfirmationAsync(string email, string firstName);
+        Task SendCustomerReminderNotificationAsync(string email, string customerName,
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDaysBefore);
+        Task SendCustomerBookingConfirmationAsync(string email, string customerName,
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId);
     }
 }

@@ -17,13 +17,15 @@ namespace DreamCleaningBackend.Controllers
         private readonly IConfiguration _configuration;
         private readonly ISubscriptionService _subscriptionService;
         private readonly IGiftCardService _giftCardService;
+        private readonly IEmailService _emailService;
 
-        public BookingController(ApplicationDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, IGiftCardService giftCardService)
+        public BookingController(ApplicationDbContext context, IConfiguration configuration, ISubscriptionService subscriptionService, IGiftCardService giftCardService, IEmailService emailService)
         {
             _context = context;
             _configuration = configuration;
             _subscriptionService = subscriptionService;
             _giftCardService = giftCardService;
+            _emailService = emailService;
         }
 
         [HttpGet("service-types")]
@@ -793,6 +795,7 @@ namespace DreamCleaningBackend.Controllers
 
                 var order = await _context.Orders
                     .Include(o => o.OrderServices)
+                    .Include(o => o.ServiceType) // ADD THIS - needed for email
                     .FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
 
                 if (order == null)
@@ -919,6 +922,30 @@ namespace DreamCleaningBackend.Controllers
                 order.PaidAt = DateTime.Now;
                 order.Status = "Active";
                 order.PaymentIntentId = "pi_simulated_" + Guid.NewGuid().ToString();
+
+                // ========== ADD THIS SECTION HERE ==========
+                // Send booking confirmation email to customer (after payment completion)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _emailService.SendCustomerBookingConfirmationAsync(
+                            order.ContactEmail,
+                            order.ContactFirstName,
+                            order.ServiceDate,
+                            order.ServiceTime.ToString(),
+                            order.ServiceType.Name,
+                            order.ServiceAddress,
+                            order.Id
+                        );
+                        Console.WriteLine($"Booking confirmation email sent to {order.ContactEmail} for order {order.Id}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to send booking confirmation email: {ex.Message}");
+                    }
+                });
+                // ========== END OF ADDITION ==========
 
                 // Handle subscription activation for paid orders
                 var subscription = await _context.Subscriptions.FindAsync(order.SubscriptionId);

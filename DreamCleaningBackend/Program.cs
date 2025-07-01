@@ -88,6 +88,7 @@ builder.Services.AddHostedService<UnverifiedUserCleanupService>();
 builder.Services.AddScoped<ISpecialOfferService, SpecialOfferService>();
 builder.Services.AddScoped<ICleanerService, CleanerService>();
 builder.Services.AddHostedService<CleanerNotificationService>();
+builder.Services.AddHostedService<CustomerNotificationService>();
 
 builder.Services.AddHttpClient();
 
