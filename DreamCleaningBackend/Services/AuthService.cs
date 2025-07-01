@@ -173,14 +173,29 @@ namespace DreamCleaningBackend.Services
                         ExternalAuthId = googleId,
                         CreatedAt = DateTime.Now,
                         FirstTimeOrder = true,
-                        IsActive = true
+                        IsActive = true,
+                        IsEmailVerified = true // Google emails are pre-verified
                     };
 
                     _context.Users.Add(user);
                 }
                 else if (user.AuthProvider != "Google")
                 {
-                    throw new Exception("Email already registered with different provider");
+                    // CHANGED: Don't overwrite AuthProvider, just add Google info
+                    // Keep original AuthProvider (Local) but add Google support
+                    user.ExternalAuthId = googleId;
+                    user.IsEmailVerified = true; // Google emails are verified
+
+                    // Optionally update names if they were empty or different
+                    if (string.IsNullOrEmpty(user.FirstName) || user.FirstName == "User")
+                        user.FirstName = firstName;
+                    if (string.IsNullOrEmpty(user.LastName))
+                        user.LastName = lastName;
+
+                    user.UpdatedAt = DateTime.Now;
+
+                    _logger.LogInformation("Linked Google to existing local account {Email}", email);
+                    // NOTE: AuthProvider stays "Local" so local login still works
                 }
 
                 // Update refresh token
