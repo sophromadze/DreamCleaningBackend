@@ -10,11 +10,13 @@ namespace DreamCleaningBackend.Services
     {
         private readonly ApplicationDbContext _context;
         private readonly IEmailService _emailService;
+        private readonly IAuditService _auditService;
 
-        public CleanerService(ApplicationDbContext context, IEmailService emailService)
+        public CleanerService(ApplicationDbContext context, IEmailService emailService, IAuditService auditService)
         {
             _context = context;
             _emailService = emailService;
+            _auditService = auditService;
         }
 
         public async Task<List<CleanerCalendarDto>> GetCleanerCalendarAsync(int cleanerId)
@@ -145,12 +147,19 @@ namespace DreamCleaningBackend.Services
 
             try
             {
+                var assignedCleanerEmails = new List<string>();
+                var newlyAssignedCleanerIds = new List<int>();
+
                 // DON'T remove existing assignments - just add new ones or update existing ones
                 foreach (var cleanerId in dto.CleanerIds)
                 {
                     // Check if this cleaner is already assigned
                     var existingAssignment = await _context.OrderCleaners
                         .FirstOrDefaultAsync(oc => oc.OrderId == dto.OrderId && oc.CleanerId == cleanerId);
+
+                    // Get cleaner details for audit logging
+                    var cleaner = await _context.Users
+                        .FirstOrDefaultAsync(u => u.Id == cleanerId);
 
                     if (existingAssignment == null)
                     {
@@ -164,6 +173,30 @@ namespace DreamCleaningBackend.Services
                         };
 
                         _context.OrderCleaners.Add(orderCleaner);
+                        newlyAssignedCleanerIds.Add(cleanerId); // Track newly assigned cleaners
+
+                        // LOG CLEANER ASSIGNMENT TO AUDIT
+                        if (cleaner != null)
+                        {
+                            try
+                            {
+                                await _auditService.LogCleanerAssignmentAsync(
+                                    orderId: dto.OrderId,
+                                    cleanerEmail: cleaner.Email,
+                                    action: "Assigned",
+                                    adminId: assignedBy
+                                );
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Audit logging failed for cleaner assignment: {ex.Message}");
+                            }
+                        }
+
+                        if (cleaner != null)
+                        {
+                            assignedCleanerEmails.Add(cleaner.Email);
+                        }
                     }
                     else
                     {
@@ -177,8 +210,11 @@ namespace DreamCleaningBackend.Services
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
 
-                // Send notifications only to newly assigned cleaners
-                await SendCleanerAssignmentNotifications(dto.OrderId, dto.CleanerIds);
+                // KEEP ASSIGNMENT EMAILS SYNCHRONOUS (only newly assigned cleaners)
+                if (newlyAssignedCleanerIds.Any())
+                {
+                    await SendCleanerAssignmentNotifications(dto.OrderId, newlyAssignedCleanerIds);
+                }
 
                 return true;
             }
@@ -189,7 +225,7 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        public async Task<bool> UnassignCleanerFromOrderAsync(int orderId, int cleanerId)
+        public async Task<bool> UnassignCleanerFromOrderAsync(int orderId, int cleanerId, int removedBy)
         {
             var assignment = await _context.OrderCleaners
                 .Include(oc => oc.Order)
@@ -200,17 +236,49 @@ namespace DreamCleaningBackend.Services
             if (assignment == null)
                 return false;
 
+            // Store cleaner info before removing
+            var cleanerEmail = assignment.Cleaner.Email;
+            var cleanerFirstName = assignment.Cleaner.FirstName;
+            var serviceDate = assignment.Order.ServiceDate;
+            var serviceTime = assignment.Order.ServiceTime.ToString();
+            var serviceTypeName = assignment.Order.ServiceType.Name;
+
+            // LOG CLEANER REMOVAL TO AUDIT BEFORE REMOVING
+            try
+            {
+                await _auditService.LogCleanerAssignmentAsync(
+                    orderId: orderId,
+                    cleanerEmail: assignment.Cleaner.Email,
+                    action: "Removed",
+                    adminId: removedBy
+                );
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Audit logging failed for cleaner removal: {ex.Message}");
+            }
+
             _context.OrderCleaners.Remove(assignment);
             await _context.SaveChangesAsync();
 
-            // Send removal notification email
-            await _emailService.SendCleanerRemovalNotificationAsync(
-                assignment.Cleaner.Email,
-                assignment.Cleaner.FirstName,
-                assignment.Order.ServiceDate,
-                assignment.Order.ServiceTime.ToString(),
-                assignment.Order.ServiceType.Name
-            );
+            // OPTIMIZED: Send removal notification in background (fire and forget)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _emailService.SendCleanerRemovalNotificationAsync(
+                        cleanerEmail,
+                        cleanerFirstName,
+                        serviceDate,
+                        serviceTime,
+                        serviceTypeName
+                    );
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Background removal email sending failed: {ex.Message}");
+                }
+            });
 
             return true;
         }

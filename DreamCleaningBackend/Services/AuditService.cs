@@ -266,5 +266,36 @@ namespace DreamCleaningBackend.Services
 
             return changedFields;
         }
+
+        public async Task LogCleanerAssignmentAsync(int orderId, string cleanerEmail, string action, int adminId)
+        {
+            try
+            {
+                var auditLog = new AuditLog
+                {
+                    EntityType = "CleanerAssignment",
+                    EntityId = orderId,
+                    Action = action, // "Assigned" or "Removed"
+                    OldValues = null,
+                    NewValues = JsonConvert.SerializeObject(new
+                    {
+                        CleanerEmail = cleanerEmail,
+                        OrderId = orderId
+                    }, _jsonSettings),
+                    ChangedFields = JsonConvert.SerializeObject(new[] { "CleanerEmail" }, _jsonSettings),
+                    UserId = adminId,
+                    IpAddress = GetIpAddress(),
+                    UserAgent = GetUserAgent(),
+                    CreatedAt = DateTime.Now
+                };
+
+                _context.AuditLogs.Add(auditLog);
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Cleaner assignment audit logging failed: {ex.Message}");
+            }
+        }
     }
 }

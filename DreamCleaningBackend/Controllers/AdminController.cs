@@ -3135,7 +3135,10 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.View)]
         public async Task<ActionResult> RemoveCleanerFromOrder(int orderId, int cleanerId)
         {
-            var success = await _cleanerService.UnassignCleanerFromOrderAsync(orderId, cleanerId);
+            // Pass current user ID to the service for audit logging
+            var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+
+            var success = await _cleanerService.UnassignCleanerFromOrderAsync(orderId, cleanerId, currentUserId);
 
             if (success)
                 return Ok(new { message = "Cleaner removed successfully and notified via email" });
