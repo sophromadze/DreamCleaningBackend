@@ -539,9 +539,44 @@ namespace DreamCleaningBackend.Controllers
                             }
                             else if (extraService.HasQuantity)
                             {
-                                cost = extraService.Price * extraServiceDto.Quantity * currentMultiplier;
-                                duration = extraService.Duration * extraServiceDto.Quantity;
-                                Console.WriteLine($"  HasQuantity calculation - Duration: {extraService.Duration} x {extraServiceDto.Quantity} = {duration} minutes");
+                                if (extraService.Name == "Extra Cleaners")
+                                {
+                                    // Extra Cleaners: fixed cost per cleaner (not based on hours)
+                                    decimal baseCostPerCleaner = 40m; // Base cost per extra cleaner
+
+                                    // Adjust cost based on cleaning type
+                                    if (dto.ExtraServices.Any(es =>
+                                    {
+                                        var esService = _context.ExtraServices.Find(es.ExtraServiceId);
+                                        return esService?.IsSuperDeepCleaning == true;
+                                    }))
+                                    {
+                                        baseCostPerCleaner = 80m; // Super deep cleaning
+                                    }
+                                    else if (dto.ExtraServices.Any(es =>
+                                    {
+                                        var esService = _context.ExtraServices.Find(es.ExtraServiceId);
+                                        return esService?.IsDeepCleaning == true;
+                                    }))
+                                    {
+                                        baseCostPerCleaner = 60m; // Deep cleaning
+                                    }
+
+                                    cost = baseCostPerCleaner * extraServiceDto.Quantity;
+                                    duration = 0; // Extra cleaners don't add duration - they reduce it
+
+                                    Console.WriteLine($"  Extra Cleaners calculation:");
+                                    Console.WriteLine($"    Quantity: {extraServiceDto.Quantity}");
+                                    Console.WriteLine($"    Cost per cleaner: {baseCostPerCleaner}");
+                                    Console.WriteLine($"    Total cost: {cost}");
+                                }
+                                else
+                                {
+                                    // Regular quantity-based extra service
+                                    cost = extraService.Price * extraServiceDto.Quantity * currentMultiplier;
+                                    duration = extraService.Duration * extraServiceDto.Quantity;
+                                    Console.WriteLine($"  HasQuantity calculation - Duration: {extraService.Duration} x {extraServiceDto.Quantity} = {duration} minutes");
+                                }
                             }
                             else
                             {
