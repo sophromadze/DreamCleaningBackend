@@ -53,21 +53,26 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("submit")]
-        [Authorize]
         public async Task<ActionResult> SubmitPoll(CreatePollSubmissionDto dto)
         {
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
-                var userId = int.Parse(User.FindFirst("userId")?.Value ?? "0");
-                if (userId == 0)
+                // For anonymous users, set UserId to null instead of trying to get from User claims
+                int? userId = null;
+                if (User.Identity?.IsAuthenticated == true)
                 {
-                    return Unauthorized();
+                    // If user is logged in, get their ID
+                    var userIdClaim = User.FindFirst("userId")?.Value;
+                    if (!string.IsNullOrEmpty(userIdClaim) && int.TryParse(userIdClaim, out var parsedUserId))
+                    {
+                        userId = parsedUserId;
+                    }
                 }
 
                 var submission = new PollSubmission
                 {
-                    UserId = userId,
+                    UserId = userId, // This can be null for anonymous submissions
                     ServiceTypeId = dto.ServiceTypeId,
                     ContactFirstName = dto.ContactFirstName,
                     ContactLastName = dto.ContactLastName,

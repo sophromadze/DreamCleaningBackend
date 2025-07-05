@@ -74,7 +74,7 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public decimal BasePrice { get; set; }
         public string? Description { get; set; }
-        public bool HasPoll { get; set; }
+        public bool HasPoll { get; set; } = false;
         public int DisplayOrder { get; set; }
         [Required]
         public int TimeDuration { get; set; }

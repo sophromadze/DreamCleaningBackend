@@ -25,7 +25,7 @@
     public class PollSubmissionDto
     {
         public int Id { get; set; }
-        public int UserId { get; set; }
+        public int? UserId { get; set; }
         public int ServiceTypeId { get; set; }
         public string ServiceTypeName { get; set; }
         public string ContactFirstName { get; set; }

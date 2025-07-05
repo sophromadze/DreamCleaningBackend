@@ -7,8 +7,8 @@ namespace DreamCleaningBackend.Models
         public int Id { get; set; }
 
         // User and Service Type relationship
-        public int UserId { get; set; }
-        public virtual User User { get; set; }
+        public int? UserId { get; set; } // CHANGED: Made nullable for anonymous submissions
+        public virtual User? User { get; set; } // CHANGED: Made nullable
 
         public int ServiceTypeId { get; set; }
         public virtual ServiceType ServiceType { get; set; }
