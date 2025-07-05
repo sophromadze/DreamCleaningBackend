@@ -17,16 +17,15 @@ namespace DreamCleaningBackend.Models
         [StringLength(500)]
         public string? Description { get; set; }
         public int TimeDuration { get; set; } = 90;
-
         public bool IsActive { get; set; } = true;
-
-        // Display order for UI
         public int DisplayOrder { get; set; }
+        public bool HasPoll { get; set; } = false;
 
         // Navigation properties
         public virtual ICollection<Service> Services { get; set; } = new List<Service>();
         public virtual ICollection<ExtraService> ExtraServices { get; set; } = new List<ExtraService>();
         public virtual ICollection<Order> Orders { get; set; } = new List<Order>();
+        public virtual ICollection<PollQuestion> PollQuestions { get; set; } = new List<PollQuestion>();
 
         // Audit fields
         public DateTime CreatedAt { get; set; }

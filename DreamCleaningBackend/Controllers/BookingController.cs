@@ -60,6 +60,7 @@ namespace DreamCleaningBackend.Controllers
                     BasePrice = st.BasePrice,
                     Description = st.Description,
                     DisplayOrder = st.DisplayOrder,
+                    HasPoll = st.HasPoll,
                     TimeDuration = st.TimeDuration,
                     Services = st.Services
                         .OrderBy(s => s.DisplayOrder)

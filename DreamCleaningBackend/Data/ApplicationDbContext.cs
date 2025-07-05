@@ -13,8 +13,6 @@ namespace DreamCleaningBackend.Data
         public DbSet<User> Users { get; set; }
         public DbSet<Apartment> Apartments { get; set; }
         public DbSet<Subscription> Subscriptions { get; set; }
-
-        // New entities for booking system
         public DbSet<Order> Orders { get; set; }
         public DbSet<ServiceType> ServiceTypes { get; set; }
         public DbSet<Service> Services { get; set; }
@@ -30,6 +28,9 @@ namespace DreamCleaningBackend.Data
         public DbSet<GiftCardConfig> GiftCardConfigs { get; set; }
         public DbSet<OrderCleaner> OrderCleaners { get; set; }
         public DbSet<NotificationLog> NotificationLogs { get; set; }
+        public DbSet<PollQuestion> PollQuestions { get; set; }
+        public DbSet<PollSubmission> PollSubmissions { get; set; }
+        public DbSet<PollAnswer> PollAnswers { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -128,8 +129,40 @@ namespace DreamCleaningBackend.Data
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // Service configuration
-            modelBuilder.Entity<Service>()
+            // Poll configuration
+            modelBuilder.Entity<PollQuestion>()
+                .HasOne(pq => pq.ServiceType)
+                .WithMany(st => st.PollQuestions)
+                .HasForeignKey(pq => pq.ServiceTypeId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<PollSubmission>()
+                .HasOne(ps => ps.User)
+                .WithMany()
+                .HasForeignKey(ps => ps.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<PollSubmission>()
+                .HasOne(ps => ps.ServiceType)
+                .WithMany()
+                .HasForeignKey(ps => ps.ServiceTypeId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<PollAnswer>()
+                .HasOne(pa => pa.PollSubmission)
+                .WithMany(ps => ps.PollAnswers)
+                .HasForeignKey(pa => pa.PollSubmissionId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<PollAnswer>()
+                .HasOne(pa => pa.PollQuestion)
+                .WithMany(pq => pq.PollAnswers)
+                .HasForeignKey(pa => pa.PollQuestionId)
+                .OnDelete(DeleteBehavior.Restrict);
+        
+
+        // Service configuration
+        modelBuilder.Entity<Service>()
                 .HasOne(s => s.ServiceType)
                 .WithMany(st => st.Services)
                 .HasForeignKey(s => s.ServiceTypeId)

@@ -80,6 +80,7 @@ namespace DreamCleaningBackend.Controllers
                     Description = st.Description,
                     IsActive = st.IsActive,
                     DisplayOrder = st.DisplayOrder,
+                    HasPoll = st.HasPoll,
                     TimeDuration = st.TimeDuration,
                     Services = st.Services
                         .OrderBy(s => s.DisplayOrder)
@@ -189,6 +190,7 @@ namespace DreamCleaningBackend.Controllers
                         BasePrice = dto.BasePrice,
                         Description = dto.Description,
                         DisplayOrder = dto.DisplayOrder,
+                        HasPoll = dto.HasPoll,
                         IsActive = true,
                         TimeDuration = dto.TimeDuration,
                         CreatedAt = DateTime.Now
@@ -207,6 +209,7 @@ namespace DreamCleaningBackend.Controllers
                         BasePrice = serviceType.BasePrice,
                         Description = serviceType.Description,
                         DisplayOrder = serviceType.DisplayOrder,
+                        HasPoll = serviceType.HasPoll,
                         IsActive = serviceType.IsActive,
                         TimeDuration = serviceType.TimeDuration
                     });
@@ -235,6 +238,7 @@ namespace DreamCleaningBackend.Controllers
                 BasePrice = serviceType.BasePrice,
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
+                HasPoll = serviceType.HasPoll,
                 IsActive = serviceType.IsActive,
                 TimeDuration = serviceType.TimeDuration
             };
@@ -279,6 +283,7 @@ namespace DreamCleaningBackend.Controllers
                     serviceType.BasePrice = dto.BasePrice;
                     serviceType.Description = dto.Description;
                     serviceType.DisplayOrder = dto.DisplayOrder;
+                    serviceType.HasPoll = dto.HasPoll;
                     serviceType.TimeDuration = dto.TimeDuration;
                     serviceType.UpdatedAt = DateTime.Now;
 
@@ -295,6 +300,7 @@ namespace DreamCleaningBackend.Controllers
                         BasePrice = serviceType.BasePrice,
                         Description = serviceType.Description,
                         DisplayOrder = serviceType.DisplayOrder,
+                        HasPoll = serviceType.HasPoll,
                         IsActive = serviceType.IsActive,
                         TimeDuration = serviceType.TimeDuration
                     });
@@ -323,6 +329,7 @@ namespace DreamCleaningBackend.Controllers
                 BasePrice = serviceType.BasePrice,
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
+                HasPoll = serviceType.HasPoll,
                 IsActive = serviceType.IsActive,
                 TimeDuration = serviceType.TimeDuration
             };
@@ -354,6 +361,7 @@ namespace DreamCleaningBackend.Controllers
                 BasePrice = serviceType.BasePrice,
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
+                HasPoll = serviceType.HasPoll,
                 IsActive = serviceType.IsActive,
                 TimeDuration = serviceType.TimeDuration
             };
@@ -3122,7 +3130,8 @@ namespace DreamCleaningBackend.Controllers
             var assignedCleaners = await _context.OrderCleaners
                 .Where(oc => oc.OrderId == orderId)
                 .Include(oc => oc.Cleaner)
-                .Select(oc => new {
+                .Select(oc => new
+                {
                     id = oc.CleanerId,
                     name = $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}"
                 })
@@ -3144,6 +3153,159 @@ namespace DreamCleaningBackend.Controllers
                 return Ok(new { message = "Cleaner removed successfully and notified via email" });
 
             return NotFound(new { message = "Cleaner assignment not found" });
+        }
+
+        [HttpGet("poll-questions")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<PollQuestionDto>>> GetAllPollQuestions()
+        {
+            var questions = await _context.PollQuestions
+                .Include(pq => pq.ServiceType)
+                .OrderBy(pq => pq.ServiceTypeId)
+                .ThenBy(pq => pq.DisplayOrder)
+                .Select(pq => new PollQuestionDto
+                {
+                    Id = pq.Id,
+                    Question = pq.Question,
+                    QuestionType = pq.QuestionType,
+                    Options = pq.Options,
+                    IsRequired = pq.IsRequired,
+                    DisplayOrder = pq.DisplayOrder,
+                    IsActive = pq.IsActive,
+                    ServiceTypeId = pq.ServiceTypeId
+                })
+                .ToListAsync();
+
+            return Ok(questions);
+        }
+
+        [HttpPost("poll-questions")]
+        [RequirePermission(Permission.Create)]
+        public async Task<ActionResult<PollQuestionDto>> CreatePollQuestion(CreatePollQuestionDto dto)
+        {
+            var question = new PollQuestion
+            {
+                Question = dto.Question,
+                QuestionType = dto.QuestionType,
+                Options = dto.Options,
+                IsRequired = dto.IsRequired,
+                DisplayOrder = dto.DisplayOrder,
+                ServiceTypeId = dto.ServiceTypeId,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.PollQuestions.Add(question);
+            await _context.SaveChangesAsync();
+
+            var result = new PollQuestionDto
+            {
+                Id = question.Id,
+                Question = question.Question,
+                QuestionType = question.QuestionType,
+                Options = question.Options,
+                IsRequired = question.IsRequired,
+                DisplayOrder = question.DisplayOrder,
+                IsActive = question.IsActive,
+                ServiceTypeId = question.ServiceTypeId
+            };
+
+            return Ok(result);
+        }
+
+        [HttpPut("poll-questions/{id}")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> UpdatePollQuestion(int id, PollQuestionDto dto)
+        {
+            var question = await _context.PollQuestions.FindAsync(id);
+            if (question == null)
+            {
+                return NotFound();
+            }
+
+            question.Question = dto.Question;
+            question.QuestionType = dto.QuestionType;
+            question.Options = dto.Options;
+            question.IsRequired = dto.IsRequired;
+            question.DisplayOrder = dto.DisplayOrder;
+            question.IsActive = dto.IsActive;
+            question.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+            return Ok();
+        }
+
+        [HttpDelete("poll-questions/{id}")]
+        [RequirePermission(Permission.Delete)]
+        public async Task<ActionResult> DeletePollQuestion(int id)
+        {
+            var question = await _context.PollQuestions.FindAsync(id);
+            if (question == null)
+            {
+                return NotFound();
+            }
+
+            _context.PollQuestions.Remove(question);
+            await _context.SaveChangesAsync();
+            return Ok();
+        }
+
+        [HttpGet("poll-submissions")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<PollSubmissionDto>>> GetPollSubmissions()
+        {
+            var submissions = await _context.PollSubmissions
+                .Include(ps => ps.ServiceType)
+                .Include(ps => ps.PollAnswers)
+                    .ThenInclude(pa => pa.PollQuestion)
+                .OrderByDescending(ps => ps.CreatedAt)
+                .Select(ps => new PollSubmissionDto
+                {
+                    Id = ps.Id,
+                    UserId = ps.UserId,
+                    ServiceTypeId = ps.ServiceTypeId,
+                    ServiceTypeName = ps.ServiceType.Name,
+                    ContactFirstName = ps.ContactFirstName,
+                    ContactLastName = ps.ContactLastName,
+                    ContactEmail = ps.ContactEmail,
+                    ContactPhone = ps.ContactPhone,
+                    ServiceAddress = ps.ServiceAddress,
+                    AptSuite = ps.AptSuite,
+                    City = ps.City,
+                    State = ps.State,
+                    PostalCode = ps.PostalCode,
+                    Status = ps.Status,
+                    AdminNotes = ps.AdminNotes,
+                    CreatedAt = ps.CreatedAt,
+                    Answers = ps.PollAnswers.Select(pa => new PollAnswerDto
+                    {
+                        Id = pa.Id,
+                        PollQuestionId = pa.PollQuestionId,
+                        Question = pa.PollQuestion.Question,
+                        Answer = pa.Answer
+                    }).ToList()
+                })
+                .ToListAsync();
+
+            return Ok(submissions);
+        }
+
+        [HttpPut("poll-submissions/{id}/status")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> UpdatePollSubmissionStatus(int id, [FromBody] UpdatePollSubmissionStatusDto dto)
+        {
+            var submission = await _context.PollSubmissions.FindAsync(id);
+            if (submission == null)
+            {
+                return NotFound();
+            }
+
+            submission.Status = dto.Status;
+            submission.AdminNotes = dto.AdminNotes;
+            submission.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+            return Ok();
         }
     }
 }

@@ -93,7 +93,7 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(email, subject, body);
         }
 
-        private async Task SendEmailAsync(string to, string subject, string html)
+        public async Task SendEmailAsync(string to, string subject, string html)
         {
             const int timeoutMs = 30000; // 30 second timeout
 

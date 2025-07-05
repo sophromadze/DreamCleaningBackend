@@ -20,5 +20,6 @@
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDaysBefore);
         Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId);
+        Task SendEmailAsync(string to, string subject, string html);
     }
 }
