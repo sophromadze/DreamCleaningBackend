@@ -20,14 +20,16 @@ namespace DreamCleaningBackend.Services
         private readonly IEmailService _emailService;
         private readonly ILogger<AuthService> _logger;
         private readonly ISpecialOfferService _specialOfferService;
+        private readonly IAuditService _auditService;
 
-        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService)
+        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService)
         {
             _context = context;
             _configuration = configuration;
             _emailService = emailService;
             _logger = logger;
             _specialOfferService = specialOfferService;
+            _auditService = auditService;
         }
 
         // Update your AuthService.cs Register method with better error handling
@@ -686,6 +688,22 @@ namespace DreamCleaningBackend.Services
             if (emailExists)
                 throw new Exception("This email address is no longer available");
 
+            // ADDED: Capture user state before email change for auditing
+            var userBeforeUpdate = new User
+            {
+                Id = user.Id,
+                FirstName = user.FirstName,
+                LastName = user.LastName,
+                Email = user.Email, // This is the OLD email
+                Phone = user.Phone,
+                Role = user.Role,
+                IsActive = user.IsActive,
+                FirstTimeOrder = user.FirstTimeOrder,
+                SubscriptionId = user.SubscriptionId,
+                CreatedAt = user.CreatedAt,
+                UpdatedAt = user.UpdatedAt
+            };
+
             // Update the email
             user.Email = user.PendingEmail;
             user.PendingEmail = null;
@@ -694,6 +712,17 @@ namespace DreamCleaningBackend.Services
             user.UpdatedAt = DateTime.Now;
 
             await _context.SaveChangesAsync();
+
+            // ADDED: Log the email change in audit history
+            try
+            {
+                await _auditService.LogUpdateAsync(userBeforeUpdate, user);
+            }
+            catch (Exception ex)
+            {
+                // Don't fail the email change if audit logging fails
+                Console.WriteLine($"Audit logging failed for email change: {ex.Message}");
+            }
 
             // Send confirmation email to the new email address
             try
