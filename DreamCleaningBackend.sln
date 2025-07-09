@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35931.197 d17.13
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DreamCleaningBackend", "DreamCleaningBackend\DreamCleaningBackend.csproj", "{ED0BF275-D7B5-4557-9228-120AC5DF2494}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{ED0BF275-D7B5-4557-9228-120AC5DF2494}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ED0BF275-D7B5-4557-9228-120AC5DF2494}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ED0BF275-D7B5-4557-9228-120AC5DF2494}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ED0BF275-D7B5-4557-9228-120AC5DF2494}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {EA8AD98F-DFC1-4B37-89EB-3F836ED5DF19}
+	EndGlobalSection
+EndGlobal
