@@ -2,6 +2,9 @@
 using Microsoft.AspNetCore.Mvc;
 using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims;
+using DreamCleaningBackend.DTOs;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -104,6 +107,39 @@ namespace DreamCleaningBackend.Controllers
         {
             _logger.LogWarning($"Payment failed for intent: {paymentIntent.Id}");
             // Implement failure handling logic
+        }
+
+        [HttpPost("create-payment-intent")]
+        [Authorize]
+        public async Task<ActionResult> CreatePaymentIntent([FromBody] CreatePaymentIntentDto dto)
+        {
+            try
+            {
+                var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+                var options = new PaymentIntentCreateOptions
+                {
+                    Amount = dto.Amount,
+                    Currency = dto.Currency ?? "usd",
+                    Metadata = dto.Metadata ?? new Dictionary<string, string>()
+                };
+
+                // Add user ID to metadata
+                options.Metadata["userId"] = userId;
+
+                var service = new PaymentIntentService();
+                var paymentIntent = await service.CreateAsync(options);
+
+                return Ok(new
+                {
+                    client_secret = paymentIntent.ClientSecret,
+                    id = paymentIntent.Id
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = "Failed to create payment intent: " + ex.Message });
+            }
         }
     }
 }
