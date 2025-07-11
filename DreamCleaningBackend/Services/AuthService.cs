@@ -10,6 +10,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using Google.Apis.Auth;
 using DreamCleaningBackend.Services.Interfaces;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Services
 {
@@ -40,6 +41,10 @@ namespace DreamCleaningBackend.Services
             {
                 if (await UserExists(registerDto.Email))
                     throw new Exception("User already exists");
+
+                // Validate password requirements
+                if (!PasswordValidator.IsValidPassword(registerDto.Password, out string passwordError))
+                    throw new Exception(passwordError);
 
                 CreatePasswordHash(registerDto.Password, out string passwordHash, out string passwordSalt);
 
@@ -105,7 +110,7 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-         public async Task<AuthResponseDto> Login(LoginDto loginDto)
+        public async Task<AuthResponseDto> Login(LoginDto loginDto)
         {
             var user = await _context.Users
                 .Include(u => u.Subscription)
@@ -455,6 +460,10 @@ namespace DreamCleaningBackend.Services
             if (!VerifyPasswordHash(changePasswordDto.CurrentPassword, user.PasswordHash, user.PasswordSalt))
                 throw new Exception("Current password is incorrect");
 
+            // Validate new password requirements
+            if (!PasswordValidator.IsValidPassword(changePasswordDto.NewPassword, out string passwordError))
+                throw new Exception(passwordError);
+
             // Create new password hash
             CreatePasswordHash(changePasswordDto.NewPassword, out string passwordHash, out string passwordSalt);
 
@@ -583,6 +592,10 @@ namespace DreamCleaningBackend.Services
 
             if (user == null)
                 throw new Exception("Invalid or expired reset token");
+
+            // Validate new password requirements
+            if (!PasswordValidator.IsValidPassword(resetDto.NewPassword, out string passwordError))
+                throw new Exception(passwordError);
 
             CreatePasswordHash(resetDto.NewPassword, out string passwordHash, out string passwordSalt);
 
