@@ -409,6 +409,7 @@ namespace DreamCleaningBackend.Controllers
                     subTotal = dto.CustomAmount ?? serviceType.BasePrice;
                     totalDuration = dto.CustomDuration ?? serviceType.TimeDuration;
                     order.MaidsCount = dto.CustomCleaners ?? 1;
+                    order.TotalDuration = dto.CustomDuration ?? 90;
 
                     Console.WriteLine($"Custom pricing applied - SubTotal: {subTotal}, Duration: {totalDuration} minutes, Cleaners: {order.MaidsCount}");
                 }
@@ -667,7 +668,15 @@ namespace DreamCleaningBackend.Controllers
                 var subscription = await _context.Subscriptions.FindAsync(dto.SubscriptionId);
 
                 // Set MaidsCount from the frontend
-                order.MaidsCount = dto.MaidsCount;
+                if (dto.IsCustomPricing)
+                {
+                    order.MaidsCount = dto.CustomCleaners ?? dto.MaidsCount;
+                    Console.WriteLine($"Custom Pricing - Using CustomCleaners: {order.MaidsCount}");
+                }
+                else
+                {
+                    order.MaidsCount = dto.MaidsCount;
+                }
 
                 // If MaidsCount is 0 (not sent from frontend), calculate it
                 if (order.MaidsCount == 0)
@@ -700,7 +709,15 @@ namespace DreamCleaningBackend.Controllers
                 order.Tax = (subTotal - order.DiscountAmount - order.SubscriptionDiscountAmount) * 0.088m;
                 var totalBeforeGiftCard = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount + order.Tax + order.Tips + order.CompanyDevelopmentTips;
                 order.Total = totalBeforeGiftCard - giftCardAmountUsed; // Subtract gift card amount
-                order.TotalDuration = totalDuration;
+                if (dto.IsCustomPricing)
+                {
+                    order.TotalDuration = dto.CustomDuration ?? totalDuration;
+                    Console.WriteLine($"Custom Pricing - Using CustomDuration: {order.TotalDuration}");
+                }
+                else
+                {
+                    order.TotalDuration = totalDuration;
+                }
 
                 Console.WriteLine($"Final values saved to DB:");
                 Console.WriteLine($"- SubTotal: ${order.SubTotal}");
@@ -1105,12 +1122,13 @@ namespace DreamCleaningBackend.Controllers
         [HttpGet("available-times")]
         public ActionResult<List<string>> GetAvailableTimeSlots(DateTime date, int serviceTypeId)
         {
-            // Simple time slot generation - in a real app, you'd check existing bookings
+            // Time slots from 8:00 AM to 6:00 PM (30-minute intervals) for all days
             var timeSlots = new List<string>
-            {
-                "08:00", "09:00", "10:00", "11:00", "12:00",
-                "13:00", "14:00", "15:00", "16:00"
-            };
+                {
+                    "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30",
+                    "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30",
+                    "16:00", "16:30", "17:00", "17:30", "18:00"
+                };
 
             return Ok(timeSlots);
         }
