@@ -162,6 +162,7 @@ namespace DreamCleaningBackend.Services
                 var googleId = payload.Subject;
                 var firstName = payload.GivenName ?? "User";
                 var lastName = payload.FamilyName ?? "";
+                var profilePicture = payload.Picture; // Add this line
 
                 // Check if user exists
                 var user = await _context.Users
@@ -178,20 +179,23 @@ namespace DreamCleaningBackend.Services
                         LastName = lastName,
                         AuthProvider = "Google",
                         ExternalAuthId = googleId,
+                        ProfilePictureUrl = profilePicture, // Add this line
                         CreatedAt = DateTime.Now,
                         FirstTimeOrder = true,
                         IsActive = true,
-                        IsEmailVerified = true // Google emails are pre-verified
+                        IsEmailVerified = true
                     };
 
                     _context.Users.Add(user);
                 }
                 else if (user.AuthProvider != "Google")
                 {
-                    // CHANGED: Don't overwrite AuthProvider, just add Google info
                     // Keep original AuthProvider (Local) but add Google support
                     user.ExternalAuthId = googleId;
-                    user.IsEmailVerified = true; // Google emails are verified
+                    user.IsEmailVerified = true;
+
+                    // Update profile picture from Google
+                    user.ProfilePictureUrl = profilePicture; // Add this line
 
                     // Optionally update names if they were empty or different
                     if (string.IsNullOrEmpty(user.FirstName) || user.FirstName == "User")
@@ -202,8 +206,14 @@ namespace DreamCleaningBackend.Services
                     user.UpdatedAt = DateTime.Now;
 
                     _logger.LogInformation("Linked Google to existing local account {Email}", email);
-                    // NOTE: AuthProvider stays "Local" so local login still works
                 }
+                else
+                {
+                    // Existing Google user - update profile picture in case it changed
+                    user.ProfilePictureUrl = profilePicture; // Add this line
+                    user.UpdatedAt = DateTime.Now;
+                }
+
 
                 // Update refresh token
                 user.RefreshToken = GenerateRefreshToken();
@@ -489,7 +499,8 @@ namespace DreamCleaningBackend.Services
                 FirstTimeOrder = user.FirstTimeOrder,
                 SubscriptionId = user.SubscriptionId,
                 AuthProvider = user.AuthProvider,
-                Role = user.Role.ToString()
+                Role = user.Role.ToString(),
+                ProfilePictureUrl = user.ProfilePictureUrl
             };
         }
 

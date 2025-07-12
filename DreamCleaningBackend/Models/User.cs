@@ -23,6 +23,10 @@ namespace DreamCleaningBackend.Models
         public string? PasswordHash { get; set; }
         public string? PasswordSalt { get; set; }
 
+        // for google avatar
+        [StringLength(500)]
+        public string? ProfilePictureUrl { get; set; }
+
         [StringLength(20)]
         public string? Phone { get; set; }
 

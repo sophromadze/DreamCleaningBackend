@@ -376,7 +376,7 @@ namespace DreamCleaningBackend.Services
             // Reapply original discount
             var totalDiscounts = order.DiscountAmount + (order.SubscriptionDiscountAmount == 0 ? 0 : order.SubscriptionDiscountAmount);
             var discountedSubTotal = newSubTotal - totalDiscounts;
-            order.Tax = discountedSubTotal * 0.088m; // 8.8% tax
+            order.Tax = discountedSubTotal * 0.08875m; // 8.8% tax
 
             // Calculate total BEFORE gift card
             var totalBeforeGiftCard = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
@@ -639,14 +639,14 @@ namespace DreamCleaningBackend.Services
 
             // Reapply original discount
             var discountedSubTotal = newSubTotal - order.DiscountAmount;
-            order.Tax = discountedSubTotal * 0.088m; // 8.8% tax
+            order.Tax = discountedSubTotal * 0.08875m; // 8.8% tax
             order.Total = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
 
             // Calculate additional amount
             var additionalAmount = order.Total - order.Total; // This will be recalculated properly
 
             // Calculate new total with tips from DTO
-            var newTax = discountedSubTotal * 0.088m;
+            var newTax = discountedSubTotal * 0.08875m;
             var newTotal = discountedSubTotal + newTax + updateOrderDto.Tips + updateOrderDto.CompanyDevelopmentTips;
 
             // Log for debugging

@@ -706,7 +706,7 @@ namespace DreamCleaningBackend.Controllers
 
                 // Complete order calculations
                 order.SubTotal = subTotal;
-                order.Tax = (subTotal - order.DiscountAmount - order.SubscriptionDiscountAmount) * 0.088m;
+                order.Tax = (subTotal - order.DiscountAmount - order.SubscriptionDiscountAmount) * 0.08875m;
                 var totalBeforeGiftCard = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount + order.Tax + order.Tips + order.CompanyDevelopmentTips;
                 order.Total = totalBeforeGiftCard - giftCardAmountUsed; // Subtract gift card amount
                 if (dto.IsCustomPricing)
