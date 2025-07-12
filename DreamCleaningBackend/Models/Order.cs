@@ -37,7 +37,7 @@ namespace DreamCleaningBackend.Models
         public string? CancellationReason { get; set; }
 
         // Duration in minutes
-        public int TotalDuration { get; set; }
+        public decimal TotalDuration { get; set; }
 
         // Number of maids/cleaners for this order
         public int MaidsCount { get; set; }

@@ -25,7 +25,7 @@ namespace DreamCleaningBackend.Models
         public decimal Cost { get; set; }
 
         // Duration in minutes
-        public int Duration { get; set; }
+        public decimal Duration { get; set; }
 
         public DateTime CreatedAt { get; set; }
     }

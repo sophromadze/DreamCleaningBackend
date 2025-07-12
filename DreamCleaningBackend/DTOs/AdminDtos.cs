@@ -13,7 +13,7 @@ namespace DreamCleaningBackend.DTOs
         public int DisplayOrder { get; set; }
         public bool HasPoll { get; set; }
         public bool IsCustom { get; set; }
-        public int TimeDuration { get; set; }
+        public decimal TimeDuration { get; set; }
         public List<ServiceDto> Services { get; set; } = new List<ServiceDto>();
         public List<ExtraServiceDto> ExtraServices { get; set; } = new List<ExtraServiceDto>();
     }
@@ -24,7 +24,7 @@ namespace DreamCleaningBackend.DTOs
         public string Name { get; set; }
         public string ServiceKey { get; set; }
         public decimal Cost { get; set; }
-        public int TimeDuration { get; set; }
+        public decimal TimeDuration { get; set; }
         public int ServiceTypeId { get; set; }
         public string InputType { get; set; }
         public int? MinValue { get; set; }
@@ -43,7 +43,7 @@ namespace DreamCleaningBackend.DTOs
         public string Name { get; set; }
         public string? Description { get; set; }
         public decimal Price { get; set; }
-        public int Duration { get; set; }
+        public decimal Duration { get; set; }
         public string? Icon { get; set; }
         public bool HasQuantity { get; set; }
         public bool HasHours { get; set; }
@@ -66,7 +66,7 @@ namespace DreamCleaningBackend.DTOs
         public bool HasPoll { get; set; } = false;
         public bool IsCustom { get; set; }
         [Required]
-        public int TimeDuration { get; set; } = 90;
+        public decimal TimeDuration { get; set; } = 90;
     }
 
     public class UpdateServiceTypeDto
@@ -80,7 +80,7 @@ namespace DreamCleaningBackend.DTOs
         public bool IsCustom { get; set; }
         public int DisplayOrder { get; set; }
         [Required]
-        public int TimeDuration { get; set; }
+        public decimal TimeDuration { get; set; }
     }
 
     // Service DTOs
@@ -93,7 +93,7 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public decimal Cost { get; set; }
         [Required]
-        public int TimeDuration { get; set; }
+        public decimal TimeDuration { get; set; }
         [Required]
         public int ServiceTypeId { get; set; }
         [Required]
@@ -116,7 +116,7 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public decimal Cost { get; set; }
         [Required]
-        public int TimeDuration { get; set; }
+        public decimal TimeDuration { get; set; }
         [Required]
         public int ServiceTypeId { get; set; }
         [Required]
@@ -140,7 +140,7 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public decimal Price { get; set; }
         [Required]
-        public int Duration { get; set; }
+        public decimal Duration { get; set; }
         public string? Icon { get; set; }
         public bool HasQuantity { get; set; }
         public bool HasHours { get; set; }
@@ -161,7 +161,7 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public decimal Price { get; set; }
         [Required]
-        public int Duration { get; set; }
+        public decimal Duration { get; set; }
         public string? Icon { get; set; }
         public bool HasQuantity { get; set; }
         public bool HasHours { get; set; }

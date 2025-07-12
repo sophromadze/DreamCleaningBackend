@@ -22,7 +22,7 @@ namespace DreamCleaningBackend.Models
         public decimal Cost { get; set; }
 
         // Duration in minutes for this service
-        public int Duration { get; set; }
+        public decimal Duration { get; set; }
 
         // For tracking deep cleaning price modifications
         [Column(TypeName = "decimal(18,2)")]

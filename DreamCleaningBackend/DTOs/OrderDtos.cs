@@ -40,7 +40,7 @@ namespace DreamCleaningBackend.DTOs
         public string City { get; set; }
         public string State { get; set; }
         public string ZipCode { get; set; }
-        public int TotalDuration { get; set; }
+        public decimal TotalDuration { get; set; }
         public int MaidsCount { get; set; }
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
@@ -55,7 +55,7 @@ namespace DreamCleaningBackend.DTOs
         public string ServiceName { get; set; }
         public int Quantity { get; set; }
         public decimal Cost { get; set; }
-        public int Duration { get; set; }
+        public decimal Duration { get; set; }
         public decimal PriceMultiplier { get; set; }
     }
 
@@ -67,7 +67,7 @@ namespace DreamCleaningBackend.DTOs
         public int Quantity { get; set; }
         public decimal Hours { get; set; }
         public decimal Cost { get; set; }
-        public int Duration { get; set; }
+        public decimal Duration { get; set; }
     }
 
     public class UpdateOrderDto
@@ -75,7 +75,7 @@ namespace DreamCleaningBackend.DTOs
         public DateTime ServiceDate { get; set; }
         public string ServiceTime { get; set; }
         public int MaidsCount { get; set; }
-        public int TotalDuration { get; set; }
+        public decimal TotalDuration { get; set; }
         public string EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
         public string ContactFirstName { get; set; }

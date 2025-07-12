@@ -394,7 +394,7 @@ namespace DreamCleaningBackend.Controllers
 
                 // Calculate subtotal
                 decimal subTotal = 0;
-                int totalDuration = 0;
+                decimal totalDuration = 0;
                 decimal priceMultiplier = 1;
                 decimal deepCleaningFee = 0;
 
@@ -456,7 +456,7 @@ namespace DreamCleaningBackend.Controllers
                             Console.WriteLine($"  TimeDuration: {service.TimeDuration}");
 
                             decimal serviceCost = 0;
-                            int serviceDuration = 0;
+                            decimal serviceDuration = 0;
                             bool shouldAddToOrder = true;
 
                             // Special handling for cleaner-hours relationship
@@ -548,7 +548,7 @@ namespace DreamCleaningBackend.Controllers
                             Console.WriteLine($"  HasQuantity: {extraService.HasQuantity}");
 
                             decimal cost = 0;
-                            int duration = 0;
+                            decimal duration = 0;
 
                             // For deep cleaning services, store their actual price
                             if (extraService.IsDeepCleaning || extraService.IsSuperDeepCleaning)

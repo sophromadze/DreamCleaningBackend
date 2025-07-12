@@ -18,7 +18,7 @@ namespace DreamCleaningBackend.Models
         public decimal Price { get; set; }
 
         // Duration in minutes
-        public int Duration { get; set; }
+        public decimal Duration { get; set; }
 
         // Icon path or name
         [StringLength(100)]

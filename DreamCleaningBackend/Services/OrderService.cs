@@ -173,7 +173,7 @@ namespace DreamCleaningBackend.Services
             _context.OrderServices.RemoveRange(order.OrderServices);
 
             decimal newSubTotal = order.ServiceType.BasePrice * priceMultiplier;
-            int newTotalDuration = 0;
+            decimal newTotalDuration = 0;
 
             Console.WriteLine($"\nStarting backend duration calculation...");
 
@@ -188,7 +188,7 @@ namespace DreamCleaningBackend.Services
                 var svc = _context.Services.Find(os.ServiceId);
                 return svc?.ServiceRelationType == "cleaner";
             });
-            int originalHours = originalCleanerService != null ? originalCleanerService.Duration / 60 : 0;
+            decimal originalHours = originalCleanerService != null ? originalCleanerService.Duration / 60 : 0;
 
             foreach (var serviceDto in updateOrderDto.Services)
             {
@@ -196,7 +196,7 @@ namespace DreamCleaningBackend.Services
                 if (service != null)
                 {
                     decimal serviceCost = 0;
-                    int serviceDuration = 0;
+                    decimal serviceDuration = 0;
                     bool shouldAddToOrder = true;
 
                     // Special handling for cleaner-hours relationship
@@ -209,7 +209,7 @@ namespace DreamCleaningBackend.Services
                             return svc?.ServiceRelationType == "hours" && svc.ServiceTypeId == service.ServiceTypeId;
                         });
 
-                        int hours = 0;
+                        decimal hours = 0;
 
                         if (hoursServiceDto != null)
                         {
@@ -298,7 +298,7 @@ namespace DreamCleaningBackend.Services
                 if (extraService != null)
                 {
                     decimal cost = 0;
-                    int duration = extraService.Duration; // Base duration
+                    decimal duration = extraService.Duration; // Base duration
 
                     // For deep cleaning services, store their actual price
                     if (extraService.IsDeepCleaning || extraService.IsSuperDeepCleaning)
@@ -543,7 +543,7 @@ namespace DreamCleaningBackend.Services
 
             // Calculate new subtotal
             decimal newSubTotal = order.ServiceType.BasePrice * priceMultiplier;
-            int newTotalDuration = 0;
+            decimal newTotalDuration = 0;
 
             if (order.ServiceType != null && order.ServiceType.TimeDuration > 0)
             {
@@ -557,7 +557,7 @@ namespace DreamCleaningBackend.Services
                 if (service != null)
                 {
                     decimal cost = 0;
-                    int duration = 0;
+                    decimal duration = 0;
 
                     if (service.ServiceRelationType == "hours")
                     {

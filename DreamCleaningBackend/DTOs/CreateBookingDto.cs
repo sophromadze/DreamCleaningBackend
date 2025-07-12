@@ -67,14 +67,14 @@ namespace DreamCleaningBackend.DTOs
         [Range(0, double.MaxValue)]
         public decimal CompanyDevelopmentTips { get; set; }
         public int MaidsCount { get; set; }
-        public int TotalDuration { get; set; }
+        public decimal TotalDuration { get; set; }
         public decimal DiscountAmount { get; set; }
         public decimal SubscriptionDiscountAmount { get; set; } = 0;
         public decimal SubTotal { get; set; }
         public bool IsCustomPricing { get; set; } = false;
         public decimal? CustomAmount { get; set; }
         public int? CustomCleaners { get; set; }
-        public int? CustomDuration { get; set; }
+        public decimal? CustomDuration { get; set; }
         public List<PhotoUploadDto> UploadedPhotos { get; set; } = new List<PhotoUploadDto>();
     }
 }

@@ -8,6 +8,6 @@
         public decimal Tips { get; set; }
         public decimal CompanyDevelopmentTips { get; set; }
         public decimal Total { get; set; }
-        public int TotalDuration { get; set; }
+        public decimal TotalDuration { get; set; }
     }
 }

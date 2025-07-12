@@ -17,8 +17,8 @@ namespace DreamCleaningBackend.Models
         [Column(TypeName = "decimal(18,2)")]
         public decimal Cost { get; set; } // Cost per unit
 
-        // Time duration in minutes (per unit)
-        public int TimeDuration { get; set; }
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal TimeDuration { get; set; }
 
         // Service Type
         public int ServiceTypeId { get; set; }
