@@ -378,9 +378,9 @@ namespace DreamCleaningBackend.Controllers
                     ContactLastName = dto.ContactLastName,
                     ContactEmail = dto.ContactEmail,
                     ContactPhone = dto.ContactPhone,
-                    PromoCode = promoCode,  // Set to null if it's a gift card
+                    PromoCode = promoCode,
                     GiftCardCode = giftCardCode,
-                    GiftCardAmountUsed = 0,  // Set to 0 initially, will update after actual application
+                    GiftCardAmountUsed = 0,
                     Tips = dto.Tips,
                     CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                     Status = "Pending",
@@ -389,7 +389,13 @@ namespace DreamCleaningBackend.Controllers
                     OrderServices = new List<Models.OrderService>(),
                     OrderExtraServices = new List<OrderExtraService>(),
                     CreatedAt = DateTime.Now,
-                    MaidsCount = dto.MaidsCount
+                    MaidsCount = dto.MaidsCount,
+                    // ADD THESE THREE LINES:
+                    SubTotal = dto.SubTotal,
+                    Tax = dto.Tax,
+                    Total = dto.Total,
+                    DiscountAmount = dto.DiscountAmount,
+                    SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount
                 };
 
                 // Calculate subtotal
@@ -439,6 +445,7 @@ namespace DreamCleaningBackend.Controllers
                     // Add base price
                     subTotal += serviceType.BasePrice * priceMultiplier;
                     Console.WriteLine($"Base Price: {serviceType.BasePrice} x {priceMultiplier} = {serviceType.BasePrice * priceMultiplier}");
+                    Console.WriteLine($"Running SubTotal after base price: ${subTotal}");
 
                     totalDuration += serviceType.TimeDuration;
                     Console.WriteLine($"Service Type Base Duration: {serviceType.TimeDuration} minutes");
@@ -494,7 +501,7 @@ namespace DreamCleaningBackend.Controllers
                             else if (service.ServiceKey == "bedrooms" && serviceDto.Quantity == 0)
                             {
                                 // Studio apartment
-                                serviceCost = 20 * priceMultiplier;
+                                serviceCost = 10 * priceMultiplier;
                                 serviceDuration = 20;
                                 Console.WriteLine($"  Studio apartment - Fixed duration: 20 minutes");
                             }
@@ -527,6 +534,8 @@ namespace DreamCleaningBackend.Controllers
                                 order.OrderServices.Add(orderService);
                                 subTotal += serviceCost;
                                 totalDuration += serviceDuration;
+                                Console.WriteLine($"  Added service cost: ${serviceCost}");
+                                Console.WriteLine($"  Running SubTotal: ${subTotal}");
 
                                 Console.WriteLine($"  Added to total - Running total duration: {totalDuration} minutes");
                             }
@@ -631,6 +640,8 @@ namespace DreamCleaningBackend.Controllers
                             if (!extraService.IsDeepCleaning && !extraService.IsSuperDeepCleaning)
                             {
                                 subTotal += cost;
+                                Console.WriteLine($"  Added extra service cost: ${cost}");
+                                Console.WriteLine($"  Running SubTotal: ${subTotal}");
                             }
                             totalDuration += duration;
 
@@ -705,10 +716,17 @@ namespace DreamCleaningBackend.Controllers
                 order.SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount; // Add this line if property exists
 
                 // Complete order calculations
-                order.SubTotal = subTotal;
-                order.Tax = (subTotal - order.DiscountAmount - order.SubscriptionDiscountAmount) * 0.08875m;
-                var totalBeforeGiftCard = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount + order.Tax + order.Tips + order.CompanyDevelopmentTips;
-                order.Total = totalBeforeGiftCard - giftCardAmountUsed; // Subtract gift card amount
+                order.SubTotal = Math.Round(subTotal * 100) / 100;
+
+                // Calculate discounted subtotal FIRST
+                var discountedSubTotal = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount;
+
+                // Calculate tax on the DISCOUNTED amount (this is the fix)
+                order.Tax = Math.Round(discountedSubTotal * 0.08875m * 100) / 100;
+
+                // Calculate total
+                var totalBeforeGiftCard = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
+                order.Total = Math.Round((totalBeforeGiftCard - giftCardAmountUsed) * 100) / 100;
                 if (dto.IsCustomPricing)
                 {
                     order.TotalDuration = dto.CustomDuration ?? totalDuration;

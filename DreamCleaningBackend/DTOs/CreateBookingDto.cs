@@ -61,6 +61,9 @@ namespace DreamCleaningBackend.DTOs
         public decimal GiftCardAmountToUse { get; set; }
         public int? UserSpecialOfferId { get; set; }
 
+        public decimal Tax { get; set; }
+        public decimal Total { get; set; }
+
         [Range(0, double.MaxValue)]
         public decimal Tips { get; set; }
 
