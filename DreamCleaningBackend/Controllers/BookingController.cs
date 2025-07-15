@@ -658,7 +658,7 @@ namespace DreamCleaningBackend.Controllers
                 Console.WriteLine($"Frontend Sent Total Duration: {dto.TotalDuration} minutes");
                 Console.WriteLine($"Frontend Sent Maids Count: {dto.MaidsCount}");
                 Console.WriteLine($"DIFFERENCE: {dto.TotalDuration - totalDuration} minutes");
-
+                               
                 // If there's a mismatch, use the frontend value but log it
                 if (dto.TotalDuration != totalDuration)
                 {
@@ -673,6 +673,12 @@ namespace DreamCleaningBackend.Controllers
                 {
                     Console.WriteLine($"WARNING: Duration mismatch! Using frontend value: {dto.TotalDuration}");
                     totalDuration = dto.TotalDuration;
+                }
+
+                if (totalDuration < 60)
+                {
+                    Console.WriteLine($"WARNING: Backend calculated duration {totalDuration} is less than minimum 60 minutes. Setting to 60 minutes.");
+                    totalDuration = 60;
                 }
 
                 //// Apply subscription discount
@@ -731,6 +737,12 @@ namespace DreamCleaningBackend.Controllers
                 {
                     order.TotalDuration = dto.CustomDuration ?? totalDuration;
                     Console.WriteLine($"Custom Pricing - Using CustomDuration: {order.TotalDuration}");
+
+                    if (order.TotalDuration < 60)
+                    {
+                        order.TotalDuration = 60;
+                        Console.WriteLine($"Custom Pricing - Enforced minimum 60 minutes");
+                    }
                 }
                 else
                 {

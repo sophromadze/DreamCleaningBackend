@@ -361,12 +361,26 @@ namespace DreamCleaningBackend.Services
             Console.WriteLine($"Frontend sent total duration: {updateOrderDto.TotalDuration} minutes");
             Console.WriteLine($"DIFFERENCE: {updateOrderDto.TotalDuration - newTotalDuration} minutes");
 
+            // ADD: Check for significant mismatch and use frontend value if needed
+            if (Math.Abs(updateOrderDto.TotalDuration - newTotalDuration) > 5) // Allow 5 minutes tolerance
+            {
+                Console.WriteLine($"WARNING: Significant duration mismatch! Using frontend value: {updateOrderDto.TotalDuration}");
+                newTotalDuration = updateOrderDto.TotalDuration;
+            }
+
+            // Enforce minimum 1 hour duration
+            if (newTotalDuration < 60)
+            {
+                Console.WriteLine($"WARNING: Backend calculated duration {newTotalDuration} is less than minimum 60 minutes. Setting to 60 minutes.");
+                newTotalDuration = 60;
+            }
+
             // IMPORTANT: This is where the issue is - backend uses its calculation instead of frontend value
             order.MaidsCount = updateOrderDto.MaidsCount;
-            order.TotalDuration = newTotalDuration; // THIS IS THE PROBLEM - should be updateOrderDto.TotalDuration
+            order.TotalDuration = newTotalDuration; // Now this will always be at least 60 minutes
 
             Console.WriteLine($"\nSAVING TO DB:");
-            Console.WriteLine($"  TotalDuration: {order.TotalDuration} minutes (using backend calculation)");
+            Console.WriteLine($"  TotalDuration: {order.TotalDuration} minutes (backend calculation with 60 min minimum)");
             Console.WriteLine($"  MaidsCount: {order.MaidsCount}");
             Console.WriteLine("========================================\n");
 
