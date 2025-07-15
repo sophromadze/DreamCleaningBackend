@@ -9,6 +9,9 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendWelcomeEmailAsync(string email, string firstName);
         Task SendGiftCardNotificationAsync(string recipientEmail, string recipientName,
             string senderName, string giftCardCode, decimal amount, string message, string senderEmail);
+        Task SendGiftCardSenderConfirmationAsync(string senderEmail, string senderName,
+            string recipientName, string recipientEmail, string giftCardCode,
+            decimal amount, string message);
         Task SendContactFormEmailAsync(string to, string subject, string html);
         Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address);

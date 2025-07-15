@@ -317,6 +317,113 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(recipientEmail, subject, body);
         }
 
+        public async Task SendGiftCardSenderConfirmationAsync(string senderEmail, string senderName,
+            string recipientName, string recipientEmail, string giftCardCode,
+            decimal amount, string message)
+        {
+            var subject = $"Gift Card Purchase Confirmation - Dream Cleaning";
+
+            var body = $@"
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                color: #333;
+                line-height: 1.6;
+                max-width: 600px;
+                margin: 0 auto;
+            }}
+            .container {{
+                background-color: #f8f9fa;
+                padding: 20px;
+                border-radius: 10px;
+                margin: 20px 0;
+            }}
+            .header {{
+                background-color: #28a745;
+                color: white;
+                padding: 20px;
+                border-radius: 10px 10px 0 0;
+                text-align: center;
+            }}
+            .content {{
+                background-color: white;
+                padding: 30px;
+                border-radius: 0 0 10px 10px;
+            }}
+            .gift-card-details {{
+                background-color: #e8f5e9;
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+                border-left: 4px solid #28a745;
+            }}
+            .code-display {{
+                background-color: #f5f5f5;
+                padding: 15px;
+                border-radius: 5px;
+                text-align: center;
+                font-family: monospace;
+                font-size: 18px;
+                letter-spacing: 2px;
+                margin: 15px 0;
+                border: 2px dashed #28a745;
+            }}
+            .footer {{
+                text-align: center;
+                color: #666;
+                font-size: 14px;
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #eee;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class='container'>
+            <div class='header'>
+                <h2>Thank You for Your Gift Card Purchase!</h2>
+            </div>
+            
+            <div class='content'>
+                <p>Dear {senderName},</p>
+                
+                <p>Thank you for purchasing a Dream Cleaning gift card! Your thoughtful gift has been successfully processed and sent to <strong>{recipientName}</strong>.</p>
+                
+                <div class='gift-card-details'>
+                    <h3 style='margin-top: 0;'>Gift Card Details:</h3>
+                    <p><strong>Amount:</strong> ${amount:F2}</p>
+                    <p><strong>Recipient:</strong> {recipientName} ({recipientEmail})</p>
+                    <p><strong>Gift Card Code:</strong></p>
+                    <div class='code-display'>{giftCardCode}</div>
+                    {(!string.IsNullOrEmpty(message) ? $@"<p><strong>Your Message:</strong><br/><em>""{message}""</em></p>" : "")}
+                </div>
+                
+                <p><strong>What happens next?</strong></p>
+                <ul>
+                    <li>{recipientName} has received an email with the gift card details</li>
+                    <li>They can use the code <strong>{giftCardCode}</strong> when booking any Dream Cleaning service</li>
+                    <li>The gift card never expires and can be used for multiple bookings until the balance is depleted</li>
+                </ul>
+                
+                <p>Please save this email for your records. The gift card code above can be shared with the recipient if they haven't received their email.</p>
+                
+                <div class='footer'>
+                    <p>If you have any questions about your gift card purchase, please contact us at<br/>
+                    {_configuration["Email:FromAddress"]} or call (929) 930-1525</p>
+                    <p>&copy; {DateTime.Now.Year} Dream Cleaning. All rights reserved.</p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    ";
+
+            await SendEmailAsync(senderEmail, subject, body);
+        }
+
         public async Task SendContactFormEmailAsync(string to, string subject, string html)
         {
             await SendEmailAsync(to, subject, html);

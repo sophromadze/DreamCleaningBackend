@@ -102,9 +102,20 @@ namespace DreamCleaningBackend.Controllers
                             updatedGiftCard.SenderEmail
                         );
 
+                        // ADDED: Send confirmation email to sender
+                        await _emailService.SendGiftCardSenderConfirmationAsync(
+                            updatedGiftCard.SenderEmail,
+                            updatedGiftCard.SenderName,
+                            updatedGiftCard.RecipientName,
+                            updatedGiftCard.RecipientEmail,
+                            updatedGiftCard.Code,
+                            updatedGiftCard.OriginalAmount,
+                            updatedGiftCard.Message
+                        );
+
                         return Ok(new
                         {
-                            message = "Gift card payment processed successfully and email sent to recipient",
+                            message = "Gift card payment processed successfully and emails sent to both recipient and sender",
                             paymentIntentId = dto.PaymentIntentId
                         });
                     }
@@ -115,7 +126,7 @@ namespace DreamCleaningBackend.Controllers
                         {
                             message = "Gift card payment processed successfully",
                             paymentIntentId = dto.PaymentIntentId,
-                            warning = "Email notification could not be sent"
+                            warning = "Email notifications could not be sent"
                         });
                     }
                 }
