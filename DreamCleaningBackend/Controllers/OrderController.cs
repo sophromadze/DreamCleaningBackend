@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -18,12 +19,14 @@ namespace DreamCleaningBackend.Controllers
         private readonly IOrderService _orderService;
         private readonly ApplicationDbContext _context;
         private readonly IAuditService _auditService;
+        private readonly IStripeService _stripeService;
 
-        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService)
+        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService)
         {
             _orderService = orderService;
             _context = context;
             _auditService = auditService;
+            _stripeService = stripeService;
         }
 
         [HttpGet]
@@ -90,6 +93,47 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 return Ok(order);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("{orderId}/create-update-payment")]
+        public async Task<ActionResult> CreateUpdatePayment(int orderId, UpdateOrderDto updateOrderDto)
+        {
+            try
+            {
+                var userId = GetUserId();
+                var result = await _orderService.CreateUpdatePaymentIntent(orderId, userId, updateOrderDto);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("{orderId}/confirm-update-payment")]
+        public async Task<ActionResult> ConfirmUpdatePayment(int orderId, [FromBody] ConfirmUpdatePaymentDto dto)
+        {
+            try
+            {
+                var userId = GetUserId();
+
+                // Verify payment with Stripe
+                var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
+
+                if (paymentIntent.Status != "succeeded")
+                {
+                    return BadRequest(new { message = "Payment not completed" });
+                }
+
+                // Now update the order
+                var updatedOrder = await _orderService.UpdateOrder(orderId, userId, dto.UpdateOrderData);
+
+                return Ok(updatedOrder);
             }
             catch (Exception ex)
             {

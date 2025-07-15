@@ -86,6 +86,23 @@ namespace DreamCleaningBackend.Controllers
                             }
                         }
                         break;
+                    case "order_update":
+                        if (metadata.TryGetValue("orderId", out var updateOrderIdStr) &&
+                            int.TryParse(updateOrderIdStr, out var updateOrderId) &&
+                            metadata.TryGetValue("additionalAmount", out var additionalAmountStr) &&
+                            decimal.TryParse(additionalAmountStr, out var additionalAmount))
+                        {
+                            var order = await _context.Orders.FindAsync(updateOrderId);
+                            if (order != null)
+                            {
+                                // Log the additional payment
+                                _logger.LogInformation($"Additional payment of ${additionalAmount} received for order {updateOrderId}");
+
+                                // You might want to create a payment history record here
+                                // or update the order with additional payment info
+                            }
+                        }
+                        break;
                     case "gift_card":
                         if (metadata.TryGetValue("giftCardId", out var giftCardIdStr) &&
                             int.TryParse(giftCardIdStr, out var giftCardId))

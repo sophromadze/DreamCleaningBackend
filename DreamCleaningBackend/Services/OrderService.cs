@@ -15,11 +15,13 @@ namespace DreamCleaningBackend.Services
     {
         private readonly IOrderRepository _orderRepository;
         private readonly ApplicationDbContext _context;
+        private readonly IStripeService _stripeService;
 
-        public OrderService(IOrderRepository orderRepository, ApplicationDbContext context)
+        public OrderService(IOrderRepository orderRepository, ApplicationDbContext context, IStripeService stripeService)
         {
             _orderRepository = orderRepository;
             _context = context;
+            _stripeService = stripeService;
         }
 
         public async Task<List<OrderListDto>> GetAllOrdersForAdmin()
@@ -490,6 +492,42 @@ namespace DreamCleaningBackend.Services
             return await GetOrderById(orderId, userId);
         }
 
+        public async Task<OrderUpdatePaymentDto> CreateUpdatePaymentIntent(int orderId, int userId, UpdateOrderDto updateOrderDto)
+        {
+            var order = await _orderRepository.GetByIdWithDetailsAsync(orderId);
+
+            if (order == null || order.UserId != userId)
+                throw new Exception("Order not found");
+
+            if (order.Status == "Cancelled" || order.Status == "Done")
+                throw new Exception($"Cannot update a {order.Status.ToLower()} order");
+
+            // Calculate additional amount
+            var additionalAmount = await CalculateAdditionalAmount(orderId, updateOrderDto);
+
+            if (additionalAmount <= 0)
+                throw new Exception("No additional payment required");
+
+            // Create payment intent for the additional amount
+            var metadata = new Dictionary<string, string>
+    {
+        { "orderId", order.Id.ToString() },
+        { "userId", userId.ToString() },
+        { "type", "order_update" },
+        { "additionalAmount", additionalAmount.ToString("F2") }
+    };
+
+            var paymentIntent = await _stripeService.CreatePaymentIntentAsync(additionalAmount, metadata);
+
+            return new OrderUpdatePaymentDto
+            {
+                OrderId = order.Id,
+                AdditionalAmount = additionalAmount,
+                PaymentIntentId = paymentIntent.Id,
+                PaymentClientSecret = paymentIntent.ClientSecret
+            };
+        }
+
         public async Task<bool> CancelOrder(int orderId, int userId, CancelOrderDto cancelOrderDto)
         {
             var order = await _orderRepository.GetByIdAsync(orderId);
@@ -531,6 +569,20 @@ namespace DreamCleaningBackend.Services
 
             if (order == null)
                 throw new Exception("Order not found");
+
+            // Store original values for comparison - DO NOT MODIFY THE ORDER OBJECT!
+            var originalTotal = order.Total;
+
+            Console.WriteLine("\n========== CALCULATE ADDITIONAL AMOUNT DEBUG ==========");
+            Console.WriteLine($"Order ID: {orderId}");
+            Console.WriteLine($"ORIGINAL VALUES:");
+            Console.WriteLine($"  Original SubTotal: ${order.SubTotal:F2}");
+            Console.WriteLine($"  Original Tax: ${order.Tax:F2}");
+            Console.WriteLine($"  Original Tips: ${order.Tips:F2}");
+            Console.WriteLine($"  Original Company Tips: ${order.CompanyDevelopmentTips:F2}");
+            Console.WriteLine($"  Original Total: ${originalTotal:F2}");
+            Console.WriteLine($"  Original Discount: ${order.DiscountAmount:F2}");
+            Console.WriteLine($"  Original Subscription Discount: ${order.SubscriptionDiscountAmount:F2}");
 
             // Calculate price multiplier from extra services FIRST
             decimal priceMultiplier = 1.0m;
@@ -637,45 +689,38 @@ namespace DreamCleaningBackend.Services
             newSubTotal += deepCleaningFee;
 
             // If there's a significant mismatch, use the frontend value
-            // The frontend has all the user selections and should be the source of truth
             if (Math.Abs(updateOrderDto.TotalDuration - newTotalDuration) > 5) // Allow 5 minutes tolerance
             {
                 Console.WriteLine($"WARNING: Duration mismatch exceeds tolerance! Using frontend value: {updateOrderDto.TotalDuration}");
                 newTotalDuration = updateOrderDto.TotalDuration;
             }
 
-            // Now use the potentially updated newTotalDuration
-            order.MaidsCount = updateOrderDto.MaidsCount;
-            order.TotalDuration = newTotalDuration; // This will now use frontend value if there's a big difference
+            // Calculate new totals - DO NOT MODIFY THE ORDER OBJECT
+            var totalDiscounts = order.DiscountAmount + order.SubscriptionDiscountAmount;
+            var discountedSubTotal = newSubTotal - totalDiscounts;
+            var newTax = Math.Round(discountedSubTotal * 0.08875m, 2); // 8.875% tax
+            var newTotal = Math.Round(discountedSubTotal + newTax + updateOrderDto.Tips + updateOrderDto.CompanyDevelopmentTips, 2);
 
-            // Recalculate totals
-            order.SubTotal = newSubTotal;
+            Console.WriteLine($"\nNEW VALUES:");
+            Console.WriteLine($"  New SubTotal: ${newSubTotal:F2}");
+            Console.WriteLine($"  Price Multiplier: {priceMultiplier}");
+            Console.WriteLine($"  Deep Cleaning Fee: ${deepCleaningFee:F2}");
+            Console.WriteLine($"  Total Discounts: ${totalDiscounts:F2}");
+            Console.WriteLine($"  Discounted SubTotal: ${discountedSubTotal:F2}");
+            Console.WriteLine($"  New Tax: ${newTax:F2}");
+            Console.WriteLine($"  New Tips: ${updateOrderDto.Tips:F2}");
+            Console.WriteLine($"  New Company Tips: ${updateOrderDto.CompanyDevelopmentTips:F2}");
+            Console.WriteLine($"  New Total: ${newTotal:F2}");
 
-            // Reapply original discount
-            var discountedSubTotal = newSubTotal - order.DiscountAmount;
-            order.Tax = discountedSubTotal * 0.08875m; // 8.8% tax
-            order.Total = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
+            var additionalAmount = newTotal - originalTotal;
 
-            // Calculate additional amount
-            var additionalAmount = order.Total - order.Total; // This will be recalculated properly
+            Console.WriteLine($"\nFINAL CALCULATION:");
+            Console.WriteLine($"  New Total: ${newTotal:F2}");
+            Console.WriteLine($"  Original Total: ${originalTotal:F2}");
+            Console.WriteLine($"  Additional Amount: ${additionalAmount:F2}");
+            Console.WriteLine("======================================================\n");
 
-            // Calculate new total with tips from DTO
-            var newTax = discountedSubTotal * 0.08875m;
-            var newTotal = discountedSubTotal + newTax + updateOrderDto.Tips + updateOrderDto.CompanyDevelopmentTips;
-
-            // Log for debugging
-            Console.WriteLine($"CalculateAdditionalAmount Debug:");
-            Console.WriteLine($"  Maids Count from DTO: {updateOrderDto.MaidsCount}");
-            Console.WriteLine($"  New SubTotal: ${newSubTotal}");
-            Console.WriteLine($"  Discount: ${order.DiscountAmount}");
-            Console.WriteLine($"  Discounted SubTotal: ${discountedSubTotal}");
-            Console.WriteLine($"  New Tax: ${newTax}");
-            Console.WriteLine($"  Tips: ${updateOrderDto.Tips}");
-            Console.WriteLine($"  New Total: ${newTotal}");
-            Console.WriteLine($"  Original Total: ${order.Total}");
-            Console.WriteLine($"  Additional Amount: ${newTotal - order.Total}");
-
-            return newTotal - order.Total;
+            return additionalAmount;
         }
 
         public async Task<bool> MarkOrderAsDone(int orderId)

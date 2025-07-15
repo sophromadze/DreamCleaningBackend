@@ -93,6 +93,20 @@ namespace DreamCleaningBackend.DTOs
         public decimal CompanyDevelopmentTips { get; set; }
     }
 
+    public class OrderUpdatePaymentDto
+    {
+        public int OrderId { get; set; }
+        public decimal AdditionalAmount { get; set; }
+        public string PaymentIntentId { get; set; }
+        public string PaymentClientSecret { get; set; }
+    }
+
+    public class ConfirmUpdatePaymentDto
+    {
+        public string PaymentIntentId { get; set; }
+        public UpdateOrderDto UpdateOrderData { get; set; }
+    }
+
     public class OrderListDto
     {
         public int Id { get; set; }

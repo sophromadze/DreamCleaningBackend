@@ -15,5 +15,6 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<bool> MarkOrderAsDone(int orderId);
         Task<List<OrderListDto>> GetUserOrdersForAdmin(int userId);
         Task<OrderDto> GetOrderByIdForAdmin(int orderId);
+        Task<OrderUpdatePaymentDto> CreateUpdatePaymentIntent(int orderId, int userId, UpdateOrderDto updateOrderDto);
     }
 }
