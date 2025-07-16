@@ -96,6 +96,9 @@ namespace DreamCleaningBackend.Services
             if (order.Status == "Done")
                 throw new Exception("Cannot update a completed order");
 
+            // Define tolerance for floating-point comparisons
+            const decimal tolerance = 0.01m; // 1 cent tolerance
+
             // TOTALDURATION LOGGING - START
             Console.WriteLine("\n========== TOTALDURATION TRACKING ==========");
             Console.WriteLine($"Frontend sent TotalDuration: {updateOrderDto.TotalDuration} minutes");
@@ -115,7 +118,8 @@ namespace DreamCleaningBackend.Services
             Console.WriteLine($"Additional amount: ${additionalAmount:F2}");
 
             // Check if the new total would be less than the original
-            if (additionalAmount < 0)
+            // Use the tolerance to handle floating-point precision issues
+            if (additionalAmount < -tolerance)
             {
                 var newTotal = originalTotal + additionalAmount;
                 throw new Exception($"Cannot reduce order total. Original: ${originalTotal:F2}, New: ${newTotal:F2}, Difference: ${Math.Abs(additionalAmount):F2}");
@@ -201,8 +205,16 @@ namespace DreamCleaningBackend.Services
                     decimal serviceDuration = 0;
                     bool shouldAddToOrder = true;
 
+                    // Special handling for studio apartments (0 bedrooms)
+                    if (service.ServiceKey == "bedrooms" && serviceDto.Quantity == 0)
+                    {
+                        Console.WriteLine($"  Studio apartment detected for service: {service.Name}");
+                        serviceCost = 10 * priceMultiplier; // Flat $10 for studio
+                        serviceDuration = 20; // 20 minutes for studio
+                        Console.WriteLine($"    Studio pricing: $10 * {priceMultiplier} = ${serviceCost:F2}");
+                    }
                     // Special handling for cleaner-hours relationship
-                    if (service.ServiceRelationType == "cleaner")
+                    else if (service.ServiceRelationType == "cleaner")
                     {
                         // Find the hours service in the update
                         var hoursServiceDto = updateOrderDto.Services.FirstOrDefault(s =>
@@ -256,12 +268,6 @@ namespace DreamCleaningBackend.Services
                             serviceDuration = service.TimeDuration * serviceDto.Quantity;
                         }
                     }
-                    else if (service.ServiceKey == "bedrooms" && serviceDto.Quantity == 0)
-                    {
-                        // Studio apartment - flat rate
-                        serviceCost = 20 * priceMultiplier;
-                        serviceDuration = 20; // 20 minutes for studio
-                    }
                     else
                     {
                         // Regular service calculation
@@ -310,7 +316,7 @@ namespace DreamCleaningBackend.Services
                     }
                     else
                     {
-                        // Regular extra services
+                        // Regular extra services - apply deep cleaning multiplier to non-same-day services
                         var currentMultiplier = extraService.IsSameDayService ? 1.0m : priceMultiplier;
 
                         if (extraService.HasHours && extraServiceDto.Hours > 0)
@@ -392,7 +398,7 @@ namespace DreamCleaningBackend.Services
             // Reapply original discount
             var totalDiscounts = order.DiscountAmount + (order.SubscriptionDiscountAmount == 0 ? 0 : order.SubscriptionDiscountAmount);
             var discountedSubTotal = newSubTotal - totalDiscounts;
-            order.Tax = discountedSubTotal * 0.08875m; // 8.8% tax
+            order.Tax = discountedSubTotal * 0.08875m; // 8.875% tax
 
             // Calculate total BEFORE gift card
             var totalBeforeGiftCard = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
@@ -481,7 +487,8 @@ namespace DreamCleaningBackend.Services
             }
 
             // Final check to ensure the new total is not less than the original
-            if (order.Total < originalTotal)
+            // Use the tolerance to handle floating-point precision issues
+            if (order.Total < originalTotal - tolerance)
             {
                 throw new Exception($"Cannot save changes. The new total (${order.Total:F2}) is less than the original amount paid (${originalTotal:F2}). Please add more services or keep the current selection.");
             }
@@ -584,49 +591,97 @@ namespace DreamCleaningBackend.Services
             Console.WriteLine($"  Original Discount: ${order.DiscountAmount:F2}");
             Console.WriteLine($"  Original Subscription Discount: ${order.SubscriptionDiscountAmount:F2}");
 
+            // Log what services are being sent from frontend
+            Console.WriteLine($"\nFRONTEND SENT SERVICES:");
+            foreach (var serviceDto in updateOrderDto.Services)
+            {
+                Console.WriteLine($"  Service ID: {serviceDto.ServiceId}, Quantity: {serviceDto.Quantity}");
+            }
+
+            Console.WriteLine($"\nFRONTEND SENT EXTRA SERVICES:");
+            foreach (var extraServiceDto in updateOrderDto.ExtraServices)
+            {
+                Console.WriteLine($"  Extra Service ID: {extraServiceDto.ExtraServiceId}, Quantity: {extraServiceDto.Quantity}, Hours: {extraServiceDto.Hours}");
+            }
+
             // Calculate price multiplier from extra services FIRST
             decimal priceMultiplier = 1.0m;
             decimal deepCleaningFee = 0;
 
+            Console.WriteLine($"\nCALCULATING PRICE MULTIPLIER:");
             foreach (var extraServiceDto in updateOrderDto.ExtraServices)
             {
                 var extraService = await _context.ExtraServices.FindAsync(extraServiceDto.ExtraServiceId);
                 if (extraService != null)
                 {
+                    Console.WriteLine($"  Extra Service: {extraService.Name} (ID: {extraService.Id})");
+                    Console.WriteLine($"    IsDeepCleaning: {extraService.IsDeepCleaning}");
+                    Console.WriteLine($"    IsSuperDeepCleaning: {extraService.IsSuperDeepCleaning}");
+                    Console.WriteLine($"    PriceMultiplier: {extraService.PriceMultiplier}");
+                    Console.WriteLine($"    Price: ${extraService.Price:F2}");
+
                     if (extraService.IsSuperDeepCleaning)
                     {
                         priceMultiplier = extraService.PriceMultiplier;
                         deepCleaningFee = extraService.Price;
+                        Console.WriteLine($"    >> Setting Super Deep Cleaning - Multiplier: {priceMultiplier}, Fee: ${deepCleaningFee:F2}");
                         break; // Super deep cleaning takes precedence
                     }
                     else if (extraService.IsDeepCleaning && priceMultiplier == 1.0m)
                     {
                         priceMultiplier = extraService.PriceMultiplier;
                         deepCleaningFee = extraService.Price;
+                        Console.WriteLine($"    >> Setting Deep Cleaning - Multiplier: {priceMultiplier}, Fee: ${deepCleaningFee:F2}");
                     }
                 }
             }
 
             // Calculate new subtotal
-            decimal newSubTotal = order.ServiceType.BasePrice * priceMultiplier;
+            Console.WriteLine($"\nBASE CALCULATION:");
+            Console.WriteLine($"  ServiceType: {order.ServiceType?.Name ?? "Unknown"} (ID: {order.ServiceType?.Id ?? 0})");
+            Console.WriteLine($"  ServiceType BasePrice: ${order.ServiceType?.BasePrice ?? 0:F2}");
+            Console.WriteLine($"  Price Multiplier: {priceMultiplier}");
+
+            decimal newSubTotal = (order.ServiceType?.BasePrice ?? 0) * priceMultiplier;
+            Console.WriteLine($"  Initial SubTotal (BasePrice * Multiplier): ${newSubTotal:F2}");
+
             decimal newTotalDuration = 0;
 
             if (order.ServiceType != null && order.ServiceType.TimeDuration > 0)
             {
                 newTotalDuration += order.ServiceType.TimeDuration;
+                Console.WriteLine($"  ServiceType Duration: {order.ServiceType.TimeDuration} minutes");
             }
 
             // Process services
+            Console.WriteLine($"\nPROCESSING SERVICES:");
             foreach (var serviceDto in updateOrderDto.Services)
             {
                 var service = await _context.Services.FindAsync(serviceDto.ServiceId);
                 if (service != null)
                 {
+                    Console.WriteLine($"\n  Service: {service.Name} (ID: {service.Id})");
+                    Console.WriteLine($"    ServiceRelationType: {service.ServiceRelationType}");
+                    Console.WriteLine($"    ServiceKey: {service.ServiceKey}");
+                    Console.WriteLine($"    Cost: ${service.Cost:F2}");
+                    Console.WriteLine($"    TimeDuration: {service.TimeDuration} minutes");
+                    Console.WriteLine($"    Quantity from Frontend: {serviceDto.Quantity}");
+
                     decimal cost = 0;
                     decimal duration = 0;
 
-                    if (service.ServiceRelationType == "hours")
+                    // Special handling for studio apartments (0 bedrooms)
+                    if (service.ServiceKey == "bedrooms" && serviceDto.Quantity == 0)
                     {
+                        Console.WriteLine($"    >> STUDIO APARTMENT DETECTED");
+                        cost = 10 * priceMultiplier; // Flat $10 for studio
+                        duration = 20; // 20 minutes for studio
+                        Console.WriteLine($"    >> Studio pricing: $10 * {priceMultiplier} = ${cost:F2}");
+                        Console.WriteLine($"    >> Studio duration: 20 minutes");
+                    }
+                    else if (service.ServiceRelationType == "hours")
+                    {
+                        Console.WriteLine($"    >> This is an HOURS service");
                         var cleanerService = updateOrderDto.Services.FirstOrDefault(s =>
                         {
                             var svc = _context.Services.Find(s.ServiceId);
@@ -635,26 +690,41 @@ namespace DreamCleaningBackend.Services
 
                         if (cleanerService != null)
                         {
+                            var cleanerSvc = await _context.Services.FindAsync(cleanerService.ServiceId);
+                            Console.WriteLine($"    >> Found related cleaner service: {cleanerSvc?.Name} with quantity: {cleanerService.Quantity}");
                             cost = service.Cost * serviceDto.Quantity * cleanerService.Quantity * priceMultiplier;
                             duration = service.TimeDuration * serviceDto.Quantity * cleanerService.Quantity;
+                            Console.WriteLine($"    >> Calculation: ${service.Cost} * {serviceDto.Quantity} hours * {cleanerService.Quantity} cleaners * {priceMultiplier} multiplier = ${cost:F2}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"    >> WARNING: No cleaner service found for hours service!");
                         }
                     }
                     else if (service.Cost > 0)
                     {
                         cost = service.Cost * serviceDto.Quantity * priceMultiplier;
                         duration = service.TimeDuration * serviceDto.Quantity;
+                        Console.WriteLine($"    >> Regular service calculation: ${service.Cost} * {serviceDto.Quantity} * {priceMultiplier} = ${cost:F2}");
                     }
                     else
                     {
                         duration = service.TimeDuration * serviceDto.Quantity;
+                        Console.WriteLine($"    >> Duration-only service (no cost)");
                     }
 
                     newSubTotal += cost;
                     newTotalDuration += duration;
+                    Console.WriteLine($"    >> Added ${cost:F2} to subtotal. Running SubTotal: ${newSubTotal:F2}");
+                }
+                else
+                {
+                    Console.WriteLine($"\n  WARNING: Service ID {serviceDto.ServiceId} not found in database!");
                 }
             }
 
             // Process extra services
+            Console.WriteLine($"\nPROCESSING REGULAR EXTRA SERVICES:");
             foreach (var extraServiceDto in updateOrderDto.ExtraServices)
             {
                 var extraService = await _context.ExtraServices.FindAsync(extraServiceDto.ExtraServiceId);
@@ -664,34 +734,61 @@ namespace DreamCleaningBackend.Services
 
                     if (!extraService.IsDeepCleaning && !extraService.IsSuperDeepCleaning)
                     {
-                        var currentMultiplier = extraService.IsSameDayService ? extraService.PriceMultiplier : 1.0m;
+                        Console.WriteLine($"\n  Extra Service: {extraService.Name} (ID: {extraService.Id})");
+                        Console.WriteLine($"    Price: ${extraService.Price:F2}");
+                        Console.WriteLine($"    HasHours: {extraService.HasHours}");
+                        Console.WriteLine($"    HasQuantity: {extraService.HasQuantity}");
+                        Console.WriteLine($"    IsSameDayService: {extraService.IsSameDayService}");
+
+                        // Apply deep cleaning multiplier to regular extra services
+                        var currentMultiplier = extraService.IsSameDayService ? extraService.PriceMultiplier : priceMultiplier;
+                        Console.WriteLine($"    Multiplier: {currentMultiplier}");
 
                         if (extraService.HasHours && extraServiceDto.Hours > 0)
                         {
                             cost = extraService.Price * extraServiceDto.Hours * currentMultiplier;
+                            Console.WriteLine($"    >> Hours-based: ${extraService.Price} * {extraServiceDto.Hours} hours * {currentMultiplier} = ${cost:F2}");
                         }
                         else if (extraService.HasQuantity && extraServiceDto.Quantity > 0)
                         {
                             cost = extraService.Price * extraServiceDto.Quantity * currentMultiplier;
+                            Console.WriteLine($"    >> Quantity-based: ${extraService.Price} * {extraServiceDto.Quantity} * {currentMultiplier} = ${cost:F2}");
                         }
                         else if (!extraService.HasHours && !extraService.HasQuantity)
                         {
                             cost = extraService.Price * currentMultiplier;
+                            Console.WriteLine($"    >> Fixed price: ${extraService.Price} * {currentMultiplier} = ${cost:F2}");
                         }
 
                         newSubTotal += cost;
+                        Console.WriteLine($"    >> Added ${cost:F2} to subtotal. Running SubTotal: ${newSubTotal:F2}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"\n  Skipping {extraService.Name} (deep cleaning already applied to multiplier)");
                     }
                     newTotalDuration += extraService.Duration;
                 }
             }
 
             // Add deep cleaning fee AFTER all other calculations
+            Console.WriteLine($"\nADDING DEEP CLEANING FEE: ${deepCleaningFee:F2}");
             newSubTotal += deepCleaningFee;
+            Console.WriteLine($"FINAL SUBTOTAL: ${newSubTotal:F2}");
+
+            // Compare with original
+            Console.WriteLine($"\nSUBTOTAL COMPARISON:");
+            Console.WriteLine($"  Original SubTotal: ${order.SubTotal:F2}");
+            Console.WriteLine($"  Calculated SubTotal: ${newSubTotal:F2}");
+            Console.WriteLine($"  Difference: ${newSubTotal - order.SubTotal:F2}");
 
             // If there's a significant mismatch, use the frontend value
             if (Math.Abs(updateOrderDto.TotalDuration - newTotalDuration) > 5) // Allow 5 minutes tolerance
             {
-                Console.WriteLine($"WARNING: Duration mismatch exceeds tolerance! Using frontend value: {updateOrderDto.TotalDuration}");
+                Console.WriteLine($"\nWARNING: Duration mismatch exceeds tolerance!");
+                Console.WriteLine($"  Frontend Duration: {updateOrderDto.TotalDuration} minutes");
+                Console.WriteLine($"  Backend Duration: {newTotalDuration} minutes");
+                Console.WriteLine($"  Using frontend value: {updateOrderDto.TotalDuration}");
                 newTotalDuration = updateOrderDto.TotalDuration;
             }
 
@@ -712,15 +809,21 @@ namespace DreamCleaningBackend.Services
             Console.WriteLine($"  New Company Tips: ${updateOrderDto.CompanyDevelopmentTips:F2}");
             Console.WriteLine($"  New Total: ${newTotal:F2}");
 
-            var additionalAmount = newTotal - originalTotal;
+            var finalAdditionalAmount = newTotal - originalTotal;
+
+            // If the difference is within tolerance (1 cent), consider it zero
+            if (Math.Abs(finalAdditionalAmount) < 0.01m)
+            {
+                finalAdditionalAmount = 0;
+            }
 
             Console.WriteLine($"\nFINAL CALCULATION:");
             Console.WriteLine($"  New Total: ${newTotal:F2}");
             Console.WriteLine($"  Original Total: ${originalTotal:F2}");
-            Console.WriteLine($"  Additional Amount: ${additionalAmount:F2}");
+            Console.WriteLine($"  Additional Amount: ${finalAdditionalAmount:F2}");
             Console.WriteLine("======================================================\n");
 
-            return additionalAmount;
+            return finalAdditionalAmount;
         }
 
         public async Task<bool> MarkOrderAsDone(int orderId)
