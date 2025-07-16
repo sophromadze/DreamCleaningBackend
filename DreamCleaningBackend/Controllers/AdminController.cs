@@ -2240,6 +2240,11 @@ namespace DreamCleaningBackend.Controllers
                     Tips = order.Tips,
                     CompanyDevelopmentTips = order.CompanyDevelopmentTips,
                     Total = order.Total,
+                    InitialSubTotal = order.InitialSubTotal,
+                    InitialTax = order.InitialTax,
+                    InitialTips = order.InitialTips,
+                    InitialCompanyDevelopmentTips = order.InitialCompanyDevelopmentTips,
+                    InitialTotal = order.InitialTotal,
                     DiscountAmount = order.DiscountAmount,
                     SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                     PromoCode = order.PromoCode,
@@ -3314,6 +3319,41 @@ namespace DreamCleaningBackend.Controllers
 
             await _context.SaveChangesAsync();
             return Ok();
+        }
+
+        [HttpGet("orders/{orderId}/update-history")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> GetOrderUpdateHistory(int orderId)
+        {
+            var history = await _context.OrderUpdateHistories
+                .Where(h => h.OrderId == orderId)
+                .Include(h => h.UpdatedByUser)
+                .OrderBy(h => h.UpdatedAt)
+                .Select(h => new
+                {
+                    h.Id,
+                    h.UpdatedAt,
+                    UpdatedBy = h.UpdatedByUser.FirstName + " " + h.UpdatedByUser.LastName,
+                    UpdatedByEmail = h.UpdatedByUser.Email,
+                    h.OriginalSubTotal,
+                    h.OriginalTax,
+                    h.OriginalTips,
+                    h.OriginalCompanyDevelopmentTips,
+                    h.OriginalTotal,
+                    h.NewSubTotal,
+                    h.NewTax,
+                    h.NewTips,
+                    h.NewCompanyDevelopmentTips,
+                    h.NewTotal,
+                    h.AdditionalAmount,
+                    h.PaymentIntentId,
+                    h.IsPaid,
+                    h.PaidAt,
+                    h.UpdateNotes
+                })
+                .ToListAsync();
+
+            return Ok(history);
         }
     }
 }

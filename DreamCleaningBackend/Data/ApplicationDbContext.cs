@@ -31,6 +31,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<PollQuestion> PollQuestions { get; set; }
         public DbSet<PollSubmission> PollSubmissions { get; set; }
         public DbSet<PollAnswer> PollAnswers { get; set; }
+        public DbSet<OrderUpdateHistory> OrderUpdateHistories { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -128,6 +129,23 @@ namespace DreamCleaningBackend.Data
                       .HasForeignKey(oc => oc.AssignedBy)
                       .OnDelete(DeleteBehavior.Restrict);
             });
+
+            // OrderUpdateHistory configuration
+            modelBuilder.Entity<OrderUpdateHistory>()
+                .HasOne(ouh => ouh.Order)
+                .WithMany(o => o.UpdateHistory)
+                .HasForeignKey(ouh => ouh.OrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<OrderUpdateHistory>()
+                .HasOne(ouh => ouh.UpdatedByUser)
+                .WithMany()
+                .HasForeignKey(ouh => ouh.UpdatedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<OrderUpdateHistory>()
+                .Property(ouh => ouh.IsPaid)
+                .HasDefaultValue(false);
 
             // Poll configuration
             modelBuilder.Entity<PollQuestion>()

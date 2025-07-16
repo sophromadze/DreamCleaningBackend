@@ -75,8 +75,12 @@ namespace DreamCleaningBackend.Controllers
 
                 var order = await _orderService.UpdateOrder(orderId, userId, updateOrderDto);
 
-                // Get the order after update
+                // IMPORTANT: Detach any tracked entities and force a fresh load
+                _context.ChangeTracker.Clear();
+
+                // Get the order after update - force fresh load from database
                 var orderAfter = await _context.Orders
+                    .AsNoTracking() // Add AsNoTracking here too
                     .FirstOrDefaultAsync(o => o.Id == orderId);
 
                 // Log the update
@@ -89,6 +93,9 @@ namespace DreamCleaningBackend.Controllers
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Audit logging failed: {ex.Message}");
+                        // Log more details for debugging
+                        Console.WriteLine($"OrderBefore Total: {orderBefore.Total}");
+                        Console.WriteLine($"OrderAfter Total: {orderAfter.Total}");
                     }
                 }
 
@@ -124,14 +131,52 @@ namespace DreamCleaningBackend.Controllers
 
                 // Verify payment with Stripe
                 var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
-
                 if (paymentIntent.Status != "succeeded")
                 {
                     return BadRequest(new { message = "Payment not completed" });
                 }
 
+                // ADD THIS: Get the order before update for audit logging
+                var orderBefore = await _context.Orders.AsNoTracking()
+                    .FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
+
+                if (orderBefore == null)
+                    return NotFound();
+
                 // Now update the order
                 var updatedOrder = await _orderService.UpdateOrder(orderId, userId, dto.UpdateOrderData);
+
+                // ADD THIS: Mark the update history as paid
+                var updateHistory = await _context.OrderUpdateHistories
+                    .Where(h => h.OrderId == orderId && !h.IsPaid)
+                    .OrderByDescending(h => h.UpdatedAt)
+                    .FirstOrDefaultAsync();
+
+                if (updateHistory != null)
+                {
+                    updateHistory.PaymentIntentId = dto.PaymentIntentId;
+                    updateHistory.IsPaid = true;
+                    updateHistory.PaidAt = DateTime.Now;
+                    await _context.SaveChangesAsync();
+                }
+
+                // ADD THIS: Get the order after update and create audit log
+                _context.ChangeTracker.Clear();
+                var orderAfter = await _context.Orders
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(o => o.Id == orderId);
+
+                if (orderAfter != null)
+                {
+                    try
+                    {
+                        await _auditService.LogUpdateAsync(orderBefore, orderAfter);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Audit logging failed: {ex.Message}");
+                    }
+                }
 
                 return Ok(updatedOrder);
             }

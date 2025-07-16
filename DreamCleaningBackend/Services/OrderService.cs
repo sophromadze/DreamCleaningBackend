@@ -112,6 +112,12 @@ namespace DreamCleaningBackend.Services
             var originalTotal = order.Total;
             var originalGiftCardAmountUsed = order.GiftCardAmountUsed;
 
+            // store original values before they're modified:
+            var originalSubTotal = order.SubTotal;
+            var originalTax = order.Tax;
+            var originalTips = order.Tips;
+            var originalCompanyDevelopmentTips = order.CompanyDevelopmentTips;
+
             // Log the original total
             Console.WriteLine($"Original total: ${originalTotal:F2}");
 
@@ -509,6 +515,33 @@ namespace DreamCleaningBackend.Services
             {
                 // Log the error but don't fail the order update
                 _logger.LogError(ex, $"Failed to send order update notification for Order #{order.Id}");
+            }
+
+            // Create update history record if there's an additional amount
+            if (Math.Abs(additionalAmount) > 0.01m)
+            {
+                var updateHistory = new OrderUpdateHistory
+                {
+                    OrderId = order.Id,
+                    UpdatedByUserId = userId,
+                    UpdatedAt = DateTime.Now,
+                    // Use the stored original values
+                    OriginalSubTotal = originalSubTotal,
+                    OriginalTax = originalTax,
+                    OriginalTips = originalTips,
+                    OriginalCompanyDevelopmentTips = originalCompanyDevelopmentTips,
+                    OriginalTotal = originalTotal,
+                    // New values after update
+                    NewSubTotal = order.SubTotal,
+                    NewTax = order.Tax,
+                    NewTips = order.Tips,
+                    NewCompanyDevelopmentTips = order.CompanyDevelopmentTips,
+                    NewTotal = order.Total,
+                    AdditionalAmount = additionalAmount,
+                    IsPaid = false
+                };
+
+                _context.OrderUpdateHistories.Add(updateHistory);
             }
 
             await _orderRepository.UpdateAsync(order);

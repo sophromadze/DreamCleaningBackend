@@ -151,5 +151,23 @@ namespace DreamCleaningBackend.Models
 
         // Add to existing Order model
         public virtual ICollection<OrderCleaner> OrderCleaners { get; set; } = new List<OrderCleaner>();
+
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal InitialSubTotal { get; set; }
+
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal InitialTax { get; set; }
+
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal InitialTips { get; set; }
+
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal InitialCompanyDevelopmentTips { get; set; }
+
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal InitialTotal { get; set; }
+
+        // Navigation property for update history
+        public virtual ICollection<OrderUpdateHistory> UpdateHistory { get; set; } = new List<OrderUpdateHistory>();
     }
 }

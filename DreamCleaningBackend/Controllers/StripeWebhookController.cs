@@ -82,10 +82,28 @@ namespace DreamCleaningBackend.Controllers
                                 order.IsPaid = true;
                                 order.PaidAt = DateTime.Now;
                                 order.Status = "Confirmed";
+
+                                // Set initial values when order is first paid
+                                // Remove the check for InitialTotal == 0 to handle edge cases
+                                if (order.InitialSubTotal == 0 && order.InitialTax == 0 && order.InitialTotal == 0)
+                                {
+                                    order.InitialSubTotal = order.SubTotal;
+                                    order.InitialTax = order.Tax;
+                                    order.InitialTips = order.Tips;
+                                    order.InitialCompanyDevelopmentTips = order.CompanyDevelopmentTips;
+                                    order.InitialTotal = order.Total;
+
+                                    _logger.LogInformation($"Set initial pricing for order {orderId}: " +
+                                        $"SubTotal=${order.InitialSubTotal}, Tax=${order.InitialTax}, " +
+                                        $"Tips=${order.InitialTips}, CompanyTips=${order.InitialCompanyDevelopmentTips}, " +
+                                        $"Total=${order.InitialTotal}");
+                                }
+
                                 await _context.SaveChangesAsync();
                             }
                         }
                         break;
+
                     case "order_update":
                         if (metadata.TryGetValue("orderId", out var updateOrderIdStr) &&
                             int.TryParse(updateOrderIdStr, out var updateOrderId) &&
@@ -98,8 +116,21 @@ namespace DreamCleaningBackend.Controllers
                                 // Log the additional payment
                                 _logger.LogInformation($"Additional payment of ${additionalAmount} received for order {updateOrderId}");
 
-                                // You might want to create a payment history record here
-                                // or update the order with additional payment info
+                                // ADD THIS - Mark the latest update history as paid
+                                var updateHistory = await _context.OrderUpdateHistories
+                                    .Where(h => h.OrderId == updateOrderId && !h.IsPaid)
+                                    .OrderByDescending(h => h.UpdatedAt)
+                                    .FirstOrDefaultAsync();
+
+                                if (updateHistory != null)
+                                {
+                                    updateHistory.PaymentIntentId = paymentIntent.Id;
+                                    updateHistory.IsPaid = true;
+                                    updateHistory.PaidAt = DateTime.Now;
+                                    await _context.SaveChangesAsync();
+
+                                    _logger.LogInformation($"Marked OrderUpdateHistory {updateHistory.Id} as paid");
+                                }
                             }
                         }
                         break;

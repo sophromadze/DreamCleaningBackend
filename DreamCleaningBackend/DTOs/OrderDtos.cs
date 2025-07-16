@@ -44,6 +44,11 @@ namespace DreamCleaningBackend.DTOs
         public int MaidsCount { get; set; }
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
+        public decimal InitialSubTotal { get; set; }
+        public decimal InitialTax { get; set; }
+        public decimal InitialTips { get; set; }
+        public decimal InitialCompanyDevelopmentTips { get; set; }
+        public decimal InitialTotal { get; set; }
         public List<OrderServiceDto> Services { get; set; } = new List<OrderServiceDto>();
         public List<OrderExtraServiceDto> ExtraServices { get; set; } = new List<OrderExtraServiceDto>();
     }
