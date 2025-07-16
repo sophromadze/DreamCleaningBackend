@@ -26,21 +26,9 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId);
         Task SendEmailAsync(string to, string subject, string html);
-        Task SendCompanyBookingNotificationAsync(
-            string contactFirstName,
-            string contactLastName,
-            string contactEmail,
-            string contactPhone,
-            DateTime serviceDate,
-            string serviceTime,
-            string serviceTypeName,
-            string serviceAddress,
-            string aptSuite,
-            string city,
-            string state,
-            string zipCode,
-            int orderId,
-            List<PhotoUploadDto> uploadedPhotos = null);
+        Task SendCompanyBookingNotificationAsync(string contactFirstName, string contactLastName, string contactEmail, string contactPhone, DateTime serviceDate,
+            string serviceTime, string serviceTypeName, string serviceAddress, string aptSuite, string city, string state, string zipCode, int orderId, List<PhotoUploadDto> uploadedPhotos = null);
         Task SendPollSubmissionEmailWithPhotosAsync(string toEmail, string subject, string htmlBody, List<PhotoUploadDto> uploadedPhotos = null);
+        Task SendOrderUpdateNotificationAsync(int orderId, string customerEmail, decimal additionalAmount);
     }
 }

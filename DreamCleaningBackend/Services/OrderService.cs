@@ -16,12 +16,16 @@ namespace DreamCleaningBackend.Services
         private readonly IOrderRepository _orderRepository;
         private readonly ApplicationDbContext _context;
         private readonly IStripeService _stripeService;
+        private readonly IEmailService _emailService;
+        private readonly ILogger<OrderService> _logger;
 
-        public OrderService(IOrderRepository orderRepository, ApplicationDbContext context, IStripeService stripeService)
+        public OrderService(IOrderRepository orderRepository, ApplicationDbContext context, IStripeService stripeService, IEmailService emailService, ILogger<OrderService> logger)
         {
             _orderRepository = orderRepository;
             _context = context;
             _stripeService = stripeService;
+            _emailService = emailService;
+            _logger = logger;
         }
 
         public async Task<List<OrderListDto>> GetAllOrdersForAdmin()
@@ -491,6 +495,20 @@ namespace DreamCleaningBackend.Services
             if (order.Total < originalTotal - tolerance)
             {
                 throw new Exception($"Cannot save changes. The new total (${order.Total:F2}) is less than the original amount paid (${originalTotal:F2}). Please add more services or keep the current selection.");
+            }
+
+            try
+            {
+                await _emailService.SendOrderUpdateNotificationAsync(
+                    orderId: order.Id,
+                    customerEmail: order.ContactEmail,
+                    additionalAmount: additionalAmount
+                );
+            }
+            catch (Exception ex)
+            {
+                // Log the error but don't fail the order update
+                _logger.LogError(ex, $"Failed to send order update notification for Order #{order.Id}");
             }
 
             await _orderRepository.UpdateAsync(order);

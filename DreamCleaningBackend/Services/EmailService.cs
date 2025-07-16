@@ -852,21 +852,8 @@ namespace DreamCleaningBackend.Services
             email.Body = multipart;
         }
 
-        public async Task SendCompanyBookingNotificationAsync(
-            string contactFirstName,
-            string contactLastName,
-            string contactEmail,
-            string contactPhone,
-            DateTime serviceDate,
-            string serviceTime,
-            string serviceTypeName,
-            string serviceAddress,
-            string aptSuite,
-            string city,
-            string state,
-            string zipCode,
-            int orderId,
-            List<PhotoUploadDto> uploadedPhotos = null)
+        public async Task SendCompanyBookingNotificationAsync(string contactFirstName, string contactLastName, string contactEmail, string contactPhone, DateTime serviceDate,
+            string serviceTime, string serviceTypeName, string serviceAddress, string aptSuite, string city, string state, string zipCode, int orderId, List<PhotoUploadDto> uploadedPhotos = null)
         {
             var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
             var subject = $"New Booking Order #{orderId} - {contactFirstName} {contactLastName}";
@@ -954,11 +941,7 @@ namespace DreamCleaningBackend.Services
             _logger.LogInformation($"Company notification email sent for order {orderId}");
         }
 
-        public async Task SendPollSubmissionEmailWithPhotosAsync(
-            string toEmail,
-            string subject,
-            string htmlBody,
-            List<PhotoUploadDto> uploadedPhotos = null)
+        public async Task SendPollSubmissionEmailWithPhotosAsync(string toEmail, string subject, string htmlBody, List<PhotoUploadDto> uploadedPhotos = null)
         {
             try
             {
@@ -1005,6 +988,35 @@ namespace DreamCleaningBackend.Services
             {
                 _logger.LogError(ex, $"Failed to send poll submission email to {toEmail}");
                 throw;
+            }
+        }
+
+        public async Task SendOrderUpdateNotificationAsync(int orderId, string customerEmail, decimal additionalAmount)
+        {
+            try
+            {
+                var companyEmail = _configuration["Email:CompanyEmail"] ?? "notifications@dreamcleaning.com";
+                var subject = $"Order #{orderId} Updated";
+
+                var body = $@"
+            <html>
+            <body style='font-family: Arial, sans-serif;'>
+                <h3>Order Update Notification</h3>
+                <p>Order #{orderId} has been updated.</p>
+                <p><strong>Customer Email:</strong> {customerEmail}</p>
+                <p><strong>Additional Amount:</strong> ${additionalAmount:F2}</p>
+                <p><strong>Updated at:</strong> {DateTime.Now:yyyy-MM-dd HH:mm:ss}</p>
+            </body>
+            </html>";
+
+                await SendEmailAsync(companyEmail, subject, body);
+
+                _logger.LogInformation($"Order update notification sent for Order #{orderId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send order update notification for Order #{orderId}");
+                // Don't throw - we don't want email failures to break the order update
             }
         }
     }
