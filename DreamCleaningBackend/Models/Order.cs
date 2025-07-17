@@ -138,9 +138,6 @@ namespace DreamCleaningBackend.Models
         public bool IsPaid { get; set; } = false;
         public DateTime? PaidAt { get; set; }
 
-        public bool IsAuthorizationOnly { get; set; } = false;
-        public DateTime? PaymentCapturedAt { get; set; }
-
         // Navigation properties
         public virtual ICollection<OrderService> OrderServices { get; set; } = new List<OrderService>();
         public virtual ICollection<OrderExtraService> OrderExtraServices { get; set; } = new List<OrderExtraService>();
