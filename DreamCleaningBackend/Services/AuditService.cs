@@ -220,14 +220,14 @@ namespace DreamCleaningBackend.Services
 
         private async Task LogOrderServiceChanges(Order originalOrder, Order currentOrder, long orderId, int? userId)
         {
-            // Create snapshots of services
+            // Create snapshots of services - explicitly cast to object
             var beforeServices = originalOrder.OrderServices?.Select(os => (object)new
             {
                 ServiceId = os.ServiceId,
                 ServiceName = os.Service?.Name ?? $"Service {os.ServiceId}",
                 Quantity = os.Quantity,
                 Cost = os.Cost
-            }).ToList() ?? new List<object>();
+            }).OrderBy(s => ((dynamic)s).ServiceId).ToList() ?? new List<object>();
 
             var afterServices = currentOrder.OrderServices?.Select(os => (object)new
             {
@@ -235,7 +235,7 @@ namespace DreamCleaningBackend.Services
                 ServiceName = os.Service?.Name ?? $"Service {os.ServiceId}",
                 Quantity = os.Quantity,
                 Cost = os.Cost
-            }).ToList() ?? new List<object>();
+            }).OrderBy(s => ((dynamic)s).ServiceId).ToList() ?? new List<object>();
 
             var beforeExtraServices = originalOrder.OrderExtraServices?.Select(oes => (object)new
             {
@@ -244,7 +244,7 @@ namespace DreamCleaningBackend.Services
                 Quantity = oes.Quantity,
                 Hours = oes.Hours,
                 Cost = oes.Cost
-            }).ToList() ?? new List<object>();
+            }).OrderBy(s => ((dynamic)s).ExtraServiceId).ToList() ?? new List<object>();
 
             var afterExtraServices = currentOrder.OrderExtraServices?.Select(oes => (object)new
             {
@@ -253,29 +253,81 @@ namespace DreamCleaningBackend.Services
                 Quantity = oes.Quantity,
                 Hours = oes.Hours,
                 Cost = oes.Cost
-            }).ToList() ?? new List<object>();
+            }).OrderBy(s => ((dynamic)s).ExtraServiceId).ToList() ?? new List<object>();
 
-            // Check if there are any changes
-            bool hasChanges = beforeServices.Count != afterServices.Count ||
-                              beforeExtraServices.Count != afterExtraServices.Count ||
-                              JsonConvert.SerializeObject(beforeServices) != JsonConvert.SerializeObject(afterServices) ||
-                              JsonConvert.SerializeObject(beforeExtraServices) != JsonConvert.SerializeObject(afterExtraServices);
+            // Check for changes more reliably
+            bool servicesChanged = false;
+            bool extraServicesChanged = false;
 
-            if (hasChanges)
+            // Check regular services
+            if (beforeServices.Count != afterServices.Count)
+            {
+                servicesChanged = true;
+            }
+            else
+            {
+                for (int i = 0; i < beforeServices.Count; i++)
+                {
+                    dynamic before = beforeServices[i];
+                    dynamic after = afterServices[i];
+
+                    if (before.ServiceId != after.ServiceId ||
+                        before.Quantity != after.Quantity ||
+                        Math.Abs((decimal)before.Cost - (decimal)after.Cost) > 0.01m)
+                    {
+                        servicesChanged = true;
+                        break;
+                    }
+                }
+            }
+
+            // Check extra services
+            if (beforeExtraServices.Count != afterExtraServices.Count)
+            {
+                extraServicesChanged = true;
+            }
+            else
+            {
+                for (int i = 0; i < beforeExtraServices.Count; i++)
+                {
+                    dynamic before = beforeExtraServices[i];
+                    dynamic after = afterExtraServices[i];
+
+                    if (before.ExtraServiceId != after.ExtraServiceId ||
+                        before.Quantity != after.Quantity ||
+                        before.Hours != after.Hours ||
+                        Math.Abs((decimal)before.Cost - (decimal)after.Cost) > 0.01m)
+                    {
+                        extraServicesChanged = true;
+                        break;
+                    }
+                }
+            }
+
+            if (servicesChanged || extraServicesChanged)
             {
                 var serviceAuditLog = new AuditLog
                 {
                     EntityType = "OrderServicesUpdate",
                     EntityId = orderId,
                     Action = "Update",
-                    OldValues = JsonConvert.SerializeObject(new { Services = beforeServices, ExtraServices = beforeExtraServices }, _jsonSettings),
-                    NewValues = JsonConvert.SerializeObject(new { Services = afterServices, ExtraServices = afterExtraServices }, _jsonSettings),
+                    OldValues = JsonConvert.SerializeObject(new
+                    {
+                        Services = beforeServices,
+                        ExtraServices = beforeExtraServices
+                    }, _jsonSettings),
+                    NewValues = JsonConvert.SerializeObject(new
+                    {
+                        Services = afterServices,
+                        ExtraServices = afterExtraServices
+                    }, _jsonSettings),
                     ChangedFields = JsonConvert.SerializeObject(new[] { "Services", "ExtraServices" }, _jsonSettings),
                     UserId = userId,
                     IpAddress = GetIpAddress(),
                     UserAgent = GetUserAgent(),
                     CreatedAt = DateTime.Now
                 };
+
                 _context.AuditLogs.Add(serviceAuditLog);
             }
         }

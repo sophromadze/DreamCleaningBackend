@@ -706,71 +706,103 @@ namespace DreamCleaningBackend.Services
 
             // Process services
             Console.WriteLine($"\nPROCESSING SERVICES:");
+            var hasCleanerService = updateOrderDto.Services.Any(s =>
+            {
+                var svc = _context.Services.Find(s.ServiceId);
+                return svc?.ServiceRelationType == "cleaner";
+            });
+
+            var hasHoursService = updateOrderDto.Services.Any(s =>
+            {
+                var svc = _context.Services.Find(s.ServiceId);
+                return svc?.ServiceRelationType == "hours";
+            });
+
+            bool cleanerHoursCostCalculated = false;
+
             foreach (var serviceDto in updateOrderDto.Services)
             {
                 var service = await _context.Services.FindAsync(serviceDto.ServiceId);
                 if (service != null)
                 {
+                    decimal cost = 0;
+                    decimal duration = 0;
+
                     Console.WriteLine($"\n  Service: {service.Name} (ID: {service.Id})");
                     Console.WriteLine($"    ServiceRelationType: {service.ServiceRelationType}");
                     Console.WriteLine($"    ServiceKey: {service.ServiceKey}");
                     Console.WriteLine($"    Cost: ${service.Cost:F2}");
-                    Console.WriteLine($"    TimeDuration: {service.TimeDuration} minutes");
+                    Console.WriteLine($"    TimeDuration: {service.TimeDuration:F2} minutes");
                     Console.WriteLine($"    Quantity from Frontend: {serviceDto.Quantity}");
 
-                    decimal cost = 0;
-                    decimal duration = 0;
-
-                    // Special handling for studio apartments (0 bedrooms)
-                    if (service.ServiceKey == "bedrooms" && serviceDto.Quantity == 0)
+                    // Handle cleaner service
+                    if (service.ServiceRelationType == "cleaner" && hasHoursService && !cleanerHoursCostCalculated)
                     {
-                        Console.WriteLine($"    >> STUDIO APARTMENT DETECTED");
-                        cost = 10 * priceMultiplier; // Flat $10 for studio
-                        duration = 20; // 20 minutes for studio
-                        Console.WriteLine($"    >> Studio pricing: $10 * {priceMultiplier} = ${cost:F2}");
-                        Console.WriteLine($"    >> Studio duration: 20 minutes");
-                    }
-                    else if (service.ServiceRelationType == "hours")
-                    {
-                        Console.WriteLine($"    >> This is an HOURS service");
-                        var cleanerService = updateOrderDto.Services.FirstOrDefault(s =>
+                        // Find the hours service
+                        var hoursServiceDto = updateOrderDto.Services.FirstOrDefault(s =>
                         {
                             var svc = _context.Services.Find(s.ServiceId);
-                            return svc?.ServiceRelationType == "cleaner" && svc.ServiceTypeId == service.ServiceTypeId;
+                            return svc?.ServiceRelationType == "hours" && svc.ServiceTypeId == service.ServiceTypeId;
                         });
 
-                        if (cleanerService != null)
+                        if (hoursServiceDto != null)
                         {
-                            var cleanerSvc = await _context.Services.FindAsync(cleanerService.ServiceId);
-                            Console.WriteLine($"    >> Found related cleaner service: {cleanerSvc?.Name} with quantity: {cleanerService.Quantity}");
-                            cost = service.Cost * serviceDto.Quantity * cleanerService.Quantity * priceMultiplier;
-                            duration = service.TimeDuration * serviceDto.Quantity * cleanerService.Quantity;
-                            Console.WriteLine($"    >> Calculation: ${service.Cost} * {serviceDto.Quantity} hours * {cleanerService.Quantity} cleaners * {priceMultiplier} multiplier = ${cost:F2}");
+                            // Calculate combined cleaner-hours cost
+                            var hours = hoursServiceDto.Quantity;
+                            var cleaners = serviceDto.Quantity;
+                            var costPerCleanerPerHour = service.Cost * priceMultiplier;
+                            cost = costPerCleanerPerHour * cleaners * hours;
+                            duration = (int)(hours * 60); // Duration is just hours * 60
+
+                            Console.WriteLine($"    >> Cleaner-hours calculation:");
+                            Console.WriteLine($"    >> ${costPerCleanerPerHour:F2}/hour * {cleaners} cleaners * {hours} hours = ${cost:F2}");
+
+                            cleanerHoursCostCalculated = true;
+                        }
+                    }
+                    // Handle hours service (skip if already calculated with cleaners)
+                    else if (service.ServiceRelationType == "hours" && hasCleanerService)
+                    {
+                        Console.WriteLine($"    >> This is an HOURS service");
+                        if (cleanerHoursCostCalculated)
+                        {
+                            Console.WriteLine($"    >> Cost already calculated with cleaner service, skipping");
+                            // Don't add cost, but still track duration
+                            var hours = serviceDto.Quantity;
+                            duration = (int)(hours * 60);
                         }
                         else
                         {
-                            Console.WriteLine($"    >> WARNING: No cleaner service found for hours service!");
+                            Console.WriteLine($"    >> WARNING: Hours service without cleaner calculation!");
+                            // This shouldn't happen if cleaner service exists
+                            duration = serviceDto.Quantity * 60;
                         }
                     }
-                    else if (service.Cost > 0)
+                    // Handle cleaner service without hours
+                    else if (service.ServiceRelationType == "cleaner" && !hasHoursService)
                     {
                         cost = service.Cost * serviceDto.Quantity * priceMultiplier;
                         duration = service.TimeDuration * serviceDto.Quantity;
-                        Console.WriteLine($"    >> Regular service calculation: ${service.Cost} * {serviceDto.Quantity} * {priceMultiplier} = ${cost:F2}");
+                        Console.WriteLine($"    >> Regular cleaner calculation: ${service.Cost:F2} * {serviceDto.Quantity} * {priceMultiplier} = ${cost:F2}");
                     }
-                    else
+                    // Handle studio apartment (0 bedrooms)
+                    else if (service.ServiceKey == "bedrooms" && serviceDto.Quantity == 0)
                     {
+                        cost = 10 * priceMultiplier; // $10 base for studio
+                        duration = 20; // 20 minutes for studio
+                        Console.WriteLine($"    >> Studio apartment - Fixed price: ${cost:F2}");
+                    }
+                    // Handle all other services
+                    else if (service.ServiceRelationType != "cleaner" && service.ServiceRelationType != "hours")
+                    {
+                        cost = service.Cost * serviceDto.Quantity * priceMultiplier;
                         duration = service.TimeDuration * serviceDto.Quantity;
-                        Console.WriteLine($"    >> Duration-only service (no cost)");
+                        Console.WriteLine($"    >> Regular service calculation: ${service.Cost:F2} * {serviceDto.Quantity} * {priceMultiplier} = ${cost:F2}");
                     }
 
                     newSubTotal += cost;
                     newTotalDuration += duration;
                     Console.WriteLine($"    >> Added ${cost:F2} to subtotal. Running SubTotal: ${newSubTotal:F2}");
-                }
-                else
-                {
-                    Console.WriteLine($"\n  WARNING: Service ID {serviceDto.ServiceId} not found in database!");
                 }
             }
 

@@ -66,21 +66,31 @@ namespace DreamCleaningBackend.Controllers
             {
                 var userId = GetUserId();
 
-                // Get the order before update
-                var orderBefore = await _context.Orders.AsNoTracking()
+                // Get the order before update - INCLUDE ALL navigation properties for audit
+                var orderBefore = await _context.Orders
+                    .Include(o => o.OrderServices)
+                        .ThenInclude(os => os.Service)
+                    .Include(o => o.OrderExtraServices)
+                        .ThenInclude(oes => oes.ExtraService)
+                    .AsNoTracking()
                     .FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
 
                 if (orderBefore == null)
                     return NotFound();
 
+                // Perform the update
                 var order = await _orderService.UpdateOrder(orderId, userId, updateOrderDto);
 
-                // IMPORTANT: Detach any tracked entities and force a fresh load
+                // Clear the change tracker to ensure fresh data
                 _context.ChangeTracker.Clear();
 
-                // Get the order after update - force fresh load from database
+                // Get the order after update - INCLUDE ALL navigation properties for audit
                 var orderAfter = await _context.Orders
-                    .AsNoTracking() // Add AsNoTracking here too
+                    .Include(o => o.OrderServices)
+                        .ThenInclude(os => os.Service)
+                    .Include(o => o.OrderExtraServices)
+                        .ThenInclude(oes => oes.ExtraService)
+                    .AsNoTracking()
                     .FirstOrDefaultAsync(o => o.Id == orderId);
 
                 // Log the update
@@ -93,9 +103,7 @@ namespace DreamCleaningBackend.Controllers
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Audit logging failed: {ex.Message}");
-                        // Log more details for debugging
-                        Console.WriteLine($"OrderBefore Total: {orderBefore.Total}");
-                        Console.WriteLine($"OrderAfter Total: {orderAfter.Total}");
+                        Console.WriteLine($"Stack trace: {ex.StackTrace}");
                     }
                 }
 
@@ -136,7 +144,7 @@ namespace DreamCleaningBackend.Controllers
                     return BadRequest(new { message = "Payment not completed" });
                 }
 
-                // Get the order before update - INCLUDE navigation properties for audit
+                // Get the order before update - INCLUDE ALL navigation properties for audit
                 var orderBefore = await _context.Orders
                     .Include(o => o.OrderServices)
                         .ThenInclude(os => os.Service)
@@ -148,7 +156,7 @@ namespace DreamCleaningBackend.Controllers
                 if (orderBefore == null)
                     return NotFound();
 
-                // Now update the order
+                // Perform the update
                 var updatedOrder = await _orderService.UpdateOrder(orderId, userId, dto.UpdateOrderData);
 
                 // Mark the update history as paid
@@ -165,10 +173,10 @@ namespace DreamCleaningBackend.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                // Clear the change tracker
+                // Clear the change tracker to ensure fresh data
                 _context.ChangeTracker.Clear();
 
-                // Get the order after update - INCLUDE navigation properties for audit
+                // Get the order after update - INCLUDE ALL navigation properties for audit
                 var orderAfter = await _context.Orders
                     .Include(o => o.OrderServices)
                         .ThenInclude(os => os.Service)
@@ -186,6 +194,7 @@ namespace DreamCleaningBackend.Controllers
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Audit logging failed: {ex.Message}");
+                        Console.WriteLine($"Stack trace: {ex.StackTrace}");
                     }
                 }
 
