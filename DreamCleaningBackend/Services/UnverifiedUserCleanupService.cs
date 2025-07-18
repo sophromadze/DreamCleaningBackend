@@ -10,7 +10,9 @@ namespace DreamCleaningBackend.Services
     {
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<UnverifiedUserCleanupService> _logger;
-        private readonly TimeSpan _cleanupInterval = TimeSpan.FromMinutes(30); // Run every 30 minutes
+        private readonly TimeSpan _cleanupInterval = TimeSpan.FromMinutes(30);
+        private int _consecutiveErrors = 0;
+        private const int MAX_CONSECUTIVE_ERRORS = 5;
 
         public UnverifiedUserCleanupService(
             IServiceProvider serviceProvider,
@@ -22,19 +24,46 @@ namespace DreamCleaningBackend.Services
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            // Wait 60 seconds before starting to avoid startup issues
+            await Task.Delay(TimeSpan.FromSeconds(60), stoppingToken);
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
                     await CleanupUnverifiedUsers();
+                    _consecutiveErrors = 0; // Reset on success
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error occurred while cleaning up unverified users");
+                    _consecutiveErrors++;
+                    _logger.LogError(ex, $"Error occurred while cleaning up unverified users (attempt {_consecutiveErrors})");
+
+                    if (_consecutiveErrors >= MAX_CONSECUTIVE_ERRORS)
+                    {
+                        _logger.LogCritical("Too many consecutive errors in UnverifiedUserCleanupService. Stopping service.");
+                        break;
+                    }
                 }
 
-                await Task.Delay(_cleanupInterval, stoppingToken);
+                try
+                {
+                    // Use exponential backoff if errors occurred
+                    var delay = _consecutiveErrors > 0
+                        ? TimeSpan.FromMinutes(5 * _consecutiveErrors) // 5, 10, 15, 20, 25 minutes
+                        : _cleanupInterval; // Normal 30 minutes delay
+
+                    await Task.Delay(delay, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected when cancellation is requested
+                    _logger.LogInformation("UnverifiedUserCleanupService cancellation requested");
+                    break;
+                }
             }
+
+            _logger.LogInformation("UnverifiedUserCleanupService stopped");
         }
 
         private async Task CleanupUnverifiedUsers()
@@ -45,40 +74,34 @@ namespace DreamCleaningBackend.Services
             // Find users who:
             // 1. Are not email verified
             // 2. Were created more than 1 hour ago
-            // 3. Are using local auth (not social login)
+            // 3. Have no orders
             var cutoffTime = DateTime.Now.AddHours(-1);
 
-            var unverifiedUsers = await context.Users
-                .Where(u => !u.IsEmailVerified
-                    && u.CreatedAt < cutoffTime
-                    && u.AuthProvider == "Local")
+            var usersToDelete = await context.Users
+                .Where(u => !u.IsEmailVerified &&
+                           u.CreatedAt < cutoffTime &&
+                           !context.Orders.Any(o => o.UserId == u.Id))
                 .ToListAsync();
 
-            if (unverifiedUsers.Any())
+            if (usersToDelete.Any())
             {
-                _logger.LogInformation($"Found {unverifiedUsers.Count} unverified users to delete");
+                _logger.LogInformation($"Found {usersToDelete.Count} unverified users to cleanup");
 
-                // Delete associated data first (if any)
-                foreach (var user in unverifiedUsers)
+                foreach (var user in usersToDelete)
                 {
-                    // Delete any apartments
-                    var apartments = await context.Apartments
-                        .Where(a => a.UserId == user.Id)
-                        .ToListAsync();
-                    context.Apartments.RemoveRange(apartments);
-
-                    // Delete any orders (shouldn't be any, but just in case)
-                    var orders = await context.Orders
-                        .Where(o => o.UserId == user.Id)
-                        .ToListAsync();
-                    context.Orders.RemoveRange(orders);
+                    try
+                    {
+                        context.Users.Remove(user);
+                        _logger.LogInformation($"Removing unverified user: {user.Email}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"Failed to remove unverified user: {user.Email}");
+                    }
                 }
 
-                // Delete the users
-                context.Users.RemoveRange(unverifiedUsers);
                 await context.SaveChangesAsync();
-
-                _logger.LogInformation($"Successfully deleted {unverifiedUsers.Count} unverified users");
+                _logger.LogInformation($"Cleanup completed. Removed {usersToDelete.Count} unverified users");
             }
         }
     }

@@ -9,6 +9,8 @@ namespace DreamCleaningBackend.Services
     {
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<CustomerNotificationService> _logger;
+        private int _consecutiveErrors = 0;
+        private const int MAX_CONSECUTIVE_ERRORS = 5;
 
         public CustomerNotificationService(IServiceProvider serviceProvider, ILogger<CustomerNotificationService> logger)
         {
@@ -18,20 +20,46 @@ namespace DreamCleaningBackend.Services
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            // Wait 30 seconds before starting to avoid startup issues
+            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
                     await SendScheduledCustomerNotifications();
-
-                    // Check every hour
-                    await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
+                    _consecutiveErrors = 0; // Reset on success
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error in customer notification service");
+                    _consecutiveErrors++;
+                    _logger.LogError(ex, $"Error in customer notification service (attempt {_consecutiveErrors})");
+
+                    if (_consecutiveErrors >= MAX_CONSECUTIVE_ERRORS)
+                    {
+                        _logger.LogCritical("Too many consecutive errors in CustomerNotificationService. Stopping service.");
+                        break;
+                    }
+                }
+
+                try
+                {
+                    // Use exponential backoff if errors occurred
+                    var delay = _consecutiveErrors > 0
+                        ? TimeSpan.FromMinutes(5 * _consecutiveErrors) // 5, 10, 15, 20, 25 minutes
+                        : TimeSpan.FromHours(1); // Normal delay
+
+                    await Task.Delay(delay, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected when cancellation is requested
+                    _logger.LogInformation("CustomerNotificationService cancellation requested");
+                    break;
                 }
             }
+
+            _logger.LogInformation("CustomerNotificationService stopped");
         }
 
         private async Task SendScheduledCustomerNotifications()
@@ -44,111 +72,111 @@ namespace DreamCleaningBackend.Services
             var twoDaysFromNow = now.AddDays(2);
             var twoHoursFromNow = now.AddHours(2);
 
-            // Get orders for 2-day reminders (only for orders scheduled more than 2 days from booking)
+            // Get orders for 2-day customer reminders
             var twoDayReminders = await context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
                 .Where(o => o.ServiceDate.Date == twoDaysFromNow.Date &&
                            o.Status == "Active" &&
-                           o.IsPaid &&
-                           // Only send 2-day reminder if order was created more than 2 days ago
-                           o.OrderDate.Date < twoDaysFromNow.AddDays(-2).Date &&
+                           o.User != null &&
                            !context.NotificationLogs.Any(nl =>
                                nl.OrderId == o.Id &&
-                               nl.CustomerId == o.UserId &&
                                nl.NotificationType == "CustomerTwoDayReminder"))
                 .ToListAsync();
 
-            // Get orders for 2-hour reminders (approximate time matching)
+            // Get orders for 2-hour customer reminders
             var twoHourReminders = await context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
                 .Where(o => o.ServiceDate.Date == now.Date &&
                            o.Status == "Active" &&
-                           o.IsPaid &&
+                           o.User != null &&
                            !context.NotificationLogs.Any(nl =>
                                nl.OrderId == o.Id &&
-                               nl.CustomerId == o.UserId &&
                                nl.NotificationType == "CustomerTwoHourReminder"))
                 .ToListAsync();
 
-            // Filter 2-hour reminders by time (within 30 minutes of target time)
-            var filteredTwoHourReminders = new List<Order>();
-            foreach (var order in twoHourReminders)
-            {
-                var serviceDateTime = order.ServiceDate.Date.Add(order.ServiceTime);
-                var timeDiff = Math.Abs((serviceDateTime - twoHoursFromNow).TotalMinutes);
-                if (timeDiff <= 30)
-                {
-                    filteredTwoHourReminders.Add(order);
-                }
-            }
-
-            // Send 2-day reminders
+            // Send 2-day customer reminders
             foreach (var order in twoDayReminders)
             {
                 try
                 {
-                    await emailService.SendCustomerReminderNotificationAsync(
-                        order.ContactEmail,
-                        order.ContactFirstName,
-                        order.ServiceDate,
-                        order.ServiceTime.ToString(),
-                        order.ServiceType.Name,
-                        order.ServiceAddress,
-                        true // isDaysBefore = true for 2-day reminder
-                    );
-
-                    // Log notification
-                    context.NotificationLogs.Add(new NotificationLog
+                    if (order.User != null)
                     {
-                        OrderId = order.Id,
-                        CustomerId = order.UserId,
-                        NotificationType = "CustomerTwoDayReminder",
-                        SentAt = DateTime.Now
-                    });
+                        // Send customer reminder email
+                        await emailService.SendCustomerReminderNotificationAsync(
+                            order.ContactEmail ?? order.User.Email,
+                            $"{order.ContactFirstName} {order.ContactLastName}",
+                            order.ServiceDate,
+                            order.ServiceTime.ToString(),
+                            order.ServiceType?.Name ?? "Cleaning Service",
+                            order.ServiceAddress,
+                            true // This is a 2-day reminder
+                        );
 
-                    _logger.LogInformation($"Sent 2-day reminder to customer {order.ContactEmail} for order {order.Id}");
+                        // Log the notification
+                        var log = new NotificationLog
+                        {
+                            OrderId = order.Id,
+                            NotificationType = "CustomerTwoDayReminder",
+                            SentAt = DateTime.Now
+                        };
+                        context.NotificationLogs.Add(log);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send 2-day reminder for order {order.Id} to customer {order.ContactEmail}");
+                    _logger.LogError(ex, $"Failed to send customer reminder for Order {order.Id}");
                 }
             }
 
-            // Send 2-hour reminders
-            foreach (var order in filteredTwoHourReminders)
+            // Send 2-hour customer reminders
+            foreach (var order in twoHourReminders)
             {
                 try
                 {
-                    await emailService.SendCustomerReminderNotificationAsync(
-                        order.ContactEmail,
-                        order.ContactFirstName,
-                        order.ServiceDate,
-                        order.ServiceTime.ToString(),
-                        order.ServiceType.Name,
-                        order.ServiceAddress,
-                        false // isDaysBefore = false for 2-hour reminder
-                    );
+                    var orderTime = order.ServiceTime;
+                    var currentTime = TimeSpan.FromHours(now.Hour) + TimeSpan.FromMinutes(now.Minute);
+                    var timeDifference = orderTime - currentTime;
 
-                    // Log notification
-                    context.NotificationLogs.Add(new NotificationLog
+                    // Check if it's within 2 hours window
+                    if (timeDifference.TotalHours <= 2 && timeDifference.TotalHours > 0)
                     {
-                        OrderId = order.Id,
-                        CustomerId = order.UserId,
-                        NotificationType = "CustomerTwoHourReminder",
-                        SentAt = DateTime.Now
-                    });
+                        if (order.User != null)
+                        {
+                            // Send customer reminder email
+                            await emailService.SendCustomerReminderNotificationAsync(
+                                order.ContactEmail ?? order.User.Email,
+                                $"{order.ContactFirstName} {order.ContactLastName}",
+                                order.ServiceDate,
+                                order.ServiceTime.ToString(),
+                                order.ServiceType?.Name ?? "Cleaning Service",
+                                order.ServiceAddress,
+                                false // This is a 2-hour (same day) reminder
+                            );
 
-                    _logger.LogInformation($"Sent 2-hour reminder to customer {order.ContactEmail} for order {order.Id}");
+                            // Log the notification
+                            var log = new NotificationLog
+                            {
+                                OrderId = order.Id,
+                                NotificationType = "CustomerTwoHourReminder",
+                                SentAt = DateTime.Now
+                            };
+                            context.NotificationLogs.Add(log);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send 2-hour reminder for order {order.Id} to customer {order.ContactEmail}");
+                    _logger.LogError(ex, $"Failed to send 2-hour customer reminder for Order {order.Id}");
                 }
             }
 
-            await context.SaveChangesAsync();
+            // Save all notification logs
+            if (context.ChangeTracker.HasChanges())
+            {
+                await context.SaveChangesAsync();
+            }
         }
     }
 }
