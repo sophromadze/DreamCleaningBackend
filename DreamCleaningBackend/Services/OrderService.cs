@@ -100,6 +100,13 @@ namespace DreamCleaningBackend.Services
             if (order.Status == "Done")
                 throw new Exception("Cannot update a completed order");
 
+            // 48-HOUR VALIDATION CHECK
+            var hoursUntilService = (order.ServiceDate - DateTime.Now).TotalHours;
+            if (hoursUntilService <= 48)
+            {
+                throw new Exception("Orders can only be edited at least 48 hours before the scheduled service time");
+            }
+
             // Define tolerance for floating-point comparisons
             const decimal tolerance = 0.01m; // 1 cent tolerance
 
@@ -596,8 +603,8 @@ namespace DreamCleaningBackend.Services
             if (order.Status == "Done")
                 throw new Exception("Cannot cancel a completed order");
             // Check if service date is not too close (e.g., within 24 hours)
-            if (order.ServiceDate <= DateTime.Now.AddHours(24))
-                throw new Exception("Cannot cancel order within 24 hours of service date");
+            if (order.ServiceDate <= DateTime.Now.AddHours(48))
+                throw new Exception("Cannot cancel order within 48 hours of service date");
             order.Status = "Cancelled";
             order.CancellationReason = cancelOrderDto.Reason;
             order.UpdatedAt = DateTime.Now;

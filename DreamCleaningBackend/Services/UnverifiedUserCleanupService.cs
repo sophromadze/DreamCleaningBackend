@@ -75,7 +75,7 @@ namespace DreamCleaningBackend.Services
             // 1. Are not email verified
             // 2. Were created more than 1 hour ago
             // 3. Have no orders
-            var cutoffTime = DateTime.Now.AddHours(-1);
+            var cutoffTime = DateTime.Now.AddHours(-24);
 
             var usersToDelete = await context.Users
                 .Where(u => !u.IsEmailVerified &&
