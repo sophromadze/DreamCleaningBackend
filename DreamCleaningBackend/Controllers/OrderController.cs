@@ -136,8 +136,13 @@ namespace DreamCleaningBackend.Controllers
                     return BadRequest(new { message = "Payment not completed" });
                 }
 
-                // ADD THIS: Get the order before update for audit logging
-                var orderBefore = await _context.Orders.AsNoTracking()
+                // Get the order before update - INCLUDE navigation properties for audit
+                var orderBefore = await _context.Orders
+                    .Include(o => o.OrderServices)
+                        .ThenInclude(os => os.Service)
+                    .Include(o => o.OrderExtraServices)
+                        .ThenInclude(oes => oes.ExtraService)
+                    .AsNoTracking()
                     .FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
 
                 if (orderBefore == null)
@@ -146,7 +151,7 @@ namespace DreamCleaningBackend.Controllers
                 // Now update the order
                 var updatedOrder = await _orderService.UpdateOrder(orderId, userId, dto.UpdateOrderData);
 
-                // ADD THIS: Mark the update history as paid
+                // Mark the update history as paid
                 var updateHistory = await _context.OrderUpdateHistories
                     .Where(h => h.OrderId == orderId && !h.IsPaid)
                     .OrderByDescending(h => h.UpdatedAt)
@@ -160,9 +165,15 @@ namespace DreamCleaningBackend.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                // ADD THIS: Get the order after update and create audit log
+                // Clear the change tracker
                 _context.ChangeTracker.Clear();
+
+                // Get the order after update - INCLUDE navigation properties for audit
                 var orderAfter = await _context.Orders
+                    .Include(o => o.OrderServices)
+                        .ThenInclude(os => os.Service)
+                    .Include(o => o.OrderExtraServices)
+                        .ThenInclude(oes => oes.ExtraService)
                     .AsNoTracking()
                     .FirstOrDefaultAsync(o => o.Id == orderId);
 

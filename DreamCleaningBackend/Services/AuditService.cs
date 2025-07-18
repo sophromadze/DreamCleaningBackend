@@ -72,29 +72,62 @@ namespace DreamCleaningBackend.Services
 
                 var changedFields = GetChangedFields(originalEntity, currentEntity);
 
-                if (changedFields.Any())
+                // Special handling for Order entity
+                if (entityType == "Order" && originalEntity is Order originalOrder && currentEntity is Order currentOrder)
                 {
-                    // Create clean copies without navigation properties
-                    var cleanOriginal = CreateCleanEntity(originalEntity);
-                    var cleanCurrent = CreateCleanEntity(currentEntity);
-
-                    var auditLog = new AuditLog
+                    // First, log the main order changes (without navigation properties)
+                    if (changedFields.Any())
                     {
-                        EntityType = entityType,
-                        EntityId = entityId,
-                        Action = "Update",
-                        OldValues = JsonConvert.SerializeObject(cleanOriginal, _jsonSettings),
-                        NewValues = JsonConvert.SerializeObject(cleanCurrent, _jsonSettings),
-                        ChangedFields = JsonConvert.SerializeObject(changedFields, _jsonSettings),
-                        UserId = userId,
-                        IpAddress = GetIpAddress(),
-                        UserAgent = GetUserAgent(),
-                        CreatedAt = DateTime.Now
-                    };
+                        var cleanOriginal = CreateCleanEntity(originalEntity);
+                        var cleanCurrent = CreateCleanEntity(currentEntity);
 
-                    _context.AuditLogs.Add(auditLog);
-                    await _context.SaveChangesAsync();
+                        var auditLog = new AuditLog
+                        {
+                            EntityType = entityType,
+                            EntityId = entityId,
+                            Action = "Update",
+                            OldValues = JsonConvert.SerializeObject(cleanOriginal, _jsonSettings),
+                            NewValues = JsonConvert.SerializeObject(cleanCurrent, _jsonSettings),
+                            ChangedFields = JsonConvert.SerializeObject(changedFields, _jsonSettings),
+                            UserId = userId,
+                            IpAddress = GetIpAddress(),
+                            UserAgent = GetUserAgent(),
+                            CreatedAt = DateTime.Now
+                        };
+
+                        _context.AuditLogs.Add(auditLog);
+                    }
+
+                    // Now check if services have changed and create a separate audit entry
+                    await LogOrderServiceChanges(originalOrder, currentOrder, entityId, userId);
                 }
+                else
+                {
+                    // Standard handling for other entities
+                    if (changedFields.Any())
+                    {
+                        var cleanOriginal = CreateCleanEntity(originalEntity);
+                        var cleanCurrent = CreateCleanEntity(currentEntity);
+
+                        var auditLog = new AuditLog
+                        {
+                            EntityType = entityType,
+                            EntityId = entityId,
+                            Action = "Update",
+                            OldValues = JsonConvert.SerializeObject(cleanOriginal, _jsonSettings),
+                            NewValues = JsonConvert.SerializeObject(cleanCurrent, _jsonSettings),
+                            ChangedFields = JsonConvert.SerializeObject(changedFields, _jsonSettings),
+                            UserId = userId,
+                            IpAddress = GetIpAddress(),
+                            UserAgent = GetUserAgent(),
+                            CreatedAt = DateTime.Now
+                        };
+
+                        _context.AuditLogs.Add(auditLog);
+                    }
+                }
+
+                await _context.SaveChangesAsync();
             }
             catch (Exception ex)
             {
@@ -181,6 +214,68 @@ namespace DreamCleaningBackend.Services
             }
 
             return cleanEntity;
+        }
+
+        private async Task LogOrderServiceChanges(Order originalOrder, Order currentOrder, long orderId, int? userId)
+        {
+            // Create snapshots of services
+            var beforeServices = originalOrder.OrderServices?.Select(os => (object)new
+            {
+                ServiceId = os.ServiceId,
+                ServiceName = os.Service?.Name ?? $"Service {os.ServiceId}",
+                Quantity = os.Quantity,
+                Cost = os.Cost
+            }).ToList() ?? new List<object>();
+
+            var afterServices = currentOrder.OrderServices?.Select(os => (object)new
+            {
+                ServiceId = os.ServiceId,
+                ServiceName = os.Service?.Name ?? $"Service {os.ServiceId}",
+                Quantity = os.Quantity,
+                Cost = os.Cost
+            }).ToList() ?? new List<object>();
+
+            var beforeExtraServices = originalOrder.OrderExtraServices?.Select(oes => (object)new
+            {
+                ExtraServiceId = oes.ExtraServiceId,
+                ExtraServiceName = oes.ExtraService?.Name ?? $"Extra Service {oes.ExtraServiceId}",
+                Quantity = oes.Quantity,
+                Hours = oes.Hours,
+                Cost = oes.Cost
+            }).ToList() ?? new List<object>();
+
+            var afterExtraServices = currentOrder.OrderExtraServices?.Select(oes => (object)new
+            {
+                ExtraServiceId = oes.ExtraServiceId,
+                ExtraServiceName = oes.ExtraService?.Name ?? $"Extra Service {oes.ExtraServiceId}",
+                Quantity = oes.Quantity,
+                Hours = oes.Hours,
+                Cost = oes.Cost
+            }).ToList() ?? new List<object>();
+
+            // Check if there are any changes
+            bool hasChanges = beforeServices.Count != afterServices.Count ||
+                              beforeExtraServices.Count != afterExtraServices.Count ||
+                              JsonConvert.SerializeObject(beforeServices) != JsonConvert.SerializeObject(afterServices) ||
+                              JsonConvert.SerializeObject(beforeExtraServices) != JsonConvert.SerializeObject(afterExtraServices);
+
+            if (hasChanges)
+            {
+                var serviceAuditLog = new AuditLog
+                {
+                    EntityType = "OrderServicesUpdate",
+                    EntityId = orderId,
+                    Action = "Update",
+                    OldValues = JsonConvert.SerializeObject(new { Services = beforeServices, ExtraServices = beforeExtraServices }, _jsonSettings),
+                    NewValues = JsonConvert.SerializeObject(new { Services = afterServices, ExtraServices = afterExtraServices }, _jsonSettings),
+                    ChangedFields = JsonConvert.SerializeObject(new[] { "Services", "ExtraServices" }, _jsonSettings),
+                    UserId = userId,
+                    IpAddress = GetIpAddress(),
+                    UserAgent = GetUserAgent(),
+                    CreatedAt = DateTime.Now
+                };
+                _context.AuditLogs.Add(serviceAuditLog);
+            }
         }
 
         // Rest of your helper methods remain the same...
