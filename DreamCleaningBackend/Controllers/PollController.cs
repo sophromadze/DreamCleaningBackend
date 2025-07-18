@@ -84,7 +84,7 @@ namespace DreamCleaningBackend.Controllers
                     State = dto.State,
                     PostalCode = dto.PostalCode,
                     Status = "Pending",
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = DateTime.Now
                 };
 
                 _context.PollSubmissions.Add(submission);
@@ -98,7 +98,7 @@ namespace DreamCleaningBackend.Controllers
                         PollSubmissionId = submission.Id,
                         PollQuestionId = answerDto.PollQuestionId,
                         Answer = answerDto.Answer,
-                        CreatedAt = DateTime.UtcNow
+                        CreatedAt = DateTime.Now
                     };
                     _context.PollAnswers.Add(answer);
                 }

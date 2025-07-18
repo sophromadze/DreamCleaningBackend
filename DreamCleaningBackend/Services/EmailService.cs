@@ -96,6 +96,15 @@ namespace DreamCleaningBackend.Services
 
         public async Task SendEmailAsync(string to, string subject, string html)
         {
+            // Check if email sending is disabled in configuration
+            var emailEnabled = _configuration.GetValue<bool>("Email:EnableEmailSending", true);
+
+            if (!emailEnabled)
+            {
+                _logger.LogInformation($"Email sending is disabled. Would have sent email to {to} with subject: {subject}");
+                return;
+            }
+
             const int timeoutMs = 30000; // 30 second timeout
 
             try

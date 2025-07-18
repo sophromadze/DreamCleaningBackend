@@ -190,6 +190,8 @@ namespace DreamCleaningBackend.Services
                         p.PropertyType == typeof(string) ||
                         p.PropertyType == typeof(DateTime) ||
                         p.PropertyType == typeof(DateTime?) ||
+                        p.PropertyType == typeof(TimeSpan) ||
+                        p.PropertyType == typeof(TimeSpan?) ||
                         p.PropertyType == typeof(decimal) ||
                         p.PropertyType == typeof(decimal?) ||
                         p.PropertyType == typeof(int) ||
@@ -331,6 +333,8 @@ namespace DreamCleaningBackend.Services
                         p.PropertyType == typeof(string) ||
                         p.PropertyType == typeof(DateTime) ||
                         p.PropertyType == typeof(DateTime?) ||
+                        p.PropertyType == typeof(TimeSpan) ||
+                        p.PropertyType == typeof(TimeSpan?) ||
                         p.PropertyType == typeof(decimal) ||
                         p.PropertyType == typeof(decimal?) ||
                         p.PropertyType == typeof(int) ||

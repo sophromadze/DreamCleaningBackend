@@ -3205,7 +3205,7 @@ namespace DreamCleaningBackend.Controllers
                 DisplayOrder = dto.DisplayOrder,
                 ServiceTypeId = dto.ServiceTypeId,
                 IsActive = true,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.Now
             };
 
             _context.PollQuestions.Add(question);
@@ -3242,7 +3242,7 @@ namespace DreamCleaningBackend.Controllers
             question.IsRequired = dto.IsRequired;
             question.DisplayOrder = dto.DisplayOrder;
             question.IsActive = dto.IsActive;
-            question.UpdatedAt = DateTime.UtcNow;
+            question.UpdatedAt = DateTime.Now;
 
             await _context.SaveChangesAsync();
             return Ok();
@@ -3315,7 +3315,7 @@ namespace DreamCleaningBackend.Controllers
 
             submission.Status = dto.Status;
             submission.AdminNotes = dto.AdminNotes;
-            submission.UpdatedAt = DateTime.UtcNow;
+            submission.UpdatedAt = DateTime.Now;
 
             await _context.SaveChangesAsync();
             return Ok();
