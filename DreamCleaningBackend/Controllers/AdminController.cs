@@ -18,7 +18,7 @@ namespace DreamCleaningBackend.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize]
+    [Authorize(Roles = "Admin,SuperAdmin,Moderator")]
     public class AdminController : ControllerBase
     {
         private readonly ApplicationDbContext _context;

@@ -12,6 +12,7 @@ using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using MySqlConnector;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,7 +21,46 @@ builder.Services.AddScoped<IPermissionService, PermissionService>();
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+
+// UPDATE THIS SECTION - Replace builder.Services.AddSwaggerGen(); with:
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "Dream Cleaning API",
+        Version = "v1",
+        Description = "API for Dream Cleaning Services"
+    });
+
+    // Add JWT Authentication to Swagger
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "Bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "JWT Authorization header using the Bearer scheme. \r\n\r\n " +
+                      "Enter your token in the text input below.\r\n\r\n" +
+                      "Example: \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\""
+    });
+
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            new string[] {}
+        }
+    });
+});
+
 builder.Services.AddAuthorization();
 
 // Add SignalR
@@ -239,7 +279,7 @@ app.Use(async (context, next) =>
     if (!app.Environment.IsDevelopment())
     {
         context.Response.Headers.Add("X-Content-Type-Options", "nosniff");
-        context.Response.Headers.Add("X-Frame-Options", "SAMEORIGIN"); 
+        context.Response.Headers.Add("X-Frame-Options", "SAMEORIGIN");
         context.Response.Headers.Add("X-XSS-Protection", "1; mode=block");
         context.Response.Headers.Add("Referrer-Policy", "strict-origin-when-cross-origin");
         context.Response.Headers.Add("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
