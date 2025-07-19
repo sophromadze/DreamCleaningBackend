@@ -51,7 +51,7 @@ namespace DreamCleaningBackend.Models
         public DateTime? PaidAt { get; set; }
 
         // Timestamps
-        public DateTime CreatedAt { get; set; } = DateTime.Now;
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? UpdatedAt { get; set; }
 
         // Navigation properties
@@ -84,7 +84,7 @@ namespace DreamCleaningBackend.Models
         [Column(TypeName = "decimal(10,2)")]
         public decimal BalanceAfterUsage { get; set; }
 
-        public DateTime UsedAt { get; set; } = DateTime.Now;
+        public DateTime UsedAt { get; set; } = DateTime.UtcNow;
 
         // Navigation properties
         public virtual GiftCard GiftCard { get; set; }

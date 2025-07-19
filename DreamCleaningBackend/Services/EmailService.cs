@@ -317,7 +317,7 @@ namespace DreamCleaningBackend.Services
             <p>• Non-refundable and non-exchangeable for cash</p>
             <br/>
             <p>Need help? Contact us at {_configuration["Email:FromAddress"]} or call (929) 930-1525</p>
-            <p>&copy; {DateTime.Now.Year} Dream Cleaning. All rights reserved.</p>
+            <p>&copy; {DateTime.UtcNow.Year} Dream Cleaning. All rights reserved.</p>
         </div>
     </div>
 </body>
@@ -422,7 +422,7 @@ namespace DreamCleaningBackend.Services
                 <div class='footer'>
                     <p>If you have any questions about your gift card purchase, please contact us at<br/>
                     {_configuration["Email:FromAddress"]} or call (929) 930-1525</p>
-                    <p>&copy; {DateTime.Now.Year} Dream Cleaning. All rights reserved.</p>
+                    <p>&copy; {DateTime.UtcNow.Year} Dream Cleaning. All rights reserved.</p>
                 </div>
             </div>
         </div>
@@ -905,7 +905,7 @@ namespace DreamCleaningBackend.Services
                 {photoInfo}
                 
                 <p style='margin-top: 30px; color: #666; font-size: 14px;'>
-                    <strong>Booking completed on:</strong> {DateTime.Now:MMMM dd, yyyy at h:mm tt}
+                    <strong>Booking completed on:</strong> {DateTime.UtcNow:MMMM dd, yyyy at h:mm tt}
                 </p>
             ";
 
@@ -1014,7 +1014,7 @@ namespace DreamCleaningBackend.Services
                 <p>Order #{orderId} has been updated.</p>
                 <p><strong>Customer Email:</strong> {customerEmail}</p>
                 <p><strong>Additional Amount:</strong> ${additionalAmount:F2}</p>
-                <p><strong>Updated at:</strong> {DateTime.Now:yyyy-MM-dd HH:mm:ss}</p>
+                <p><strong>Updated at:</strong> {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}</p>
             </body>
             </html>";
 

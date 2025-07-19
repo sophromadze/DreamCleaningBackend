@@ -80,7 +80,7 @@ namespace DreamCleaningBackend.Controllers
                             if (order != null && !order.IsPaid)
                             {
                                 order.IsPaid = true;
-                                order.PaidAt = DateTime.Now;
+                                order.PaidAt = DateTime.UtcNow;
                                 order.Status = "Confirmed";
 
                                 // Set initial values when order is first paid
@@ -126,7 +126,7 @@ namespace DreamCleaningBackend.Controllers
                                 {
                                     updateHistory.PaymentIntentId = paymentIntent.Id;
                                     updateHistory.IsPaid = true;
-                                    updateHistory.PaidAt = DateTime.Now;
+                                    updateHistory.PaidAt = DateTime.UtcNow;
                                     await _context.SaveChangesAsync();
 
                                     _logger.LogInformation($"Marked OrderUpdateHistory {updateHistory.Id} as paid");
@@ -142,7 +142,7 @@ namespace DreamCleaningBackend.Controllers
                             if (giftCard != null && !giftCard.IsPaid)
                             {
                                 giftCard.IsPaid = true;
-                                giftCard.PaidAt = DateTime.Now;
+                                giftCard.PaidAt = DateTime.UtcNow;
                                 await _context.SaveChangesAsync();
                             }
                         }

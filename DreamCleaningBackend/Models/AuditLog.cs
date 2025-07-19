@@ -37,6 +37,6 @@ namespace DreamCleaningBackend.Models
         [StringLength(500)]
         public string? UserAgent { get; set; }
 
-        public DateTime CreatedAt { get; set; } = DateTime.Now;
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }

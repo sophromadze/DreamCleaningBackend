@@ -202,7 +202,7 @@ namespace DreamCleaningBackend.Services
                     {
                         // Update existing assignment with new tips
                         existingAssignment.TipsForCleaner = dto.TipsForCleaner;
-                        existingAssignment.AssignedAt = DateTime.Now;
+                        existingAssignment.AssignedAt = DateTime.UtcNow;
                         existingAssignment.AssignedBy = assignedBy;
                     }
                 }

@@ -101,7 +101,7 @@ namespace DreamCleaningBackend.Services
                 throw new Exception("Cannot update a completed order");
 
             // 48-HOUR VALIDATION CHECK
-            var hoursUntilService = (order.ServiceDate - DateTime.Now).TotalHours;
+            var hoursUntilService = (order.ServiceDate - DateTime.UtcNow).TotalHours;
             if (hoursUntilService <= 48)
             {
                 throw new Exception("Orders can only be edited at least 48 hours before the scheduled service time");
@@ -158,14 +158,14 @@ namespace DreamCleaningBackend.Services
             order.ZipCode = updateOrderDto.ZipCode;
             order.Tips = updateOrderDto.Tips;
             order.CompanyDevelopmentTips = updateOrderDto.CompanyDevelopmentTips;
-            order.UpdatedAt = DateTime.Now;
+            order.UpdatedAt = DateTime.UtcNow;
 
             // Update user's phone number if they don't have one
             var user = await _context.Users.FindAsync(userId);
             if (user != null && string.IsNullOrEmpty(user.Phone) && !string.IsNullOrEmpty(updateOrderDto.ContactPhone))
             {
                 user.Phone = updateOrderDto.ContactPhone;
-                user.UpdatedAt = DateTime.Now;
+                user.UpdatedAt = DateTime.UtcNow;
                 Console.WriteLine($"Updated user's phone number to: {updateOrderDto.ContactPhone}");
             }
 
@@ -303,7 +303,7 @@ namespace DreamCleaningBackend.Services
                             Cost = serviceCost,
                             Duration = serviceDuration,
                             PriceMultiplier = priceMultiplier,
-                            CreatedAt = DateTime.Now
+                            CreatedAt = DateTime.UtcNow
                         };
                         order.OrderServices.Add(orderService);
                         newSubTotal += serviceCost;
@@ -364,7 +364,7 @@ namespace DreamCleaningBackend.Services
                         Hours = extraServiceDto.Hours,
                         Cost = cost,
                         Duration = duration, // Now this is properly calculated
-                        CreatedAt = DateTime.Now
+                        CreatedAt = DateTime.UtcNow
                     };
                     order.OrderExtraServices.Add(orderExtraService);
 
@@ -465,7 +465,7 @@ namespace DreamCleaningBackend.Services
                             // Update existing usage record
                             existingUsage.AmountUsed = newGiftCardAmountToUse;
                             existingUsage.BalanceAfterUsage = giftCard.CurrentBalance;
-                            existingUsage.UsedAt = DateTime.Now; // Update timestamp
+                            existingUsage.UsedAt = DateTime.UtcNow; // Update timestamp
                         }
                         else
                         {
@@ -478,7 +478,7 @@ namespace DreamCleaningBackend.Services
                                 UserId = userId,
                                 AmountUsed = newGiftCardAmountToUse,
                                 BalanceAfterUsage = giftCard.CurrentBalance,
-                                UsedAt = DateTime.Now
+                                UsedAt = DateTime.UtcNow
                             };
                             _context.GiftCardUsages.Add(newUsage);
                         }
@@ -531,7 +531,7 @@ namespace DreamCleaningBackend.Services
                 {
                     OrderId = order.Id,
                     UpdatedByUserId = userId,
-                    UpdatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.UtcNow,
                     // Use the stored original values
                     OriginalSubTotal = originalSubTotal,
                     OriginalTax = originalTax,
@@ -603,11 +603,11 @@ namespace DreamCleaningBackend.Services
             if (order.Status == "Done")
                 throw new Exception("Cannot cancel a completed order");
             // Check if service date is not too close (e.g., within 24 hours)
-            if (order.ServiceDate <= DateTime.Now.AddHours(48))
+            if (order.ServiceDate <= DateTime.UtcNow.AddHours(48))
                 throw new Exception("Cannot cancel order within 48 hours of service date");
             order.Status = "Cancelled";
             order.CancellationReason = cancelOrderDto.Reason;
-            order.UpdatedAt = DateTime.Now;
+            order.UpdatedAt = DateTime.UtcNow;
             // In a real system, you would initiate a refund process here
             // For now, we'll just mark it as cancelled
             await _orderRepository.UpdateAsync(order);
@@ -927,7 +927,7 @@ namespace DreamCleaningBackend.Services
                 throw new Exception("Cannot complete a cancelled order");
 
             order.Status = "Done";
-            order.UpdatedAt = DateTime.Now;
+            order.UpdatedAt = DateTime.UtcNow;
 
             await _orderRepository.UpdateAsync(order);
             await _orderRepository.SaveChangesAsync();

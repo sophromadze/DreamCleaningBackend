@@ -57,11 +57,11 @@ namespace DreamCleaningBackend.Services
                     PasswordHash = passwordHash,
                     PasswordSalt = passwordSalt,
                     AuthProvider = "Local",
-                    CreatedAt = DateTime.Now,
+                    CreatedAt = DateTime.UtcNow,
                     FirstTimeOrder = true,
                     IsEmailVerified = false,
                     EmailVerificationToken = GenerateVerificationToken(),
-                    EmailVerificationTokenExpiry = DateTime.Now.AddHours(24)
+                    EmailVerificationTokenExpiry = DateTime.UtcNow.AddHours(24)
                 };
 
                 _context.Users.Add(user);
@@ -133,10 +133,10 @@ namespace DreamCleaningBackend.Services
 
             // Update refresh token
             user.RefreshToken = GenerateRefreshToken();
-            user.RefreshTokenExpiryTime = DateTime.Now.AddDays(30);
+            user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
 
             // Update the UpdatedAt field instead of LastLogin (which doesn't exist)
-            user.UpdatedAt = DateTime.Now;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -180,7 +180,7 @@ namespace DreamCleaningBackend.Services
                         AuthProvider = "Google",
                         ExternalAuthId = googleId,
                         ProfilePictureUrl = profilePicture, // Add this line
-                        CreatedAt = DateTime.Now,
+                        CreatedAt = DateTime.UtcNow,
                         FirstTimeOrder = true,
                         IsActive = true,
                         IsEmailVerified = true
@@ -203,7 +203,7 @@ namespace DreamCleaningBackend.Services
                     if (string.IsNullOrEmpty(user.LastName))
                         user.LastName = lastName;
 
-                    user.UpdatedAt = DateTime.Now;
+                    user.UpdatedAt = DateTime.UtcNow;
 
                     _logger.LogInformation("Linked Google to existing local account {Email}", email);
                 }
@@ -211,13 +211,13 @@ namespace DreamCleaningBackend.Services
                 {
                     // Existing Google user - update profile picture in case it changed
                     user.ProfilePictureUrl = profilePicture; // Add this line
-                    user.UpdatedAt = DateTime.Now;
+                    user.UpdatedAt = DateTime.UtcNow;
                 }
 
 
                 // Update refresh token
                 user.RefreshToken = GenerateRefreshToken();
-                user.RefreshTokenExpiryTime = DateTime.Now.AddDays(30);
+                user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
                 await _context.SaveChangesAsync();
 
                 try
@@ -271,7 +271,7 @@ namespace DreamCleaningBackend.Services
                     throw new Exception("Invalid refresh token");
 
                 // PRESERVED: Check if refresh token is expired
-                if (user.RefreshTokenExpiryTime <= DateTime.Now)
+                if (user.RefreshTokenExpiryTime <= DateTime.UtcNow)
                     throw new Exception("Refresh token expired");
 
                 // Generate new tokens
@@ -280,8 +280,8 @@ namespace DreamCleaningBackend.Services
 
                 // Update user's refresh token
                 user.RefreshToken = newRefreshToken;
-                user.RefreshTokenExpiryTime = DateTime.Now.AddDays(30); // Extended for better UX
-                user.UpdatedAt = DateTime.Now;
+                user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30); // Extended for better UX
+                user.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
 
@@ -318,7 +318,7 @@ namespace DreamCleaningBackend.Services
 
             // Update refresh token in database
             user.RefreshToken = refreshToken;
-            user.RefreshTokenExpiryTime = DateTime.Now.AddDays(30);
+            user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
 
             await _context.SaveChangesAsync();
 
@@ -435,7 +435,7 @@ namespace DreamCleaningBackend.Services
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(claims),
-                Expires = DateTime.Now.AddHours(2), // Extended from 1 hour to 2 hours for better UX
+                Expires = DateTime.UtcNow.AddHours(2), // Extended from 1 hour to 2 hours for better UX
                 SigningCredentials = creds
             };
 
@@ -480,7 +480,7 @@ namespace DreamCleaningBackend.Services
             // Update user password
             user.PasswordHash = passwordHash;
             user.PasswordSalt = passwordSalt;
-            user.UpdatedAt = DateTime.Now;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -508,7 +508,7 @@ namespace DreamCleaningBackend.Services
         {
             var user = await _context.Users
                 .FirstOrDefaultAsync(u => u.EmailVerificationToken == token
-                    && u.EmailVerificationTokenExpiry > DateTime.Now);
+                    && u.EmailVerificationTokenExpiry > DateTime.UtcNow);
 
             if (user == null)
                 throw new Exception("Invalid or expired verification token");
@@ -516,7 +516,7 @@ namespace DreamCleaningBackend.Services
             user.IsEmailVerified = true;
             user.EmailVerificationToken = null;
             user.EmailVerificationTokenExpiry = null;
-            user.UpdatedAt = DateTime.Now;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -538,8 +538,8 @@ namespace DreamCleaningBackend.Services
 
             // Generate new verification token
             user.EmailVerificationToken = GenerateVerificationToken();
-            user.EmailVerificationTokenExpiry = DateTime.Now.AddHours(24);
-            user.UpdatedAt = DateTime.Now;
+            user.EmailVerificationTokenExpiry = DateTime.UtcNow.AddHours(24);
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -571,8 +571,8 @@ namespace DreamCleaningBackend.Services
                 return true; // Don't reveal if user exists
 
             user.PasswordResetToken = GenerateVerificationToken();
-            user.PasswordResetTokenExpiry = DateTime.Now.AddHours(1);
-            user.UpdatedAt = DateTime.Now;
+            user.PasswordResetTokenExpiry = DateTime.UtcNow.AddHours(1);
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -599,7 +599,7 @@ namespace DreamCleaningBackend.Services
         {
             var user = await _context.Users
                 .FirstOrDefaultAsync(u => u.PasswordResetToken == resetDto.Token
-                    && u.PasswordResetTokenExpiry > DateTime.Now);
+                    && u.PasswordResetTokenExpiry > DateTime.UtcNow);
 
             if (user == null)
                 throw new Exception("Invalid or expired reset token");
@@ -614,7 +614,7 @@ namespace DreamCleaningBackend.Services
             user.PasswordSalt = passwordSalt;
             user.PasswordResetToken = null;
             user.PasswordResetTokenExpiry = null;
-            user.UpdatedAt = DateTime.Now;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -662,8 +662,8 @@ namespace DreamCleaningBackend.Services
             // Generate email change token
             user.PendingEmail = dto.NewEmail.ToLower();
             user.EmailChangeToken = GenerateVerificationToken();
-            user.EmailChangeTokenExpiry = DateTime.Now.AddHours(1); // 1 hour expiry
-            user.UpdatedAt = DateTime.Now;
+            user.EmailChangeTokenExpiry = DateTime.UtcNow.AddHours(1); // 1 hour expiry
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -699,7 +699,7 @@ namespace DreamCleaningBackend.Services
         {
             var user = await _context.Users
                 .FirstOrDefaultAsync(u => u.EmailChangeToken == token
-                    && u.EmailChangeTokenExpiry > DateTime.Now
+                    && u.EmailChangeTokenExpiry > DateTime.UtcNow
                     && !string.IsNullOrEmpty(u.PendingEmail));
 
             if (user == null)
@@ -733,7 +733,7 @@ namespace DreamCleaningBackend.Services
             user.PendingEmail = null;
             user.EmailChangeToken = null;
             user.EmailChangeTokenExpiry = null;
-            user.UpdatedAt = DateTime.Now;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 

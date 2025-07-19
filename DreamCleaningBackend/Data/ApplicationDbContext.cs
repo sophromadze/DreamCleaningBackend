@@ -237,7 +237,7 @@ namespace DreamCleaningBackend.Data
                      SubscriptionDays = 0,
                      DiscountPercentage = 0,
                      DisplayOrder = 1,
-                     CreatedAt = DateTime.Now
+                     CreatedAt = DateTime.UtcNow
                  },
                 new Subscription
                 {
@@ -247,7 +247,7 @@ namespace DreamCleaningBackend.Data
                     SubscriptionDays = 7,
                     DiscountPercentage = 15,
                     DisplayOrder = 2,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new Subscription
                 {
@@ -257,7 +257,7 @@ namespace DreamCleaningBackend.Data
                     SubscriptionDays = 14,
                     DiscountPercentage = 10,
                     DisplayOrder = 3,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new Subscription
                 {
@@ -267,7 +267,7 @@ namespace DreamCleaningBackend.Data
                     SubscriptionDays = 30,
                     DiscountPercentage = 5,
                     DisplayOrder = 4,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 }
             );
 
@@ -282,7 +282,7 @@ namespace DreamCleaningBackend.Data
                     DisplayOrder = 1,
                     IsActive = true,
                     TimeDuration = 90,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ServiceType
                 {
@@ -293,7 +293,7 @@ namespace DreamCleaningBackend.Data
                     DisplayOrder = 2,
                     IsActive = true,
                     TimeDuration = 120,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 }
             );
 
@@ -414,7 +414,7 @@ namespace DreamCleaningBackend.Data
                     StepValue = 1,
                     DisplayOrder = 1,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new Service
                 {
@@ -430,7 +430,7 @@ namespace DreamCleaningBackend.Data
                     StepValue = 1,
                     DisplayOrder = 2,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new Service
                 {
@@ -448,7 +448,7 @@ namespace DreamCleaningBackend.Data
                     Unit = "per sqft",
                     DisplayOrder = 3,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 }
             );
 
@@ -470,7 +470,7 @@ namespace DreamCleaningBackend.Data
                     ServiceRelationType = "cleaner",
                     DisplayOrder = 1,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new Service
                 {
@@ -487,7 +487,7 @@ namespace DreamCleaningBackend.Data
                     ServiceRelationType = "hours",
                     DisplayOrder = 2,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 }
             );
 
@@ -506,7 +506,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 1,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ExtraService
                 {
@@ -521,7 +521,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 2,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ExtraService
                 {
@@ -535,7 +535,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 3,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ExtraService
                 {
@@ -549,7 +549,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 4,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ExtraService
                 {
@@ -563,7 +563,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 5,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ExtraService
                 {
@@ -577,7 +577,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 6,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ExtraService
                 {
@@ -592,7 +592,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = false,
                     DisplayOrder = 7,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ExtraService
                 {
@@ -605,7 +605,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 8,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 },
                 new ExtraService
                 {
@@ -618,7 +618,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 9,
                     IsActive = true,
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 }
             );
         }

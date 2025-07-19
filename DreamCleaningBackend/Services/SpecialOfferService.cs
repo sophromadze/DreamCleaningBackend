@@ -33,7 +33,7 @@ namespace DreamCleaningBackend.Services
                 MinimumOrderAmount = dto.MinimumOrderAmount,
                 RequiresFirstTimeCustomer = dto.RequiresFirstTimeCustomer,
                 IsActive = true,
-                CreatedAt = DateTime.Now,
+                CreatedAt = DateTime.UtcNow,
                 CreatedByUserId = createdByUserId
             };
 
@@ -125,7 +125,7 @@ namespace DreamCleaningBackend.Services
             offer.BadgeColor = dto.BadgeColor;
             offer.MinimumOrderAmount = dto.MinimumOrderAmount;
             offer.IsActive = dto.IsActive;
-            offer.UpdatedAt = DateTime.Now;
+            offer.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -238,7 +238,7 @@ namespace DreamCleaningBackend.Services
                     }
 
                     // Check if offer is within valid date range
-                    var now = DateTime.Now;
+                    var now = DateTime.UtcNow;
                     if (offer.ValidFrom.HasValue && offer.ValidFrom > now)
                     {
                         shouldGrant = false;
@@ -254,7 +254,7 @@ namespace DreamCleaningBackend.Services
                         {
                             UserId = userId,
                             SpecialOfferId = offer.Id,
-                            GrantedAt = DateTime.Now,
+                            GrantedAt = DateTime.UtcNow,
                             ExpiresAt = offer.ValidTo
                         };
 
@@ -295,7 +295,7 @@ namespace DreamCleaningBackend.Services
             };
 
             offer.IsActive = true;
-            offer.UpdatedAt = DateTime.Now;
+            offer.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -334,7 +334,7 @@ namespace DreamCleaningBackend.Services
             };
 
             offer.IsActive = false;
-            offer.UpdatedAt = DateTime.Now;
+            offer.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -397,7 +397,7 @@ namespace DreamCleaningBackend.Services
                 {
                     UserId = user.Id,
                     SpecialOfferId = offerId,
-                    GrantedAt = DateTime.Now,
+                    GrantedAt = DateTime.UtcNow,
                     ExpiresAt = offer.ValidTo
                 };
 
@@ -426,7 +426,7 @@ namespace DreamCleaningBackend.Services
             {
                 UserId = userId,
                 SpecialOfferId = offerId,
-                GrantedAt = DateTime.Now,
+                GrantedAt = DateTime.UtcNow,
                 ExpiresAt = offer.ValidTo
             };
 
@@ -438,7 +438,7 @@ namespace DreamCleaningBackend.Services
 
         public async Task<List<UserSpecialOfferDto>> GetUserAvailableOffers(int userId)
         {
-            var now = DateTime.Now;
+            var now = DateTime.UtcNow;
 
             return await _context.UserSpecialOffers
                 .Where(uso => uso.UserId == userId &&
@@ -474,7 +474,7 @@ namespace DreamCleaningBackend.Services
                 return false;
 
             userOffer.IsUsed = true;
-            userOffer.UsedAt = DateTime.Now;
+            userOffer.UsedAt = DateTime.UtcNow;
             userOffer.UsedOnOrderId = orderId;
 
             await _context.SaveChangesAsync();
@@ -484,7 +484,7 @@ namespace DreamCleaningBackend.Services
 
         public async Task<UserSpecialOfferDto?> ValidateSpecialOffer(int userId, int offerId)
         {
-            var now = DateTime.Now;
+            var now = DateTime.UtcNow;
 
             return await _context.UserSpecialOffers
                 .Where(uso => uso.UserId == userId &&

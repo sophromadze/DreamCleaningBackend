@@ -61,7 +61,7 @@ namespace DreamCleaningBackend.Controllers
                     </table>
                     
                     <p style='margin-top: 30px; color: #666; font-size: 14px;'>
-                        <strong>Submitted on:</strong> {DateTime.Now:MMMM dd, yyyy at h:mm tt}
+                        <strong>Submitted on:</strong> {DateTime.UtcNow:MMMM dd, yyyy at h:mm tt}
                     </p>
                 ";
 

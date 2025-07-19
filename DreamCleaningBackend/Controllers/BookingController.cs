@@ -253,7 +253,7 @@ namespace DreamCleaningBackend.Controllers
                     }
 
                     // Check validity dates - YOUR EXISTING LOGIC
-                    if (promoCode.ValidFrom.HasValue && promoCode.ValidFrom.Value > DateTime.Now)
+                    if (promoCode.ValidFrom.HasValue && promoCode.ValidFrom.Value > DateTime.UtcNow)
                     {
                         return Ok(new PromoCodeValidationDto
                         {
@@ -262,7 +262,7 @@ namespace DreamCleaningBackend.Controllers
                         });
                     }
 
-                    if (promoCode.ValidTo.HasValue && promoCode.ValidTo.Value < DateTime.Now)
+                    if (promoCode.ValidTo.HasValue && promoCode.ValidTo.Value < DateTime.UtcNow)
                     {
                         return Ok(new PromoCodeValidationDto
                         {
@@ -384,11 +384,11 @@ namespace DreamCleaningBackend.Controllers
                     Tips = dto.Tips,
                     CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                     Status = "Pending",
-                    OrderDate = DateTime.Now,
+                    OrderDate = DateTime.UtcNow,
                     SubscriptionId = dto.SubscriptionId,
                     OrderServices = new List<Models.OrderService>(),
                     OrderExtraServices = new List<OrderExtraService>(),
-                    CreatedAt = DateTime.Now,
+                    CreatedAt = DateTime.UtcNow,
                     MaidsCount = dto.MaidsCount,
                     // ADD THESE THREE LINES:
                     SubTotal = dto.SubTotal,
@@ -529,7 +529,7 @@ namespace DreamCleaningBackend.Controllers
                                     Cost = serviceCost,
                                     Duration = serviceDuration,
                                     PriceMultiplier = priceMultiplier,
-                                    CreatedAt = DateTime.Now
+                                    CreatedAt = DateTime.UtcNow
                                 };
                                 order.OrderServices.Add(orderService);
                                 subTotal += serviceCost;
@@ -633,7 +633,7 @@ namespace DreamCleaningBackend.Controllers
                                 Hours = extraServiceDto.Hours,
                                 Cost = cost,
                                 Duration = duration,
-                                CreatedAt = DateTime.Now
+                                CreatedAt = DateTime.UtcNow
                             };
                             order.OrderExtraServices.Add(orderExtraService);
 
@@ -783,7 +783,7 @@ namespace DreamCleaningBackend.Controllers
                             if (userSpecialOffer != null)
                             {
                                 userSpecialOffer.IsUsed = true;
-                                userSpecialOffer.UsedAt = DateTime.Now;
+                                userSpecialOffer.UsedAt = DateTime.UtcNow;
                                 userSpecialOffer.UsedOnOrderId = order.Id;
 
                                 await _context.SaveChangesAsync();
@@ -956,14 +956,14 @@ namespace DreamCleaningBackend.Controllers
                     if (string.IsNullOrEmpty(user.Phone) && !string.IsNullOrEmpty(order.ContactPhone))
                     {
                         user.Phone = order.ContactPhone;
-                        user.UpdatedAt = DateTime.Now;
+                        user.UpdatedAt = DateTime.UtcNow;
                     }
 
                     // Handle first-time discount
                     if (order.PromoCode == "firstUse" && user.FirstTimeOrder)
                     {
                         user.FirstTimeOrder = false;
-                        user.UpdatedAt = DateTime.Now;
+                        user.UpdatedAt = DateTime.UtcNow;
                     }
 
                     // Your existing apartment logic stays exactly the same
@@ -1008,7 +1008,7 @@ namespace DreamCleaningBackend.Controllers
                                     existingApartmentByName.State = order.State;
                                     existingApartmentByName.PostalCode = order.ZipCode;
                                     existingApartmentByName.SpecialInstructions = order.SpecialInstructions;
-                                    existingApartmentByName.UpdatedAt = DateTime.Now;
+                                    existingApartmentByName.UpdatedAt = DateTime.UtcNow;
 
                                     Console.WriteLine($"Found existing apartment with name '{existingApartmentByName.Name}', updating all fields");
                                 }
@@ -1024,7 +1024,7 @@ namespace DreamCleaningBackend.Controllers
                                         State = order.State,
                                         PostalCode = order.ZipCode,
                                         SpecialInstructions = order.SpecialInstructions,
-                                        CreatedAt = DateTime.Now,
+                                        CreatedAt = DateTime.UtcNow,
                                         IsActive = true
                                     };
 
@@ -1045,7 +1045,7 @@ namespace DreamCleaningBackend.Controllers
 
                 // Mark order as paid
                 order.IsPaid = true;
-                order.PaidAt = DateTime.Now;
+                order.PaidAt = DateTime.UtcNow;
                 order.Status = "Active";
                 order.PaymentIntentId = dto.PaymentIntentId;
 
@@ -1129,7 +1129,7 @@ namespace DreamCleaningBackend.Controllers
                 if (user.FirstTimeOrder && order.PromoCode == "firstUse")
                 {
                     user.FirstTimeOrder = false;
-                    user.UpdatedAt = DateTime.Now;
+                    user.UpdatedAt = DateTime.UtcNow;
                 }
 
                 await _context.SaveChangesAsync();

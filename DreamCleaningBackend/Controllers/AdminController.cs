@@ -181,7 +181,7 @@ namespace DreamCleaningBackend.Controllers
                         foreach (var st in existingServiceTypes)
                         {
                             st.DisplayOrder++;
-                            st.UpdatedAt = DateTime.Now;
+                            st.UpdatedAt = DateTime.UtcNow;
                         }
                     }
 
@@ -195,7 +195,7 @@ namespace DreamCleaningBackend.Controllers
                         IsCustom = dto.IsCustom,
                         IsActive = true,
                         TimeDuration = dto.TimeDuration,
-                        CreatedAt = DateTime.Now
+                        CreatedAt = DateTime.UtcNow
                     };
                     _context.ServiceTypes.Add(serviceType);
                     await _context.SaveChangesAsync();
@@ -269,7 +269,7 @@ namespace DreamCleaningBackend.Controllers
                             foreach (var st in allServiceTypes.Where(s => s.DisplayOrder > oldDisplayOrder && s.DisplayOrder <= newDisplayOrder))
                             {
                                 st.DisplayOrder--;
-                                st.UpdatedAt = DateTime.Now;
+                                st.UpdatedAt = DateTime.UtcNow;
                             }
                         }
                         else if (oldDisplayOrder > newDisplayOrder)
@@ -278,7 +278,7 @@ namespace DreamCleaningBackend.Controllers
                             foreach (var st in allServiceTypes.Where(s => s.DisplayOrder >= newDisplayOrder && s.DisplayOrder < oldDisplayOrder))
                             {
                                 st.DisplayOrder++;
-                                st.UpdatedAt = DateTime.Now;
+                                st.UpdatedAt = DateTime.UtcNow;
                             }
                         }
                     }
@@ -290,7 +290,7 @@ namespace DreamCleaningBackend.Controllers
                     serviceType.HasPoll = dto.HasPoll;
                     serviceType.IsCustom = dto.IsCustom;
                     serviceType.TimeDuration = dto.TimeDuration;
-                    serviceType.UpdatedAt = DateTime.Now;
+                    serviceType.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
@@ -342,7 +342,7 @@ namespace DreamCleaningBackend.Controllers
             };
 
             serviceType.IsActive = false;
-            serviceType.UpdatedAt = DateTime.Now;
+            serviceType.UpdatedAt = DateTime.UtcNow;
 
             // LOG THE UPDATE (deactivation is an update)
             await _auditService.LogUpdateAsync(originalServiceType, serviceType);
@@ -375,7 +375,7 @@ namespace DreamCleaningBackend.Controllers
             };
 
             serviceType.IsActive = true;
-            serviceType.UpdatedAt = DateTime.Now;
+            serviceType.UpdatedAt = DateTime.UtcNow;
 
             // LOG THE UPDATE (activation is an update)
             await _auditService.LogUpdateAsync(originalServiceType, serviceType);
@@ -468,7 +468,7 @@ namespace DreamCleaningBackend.Controllers
                         foreach (var svc in existingServices)
                         {
                             svc.DisplayOrder++;
-                            svc.UpdatedAt = DateTime.Now;
+                            svc.UpdatedAt = DateTime.UtcNow;
                         }
                     }
 
@@ -488,7 +488,7 @@ namespace DreamCleaningBackend.Controllers
                         ServiceRelationType = dto.ServiceRelationType, // ADD THIS
                         DisplayOrder = dto.DisplayOrder,
                         IsActive = true,
-                        CreatedAt = DateTime.Now
+                        CreatedAt = DateTime.UtcNow
                     };
                     _context.Services.Add(service);
                     await _context.SaveChangesAsync();
@@ -547,7 +547,7 @@ namespace DreamCleaningBackend.Controllers
                 ServiceRelationType = sourceService.ServiceRelationType, // ADD THIS
                 DisplayOrder = sourceService.DisplayOrder,
                 IsActive = true,
-                CreatedAt = DateTime.Now
+                CreatedAt = DateTime.UtcNow
             };
 
             _context.Services.Add(newService);
@@ -622,7 +622,7 @@ namespace DreamCleaningBackend.Controllers
                             foreach (var svc in allServices.Where(s => s.DisplayOrder > oldDisplayOrder && s.DisplayOrder <= newDisplayOrder))
                             {
                                 svc.DisplayOrder--;
-                                svc.UpdatedAt = DateTime.Now;
+                                svc.UpdatedAt = DateTime.UtcNow;
                             }
                         }
                         else if (oldDisplayOrder > newDisplayOrder)
@@ -631,7 +631,7 @@ namespace DreamCleaningBackend.Controllers
                             foreach (var svc in allServices.Where(s => s.DisplayOrder >= newDisplayOrder && s.DisplayOrder < oldDisplayOrder))
                             {
                                 svc.DisplayOrder++;
-                                svc.UpdatedAt = DateTime.Now;
+                                svc.UpdatedAt = DateTime.UtcNow;
                             }
                         }
                     }
@@ -650,7 +650,7 @@ namespace DreamCleaningBackend.Controllers
                     service.Unit = dto.Unit;
                     service.ServiceRelationType = dto.ServiceRelationType;
                     service.DisplayOrder = dto.DisplayOrder;
-                    service.UpdatedAt = DateTime.Now;
+                    service.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
@@ -716,7 +716,7 @@ namespace DreamCleaningBackend.Controllers
             };
 
             service.IsActive = false;
-            service.UpdatedAt = DateTime.Now;
+            service.UpdatedAt = DateTime.UtcNow;
 
             // Save first
             await _context.SaveChangesAsync();
@@ -787,7 +787,7 @@ namespace DreamCleaningBackend.Controllers
             };
 
             service.IsActive = true;
-            service.UpdatedAt = DateTime.Now;
+            service.UpdatedAt = DateTime.UtcNow;
 
             // Save first
             await _context.SaveChangesAsync();
@@ -920,7 +920,7 @@ namespace DreamCleaningBackend.Controllers
                         foreach (var es in existingExtraServices)
                         {
                             es.DisplayOrder++;
-                            es.UpdatedAt = DateTime.Now;
+                            es.UpdatedAt = DateTime.UtcNow;
                         }
                     }
 
@@ -941,7 +941,7 @@ namespace DreamCleaningBackend.Controllers
                         IsAvailableForAll = dto.IsAvailableForAll,
                         DisplayOrder = dto.DisplayOrder,
                         IsActive = true,
-                        CreatedAt = DateTime.Now
+                        CreatedAt = DateTime.UtcNow
                     };
                     _context.ExtraServices.Add(extraService);
                     await _context.SaveChangesAsync();
@@ -1001,7 +1001,7 @@ namespace DreamCleaningBackend.Controllers
                 IsAvailableForAll = false, // When copying to specific service type
                 DisplayOrder = sourceExtraService.DisplayOrder,
                 IsActive = true,
-                CreatedAt = DateTime.Now
+                CreatedAt = DateTime.UtcNow
             };
 
             _context.ExtraServices.Add(newExtraService);
@@ -1083,7 +1083,7 @@ namespace DreamCleaningBackend.Controllers
                             foreach (var es in allExtraServices.Where(s => s.DisplayOrder > oldDisplayOrder && s.DisplayOrder <= newDisplayOrder))
                             {
                                 es.DisplayOrder--;
-                                es.UpdatedAt = DateTime.Now;
+                                es.UpdatedAt = DateTime.UtcNow;
                             }
                         }
                         else if (oldDisplayOrder > newDisplayOrder)
@@ -1092,7 +1092,7 @@ namespace DreamCleaningBackend.Controllers
                             foreach (var es in allExtraServices.Where(s => s.DisplayOrder >= newDisplayOrder && s.DisplayOrder < oldDisplayOrder))
                             {
                                 es.DisplayOrder++;
-                                es.UpdatedAt = DateTime.Now;
+                                es.UpdatedAt = DateTime.UtcNow;
                             }
                         }
                     }
@@ -1112,7 +1112,7 @@ namespace DreamCleaningBackend.Controllers
                     extraService.ServiceTypeId = dto.ServiceTypeId;
                     extraService.IsAvailableForAll = dto.IsAvailableForAll;
                     extraService.DisplayOrder = dto.DisplayOrder;
-                    extraService.UpdatedAt = DateTime.Now;
+                    extraService.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
@@ -1179,7 +1179,7 @@ namespace DreamCleaningBackend.Controllers
             };
 
             extraService.IsActive = false;
-            extraService.UpdatedAt = DateTime.Now;
+            extraService.UpdatedAt = DateTime.UtcNow;
 
             // Save first
             await _context.SaveChangesAsync();
@@ -1252,7 +1252,7 @@ namespace DreamCleaningBackend.Controllers
             };
 
             extraService.IsActive = true;
-            extraService.UpdatedAt = DateTime.Now;
+            extraService.UpdatedAt = DateTime.UtcNow;
 
             // Save first
             await _context.SaveChangesAsync();
@@ -1365,7 +1365,7 @@ namespace DreamCleaningBackend.Controllers
                         foreach (var sub in existingSubscriptions)
                         {
                             sub.DisplayOrder++;
-                            sub.UpdatedAt = DateTime.Now;
+                            sub.UpdatedAt = DateTime.UtcNow;
                         }
                     }
 
@@ -1377,7 +1377,7 @@ namespace DreamCleaningBackend.Controllers
                         SubscriptionDays = dto.SubscriptionDays,
                         DisplayOrder = dto.DisplayOrder,
                         IsActive = true,
-                        CreatedAt = DateTime.Now
+                        CreatedAt = DateTime.UtcNow
                     };
 
                     _context.Subscriptions.Add(subscription);
@@ -1453,7 +1453,7 @@ namespace DreamCleaningBackend.Controllers
                             foreach (var sub in allSubscriptions.Where(s => s.DisplayOrder > oldDisplayOrder && s.DisplayOrder <= newDisplayOrder))
                             {
                                 sub.DisplayOrder--;
-                                sub.UpdatedAt = DateTime.Now;
+                                sub.UpdatedAt = DateTime.UtcNow;
                             }
                         }
                         else if (oldDisplayOrder > newDisplayOrder)
@@ -1462,7 +1462,7 @@ namespace DreamCleaningBackend.Controllers
                             foreach (var sub in allSubscriptions.Where(s => s.DisplayOrder >= newDisplayOrder && s.DisplayOrder < oldDisplayOrder))
                             {
                                 sub.DisplayOrder++;
-                                sub.UpdatedAt = DateTime.Now;
+                                sub.UpdatedAt = DateTime.UtcNow;
                             }
                         }
                     }
@@ -1473,7 +1473,7 @@ namespace DreamCleaningBackend.Controllers
                     subscription.DiscountPercentage = dto.DiscountPercentage;
                     subscription.SubscriptionDays = dto.SubscriptionDays;
                     subscription.DisplayOrder = dto.DisplayOrder;
-                    subscription.UpdatedAt = DateTime.Now;
+                    subscription.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
@@ -1554,7 +1554,7 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 subscription.IsActive = false;
-                subscription.UpdatedAt = DateTime.Now;
+                subscription.UpdatedAt = DateTime.UtcNow;
 
                 // Save first
                 await _context.SaveChangesAsync();
@@ -1618,7 +1618,7 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 subscription.IsActive = true;
-                subscription.UpdatedAt = DateTime.Now;
+                subscription.UpdatedAt = DateTime.UtcNow;
 
                 // Save first
                 await _context.SaveChangesAsync();
@@ -1698,7 +1698,7 @@ namespace DreamCleaningBackend.Controllers
                 ValidTo = dto.ValidTo,
                 MinimumOrderAmount = dto.MinimumOrderAmount,
                 IsActive = true,
-                CreatedAt = DateTime.Now
+                CreatedAt = DateTime.UtcNow
             };
 
             _context.PromoCodes.Add(promoCode);
@@ -1756,7 +1756,7 @@ namespace DreamCleaningBackend.Controllers
             promoCode.ValidFrom = dto.ValidFrom;
             promoCode.ValidTo = dto.ValidTo;
             promoCode.MinimumOrderAmount = dto.MinimumOrderAmount;
-            promoCode.UpdatedAt = DateTime.Now;
+            promoCode.UpdatedAt = DateTime.UtcNow;
 
             // LOG THE UPDATE
             await _auditService.LogUpdateAsync(originalPromoCode, promoCode);
@@ -1828,7 +1828,7 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 promoCode.IsActive = false;
-                promoCode.UpdatedAt = DateTime.Now;
+                promoCode.UpdatedAt = DateTime.UtcNow;
 
                 // Save first
                 await _context.SaveChangesAsync();
@@ -1902,7 +1902,7 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 promoCode.IsActive = true;
-                promoCode.UpdatedAt = DateTime.Now;
+                promoCode.UpdatedAt = DateTime.UtcNow;
 
                 // Save first
                 await _context.SaveChangesAsync();
@@ -2011,7 +2011,7 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = validationResult.ErrorMessage });
 
             targetUser.Role = newRole;
-            targetUser.UpdatedAt = DateTime.Now;
+            targetUser.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -2122,7 +2122,7 @@ namespace DreamCleaningBackend.Controllers
             }
 
             targetUser.IsActive = dto.IsActive;
-            targetUser.UpdatedAt = DateTime.Now;
+            targetUser.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -2367,7 +2367,7 @@ namespace DreamCleaningBackend.Controllers
 
                 // Update the status
                 order.Status = dto.Status;
-                order.UpdatedAt = DateTime.Now; // Use UTC for consistency
+                order.UpdatedAt = DateTime.UtcNow; // Use UTC for consistency
 
                 // Save changes FIRST
                 await _context.SaveChangesAsync();
@@ -2394,7 +2394,7 @@ namespace DreamCleaningBackend.Controllers
                         if (matchingOffer != null)
                         {
                             matchingOffer.IsUsed = true;
-                            matchingOffer.UsedAt = DateTime.Now;
+                            matchingOffer.UsedAt = DateTime.UtcNow;
                             matchingOffer.UsedOnOrderId = orderId;
                             await _context.SaveChangesAsync();
 
@@ -2471,7 +2471,7 @@ namespace DreamCleaningBackend.Controllers
                 // Update the order with cancellation info
                 order.Status = "Cancelled";
                 order.CancellationReason = dto.Reason; // Save the reason
-                order.UpdatedAt = DateTime.Now;
+                order.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
 
@@ -2753,7 +2753,7 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 giftCard.IsActive = false;
-                giftCard.UpdatedAt = DateTime.Now;
+                giftCard.UpdatedAt = DateTime.UtcNow;
 
                 // Save first
                 await _context.SaveChangesAsync();
@@ -2829,7 +2829,7 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 giftCard.IsActive = true;
-                giftCard.UpdatedAt = DateTime.Now;
+                giftCard.UpdatedAt = DateTime.UtcNow;
 
                 // Save first
                 await _context.SaveChangesAsync();
@@ -2898,7 +2898,7 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.View)]
         public async Task<IActionResult> GetRecentAuditLogs([FromQuery] int? days = 7)
         {
-            var startDate = DateTime.Now.AddDays(-days.Value);
+            var startDate = DateTime.UtcNow.AddDays(-days.Value);
 
             var logs = await _context.AuditLogs
                 .Where(a => a.CreatedAt >= startDate)
@@ -2996,7 +2996,7 @@ namespace DreamCleaningBackend.Controllers
                     return BadRequest(new { message = "File size must be less than 5MB" });
 
                 // Generate unique filename (always .webp)
-                var baseFileName = $"gift-card-bg-{DateTime.Now:yyyyMMddHHmmss}";
+                var baseFileName = $"gift-card-bg-{DateTime.UtcNow:yyyyMMddHHmmss}";
                 var fileName = $"{baseFileName}.webp";
 
                 // Define the path where frontend serves static files
@@ -3055,7 +3055,7 @@ namespace DreamCleaningBackend.Controllers
                     config = new GiftCardConfig
                     {
                         BackgroundImagePath = relativePath,
-                        LastUpdated = DateTime.Now
+                        LastUpdated = DateTime.UtcNow
                     };
                     _context.GiftCardConfigs.Add(config);
                 }
@@ -3074,7 +3074,7 @@ namespace DreamCleaningBackend.Controllers
                     }
 
                     config.BackgroundImagePath = relativePath;
-                    config.LastUpdated = DateTime.Now;
+                    config.LastUpdated = DateTime.UtcNow;
                 }
 
                 await _context.SaveChangesAsync();
@@ -3205,7 +3205,7 @@ namespace DreamCleaningBackend.Controllers
                 DisplayOrder = dto.DisplayOrder,
                 ServiceTypeId = dto.ServiceTypeId,
                 IsActive = true,
-                CreatedAt = DateTime.Now
+                CreatedAt = DateTime.UtcNow
             };
 
             _context.PollQuestions.Add(question);
@@ -3242,7 +3242,7 @@ namespace DreamCleaningBackend.Controllers
             question.IsRequired = dto.IsRequired;
             question.DisplayOrder = dto.DisplayOrder;
             question.IsActive = dto.IsActive;
-            question.UpdatedAt = DateTime.Now;
+            question.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
             return Ok();
@@ -3315,7 +3315,7 @@ namespace DreamCleaningBackend.Controllers
 
             submission.Status = dto.Status;
             submission.AdminNotes = dto.AdminNotes;
-            submission.UpdatedAt = DateTime.Now;
+            submission.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
             return Ok();

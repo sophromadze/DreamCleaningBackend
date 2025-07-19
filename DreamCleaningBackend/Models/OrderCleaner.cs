@@ -20,7 +20,7 @@ namespace DreamCleaningBackend.Models
         [ForeignKey("CleanerId")]
         public virtual User Cleaner { get; set; }
 
-        public DateTime AssignedAt { get; set; } = DateTime.Now;
+        public DateTime AssignedAt { get; set; } = DateTime.UtcNow;
 
         [Required]
         public int AssignedBy { get; set; } // Admin/Moderator who assigned

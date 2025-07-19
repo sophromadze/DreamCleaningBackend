@@ -44,7 +44,7 @@ namespace DreamCleaningBackend.Services
             user.LastName = updateProfileDto.LastName;
             user.Email = updateProfileDto.Email.ToLower();
             user.Phone = updateProfileDto.Phone;
-            user.UpdatedAt = DateTime.Now;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _userRepository.UpdateAsync(user);
             await _userRepository.SaveChangesAsync();
@@ -92,7 +92,7 @@ namespace DreamCleaningBackend.Services
                 PostalCode = createApartmentDto.PostalCode,
                 SpecialInstructions = createApartmentDto.SpecialInstructions,
                 UserId = userId,
-                CreatedAt = DateTime.Now,
+                CreatedAt = DateTime.UtcNow,
                 IsActive = true
             };
 
@@ -146,7 +146,7 @@ namespace DreamCleaningBackend.Services
             apartment.State = apartmentDto.State;
             apartment.PostalCode = apartmentDto.PostalCode;
             apartment.SpecialInstructions = apartmentDto.SpecialInstructions;
-            apartment.UpdatedAt = DateTime.Now;
+            apartment.UpdatedAt = DateTime.UtcNow;
 
             await _apartmentRepository.UpdateAsync(apartment);
             await _apartmentRepository.SaveChangesAsync();

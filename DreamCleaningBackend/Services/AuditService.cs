@@ -49,7 +49,7 @@ namespace DreamCleaningBackend.Services
                     UserId = userId,
                     IpAddress = GetIpAddress(),
                     UserAgent = GetUserAgent(),
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 };
 
                 _context.AuditLogs.Add(auditLog);
@@ -92,7 +92,7 @@ namespace DreamCleaningBackend.Services
                             UserId = userId,
                             IpAddress = GetIpAddress(),
                             UserAgent = GetUserAgent(),
-                            CreatedAt = DateTime.Now
+                            CreatedAt = DateTime.UtcNow
                         };
 
                         _context.AuditLogs.Add(auditLog);
@@ -120,7 +120,7 @@ namespace DreamCleaningBackend.Services
                             UserId = userId,
                             IpAddress = GetIpAddress(),
                             UserAgent = GetUserAgent(),
-                            CreatedAt = DateTime.Now
+                            CreatedAt = DateTime.UtcNow
                         };
 
                         _context.AuditLogs.Add(auditLog);
@@ -157,7 +157,7 @@ namespace DreamCleaningBackend.Services
                     UserId = userId,
                     IpAddress = GetIpAddress(),
                     UserAgent = GetUserAgent(),
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 };
 
                 _context.AuditLogs.Add(auditLog);
@@ -325,7 +325,7 @@ namespace DreamCleaningBackend.Services
                     UserId = userId,
                     IpAddress = GetIpAddress(),
                     UserAgent = GetUserAgent(),
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 };
 
                 _context.AuditLogs.Add(serviceAuditLog);
@@ -437,7 +437,7 @@ namespace DreamCleaningBackend.Services
                     UserId = adminId,
                     IpAddress = GetIpAddress(),
                     UserAgent = GetUserAgent(),
-                    CreatedAt = DateTime.Now
+                    CreatedAt = DateTime.UtcNow
                 };
 
                 _context.AuditLogs.Add(auditLog);

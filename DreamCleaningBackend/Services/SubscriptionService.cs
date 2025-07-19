@@ -22,10 +22,10 @@ namespace DreamCleaningBackend.Services
             if (subscription == null || !subscription.IsActive) return false;
 
             user.SubscriptionId = subscriptionId;
-            user.SubscriptionStartDate = DateTime.Now;
-            user.SubscriptionExpiryDate = DateTime.Now.AddDays(subscription.SubscriptionDays);
-            user.LastOrderDate = DateTime.Now;
-            user.UpdatedAt = DateTime.Now;
+            user.SubscriptionStartDate = DateTime.UtcNow;
+            user.SubscriptionExpiryDate = DateTime.UtcNow.AddDays(subscription.SubscriptionDays);
+            user.LastOrderDate = DateTime.UtcNow;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
             return true;
@@ -41,7 +41,7 @@ namespace DreamCleaningBackend.Services
 
             // Check if subscription has expired
             if (user.SubscriptionExpiryDate.HasValue &&
-                user.SubscriptionExpiryDate.Value < DateTime.Now)
+                user.SubscriptionExpiryDate.Value < DateTime.UtcNow)
             {
                 await DeactivateSubscription(userId);
                 return false;
@@ -58,9 +58,9 @@ namespace DreamCleaningBackend.Services
 
             if (user == null || user.Subscription == null) return false;
 
-            user.SubscriptionExpiryDate = DateTime.Now.AddDays(user.Subscription.SubscriptionDays);
-            user.LastOrderDate = DateTime.Now;
-            user.UpdatedAt = DateTime.Now;
+            user.SubscriptionExpiryDate = DateTime.UtcNow.AddDays(user.Subscription.SubscriptionDays);
+            user.LastOrderDate = DateTime.UtcNow;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
             return true;
@@ -74,7 +74,7 @@ namespace DreamCleaningBackend.Services
             user.SubscriptionId = null;
             user.SubscriptionStartDate = null;
             user.SubscriptionExpiryDate = null;
-            user.UpdatedAt = DateTime.Now;
+            user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
             return true;

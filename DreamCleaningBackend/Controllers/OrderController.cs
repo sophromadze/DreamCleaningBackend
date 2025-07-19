@@ -169,7 +169,7 @@ namespace DreamCleaningBackend.Controllers
                 {
                     updateHistory.PaymentIntentId = dto.PaymentIntentId;
                     updateHistory.IsPaid = true;
-                    updateHistory.PaidAt = DateTime.Now;
+                    updateHistory.PaidAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
                 }
 

@@ -64,7 +64,7 @@ namespace DreamCleaningBackend.Services
                 SenderEmail = createDto.SenderEmail,
                 Message = createDto.Message,
                 PurchasedByUserId = userId,
-                CreatedAt = DateTime.Now
+                CreatedAt = DateTime.UtcNow
             };
 
             _context.GiftCards.Add(giftCard);
@@ -164,7 +164,7 @@ namespace DreamCleaningBackend.Services
 
             // Update gift card balance
             giftCard.CurrentBalance -= amountToApply;
-            giftCard.UpdatedAt = DateTime.Now;
+            giftCard.UpdatedAt = DateTime.UtcNow;
 
             // Save gift card changes first
             await _context.SaveChangesAsync();
@@ -180,7 +180,7 @@ namespace DreamCleaningBackend.Services
                 UserId = userId,
                 AmountUsed = amountToApply,
                 BalanceAfterUsage = giftCard.CurrentBalance,
-                UsedAt = DateTime.Now
+                UsedAt = DateTime.UtcNow
             };
 
             _context.GiftCardUsages.Add(usage);
@@ -341,9 +341,9 @@ namespace DreamCleaningBackend.Services
 
 			// YOUR EXISTING CODE: All updates remain exactly the same
 			giftCard.IsPaid = true;
-			giftCard.PaidAt = DateTime.Now;
+			giftCard.PaidAt = DateTime.UtcNow;
 			giftCard.PaymentIntentId = paymentIntentId;
-			giftCard.UpdatedAt = DateTime.Now;
+			giftCard.UpdatedAt = DateTime.UtcNow;
 
 			// MODIFIED: Only log if NOT initial payment
 			if (!isInitialPayment)

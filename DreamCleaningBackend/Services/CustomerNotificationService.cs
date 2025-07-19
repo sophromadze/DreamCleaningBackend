@@ -68,7 +68,7 @@ namespace DreamCleaningBackend.Services
             var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var emailService = scope.ServiceProvider.GetRequiredService<IEmailService>();
 
-            var now = DateTime.Now;
+            var now = DateTime.UtcNow;
             var twoDaysFromNow = now.AddDays(2);
             var twoHoursFromNow = now.AddHours(2);
 
@@ -119,7 +119,7 @@ namespace DreamCleaningBackend.Services
                         {
                             OrderId = order.Id,
                             NotificationType = "CustomerTwoDayReminder",
-                            SentAt = DateTime.Now
+                            SentAt = DateTime.UtcNow
                         };
                         context.NotificationLogs.Add(log);
                     }
@@ -160,7 +160,7 @@ namespace DreamCleaningBackend.Services
                             {
                                 OrderId = order.Id,
                                 NotificationType = "CustomerTwoHourReminder",
-                                SentAt = DateTime.Now
+                                SentAt = DateTime.UtcNow
                             };
                             context.NotificationLogs.Add(log);
                         }
