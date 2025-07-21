@@ -524,32 +524,30 @@ namespace DreamCleaningBackend.Services
                 _logger.LogError(ex, $"Failed to send order update notification for Order #{order.Id}");
             }
 
-            // Create update history record if there's an additional amount
-            if (Math.Abs(additionalAmount) > 0.01m)
+            // Create update history record for ALL changes (not just when there's additional amount)
+            // This ensures audit logs show changes even when there's no monetary difference
+            var updateHistory = new OrderUpdateHistory
             {
-                var updateHistory = new OrderUpdateHistory
-                {
-                    OrderId = order.Id,
-                    UpdatedByUserId = userId,
-                    UpdatedAt = DateTime.UtcNow,
-                    // Use the stored original values
-                    OriginalSubTotal = originalSubTotal,
-                    OriginalTax = originalTax,
-                    OriginalTips = originalTips,
-                    OriginalCompanyDevelopmentTips = originalCompanyDevelopmentTips,
-                    OriginalTotal = originalTotal,
-                    // New values after update
-                    NewSubTotal = order.SubTotal,
-                    NewTax = order.Tax,
-                    NewTips = order.Tips,
-                    NewCompanyDevelopmentTips = order.CompanyDevelopmentTips,
-                    NewTotal = order.Total,
-                    AdditionalAmount = additionalAmount,
-                    IsPaid = false
-                };
+                OrderId = order.Id,
+                UpdatedByUserId = userId,
+                UpdatedAt = DateTime.UtcNow,
+                // Use the stored original values
+                OriginalSubTotal = originalSubTotal,
+                OriginalTax = originalTax,
+                OriginalTips = originalTips,
+                OriginalCompanyDevelopmentTips = originalCompanyDevelopmentTips,
+                OriginalTotal = originalTotal,
+                // New values after update
+                NewSubTotal = order.SubTotal,
+                NewTax = order.Tax,
+                NewTips = order.Tips,
+                NewCompanyDevelopmentTips = order.CompanyDevelopmentTips,
+                NewTotal = order.Total,
+                AdditionalAmount = additionalAmount,
+                IsPaid = additionalAmount <= 0.01m // Mark as paid if no additional amount required
+            };
 
-                _context.OrderUpdateHistories.Add(updateHistory);
-            }
+            _context.OrderUpdateHistories.Add(updateHistory);
 
             await _orderRepository.UpdateAsync(order);
             await _orderRepository.SaveChangesAsync();

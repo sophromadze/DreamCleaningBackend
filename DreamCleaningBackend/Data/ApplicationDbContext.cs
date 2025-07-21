@@ -32,6 +32,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<PollSubmission> PollSubmissions { get; set; }
         public DbSet<PollAnswer> PollAnswers { get; set; }
         public DbSet<OrderUpdateHistory> OrderUpdateHistories { get; set; }
+        public DbSet<MaintenanceMode> MaintenanceModes { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
