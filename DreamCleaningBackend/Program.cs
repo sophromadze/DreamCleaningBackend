@@ -22,7 +22,7 @@ builder.Services.AddScoped<IPermissionService, PermissionService>();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
-// UPDATE THIS SECTION - Replace builder.Services.AddSwaggerGen(); with:
+// Swagger configuration
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
@@ -63,6 +63,12 @@ builder.Services.AddSwaggerGen(options =>
 
 builder.Services.AddAuthorization();
 
+// Add CSRF Protection for cookie authentication
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+});
+
 // Add SignalR
 builder.Services.AddSignalR();
 
@@ -74,7 +80,10 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseMySql(connectionString, serverVersion);
 });
 
-// Authentication Configuration - UPDATED FOR SIGNALR
+// Check if we're using cookie authentication
+var useCookieAuth = builder.Configuration.GetValue<bool>("Authentication:UseCookieAuth", false);
+
+// Authentication Configuration - Updated for both cookie and JWT auth
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -89,21 +98,42 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ClockSkew = TimeSpan.Zero
         };
 
-        // IMPORTANT: Configure JWT for SignalR
+        // Configure JWT for both SignalR and cookie auth
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
             {
-                var accessToken = context.Request.Query["access_token"];
                 var path = context.HttpContext.Request.Path;
 
-                // If the request is for our hub...
-                if (!string.IsNullOrEmpty(accessToken) &&
-                    (path.StartsWithSegments("/userManagementHub")))
+                if (useCookieAuth)
                 {
-                    // Read the token out of the query string
-                    context.Token = accessToken;
+                    // For cookie auth, read token from cookie
+                    context.Token = context.Request.Cookies["access_token"];
+                    
+                    // For SignalR with cookies, still check query string as fallback
+                    if (string.IsNullOrEmpty(context.Token) && path.StartsWithSegments("/userManagementHub"))
+                    {
+                        var accessToken = context.Request.Query["access_token"];
+                        if (!string.IsNullOrEmpty(accessToken))
+                        {
+                            context.Token = accessToken;
+                        }
+                    }
                 }
+                else
+                {
+                    // Original logic for query string token (SignalR)
+                    var accessToken = context.Request.Query["access_token"];
+
+                    // If the request is for our hub...
+                    if (!string.IsNullOrEmpty(accessToken) &&
+                        (path.StartsWithSegments("/userManagementHub")))
+                    {
+                        // Read the token out of the query string
+                        context.Token = accessToken;
+                    }
+                }
+                
                 return Task.CompletedTask;
             }
         };
@@ -135,8 +165,7 @@ builder.Services.AddScoped<IMaintenanceModeService, MaintenanceModeService>();
 
 builder.Services.AddHttpClient();
 
-
-// CORS Configuration
+// CORS Configuration - Updated for cookie auth
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAngularApp",
@@ -145,7 +174,7 @@ builder.Services.AddCors(options =>
             policy.WithOrigins("http://localhost:4200") // Angular dev server
                    .AllowAnyHeader()
                    .AllowAnyMethod()
-                   .AllowCredentials();
+                   .AllowCredentials(); // Important for cookies
         });
 
     // Add production policy
@@ -161,7 +190,7 @@ builder.Services.AddCors(options =>
                 )
                 .AllowAnyHeader()
                 .AllowAnyMethod()
-                .AllowCredentials();
+                .AllowCredentials(); // Important for cookies
         });
 });
 
@@ -253,12 +282,11 @@ app.UseExceptionHandler(appError =>
 
 Console.WriteLine("Using DB: " + builder.Configuration.GetConnectionString("DefaultConnection"));
 
-
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
-// ADD THIS - Map SignalR Hub
+// Map SignalR Hub
 app.MapHub<UserManagementHub>("/userManagementHub");
 
 // Add logging to see if hub is registered
@@ -284,6 +312,12 @@ app.Use(async (context, next) =>
         context.Response.Headers.Add("X-XSS-Protection", "1; mode=block");
         context.Response.Headers.Add("Referrer-Policy", "strict-origin-when-cross-origin");
         context.Response.Headers.Add("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+        
+        // Add cookie security headers for production
+        if (useCookieAuth)
+        {
+            context.Response.Headers.Add("Set-Cookie", "SameSite=Strict; Secure");
+        }
     }
     await next();
 });

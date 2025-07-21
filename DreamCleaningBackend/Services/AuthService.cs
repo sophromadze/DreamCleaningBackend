@@ -11,6 +11,7 @@ using DreamCleaningBackend.Models;
 using Google.Apis.Auth;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Helpers;
+using DreamCleaningBackend.Repositories.Interfaces;
 
 namespace DreamCleaningBackend.Services
 {
@@ -22,8 +23,9 @@ namespace DreamCleaningBackend.Services
         private readonly ILogger<AuthService> _logger;
         private readonly ISpecialOfferService _specialOfferService;
         private readonly IAuditService _auditService;
+        private readonly IUserRepository _userRepository;
 
-        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService)
+        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService, IUserRepository userRepository)
         {
             _context = context;
             _configuration = configuration;
@@ -31,6 +33,7 @@ namespace DreamCleaningBackend.Services
             _logger = logger;
             _specialOfferService = specialOfferService;
             _auditService = auditService;
+            _userRepository = userRepository;
         }
 
         // Update your AuthService.cs Register method with better error handling
@@ -760,6 +763,31 @@ namespace DreamCleaningBackend.Services
             }
 
             return true;
+        }
+
+        public async Task<UserDto> GetUserById(int userId)
+        {
+            var user = await _userRepository.GetByIdAsync(userId);
+            
+            if (user == null)
+            {
+                throw new Exception("User not found");
+            }
+
+            // Map User entity to UserDto
+            return new UserDto
+            {
+                Id = user.Id,
+                FirstName = user.FirstName,
+                LastName = user.LastName,
+                Email = user.Email,
+                Phone = user.Phone,
+                FirstTimeOrder = user.FirstTimeOrder,
+                SubscriptionId = user.SubscriptionId,
+                AuthProvider = user.AuthProvider,
+                Role = user.Role.ToString(),
+                ProfilePictureUrl = user.ProfilePictureUrl
+            };
         }
     }
 }

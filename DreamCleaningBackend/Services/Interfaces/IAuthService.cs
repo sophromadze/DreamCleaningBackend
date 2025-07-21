@@ -18,5 +18,6 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<bool> ResetPassword(ResetPasswordDto resetDto);
         Task<EmailChangeResponseDto> InitiateEmailChange(int userId, InitiateEmailChangeDto dto);
         Task<bool> ConfirmEmailChange(string token);
+        Task<UserDto> GetUserById(int userId);
     }
 }

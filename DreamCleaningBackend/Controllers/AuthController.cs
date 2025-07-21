@@ -20,10 +20,14 @@ namespace DreamCleaningBackend.Controllers
     public class AuthController : ControllerBase
     {
         private readonly IAuthService _authService;
+        private readonly IConfiguration _configuration;
+        private readonly bool _useCookieAuth;
 
-        public AuthController(IAuthService authService)
+        public AuthController(IAuthService authService, IConfiguration configuration)
         {
             _authService = authService;
+            _configuration = configuration;
+            _useCookieAuth = configuration.GetValue<bool>("Authentication:UseCookieAuth", false);
         }
 
         [HttpPost("register")]
@@ -32,6 +36,14 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var response = await _authService.Register(registerDto);
+                
+                if (_useCookieAuth && response.Token != null && !response.RequiresEmailVerification)
+                {
+                    SetAuthCookies(response.Token, response.RefreshToken);
+                    // Don't send tokens in response for cookie auth
+                    return Ok(new { user = response.User, requiresEmailVerification = false });
+                }
+                
                 return Ok(response);
             }
             catch (Exception ex)
@@ -46,6 +58,14 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var response = await _authService.Login(loginDto);
+                
+                if (_useCookieAuth)
+                {
+                    SetAuthCookies(response.Token, response.RefreshToken);
+                    // Don't send tokens in response for cookie auth
+                    return Ok(new { user = response.User });
+                }
+                
                 return Ok(response);
             }
             catch (Exception ex)
@@ -60,6 +80,14 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var response = await _authService.GoogleLogin(googleLoginDto);
+                
+                if (_useCookieAuth)
+                {
+                    SetAuthCookies(response.Token, response.RefreshToken);
+                    // Don't send tokens in response for cookie auth
+                    return Ok(new { user = response.User });
+                }
+                
                 return Ok(response);
             }
             catch (Exception ex)
@@ -73,13 +101,66 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var response = await _authService.RefreshToken(refreshTokenDto);
-                return Ok(response);
+                AuthResponseDto response;
+                
+                if (_useCookieAuth)
+                {
+                    // Get refresh token from cookie
+                    var refreshToken = Request.Cookies["refresh_token"];
+                    if (string.IsNullOrEmpty(refreshToken))
+                    {
+                        return Unauthorized(new { message = "No refresh token provided" });
+                    }
+                    
+                    response = await _authService.RefreshToken(new RefreshTokenDto { RefreshToken = refreshToken });
+                    SetAuthCookies(response.Token, response.RefreshToken);
+                    
+                    // Don't send tokens in response for cookie auth
+                    return Ok(new { user = response.User });
+                }
+                else
+                {
+                    response = await _authService.RefreshToken(refreshTokenDto);
+                    return Ok(response);
+                }
             }
             catch (Exception ex)
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        [HttpPost("logout")]
+        [Authorize]
+        public ActionResult Logout()
+        {
+            if (_useCookieAuth)
+            {
+                // Clear cookies
+                Response.Cookies.Delete("access_token");
+                Response.Cookies.Delete("refresh_token");
+            }
+            
+            return Ok(new { message = "Logged out successfully" });
+        }
+
+        [HttpGet("current-user")]
+        [Authorize]
+        public async Task<ActionResult<UserDto>> GetCurrentUser()
+        {
+            var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!int.TryParse(userIdClaim, out int userId))
+            {
+                return Unauthorized();
+            }
+
+            var user = await _authService.GetUserById(userId);
+            if (user == null)
+            {
+                return NotFound();
+            }
+
+            return Ok(user);
         }
 
         [HttpGet("check-email/{email}")]
@@ -124,6 +205,14 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 var response = await _authService.RefreshUserToken(userId);
+                
+                if (_useCookieAuth)
+                {
+                    SetAuthCookies(response.Token, response.RefreshToken);
+                    // Don't send tokens in response for cookie auth
+                    return Ok(new { user = response.User });
+                }
+                
                 return Ok(response);
             }
             catch (Exception ex)
@@ -223,6 +312,29 @@ namespace DreamCleaningBackend.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        private void SetAuthCookies(string token, string refreshToken)
+        {
+            var cookieOptions = new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = !_configuration.GetValue<bool>("Development:UseHttp", false), // Use HTTPS in production
+                SameSite = SameSiteMode.Strict,
+                Expires = DateTime.UtcNow.AddHours(2)
+            };
+
+            Response.Cookies.Append("access_token", token, cookieOptions);
+
+            var refreshCookieOptions = new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = !_configuration.GetValue<bool>("Development:UseHttp", false),
+                SameSite = SameSiteMode.Strict,
+                Expires = DateTime.UtcNow.AddDays(7)
+            };
+
+            Response.Cookies.Append("refresh_token", refreshToken, refreshCookieOptions);
         }
     }
 }
