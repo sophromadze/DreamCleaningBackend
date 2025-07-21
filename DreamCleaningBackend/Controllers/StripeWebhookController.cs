@@ -27,22 +27,48 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost]
+        [AllowAnonymous]  // ADD THIS - This is critical!
         public async Task<IActionResult> Handle()
         {
             var json = await new StreamReader(HttpContext.Request.Body).ReadToEndAsync();
-            _logger.LogInformation($"Received webhook event: {json}");
+            
+            // Don't log the full webhook body in production as it may contain sensitive data
+            _logger.LogInformation("Received webhook event");
+
+            // Check for empty body
+            if (string.IsNullOrEmpty(json))
+            {
+                _logger.LogWarning("Empty request body received");
+                return BadRequest("Empty request body");
+            }
+
+            // Check for Stripe signature header
+            var stripeSignature = Request.Headers["Stripe-Signature"].FirstOrDefault();
+            if (string.IsNullOrEmpty(stripeSignature))
+            {
+                _logger.LogWarning("Missing Stripe-Signature header");
+                return BadRequest("Missing Stripe-Signature header");
+            }
+
+            // Check for webhook secret configuration
+            var webhookSecret = _configuration["Stripe:WebhookSecret"];
+            if (string.IsNullOrEmpty(webhookSecret))
+            {
+                _logger.LogError("Webhook secret not configured");
+                return StatusCode(500, "Webhook configuration error");
+            }
 
             try
             {
                 var stripeEvent = EventUtility.ConstructEvent(
                     json,
-                    Request.Headers["Stripe-Signature"],
-                    _configuration["Stripe:WebhookSecret"]
+                    stripeSignature,
+                    webhookSecret
                 );
 
                 _logger.LogInformation($"Processing Stripe event: {stripeEvent.Type}");
 
-                // Handle the event - Using string constants instead of Events class
+                // Handle the event
                 switch (stripeEvent.Type)
                 {
                     case "payment_intent.succeeded":
@@ -64,12 +90,12 @@ namespace DreamCleaningBackend.Controllers
             catch (StripeException e)
             {
                 _logger.LogError(e, "Stripe webhook error: {Message}", e.Message);
-                return BadRequest();
+                return BadRequest($"Webhook Error: {e.Message}");
             }
             catch (Exception e)
             {
                 _logger.LogError(e, "Unexpected error in webhook handler: {Message}", e.Message);
-                return StatusCode(500);
+                return StatusCode(500, "Internal server error");
             }
         }
 
