@@ -51,7 +51,10 @@ namespace DreamCleaningBackend.Services
                 Status = o.Status,
                 Total = o.Total,
                 ServiceAddress = o.ServiceAddress + (string.IsNullOrEmpty(o.AptSuite) ? "" : $", {o.AptSuite}"),
-                OrderDate = o.OrderDate
+                OrderDate = o.OrderDate,
+                TotalDuration = o.TotalDuration,
+                Tips = o.Tips,
+                CompanyDevelopmentTips = o.CompanyDevelopmentTips
             }).ToList();
         }
 
@@ -73,7 +76,10 @@ namespace DreamCleaningBackend.Services
                 Status = o.Status,
                 Total = o.Total,
                 ServiceAddress = o.ServiceAddress + (string.IsNullOrEmpty(o.AptSuite) ? "" : $", {o.AptSuite}"),
-                OrderDate = o.OrderDate
+                OrderDate = o.OrderDate,
+                TotalDuration = o.TotalDuration,
+                Tips = o.Tips,
+                CompanyDevelopmentTips = o.CompanyDevelopmentTips
             }).ToList();
         }
 
@@ -956,7 +962,10 @@ namespace DreamCleaningBackend.Services
                 Status = o.Status,
                 Total = o.Total,
                 ServiceAddress = o.ServiceAddress + (string.IsNullOrEmpty(o.AptSuite) ? "" : $", {o.AptSuite}"),
-                OrderDate = o.OrderDate
+                OrderDate = o.OrderDate,
+                TotalDuration = o.TotalDuration,
+                Tips = o.Tips,
+                CompanyDevelopmentTips = o.CompanyDevelopmentTips
             }).ToList();
         }
 

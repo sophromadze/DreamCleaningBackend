@@ -19,15 +19,15 @@ namespace DreamCleaningBackend.Services
             _auditService = auditService;
         }
 
-        public async Task<List<CleanerCalendarDto>> GetCleanerCalendarAsync(int cleanerId)
+        public async Task<List<CleanerCalendarDto>> GetCleanerCalendarAsync(int userId, string userRole)
         {
             var startDate = DateTime.Today;
             var endDate = startDate.AddDays(30);
 
-            // Get ALL active orders in the date range
+            // Get ALL orders in the date range (not just Active status)
             var allOrders = await _context.Orders
                 .Where(o => o.ServiceDate >= startDate && o.ServiceDate <= endDate)
-                .Where(o => o.Status == "Active")
+                .Where(o => o.Status != "Cancelled" && o.Status != "Done") // Exclude cancelled and done orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.OrderCleaners)
                 .ToListAsync(); // Execute query first
@@ -39,20 +39,21 @@ namespace DreamCleaningBackend.Services
                 ClientName = $"{o.ContactFirstName} {o.ContactLastName}",
                 ServiceDate = o.ServiceDate,
                 ServiceTime = o.ServiceTime.ToString(),
-                ServiceAddress = o.ApartmentName ?? "Address not provided",
+                ServiceAddress = o.ServiceAddress ?? "Address not provided",
                 ServiceTypeName = o.ServiceType.Name,
                 TotalDuration = o.TotalDuration,
-                TipsForCleaner = o.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == cleanerId)?.TipsForCleaner,
-                IsAssignedToCleaner = o.OrderCleaners.Any(oc => oc.CleanerId == cleanerId)
+                TipsForCleaner = o.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == userId)?.TipsForCleaner,
+                IsAssignedToCleaner = o.OrderCleaners.Any(oc => oc.CleanerId == userId)
             })
             .OrderBy(o => o.ServiceDate)
             .ThenBy(o => o.ServiceTime)
             .ToList();
 
+            // Show all orders to everyone, but IsAssignedToCleaner indicates if the current user is assigned
             return result;
         }
 
-        public async Task<CleanerOrderDetailDto> GetOrderDetailsForCleanerAsync(int orderId, int cleanerId)
+        public async Task<CleanerOrderDetailDto> GetOrderDetailsForCleanerAsync(int orderId, int userId, string userRole)
         {
             var order = await _context.Orders
                 .Include(o => o.ServiceType)
@@ -67,8 +68,16 @@ namespace DreamCleaningBackend.Services
             if (order == null)
                 return null;
 
+            // For cleaner role, check if they are assigned to this order
+            if (userRole == "Cleaner")
+            {
+                var isAssigned = order.OrderCleaners.Any(oc => oc.CleanerId == userId);
+                if (!isAssigned)
+                    return null;
+            }
+
             // Get additional tips from OrderCleaner if any
-            var cleanerAssignment = order.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == cleanerId);
+            var cleanerAssignment = order.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == userId);
 
             var assignedCleaners = order.OrderCleaners
                 .Select(oc => $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}")

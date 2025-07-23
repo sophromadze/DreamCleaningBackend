@@ -127,6 +127,9 @@ namespace DreamCleaningBackend.DTOs
         public decimal Total { get; set; }
         public string ServiceAddress { get; set; }
         public DateTime OrderDate { get; set; }
+        public decimal TotalDuration { get; set; }
+        public decimal Tips { get; set; }
+        public decimal CompanyDevelopmentTips { get; set; }
     }
 
     public class CancelOrderDto
