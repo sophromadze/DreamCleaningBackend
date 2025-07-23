@@ -250,32 +250,52 @@ namespace DreamCleaningBackend.Services
         {
             try
             {
+                _logger.LogInformation("Starting token refresh process");
+                
                 var principal = GetPrincipalFromExpiredToken(refreshTokenDto.Token);
                 // PRESERVED: Try both claim types for user ID
                 var userId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
                              principal.FindFirst("UserId")?.Value;
 
                 if (string.IsNullOrEmpty(userId))
+                {
+                    _logger.LogWarning("Invalid token - no user ID found");
                     throw new Exception("Invalid token");
+                }
 
                 var user = await _context.Users
                     .Include(u => u.Subscription)
                     .FirstOrDefaultAsync(u => u.Id == int.Parse(userId));
 
                 if (user == null)
+                {
+                    _logger.LogWarning($"User not found for ID: {userId}");
                     throw new Exception("User not found");
+                }
 
                 // NEW: Check if user is still active
                 if (!user.IsActive)
+                {
+                    _logger.LogWarning($"User account is blocked for ID: {userId}");
                     throw new Exception("User account is blocked");
+                }
 
                 // PRESERVED: Validate refresh token
                 if (user.RefreshToken != refreshTokenDto.RefreshToken)
+                {
+                    _logger.LogWarning($"Invalid refresh token for user ID: {userId}");
+                    _logger.LogWarning($"Expected refresh token: {user.RefreshToken}");
+                    _logger.LogWarning($"Received refresh token: {refreshTokenDto.RefreshToken}");
+                    _logger.LogWarning($"Token lengths - Expected: {user.RefreshToken?.Length}, Received: {refreshTokenDto.RefreshToken?.Length}");
                     throw new Exception("Invalid refresh token");
+                }
 
                 // PRESERVED: Check if refresh token is expired
                 if (user.RefreshTokenExpiryTime <= DateTime.UtcNow)
+                {
+                    _logger.LogWarning($"Refresh token expired for user ID: {userId}");
                     throw new Exception("Refresh token expired");
+                }
 
                 // Generate new tokens
                 var newAccessToken = CreateToken(user);
@@ -287,6 +307,8 @@ namespace DreamCleaningBackend.Services
                 user.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
+
+                _logger.LogInformation($"Token refresh successful for user ID: {userId}");
 
                 return new AuthResponseDto
                 {
@@ -438,7 +460,7 @@ namespace DreamCleaningBackend.Services
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(claims),
-                Expires = DateTime.UtcNow.AddHours(2), // Extended from 1 hour to 2 hours for better UX
+                Expires = DateTime.UtcNow.AddHours(24), // Extended from 2 hours to 24 hours for better UX
                 SigningCredentials = creds
             };
 
