@@ -321,7 +321,7 @@ namespace DreamCleaningBackend.Controllers
                 HttpOnly = true,
                 Secure = !_configuration.GetValue<bool>("Development:UseHttp", false), // Use HTTPS in production
                 SameSite = SameSiteMode.Strict,
-                Expires = DateTime.UtcNow.AddHours(2)
+                Expires = DateTime.UtcNow.AddDays(7) // Changed from 2 hours to 7 days to match refresh token
             };
 
             Response.Cookies.Append("access_token", token, cookieOptions);

@@ -460,7 +460,7 @@ namespace DreamCleaningBackend.Services
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(claims),
-                Expires = DateTime.UtcNow.AddHours(24), // Extended from 2 hours to 24 hours for better UX
+                Expires = DateTime.UtcNow.AddDays(7), // Extended to 7 days to match cookie expiration
                 SigningCredentials = creds
             };
 
