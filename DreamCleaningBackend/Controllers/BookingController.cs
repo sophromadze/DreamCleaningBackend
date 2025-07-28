@@ -959,8 +959,8 @@ namespace DreamCleaningBackend.Controllers
                         user.UpdatedAt = DateTime.UtcNow;
                     }
 
-                    // Handle first-time discount
-                    if (order.PromoCode == "firstUse" && user.FirstTimeOrder)
+                    // Handle first-time order completion
+                    if (user.FirstTimeOrder)
                     {
                         user.FirstTimeOrder = false;
                         user.UpdatedAt = DateTime.UtcNow;
@@ -1126,7 +1126,8 @@ namespace DreamCleaningBackend.Controllers
                     }
                 }
 
-                if (user.FirstTimeOrder && order.PromoCode == "firstUse")
+                // Update first-time order status if this is their first order
+                if (user.FirstTimeOrder)
                 {
                     user.FirstTimeOrder = false;
                     user.UpdatedAt = DateTime.UtcNow;
