@@ -578,24 +578,10 @@ namespace DreamCleaningBackend.Services
 
         private string FormatDurationRounded(int minutes)
         {
-            var hours = minutes / 60;
-            var mins = minutes % 60;
-
-            // Rounding logic: if mins >= 45, round up to next hour
-            // if mins >= 15, round to 30; if less, round to 0
-            if (mins >= 45)
-            {
-                hours += 1;
-                mins = 0;
-            }
-            else if (mins >= 15)
-            {
-                mins = 30;
-            }
-            else
-            {
-                mins = 0;
-            }
+            // Round to nearest 15 minutes (same as frontend)
+            var roundedMinutes = (int)Math.Round(minutes / 15.0) * 15;
+            var hours = roundedMinutes / 60;
+            var mins = roundedMinutes % 60;
 
             if (hours == 0 && mins == 0)
             {
