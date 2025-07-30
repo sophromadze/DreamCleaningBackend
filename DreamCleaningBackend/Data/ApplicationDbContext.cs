@@ -33,6 +33,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<PollAnswer> PollAnswers { get; set; }
         public DbSet<OrderUpdateHistory> OrderUpdateHistories { get; set; }
         public DbSet<MaintenanceMode> MaintenanceModes { get; set; }
+        public DbSet<WebhookEvent> WebhookEvents { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

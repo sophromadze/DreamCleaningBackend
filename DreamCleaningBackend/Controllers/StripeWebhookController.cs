@@ -105,15 +105,36 @@ namespace DreamCleaningBackend.Controllers
                     {
                         case "payment_intent.succeeded":
                             var paymentIntent = stripeEvent.Data.Object as PaymentIntent;
-                            await HandlePaymentIntentSucceeded(paymentIntent, cts.Token);
+                            if (paymentIntent != null)
+                            {
+                                await HandlePaymentIntentSucceeded(paymentIntent, cts.Token);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("PaymentIntent object is null for event: {EventType}", stripeEvent.Type);
+                            }
                             break;
                         case "payment_intent.payment_failed":
                             var failedPayment = stripeEvent.Data.Object as PaymentIntent;
-                            await HandlePaymentIntentFailed(failedPayment, cts.Token);
+                            if (failedPayment != null)
+                            {
+                                await HandlePaymentIntentFailed(failedPayment, cts.Token);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("PaymentIntent object is null for event: {EventType}", stripeEvent.Type);
+                            }
                             break;
                         case "payment_intent.canceled":
                             var canceledPayment = stripeEvent.Data.Object as PaymentIntent;
-                            await HandlePaymentIntentCanceled(canceledPayment, cts.Token);
+                            if (canceledPayment != null)
+                            {
+                                await HandlePaymentIntentCanceled(canceledPayment, cts.Token);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("PaymentIntent object is null for event: {EventType}", stripeEvent.Type);
+                            }
                             break;
                         default:
                             _logger.LogInformation("Unhandled event type: {EventType}", stripeEvent.Type);
@@ -153,8 +174,14 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                _logger.LogInformation("Processing payment intent succeeded: {PaymentIntentId}", paymentIntent.Id);
+                _logger.LogInformation("Processing payment intent succeeded: {PaymentIntentId}", paymentIntent?.Id);
                 
+                if (paymentIntent?.Metadata == null)
+                {
+                    _logger.LogWarning("Payment intent or metadata is null");
+                    return;
+                }
+
                 var metadata = paymentIntent.Metadata;
 
                 if (metadata.TryGetValue("type", out var type))
@@ -185,7 +212,7 @@ namespace DreamCleaningBackend.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error handling payment intent succeeded: {PaymentIntentId}", paymentIntent.Id);
+                _logger.LogError(ex, "Error handling payment intent succeeded: {PaymentIntentId}", paymentIntent?.Id);
                 throw; // Re-throw to be caught by the main handler
             }
         }
@@ -307,10 +334,9 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                _logger.LogWarning("Payment failed for intent: {PaymentIntentId}", paymentIntent.Id);
+                _logger.LogWarning("Payment failed for intent: {PaymentIntentId}", paymentIntent?.Id);
                 
-                // Log the failure reason if available
-                if (!string.IsNullOrEmpty(paymentIntent.LastPaymentError?.Message))
+                if (paymentIntent?.LastPaymentError?.Message != null)
                 {
                     _logger.LogWarning("Payment failure reason: {FailureReason}", paymentIntent.LastPaymentError.Message);
                 }
@@ -323,14 +349,14 @@ namespace DreamCleaningBackend.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error handling payment intent failed: {PaymentIntentId}", paymentIntent.Id);
+                _logger.LogError(ex, "Error handling payment intent failed: {PaymentIntentId}", paymentIntent?.Id);
                 throw; // Re-throw to be caught by the main handler
             }
         }
 
         private async Task HandlePaymentIntentCanceled(PaymentIntent paymentIntent, CancellationToken cancellationToken = default)
         {
-            _logger.LogWarning("Payment intent {PaymentIntentId} was canceled", paymentIntent.Id);
+            _logger.LogWarning("Payment intent {PaymentIntentId} was canceled", paymentIntent?.Id);
             // Implement cancellation handling logic
         }
 
