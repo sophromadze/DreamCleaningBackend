@@ -99,6 +99,9 @@ namespace DreamCleaningBackend.Services
             // Check if email sending is disabled in configuration
             var emailEnabled = _configuration.GetValue<bool>("Email:EnableEmailSending", true);
 
+            _logger.LogInformation($"Attempting to send email to {to} with subject: {subject}");
+            _logger.LogInformation($"Email sending enabled: {emailEnabled}");
+
             if (!emailEnabled)
             {
                 _logger.LogInformation($"Email sending is disabled. Would have sent email to {to} with subject: {subject}");
@@ -118,12 +121,16 @@ namespace DreamCleaningBackend.Services
                 email.Subject = subject;
                 email.Body = new TextPart(TextFormat.Html) { Text = html };
 
+                _logger.LogInformation($"Email configured - From: {_configuration["Email:FromAddress"]}, To: {to}");
+
                 using var smtp = new SmtpClient();
 
                 // Add timeout to prevent hanging
                 smtp.Timeout = timeoutMs;
 
                 using var cts = new CancellationTokenSource(timeoutMs);
+
+                _logger.LogInformation($"Connecting to SMTP server: {_configuration["Email:SmtpHost"]}:{_configuration["Email:SmtpPort"]}");
 
                 await smtp.ConnectAsync(
                     _configuration["Email:SmtpHost"],
@@ -132,11 +139,15 @@ namespace DreamCleaningBackend.Services
                     cts.Token
                 );
 
+                _logger.LogInformation("SMTP connection established, authenticating...");
+
                 await smtp.AuthenticateAsync(
                     _configuration["Email:SmtpUser"],
                     _configuration["Email:SmtpPassword"],
                     cts.Token
                 );
+
+                _logger.LogInformation("SMTP authentication successful, sending email...");
 
                 await smtp.SendAsync(email, cts.Token);
                 await smtp.DisconnectAsync(true, cts.Token);

@@ -34,6 +34,8 @@ namespace DreamCleaningBackend.Data
         public DbSet<OrderUpdateHistory> OrderUpdateHistories { get; set; }
         public DbSet<MaintenanceMode> MaintenanceModes { get; set; }
         public DbSet<WebhookEvent> WebhookEvents { get; set; }
+        public DbSet<ScheduledMail> ScheduledMails { get; set; }
+        public DbSet<SentMailLog> SentMailLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -386,6 +388,54 @@ namespace DreamCleaningBackend.Data
                     .HasForeignKey(e => e.UserId)
                     .OnDelete(DeleteBehavior.Restrict);
             });
+
+            // ScheduledMail configuration
+            modelBuilder.Entity<ScheduledMail>(entity =>
+    {
+        entity.HasIndex(e => e.Status)
+            .HasDatabaseName("IX_ScheduledMails_Status");
+
+        entity.HasIndex(e => e.NextScheduledAt)
+            .HasDatabaseName("IX_ScheduledMails_NextScheduledAt");
+
+        entity.HasOne(e => e.CreatedBy)
+            .WithMany()
+            .HasForeignKey(e => e.CreatedById)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        entity.Property(e => e.TargetRoles)
+            .IsRequired();
+
+        entity.Property(e => e.Subject)
+            .IsRequired()
+            .HasMaxLength(200);
+
+        entity.Property(e => e.Content)
+            .IsRequired();
+    });
+
+
+            // SentMailLog configuration
+            modelBuilder.Entity<SentMailLog>(entity =>
+    {
+        entity.HasIndex(e => new { e.ScheduledMailId, e.SentAt })
+            .HasDatabaseName("IX_SentMailLogs_MailId_SentAt");
+
+        entity.HasOne(e => e.ScheduledMail)
+            .WithMany(m => m.SentMailLogs)
+            .HasForeignKey(e => e.ScheduledMailId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        entity.Property(e => e.RecipientEmail)
+            .IsRequired()
+            .HasMaxLength(256);
+
+        entity.Property(e => e.RecipientName)
+            .HasMaxLength(200);
+
+        entity.Property(e => e.RecipientRole)
+            .HasMaxLength(50);
+    });
 
             // Update Order entity for gift card tracking
             modelBuilder.Entity<Order>(entity =>
