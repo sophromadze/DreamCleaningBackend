@@ -2537,7 +2537,7 @@ namespace DreamCleaningBackend.Controllers
 
                 var orders = await _context.Orders
                     .Include(o => o.ServiceType)
-                    .Where(o => o.UserId == userId)
+                    .Where(o => o.UserId == userId && o.Status != "Cancelled")
                     .OrderByDescending(o => o.OrderDate)
                     .Select(o => new OrderListDto
                     {
@@ -2615,9 +2615,9 @@ namespace DreamCleaningBackend.Controllers
                 if (user == null)
                     return NotFound(new { message = "User not found" });
 
-                // Calculate user statistics from Orders table
+                // Calculate user statistics from Orders table (excluding cancelled orders)
                 var userOrders = await _context.Orders
-                    .Where(o => o.UserId == userId)
+                    .Where(o => o.UserId == userId && o.Status != "Cancelled")
                     .ToListAsync();
 
                 var totalOrders = userOrders.Count;
