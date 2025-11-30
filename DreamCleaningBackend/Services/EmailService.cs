@@ -510,7 +510,6 @@ namespace DreamCleaningBackend.Services
         <div style='background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
             <h3>👥 Client Information</h3>
             <p><strong>Client Name:</strong> {(order?.ContactFirstName ?? "")} {(order?.ContactLastName ?? "")}</p>
-            <p><strong>Phone:</strong> {(order?.ContactPhone ?? "")}</p>
             <p><strong>Email:</strong> {(order?.ContactEmail ?? "")}</p>
             <p><strong>Entry Method:</strong> {(order?.EntryMethod ?? "To be confirmed")}</p>
         </div>
@@ -574,6 +573,59 @@ namespace DreamCleaningBackend.Services
     ";
 
             await SendEmailAsync(email, subject, body);
+        }
+
+        public async Task SendAdminCleanerAssignmentNotificationAsync(string cleanerEmail, string cleanerName,
+            DateTime serviceDate, string serviceTime, string formattedDuration, string fullAddress)
+        {
+            var subject = $"Cleaner Assignment Notification - {cleanerName}";
+            var formattedTime = FormatTimeForEmail(TimeSpan.Parse(serviceTime));
+            
+            var body = $@"
+        <h2>Cleaner Assignment Notification</h2>
+        <p>A cleaner has been assigned to a cleaning job. Below are the details that were sent to the cleaner:</p>
+        
+        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
+            <h3>👤 Cleaner Information</h3>
+            <p><strong>Cleaner Name:</strong> {cleanerName}</p>
+            <p><strong>Cleaner Email:</strong> {cleanerEmail}</p>
+        </div>
+        
+        <div style='background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
+            <h3>📅 Scheduled Cleaning Details</h3>
+            <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
+            <p><strong>Time:</strong> {formattedTime}</p>
+            <p><strong>Duration (Hours sent to cleaner):</strong> {formattedDuration}</p>
+        </div>
+        
+        <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
+            <h3>📍 Service Address</h3>
+            <p><strong>Address:</strong> {fullAddress}</p>
+        </div>
+        
+        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;'>
+            <p><em>This is an automated notification sent when a cleaner is assigned to an order.</em></p>
+        </div>
+        
+        <br/>
+        <p>Best regards,<br/>Dream Cleaning System</p>
+    ";
+
+            // Send to both admin email addresses
+            var adminEmails = new[] { "hello@dreamcleaningnearme.com", "dreamcleaninginfos@gmail.com" };
+            
+            foreach (var adminEmail in adminEmails)
+            {
+                try
+                {
+                    await SendEmailAsync(adminEmail, subject, body);
+                }
+                catch (Exception ex)
+                {
+                    // Log error but continue to try sending to other admin emails
+                    _logger.LogError(ex, $"Failed to send admin notification to {adminEmail}");
+                }
+            }
         }
 
         private string FormatTimeForEmail(TimeSpan time)

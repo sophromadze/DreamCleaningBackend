@@ -88,7 +88,7 @@ namespace DreamCleaningBackend.Services
                 OrderId = order.Id,
                 ClientName = $"{order.ContactFirstName} {order.ContactLastName}",
                 ClientEmail = order.ContactEmail,
-                ClientPhone = order.ContactPhone,
+                ClientPhone = "", // Phone number hidden from cleaners for privacy
                 ServiceDate = order.ServiceDate,
                 ServiceTime = order.ServiceTime.ToString(),
                 ServiceAddress = order.ServiceAddress,
@@ -296,6 +296,8 @@ namespace DreamCleaningBackend.Services
         {
             var order = await _context.Orders
                 .Include(o => o.ServiceType)
+                .Include(o => o.OrderServices)
+                    .ThenInclude(os => os.Service)
                 .Include(o => o.OrderCleaners)
                 .FirstOrDefaultAsync(o => o.Id == orderId);
 
@@ -305,8 +307,44 @@ namespace DreamCleaningBackend.Services
                 .Where(u => cleanerIds.Contains(u.Id))
                 .ToListAsync();
 
+            // Calculate duration per cleaner (same logic as in EmailService)
+            bool hasCleanersService = order.OrderServices.Any(os =>
+                os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
+
+            decimal durationPerCleaner = 0;
+            string formattedDuration = "";
+
+            if (hasCleanersService)
+            {
+                durationPerCleaner = order.TotalDuration;
+            }
+            else
+            {
+                durationPerCleaner = (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
+            }
+
+            formattedDuration = FormatDurationRounded((int)durationPerCleaner);
+
+            // Build full address string
+            var fullAddressParts = new List<string>();
+            if (!string.IsNullOrEmpty(order.ServiceAddress))
+                fullAddressParts.Add(order.ServiceAddress);
+            if (!string.IsNullOrEmpty(order.AptSuite))
+                fullAddressParts.Add($"Apt/Suite: {order.AptSuite}");
+            if (!string.IsNullOrEmpty(order.City))
+                fullAddressParts.Add(order.City);
+            if (!string.IsNullOrEmpty(order.State))
+                fullAddressParts.Add(order.State);
+            if (!string.IsNullOrEmpty(order.ZipCode))
+                fullAddressParts.Add(order.ZipCode);
+
+            var fullAddress = fullAddressParts.Any() 
+                ? string.Join(", ", fullAddressParts) 
+                : (order.ApartmentName ?? "Address provided separately");
+
             foreach (var cleaner in cleaners)
             {
+                // Send notification to cleaner
                 await _emailService.SendCleanerAssignmentNotificationAsync(
                     cleaner.Email,
                     cleaner.FirstName,
@@ -315,6 +353,41 @@ namespace DreamCleaningBackend.Services
                     order.ServiceType.Name,
                     order.ApartmentName ?? "Address provided separately"
                 );
+
+                // Send notification to admin
+                await _emailService.SendAdminCleanerAssignmentNotificationAsync(
+                    cleaner.Email,
+                    cleaner.FirstName,
+                    order.ServiceDate,
+                    order.ServiceTime.ToString(),
+                    formattedDuration,
+                    fullAddress
+                );
+            }
+        }
+
+        private string FormatDurationRounded(int minutes)
+        {
+            // Round to nearest 15 minutes (same as EmailService)
+            var roundedMinutes = (int)Math.Round(minutes / 15.0) * 15;
+            var hours = roundedMinutes / 60;
+            var mins = roundedMinutes % 60;
+
+            if (hours == 0 && mins == 0)
+            {
+                return "0 minutes";
+            }
+            else if (hours == 0)
+            {
+                return $"{mins} minutes";
+            }
+            else if (mins == 0)
+            {
+                return $"{hours}h";
+            }
+            else
+            {
+                return $"{hours}h {mins}min";
             }
         }
     }

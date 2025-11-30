@@ -368,10 +368,13 @@ namespace DreamCleaningBackend.Controllers
                 {
                     try
                     {
+                        // Format the content to preserve line breaks and spacing
+                        var formattedContent = FormatEmailContent(mail.Content);
+                        
                         await _emailService.SendEmailAsync(
                             recipient.Email,
                             mail.Subject,
-                            mail.Content
+                            formattedContent
                         );
 
                         logs.Add(new SentMailLog
@@ -423,6 +426,46 @@ namespace DreamCleaningBackend.Controllers
                     ErrorMessage = ex.Message
                 };
             }
+        }
+
+        private string FormatEmailContent(string plainTextContent)
+        {
+            if (string.IsNullOrEmpty(plainTextContent))
+                return string.Empty;
+
+            // Escape HTML characters to prevent XSS
+            var escaped = System.Net.WebUtility.HtmlEncode(plainTextContent);
+            
+            // Convert line breaks to HTML line breaks
+            // Handle both \r\n (Windows) and \n (Unix/Mac) line breaks
+            var formatted = escaped
+                .Replace("\r\n", "<br/>")
+                .Replace("\n", "<br/>")
+                .Replace("\r", "<br/>");
+            
+            // Wrap in a proper HTML structure with styling to preserve formatting
+            return $@"
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            color: #333;
+            line-height: 1.6;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+        .content {{
+            word-wrap: break-word;
+        }}
+    </style>
+</head>
+<body>
+    <div class=""content"">{formatted}</div>
+</body>
+</html>";
         }
 
         private DateTime? CalculateNextScheduledTime(ScheduledMail mail)
