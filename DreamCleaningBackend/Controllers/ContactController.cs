@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using DreamCleaningBackend.Services.Interfaces;
 using System.ComponentModel.DataAnnotations;
 using DreamCleaningBackend.DTOs;
@@ -126,6 +126,75 @@ namespace DreamCleaningBackend.Controllers
             ";
 
             await SendEmailAsync(email, subject, body);
+        }
+
+        [HttpPost("quote-request")]
+        public async Task<IActionResult> SendQuoteRequest(QuoteRequestDto quoteRequest)
+        {
+            try
+            {
+                if (!ModelState.IsValid)
+                {
+                    return BadRequest(new { message = "Please fill in all required fields correctly." });
+                }
+
+                // Get the company email from configuration
+                var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
+                
+                // Validate company email before attempting to send
+                if (string.IsNullOrWhiteSpace(companyEmail))
+                {
+                    _logger.LogError("Company email is not configured. Cannot send quote request notification email.");
+                    return StatusCode(500, new { message = "Email service is not configured. Please contact support." });
+                }
+
+                var subject = $"New Free Quote Request from {quoteRequest.Name}";
+                var messageContent = !string.IsNullOrWhiteSpace(quoteRequest.Message) 
+                    ? quoteRequest.Message 
+                    : "No additional information provided.";
+
+                var body = $@"
+                    <h2>New Free Quote Request</h2>
+                    <p>A customer has requested a free quote and needs your help:</p>
+                    
+                    <table style='width: 100%; border-collapse: collapse; margin: 20px 0;'>
+                        <tr>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; width: 30%;'>Name:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'>{quoteRequest.Name}</td>
+                        </tr>
+                        <tr>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Phone:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'><a href='tel:+1{quoteRequest.Phone}'>{FormatPhoneNumber(quoteRequest.Phone)}</a></td>
+                        </tr>
+                        {(string.IsNullOrWhiteSpace(quoteRequest.Message) ? "" : $@"
+                        <tr>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; vertical-align: top;'>Additional Information:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd; white-space: pre-wrap;'>{quoteRequest.Message}</td>
+                        </tr>")}
+                    </table>
+                    
+                    <div style='background: #e8f5e9; padding: 15px; border-radius: 8px; margin: 20px 0;'>
+                        <p><strong>📞 Call Back Required</strong></p>
+                        <p>This customer is too busy to fill out the full booking form or needs assistance choosing the right service. Please call them back to help with their quote request.</p>
+                    </div>
+                    
+                    <p style='margin-top: 30px; color: #666; font-size: 14px;'>
+                        <strong>Submitted on:</strong> {DateTime.UtcNow:MMMM dd, yyyy at h:mm tt}
+                    </p>
+                ";
+
+                // Send email to company
+                await _emailService.SendContactFormEmailAsync(companyEmail, subject, body);
+
+                _logger.LogInformation($"Quote request submitted by {quoteRequest.Name} (Phone: {FormatPhoneNumber(quoteRequest.Phone)})");
+
+                return Ok(new { message = "Your quote request has been received! We'll call you back soon." });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error sending quote request");
+                return StatusCode(500, new { message = "An error occurred while sending your quote request. Please try again later." });
+            }
         }
 
         private string FormatPhoneNumber(string phone)
