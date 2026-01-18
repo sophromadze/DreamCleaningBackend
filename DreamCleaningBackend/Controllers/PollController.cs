@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Models;
@@ -133,6 +133,14 @@ namespace DreamCleaningBackend.Controllers
                 if (fullSubmission == null) return;
 
                 var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
+                
+                // Validate company email before attempting to send
+                if (string.IsNullOrWhiteSpace(companyEmail))
+                {
+                    _logger.LogError("Company email is not configured. Cannot send poll submission notification email.");
+                    return;
+                }
+
                 var subject = $"New Poll Submission: {fullSubmission.ServiceType.Name} - {fullSubmission.ContactFirstName} {fullSubmission.ContactLastName}";
 
                 var answersHtml = string.Join("", fullSubmission.PollAnswers.Select(pa => $@"
@@ -151,6 +159,18 @@ namespace DreamCleaningBackend.Controllers
                     </div>";
                 }
 
+                // Handle nullable fields safely
+                var contactLastName = !string.IsNullOrWhiteSpace(fullSubmission.ContactLastName) ? fullSubmission.ContactLastName : "";
+                var contactName = !string.IsNullOrWhiteSpace(contactLastName) 
+                    ? $"{fullSubmission.ContactFirstName} {contactLastName}" 
+                    : fullSubmission.ContactFirstName;
+                var contactEmail = !string.IsNullOrWhiteSpace(fullSubmission.ContactEmail) 
+                    ? $"<a href='mailto:{fullSubmission.ContactEmail}'>{fullSubmission.ContactEmail}</a>" 
+                    : "Not provided";
+                var serviceAddressDisplay = !string.IsNullOrWhiteSpace(fullSubmission.ServiceAddress)
+                    ? $"{fullSubmission.ServiceAddress}{(!string.IsNullOrEmpty(fullSubmission.AptSuite) ? $", {fullSubmission.AptSuite}" : "")}<br>{fullSubmission.City}, {fullSubmission.State} {fullSubmission.PostalCode}"
+                    : "Not provided";
+
                 var body = $@"
                     <h2>New Poll Submission</h2>
                     <p>A customer has submitted a poll for <strong>{fullSubmission.ServiceType.Name}</strong> service:</p>
@@ -159,11 +179,11 @@ namespace DreamCleaningBackend.Controllers
                     <table style='width: 100%; border-collapse: collapse; margin: 20px 0;'>
                         <tr>
                             <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; width: 30%;'>Name:</td>
-                            <td style='padding: 10px; border: 1px solid #ddd;'>{fullSubmission.ContactFirstName} {fullSubmission.ContactLastName}</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'>{contactName}</td>
                         </tr>
                         <tr>
                             <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Email:</td>
-                            <td style='padding: 10px; border: 1px solid #ddd;'><a href='mailto:{fullSubmission.ContactEmail}'>{fullSubmission.ContactEmail}</a></td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'>{contactEmail}</td>
                         </tr>
                         <tr>
                             <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Phone:</td>
@@ -171,7 +191,7 @@ namespace DreamCleaningBackend.Controllers
                         </tr>
                         <tr>
                             <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Service Address:</td>
-                            <td style='padding: 10px; border: 1px solid #ddd;'>{fullSubmission.ServiceAddress}{(!string.IsNullOrEmpty(fullSubmission.AptSuite) ? $", {fullSubmission.AptSuite}" : "")}<br>{fullSubmission.City}, {fullSubmission.State} {fullSubmission.PostalCode}</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'>{serviceAddressDisplay}</td>
                         </tr>
                     </table>
                     
