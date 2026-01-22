@@ -1,4 +1,4 @@
-﻿using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Services.Interfaces;
 using MailKit.Net.Smtp;
@@ -6,6 +6,7 @@ using MailKit.Security;
 using Microsoft.EntityFrameworkCore;
 using MimeKit;
 using MimeKit.Text;
+using System.IO;
 
 
 namespace DreamCleaningBackend.Services
@@ -167,25 +168,214 @@ namespace DreamCleaningBackend.Services
             // Keep the subject line - don't remove it!
             var subject = $"You've received a Dream Cleaning gift card from {senderName}!";
 
+            _logger.LogInformation($"[GIFT CARD EMAIL] Starting email send to {recipientEmail} for gift card {giftCardCode}");
+
             // Get gift card configuration
             var giftCardConfig = await _context.GiftCardConfigs.FirstOrDefaultAsync();
             var backgroundPath = giftCardConfig?.BackgroundImagePath;
+            
+            _logger.LogInformation($"[GIFT CARD EMAIL] Gift card config retrieved. Config exists: {giftCardConfig != null}, BackgroundPath: {backgroundPath ?? "NULL"}");
 
-            // Use the configured background or fall back to default
-            var backgroundImageUrl = !string.IsNullOrEmpty(backgroundPath)
-                ? $"{_configuration["Frontend:Url"]}{backgroundPath}"
-                : $"{_configuration["Frontend:Url"]}/images/mainImage.png";
+            // Get base64 encoded image for email embedding
+            string backgroundImageDataUri = "";
+            try
+            {
+                string imagePath = null;
+                if (!string.IsNullOrEmpty(backgroundPath))
+                {
+                    // Try to load the configured background image
+                    var fileUploadPath = _configuration["FileUpload:Path"];
+                    if (!string.IsNullOrEmpty(fileUploadPath))
+                    {
+                        // Normalize the path: remove leading slash
+                        var normalizedPath = backgroundPath.TrimStart('/', '\\');
+                        
+                        // Split the path by both forward and back slashes to handle any format
+                        var pathParts = normalizedPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
+                        
+                        // Combine the file upload path with all path parts
+                        var fullImagePath = Path.Combine(new[] { fileUploadPath }.Concat(pathParts).ToArray());
+                        
+                        _logger.LogInformation($"[GIFT CARD EMAIL] Attempting to load gift card background image. DB Path: {backgroundPath}, FileUploadPath: {fileUploadPath}, FullPath: {fullImagePath}");
+                        
+                        if (File.Exists(fullImagePath))
+                        {
+                            imagePath = fullImagePath;
+                            _logger.LogInformation($"[GIFT CARD EMAIL] Successfully found gift card background image at: {fullImagePath}");
+                        }
+                        else
+                        {
+                            _logger.LogWarning($"[GIFT CARD EMAIL] Gift card background image not found at: {fullImagePath}");
+                            // Try alternative path constructions
+                            var altPath1 = Path.Combine(fileUploadPath, backgroundPath.TrimStart('/'));
+                            var altPath2 = Path.Combine(fileUploadPath, "images", Path.GetFileName(backgroundPath));
+                            _logger.LogWarning($"[GIFT CARD EMAIL] Alternative paths checked - Alt1: {altPath1} (exists: {File.Exists(altPath1)}), Alt2: {altPath2} (exists: {File.Exists(altPath2)})");
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"[GIFT CARD EMAIL] FileUpload:Path configuration is empty, cannot load gift card background image");
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("[GIFT CARD EMAIL] Background path from database is empty, will use default image");
+                }
+                
+                // Fallback to default image if configured image not found
+                if (string.IsNullOrEmpty(imagePath))
+                {
+                    var fileUploadPath = _configuration["FileUpload:Path"];
+                    if (!string.IsNullOrEmpty(fileUploadPath))
+                    {
+                        var defaultImagePath = Path.Combine(fileUploadPath, "images", "mainImage.webp");
+                        _logger.LogInformation($"[GIFT CARD EMAIL] Attempting to load default gift card background image from: {defaultImagePath}");
+                        if (File.Exists(defaultImagePath))
+                        {
+                            imagePath = defaultImagePath;
+                            _logger.LogInformation($"[GIFT CARD EMAIL] Using default gift card background image from: {defaultImagePath}");
+                        }
+                        else
+                        {
+                            _logger.LogWarning($"[GIFT CARD EMAIL] Default gift card background image not found at: {defaultImagePath}");
+                        }
+                    }
+                }
+
+                // Convert image to base64 data URI
+                if (!string.IsNullOrEmpty(imagePath) && File.Exists(imagePath))
+                {
+                    var imageBytes = await File.ReadAllBytesAsync(imagePath);
+                    var base64Image = Convert.ToBase64String(imageBytes);
+                    var imageExtension = Path.GetExtension(imagePath).ToLowerInvariant().TrimStart('.');
+                    var mimeType = imageExtension switch
+                    {
+                        "webp" => "image/webp",
+                        "png" => "image/png",
+                        "jpg" or "jpeg" => "image/jpeg",
+                        "gif" => "image/gif",
+                        _ => "image/webp"
+                    };
+                    backgroundImageDataUri = $"data:{mimeType};base64,{base64Image}";
+                    _logger.LogInformation($"[GIFT CARD EMAIL] Successfully converted gift card background image to base64. Size: {imageBytes.Length} bytes, MIME type: {mimeType}, DataURI length: {backgroundImageDataUri.Length} chars");
+                }
+                else
+                {
+                    _logger.LogWarning($"[GIFT CARD EMAIL] Gift card background image path is empty or file does not exist. ImagePath: {imagePath ?? "null"}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"[GIFT CARD EMAIL] Failed to load gift card background image for email. BackgroundPath from DB: {backgroundPath}, FileUploadPath: {_configuration["FileUpload:Path"]}");
+                // Continue without background image if loading fails
+            }
+            
+            _logger.LogInformation($"[GIFT CARD EMAIL] Background image processing complete. HasBackgroundImage: {!string.IsNullOrEmpty(backgroundImageDataUri)}, DataURI length: {backgroundImageDataUri?.Length ?? 0}");
+
+            // Build the gift card HTML with proper email-compatible table structure
+            string giftCardHtml = "";
+            _logger.LogInformation($"[GIFT CARD EMAIL] Building gift card HTML. Has background image: {!string.IsNullOrEmpty(backgroundImageDataUri)}");
+            
+            if (!string.IsNullOrEmpty(backgroundImageDataUri))
+            {
+                _logger.LogInformation($"[GIFT CARD EMAIL] Using custom background image in email template");
+                // Escape the data URI for use in HTML attributes (replace single quotes and ensure proper encoding)
+                var escapedDataUri = backgroundImageDataUri.Replace("'", "&#39;");
+                
+                // Use table-based layout with embedded background image for maximum email compatibility
+                // Using background attribute (better email support) and CSS as fallback
+                giftCardHtml = $@"
+            <table width='400' cellpadding='0' cellspacing='0' border='0' style='margin: 0 auto; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); border: 1px solid #e0e0e0; background-color: #f8f9fa;'>
+                <tr>
+                    <td background=""{backgroundImageDataUri}"" style=""background-image: url('{backgroundImageDataUri}'); background-size: cover; background-position: center; background-repeat: no-repeat; padding: 0; min-height: 280px;"">
+                        <table width='100%' cellpadding='0' cellspacing='0' border='0' style='min-height: 280px;'>
+                            <!-- Header -->
+                            <tr>
+                                <td style='padding: 16px; background: linear-gradient(45deg, rgba(0, 123, 255, 0.2), rgba(0, 86, 179, 0.25)), rgba(255, 255, 255, 0.5); border-bottom: 1px solid rgba(0, 123, 255, 0.2);'>
+                                    <table width='100%' cellpadding='0' cellspacing='0' border='0'>
+                                        <tr>
+                                            <td style='font-size: 20px; color: #333; font-weight: bold; text-shadow: 1px 1px 2px rgba(255, 255, 255, 0.8);'>Dream Cleaning</td>
+                                            <td align='right' style='font-size: 24px; font-weight: bold; color: #007bff; text-shadow: 1px 1px 2px rgba(255, 255, 255, 0.8);'>${amount:F2}</td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                            <!-- Body -->
+                            <tr>
+                                <td>
+                                    <table width='100%' cellpadding='0' cellspacing='0' border='0' style='height: 220px;'>
+                                        <tr>
+                                            <td width='30%' style='padding: 16px;'></td>
+                                            <td width='70%' style='background-color: rgba(255, 255, 255, 0.74); padding: 16px; vertical-align: top;'>
+                                                <p style='font-size: 14px; color: #333; margin: 0 0 8px 0;'>Dear {recipientName},</p>
+                                                <div style='font-size: 13px; color: #666; line-height: 1.4; font-style: italic; word-wrap: break-word; margin-bottom: 16px;'>
+                                                    <p style='margin: 0;'>{message}</p>
+                                                </div>
+                                                <table width='100%' cellpadding='0' cellspacing='0' border='0' style='margin-top: auto;'>
+                                                    <tr>
+                                                        <td align='center' style='font-family: monospace; font-size: 16px; color: #666; letter-spacing: 1px; padding: 10px; background-color: rgba(255, 255, 255, 0.8); border-radius: 4px;'>
+                                                            {giftCardCode}
+                                                        </td>
+                                                    </tr>
+                                                </table>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>";
+            }
+            else
+            {
+                _logger.LogInformation($"[GIFT CARD EMAIL] No background image available, using fallback template without background");
+                // Fallback without background image
+                giftCardHtml = $@"
+            <table width='400' cellpadding='0' cellspacing='0' border='0' style='margin: 0 auto; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); border: 1px solid #e0e0e0; background-color: #f8f9fa;'>
+                <tr>
+                    <td style='padding: 16px; background: linear-gradient(45deg, rgba(0, 123, 255, 0.2), rgba(0, 86, 179, 0.25)), rgba(255, 255, 255, 0.5); border-bottom: 1px solid rgba(0, 123, 255, 0.2);'>
+                        <table width='100%' cellpadding='0' cellspacing='0' border='0'>
+                            <tr>
+                                <td style='font-size: 20px; color: #333; font-weight: bold;'>Dream Cleaning</td>
+                                <td align='right' style='font-size: 24px; font-weight: bold; color: #007bff;'>${amount:F2}</td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+                <tr>
+                    <td style='padding: 16px;'>
+                        <p style='font-size: 14px; color: #333; margin: 0 0 8px 0;'>Dear {recipientName},</p>
+                        <div style='font-size: 13px; color: #666; line-height: 1.4; font-style: italic; word-wrap: break-word; margin-bottom: 16px;'>
+                            <p style='margin: 0;'>{message}</p>
+                        </div>
+                        <table width='100%' cellpadding='0' cellspacing='0' border='0'>
+                            <tr>
+                                <td align='center' style='font-family: monospace; font-size: 16px; color: #666; letter-spacing: 1px; padding: 10px; background-color: rgba(255, 255, 255, 0.8); border-radius: 4px;'>
+                                    {giftCardCode}
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>";
+            }
 
             var body = $@"
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
     <style>
         body {{
             font-family: Arial, sans-serif;
             background-color: #f4f4f4;
             margin: 0;
             padding: 0;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }}
         .container {{
             max-width: 600px;
@@ -213,19 +403,7 @@ namespace DreamCleaningBackend.Services
             text-align: center;
         }}
         .gift-card-container {{
-            display: inline-block;
-            margin: 0 auto;
-        }}
-        .gift-card {{
-            background: url('{backgroundImageUrl}') center/cover no-repeat;
-            border-radius: 12px;
-            height: 280px;
-            width: 400px;
-            position: relative;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            border: 1px solid #e0e0e0;
-            overflow: hidden;
-            text-align: left;
+            margin: 20px 0;
         }}
         .instructions {{
             background: #e7f3ff;
@@ -235,13 +413,17 @@ namespace DreamCleaningBackend.Services
             text-align: left;
         }}
         .instructions h3 {{
-            margin: 0;
+            margin: 0 0 15px 0;
             color: #007bff;
             text-align: center;
         }}
         .instructions ol {{
             text-align: left;
             color: #666;
+            padding-left: 20px;
+        }}
+        .instructions li {{
+            margin-bottom: 8px;
         }}
         .footer {{
             text-align: center;
@@ -259,13 +441,14 @@ namespace DreamCleaningBackend.Services
             display: inline-block;
             margin: 20px 0;
             font-size: 16px;
-        }}            
-        /* Mobile responsive */
+        }}
         @media only screen and (max-width: 600px) {{
-            .gift-card {{
-                width: 100%;
-                max-width: 350px;
-                height: 240px;
+            .container {{
+                padding: 10px;
+            }}
+            .gift-card-container table {{
+                width: 100% !important;
+                max-width: 350px !important;
             }}
         }}
     </style>
@@ -278,30 +461,11 @@ namespace DreamCleaningBackend.Services
         </div>
         
         <div class='content'>
-            <h2>Hello, {recipientName}!</h2>
+            <h2 style='margin-top: 0;'>Hello, {recipientName}!</h2>
             <p style='font-size: 14px; color: #999; margin-top: 5px;'><a href='mailto:{senderEmail}' style='color: #007bff; text-decoration: none;'><b style='color:#000;'>Send a thank-you message to</b>: {senderEmail}</a></p>
             
             <div class='gift-card-container'>
-                <div class='gift-card'>
-                    <div style='display: flex; justify-content: space-between; align-items: center; padding: 16px; background: linear-gradient(45deg, rgba(0, 123, 255, 0.2), rgba(0, 86, 179, 0.25)), rgba(255, 255, 255, 0.5); border-bottom: 1px solid rgba(0, 123, 255, 0.2);'>
-                        <h3 style='font-size: 20px; color: #333; margin: 0; text-shadow: 1px 1px 2px rgba(255, 255, 255, 0.8);'>Dream Cleaning</h3>
-                        <div style='font-size: 24px; font-weight: bold; color: #007bff; text-shadow: 1px 1px 2px rgba(255, 255, 255, 0.8); margin-left:auto;'>${amount:F2}</div>
-                    </div>
-                    <div style='display: flex; height: calc(100% - 60px);'>
-                        <div style='width: 30%; padding: 16px;'></div>
-                        <div style='width: 70%; background-color: rgba(255, 255, 255, 0.74); padding: 16px; display: grid;'>
-                            <div>
-                                <p style='font-size: 14px; color: #333; margin: 0;'>Dear {recipientName},</p>
-                                <div style='font-size: 13px; color: #666; line-height: 1.4; font-style: italic; word-wrap: break-word; margin: 0;'>
-                                    <p>{message}</p>
-                                </div>                                    
-                            </div>
-                            <div style='text-align: center; font-family: monospace; font-size: 16px; color: #666; letter-spacing: 1px; margin: 0; margin-top: auto; padding: 10px; border-radius: 4px;'>
-                                {giftCardCode}
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                {giftCardHtml}
             </div>
             
             <div class='instructions'>
@@ -334,7 +498,142 @@ namespace DreamCleaningBackend.Services
 </body>
 </html>";
 
-            await SendEmailAsync(recipientEmail, subject, body);
+            _logger.LogInformation($"[GIFT CARD EMAIL] Email body constructed. Body length: {body.Length} chars, Gift card HTML length: {giftCardHtml.Length} chars");
+            
+            // Send email with inline image attachment if background image exists
+            _logger.LogInformation($"[GIFT CARD EMAIL] Sending email to {recipientEmail}...");
+            
+            if (!string.IsNullOrEmpty(backgroundImageDataUri))
+            {
+                // Load the image file to attach as inline image
+                string imagePath = null;
+                try
+                {
+                    if (!string.IsNullOrEmpty(backgroundPath))
+                    {
+                        var fileUploadPath = _configuration["FileUpload:Path"];
+                        if (!string.IsNullOrEmpty(fileUploadPath))
+                        {
+                            var normalizedPath = backgroundPath.TrimStart('/', '\\');
+                            var pathParts = normalizedPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
+                            imagePath = Path.Combine(new[] { fileUploadPath }.Concat(pathParts).ToArray());
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[GIFT CARD EMAIL] Failed to get image path for inline attachment");
+                }
+
+                if (!string.IsNullOrEmpty(imagePath) && File.Exists(imagePath))
+                {
+                    await SendEmailWithInlineImageAsync(recipientEmail, subject, body, imagePath, backgroundImageDataUri);
+                }
+                else
+                {
+                    // Fallback to regular email if image file not found
+                    _logger.LogWarning($"[GIFT CARD EMAIL] Image file not found for inline attachment, sending email with data URI");
+                    await SendEmailAsync(recipientEmail, subject, body);
+                }
+            }
+            else
+            {
+                _logger.LogWarning($"[GIFT CARD EMAIL] WARNING: No background image - email will be sent without background!");
+                await SendEmailAsync(recipientEmail, subject, body);
+            }
+            
+            _logger.LogInformation($"[GIFT CARD EMAIL] Email sent successfully to {recipientEmail}");
+        }
+
+        private async Task SendEmailWithInlineImageAsync(string to, string subject, string html, string imagePath, string fallbackDataUri)
+        {
+            // Check if email sending is disabled in configuration
+            var emailEnabled = _configuration.GetValue<bool>("Email:EnableEmailSending", true);
+
+            if (!emailEnabled)
+            {
+                _logger.LogInformation($"Email sending is disabled. Would have sent email to {to} with subject: {subject}");
+                return;
+            }
+
+            const int timeoutMs = 30000; // 30 second timeout
+
+            try
+            {
+                var email = new MimeMessage();
+                email.From.Add(new MailboxAddress(
+                    _configuration["Email:FromName"],
+                    _configuration["Email:FromAddress"]
+                ));
+                email.To.Add(MailboxAddress.Parse(to));
+                email.Subject = subject;
+
+                // Create multipart/related to include inline image
+                var multipart = new Multipart("related");
+
+                // Create HTML body part
+                var htmlPart = new TextPart(TextFormat.Html) { Text = html };
+                multipart.Add(htmlPart);
+
+                // Create inline image attachment with Content-ID
+                var imageBytes = await File.ReadAllBytesAsync(imagePath);
+                var imageExtension = Path.GetExtension(imagePath).ToLowerInvariant().TrimStart('.');
+                var mimeType = imageExtension switch
+                {
+                    "webp" => "image/webp",
+                    "png" => "image/png",
+                    "jpg" or "jpeg" => "image/jpeg",
+                    "gif" => "image/gif",
+                    _ => "image/webp"
+                };
+
+                var contentId = $"giftcard-bg-{Guid.NewGuid():N}@dreamcleaning";
+                var imagePart = new MimePart(mimeType)
+                {
+                    Content = new MimeContent(new MemoryStream(imageBytes)),
+                    ContentId = contentId,
+                    ContentDisposition = new ContentDisposition(ContentDisposition.Inline),
+                    FileName = Path.GetFileName(imagePath)
+                };
+
+                multipart.Add(imagePart);
+                
+                // Replace data URI with Content-ID reference in HTML before setting body
+                var updatedHtml = html.Replace(fallbackDataUri, $"cid:{contentId}");
+                htmlPart.Text = updatedHtml;
+                
+                email.Body = multipart;
+
+                _logger.LogInformation($"[GIFT CARD EMAIL] Using inline image attachment with Content-ID: {contentId}");
+
+                using var smtp = new SmtpClient();
+                smtp.Timeout = timeoutMs;
+                using var cts = new CancellationTokenSource(timeoutMs);
+
+                await smtp.ConnectAsync(
+                    _configuration["Email:SmtpHost"],
+                    int.Parse(_configuration["Email:SmtpPort"]),
+                    SecureSocketOptions.StartTls,
+                    cts.Token
+                );
+
+                await smtp.AuthenticateAsync(
+                    _configuration["Email:SmtpUser"],
+                    _configuration["Email:SmtpPassword"],
+                    cts.Token
+                );
+
+                await smtp.SendAsync(email, cts.Token);
+                await smtp.DisconnectAsync(true, cts.Token);
+
+                _logger.LogInformation($"Email with inline image sent successfully to {to}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send email with inline image to {to}");
+                // Fallback to regular email
+                await SendEmailAsync(to, subject, html);
+            }
         }
 
         public async Task SendGiftCardSenderConfirmationAsync(string senderEmail, string senderName,
@@ -449,10 +748,9 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(to, subject, html);
         }
 
-        public async Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName,
-            DateTime serviceDate, string serviceTime, string serviceTypeName, string address)
+        public async Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName, int orderId)
         {
-            // Find the order
+            // Find the order by ID to ensure we get the correct order
             var order = await _context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.OrderServices)
@@ -461,37 +759,55 @@ namespace DreamCleaningBackend.Services
                     .ThenInclude(oes => oes.ExtraService)
                 .Include(o => o.OrderCleaners)
                     .ThenInclude(oc => oc.Cleaner)
-                .Where(o => o.ServiceDate.Date == serviceDate.Date &&
-                       o.ServiceType.Name == serviceTypeName)
-                .FirstOrDefaultAsync();
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null)
+            {
+                _logger.LogError($"Order {orderId} not found when sending cleaner assignment notification to {email}");
+                return;
+            }
 
             // Get cleaner-specific additional instructions
-            var cleanerAdditionalInstructions = order?.OrderCleaners
+            var cleanerAdditionalInstructions = order.OrderCleaners
                 .FirstOrDefault(oc => oc.Cleaner.Email == email)?.TipsForCleaner;
 
             // Check if there's a cleaners service to determine if we should divide duration
-            bool hasCleanersService = order?.OrderServices.Any(os =>
-                os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner")) ?? false;
+            bool hasCleanersService = order.OrderServices.Any(os =>
+                os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
 
             // Calculate duration per cleaner
             decimal durationPerCleaner = 0;
             string formattedDuration = "";
 
-            if (order != null)
+            if (hasCleanersService)
             {
-                if (hasCleanersService)
-                {
-                    // If there's a cleaners service, show the total duration (it's already calculated correctly)
-                    durationPerCleaner = order.TotalDuration;
-                }
-                else
-                {
-                    // If no cleaners service, divide by number of maids
-                    durationPerCleaner = (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
-                }
-
-                formattedDuration = FormatDurationRounded((int)durationPerCleaner);
+                // If there's a cleaners service, show the total duration (it's already calculated correctly)
+                durationPerCleaner = order.TotalDuration;
             }
+            else
+            {
+                // If no cleaners service, divide by number of maids
+                durationPerCleaner = (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
+            }
+
+            formattedDuration = FormatDurationRounded((int)durationPerCleaner);
+
+            // Build full address string
+            var fullAddressParts = new List<string>();
+            if (!string.IsNullOrEmpty(order.ServiceAddress))
+                fullAddressParts.Add(order.ServiceAddress);
+            if (!string.IsNullOrEmpty(order.AptSuite))
+                fullAddressParts.Add(order.AptSuite);
+            if (!string.IsNullOrEmpty(order.City))
+                fullAddressParts.Add(order.City);
+            if (!string.IsNullOrEmpty(order.State))
+                fullAddressParts.Add(order.State);
+            if (!string.IsNullOrEmpty(order.ZipCode))
+                fullAddressParts.Add(order.ZipCode);
+
+            var fullAddress = fullAddressParts.Any() 
+                ? string.Join(", ", fullAddressParts) 
+                : (order.ApartmentName ?? "Address provided separately");
 
             var subject = "New Cleaning Job Assignment - Dream Cleaning";
             var body = $@"
@@ -500,30 +816,28 @@ namespace DreamCleaningBackend.Services
         
         <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
             <h3>📋 Job Overview</h3>
-            <p><strong>Service Type:</strong> {(order?.ServiceType.Name ?? serviceTypeName)}</p>
-            <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
-            <p><strong>Time:</strong> {FormatTimeForEmail(TimeSpan.Parse(serviceTime))}</p>
+            <p><strong>Order Number:</strong> #{order.Id}</p>
+            <p><strong>Service Type:</strong> {order.ServiceType.Name}</p>
+            <p><strong>Date:</strong> {order.ServiceDate:dddd, MMMM dd, yyyy}</p>
+            <p><strong>Time:</strong> {FormatTimeForEmail(order.ServiceTime)}</p>
             <p><strong>Duration:</strong> {formattedDuration}{(hasCleanersService ? "" : " per cleaner")}</p>
-            <p><strong>Team Size:</strong> {(order?.MaidsCount ?? 1)} cleaner(s)</p>
+            <p><strong>Team Size:</strong> {order.MaidsCount} cleaner(s)</p>
         </div>
         
         <div style='background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
             <h3>👥 Client Information</h3>
-            <p><strong>Client Name:</strong> {(order?.ContactFirstName ?? "")} {(order?.ContactLastName ?? "")}</p>
-            <p><strong>Email:</strong> {(order?.ContactEmail ?? "")}</p>
-            <p><strong>Entry Method:</strong> {(order?.EntryMethod ?? "To be confirmed")}</p>
+            <p><strong>Client Name:</strong> {order.ContactFirstName} {order.ContactLastName}</p>
+            <p><strong>Email:</strong> {order.ContactEmail}</p>
+            <p><strong>Entry Method:</strong> {(string.IsNullOrEmpty(order.EntryMethod) ? "To be confirmed" : order.EntryMethod)}</p>
         </div>
         
         <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
             <h3>📍 Complete Service Address</h3>
-            <p><strong>Address:</strong> {(order?.ServiceAddress ?? address)}</p>
-            {(!string.IsNullOrEmpty(order?.AptSuite) ? $"<p><strong>Apt/Suite:</strong> {order.AptSuite}</p>" : "")}
-            <p><strong>City:</strong> {(order?.City ?? "")}</p>
-            <p><strong>State:</strong> {(order?.State ?? "")}</p>
-            <p><strong>Postal Code:</strong> {(order?.ZipCode ?? "")}</p>
+            <p><strong>Address:</strong> {fullAddress}</p>
+            {(!string.IsNullOrEmpty(order.ApartmentName) ? $"<p><strong>Apartment Name:</strong> {order.ApartmentName}</p>" : "")}
         </div>
         
-        {(order?.OrderServices.Any() == true ? $@"
+        {(order.OrderServices.Any() ? $@"
         <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;'>
             <h3>🧹 Services to Perform</h3>
             <ul style='margin: 10px 0; padding-left: 20px;'>
@@ -531,7 +845,7 @@ namespace DreamCleaningBackend.Services
             </ul>
         </div>" : "")}
         
-        {(order?.OrderExtraServices.Any() == true ? $@"
+        {(order.OrderExtraServices.Any() ? $@"
         <div style='background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0;'>
             <h3>✨ Extra Services</h3>
             <ul style='margin: 10px 0; padding-left: 20px;'>
@@ -541,13 +855,13 @@ namespace DreamCleaningBackend.Services
             </ul>
         </div>" : "")}
 
-        {(order?.Tips > 0 ? $@"
+        {(order.Tips > 0 ? $@"
         <div style='background: #d4edda; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
             <h3>💰 Tips for Cleaning Team</h3>
             <p style='margin: 0; font-size: 1.2em; font-weight: bold; color: #155724; text-align: center;'>${order.Tips:F2}</p>
         </div>" : "")}
         
-        {(!string.IsNullOrEmpty(order?.SpecialInstructions) ? $@"
+        {(!string.IsNullOrEmpty(order.SpecialInstructions) ? $@"
         <div style='background: #ffe6e6; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc3545;'>
             <h3>⚠️ Special Instructions from Client</h3>
             <p style='margin: 0; font-style: italic; color: #721c24;'>{order.SpecialInstructions}</p>

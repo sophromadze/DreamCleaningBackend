@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace DreamCleaningBackend.DTOs
@@ -130,6 +130,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal TotalDuration { get; set; }
         public decimal Tips { get; set; }
         public decimal CompanyDevelopmentTips { get; set; }
+        public bool IsPaid { get; set; }
+        public DateTime? PaidAt { get; set; }
     }
 
     public class CancelOrderDto

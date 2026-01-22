@@ -1,4 +1,4 @@
-﻿using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
@@ -344,14 +344,11 @@ namespace DreamCleaningBackend.Services
 
             foreach (var cleaner in cleaners)
             {
-                // Send notification to cleaner
+                // Send notification to cleaner - pass orderId to ensure correct order is retrieved
                 await _emailService.SendCleanerAssignmentNotificationAsync(
                     cleaner.Email,
                     cleaner.FirstName,
-                    order.ServiceDate,
-                    order.ServiceTime.ToString(),
-                    order.ServiceType.Name,
-                    order.ApartmentName ?? "Address provided separately"
+                    orderId
                 );
 
                 // Send notification to admin

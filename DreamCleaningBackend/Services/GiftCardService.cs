@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
@@ -51,7 +51,7 @@ namespace DreamCleaningBackend.Services
             return result.ToString();
         }
 
-        public async Task<GiftCard> CreateGiftCard(int userId, CreateGiftCardDto createDto)
+        public async Task<GiftCard> CreateGiftCard(int? userId, CreateGiftCardDto createDto)
         {
             var giftCard = new GiftCard
             {
@@ -63,7 +63,7 @@ namespace DreamCleaningBackend.Services
                 SenderName = createDto.SenderName,
                 SenderEmail = createDto.SenderEmail,
                 Message = createDto.Message,
-                PurchasedByUserId = userId,
+                PurchasedByUserId = userId, // Null for anonymous purchases
                 CreatedAt = DateTime.UtcNow
             };
 

@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations.Schema;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.ComponentModel.DataAnnotations;
 
 namespace DreamCleaningBackend.Models
@@ -42,7 +42,7 @@ namespace DreamCleaningBackend.Models
         public bool IsActive { get; set; } = true;
 
         // Foreign keys
-        public int PurchasedByUserId { get; set; }
+        public int? PurchasedByUserId { get; set; } // Nullable to support anonymous purchases
 
         // Payment tracking
         [StringLength(100)]

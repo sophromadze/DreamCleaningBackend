@@ -1,4 +1,4 @@
-﻿// DreamCleaningBackend/Controllers/GiftCardController.cs
+// DreamCleaningBackend/Controllers/GiftCardController.cs
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -19,22 +19,36 @@ namespace DreamCleaningBackend.Controllers
         private readonly IEmailService _emailService;
         private readonly IStripeService _stripeService;
         private readonly ApplicationDbContext _context;
+        private readonly ILogger<GiftCardController> _logger;
 
         public GiftCardController(IGiftCardService giftCardService, IEmailService emailService, IStripeService stripeService,
-            ApplicationDbContext context)
+            ApplicationDbContext context, ILogger<GiftCardController> logger)
         {
             _giftCardService = giftCardService;
             _emailService = emailService;
             _stripeService = stripeService;
             _context = context;
+            _logger = logger;
         }
 
         [HttpPost]
+        [AllowAnonymous]
         public async Task<ActionResult<GiftCardPurchaseResponseDto>> CreateGiftCard(CreateGiftCardDto createDto)
         {
             try
             {
-                var userId = GetUserId();
+                // Get userId if user is authenticated, otherwise use null for anonymous purchases
+                int? userId = null;
+                try
+                {
+                    userId = GetUserId();
+                }
+                catch
+                {
+                    // User is not authenticated - allow anonymous purchase
+                    userId = null;
+                }
+                
                 var giftCard = await _giftCardService.CreateGiftCard(userId, createDto);
 
                 // Create Stripe payment intent
@@ -68,6 +82,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("confirm-payment/{giftCardId}")]
+        [AllowAnonymous]
         public async Task<ActionResult> ConfirmGiftCardPayment(int giftCardId, [FromBody] ConfirmPaymentDto dto)
         {
             try
@@ -85,24 +100,40 @@ namespace DreamCleaningBackend.Controllers
                     await _giftCardService.MarkGiftCardAsPaid(giftCardId, dto.PaymentIntentId);
 
                     // Get the updated gift card details to send the email
-                    var userId = GetUserId();
-                    var giftCards = await _giftCardService.GetUserGiftCards(userId);
-                    var updatedGiftCard = giftCards.FirstOrDefault(gc => gc.Id == giftCardId);
+                    // For anonymous purchases, get gift card directly from context
+                    var updatedGiftCard = await _context.GiftCards
+                        .Where(gc => gc.Id == giftCardId)
+                        .Select(gc => new
+                        {
+                            gc.RecipientEmail,
+                            gc.RecipientName,
+                            gc.SenderName,
+                            gc.Code,
+                            gc.OriginalAmount,
+                            gc.Message,
+                            gc.SenderEmail
+                        })
+                        .FirstOrDefaultAsync();
 
                     if (updatedGiftCard != null)
                     {
+                        _logger.LogInformation($"[GIFT CARD CONTROLLER] Payment confirmed for gift card {giftCardId}. Sending emails to recipient: {updatedGiftCard.RecipientEmail} and sender: {updatedGiftCard.SenderEmail}");
+                        
                         // Send email notification to recipient
+                        _logger.LogInformation($"[GIFT CARD CONTROLLER] Sending notification email to recipient: {updatedGiftCard.RecipientEmail}");
                         await _emailService.SendGiftCardNotificationAsync(
                             updatedGiftCard.RecipientEmail,
                             updatedGiftCard.RecipientName,
                             updatedGiftCard.SenderName,
                             updatedGiftCard.Code,
                             updatedGiftCard.OriginalAmount,
-                            updatedGiftCard.Message,
+                            updatedGiftCard.Message ?? "",
                             updatedGiftCard.SenderEmail
                         );
+                        _logger.LogInformation($"[GIFT CARD CONTROLLER] Recipient email sent successfully");
 
                         // ADDED: Send confirmation email to sender
+                        _logger.LogInformation($"[GIFT CARD CONTROLLER] Sending confirmation email to sender: {updatedGiftCard.SenderEmail}");
                         await _emailService.SendGiftCardSenderConfirmationAsync(
                             updatedGiftCard.SenderEmail,
                             updatedGiftCard.SenderName,
@@ -110,8 +141,9 @@ namespace DreamCleaningBackend.Controllers
                             updatedGiftCard.RecipientEmail,
                             updatedGiftCard.Code,
                             updatedGiftCard.OriginalAmount,
-                            updatedGiftCard.Message
+                            updatedGiftCard.Message ?? ""
                         );
+                        _logger.LogInformation($"[GIFT CARD CONTROLLER] Sender confirmation email sent successfully");
 
                         return Ok(new
                         {

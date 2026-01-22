@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using DreamCleaningBackend.DTOs;
@@ -207,10 +207,15 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("{orderId}/cancel")]
-        public async Task<ActionResult> CancelOrder(int orderId, CancelOrderDto cancelOrderDto)
+        public async Task<ActionResult> CancelOrder(int orderId, [FromBody] CancelOrderDto cancelOrderDto)
         {
             try
             {
+                if (cancelOrderDto == null || string.IsNullOrWhiteSpace(cancelOrderDto.Reason))
+                {
+                    return BadRequest(new { message = "Cancellation reason is required" });
+                }
+
                 var userId = GetUserId();
 
                 // Get the order before cancellation

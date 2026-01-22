@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Data
@@ -350,7 +350,8 @@ namespace DreamCleaningBackend.Data
                 entity.HasOne(e => e.PurchasedByUser)
                     .WithMany()
                     .HasForeignKey(e => e.PurchasedByUserId)
-                    .OnDelete(DeleteBehavior.Restrict);
+                    .OnDelete(DeleteBehavior.Restrict)
+                    .IsRequired(false); // Allow null for anonymous purchases
 
                 // REMOVED: UsedByUser relationship
             });

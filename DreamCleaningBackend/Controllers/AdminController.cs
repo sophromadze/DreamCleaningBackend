@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
@@ -2555,7 +2555,9 @@ namespace DreamCleaningBackend.Controllers
                         OrderDate = o.OrderDate,
                         TotalDuration = o.TotalDuration,
                         Tips = o.Tips,
-                        CompanyDevelopmentTips = o.CompanyDevelopmentTips
+                        CompanyDevelopmentTips = o.CompanyDevelopmentTips,
+                        IsPaid = o.IsPaid,
+                        PaidAt = o.PaidAt
                     })
                     .ToListAsync();
 
@@ -2966,6 +2968,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpGet("gift-card-config")]
+        [AllowAnonymous] // Allow public access to gift card config
         public async Task<ActionResult> GetGiftCardConfig()
         {
             var config = await _context.GiftCardConfigs.FirstOrDefaultAsync();
@@ -2976,6 +2979,71 @@ namespace DreamCleaningBackend.Controllers
                 lastUpdated = config?.LastUpdated,
                 hasBackground = !string.IsNullOrEmpty(config?.BackgroundImagePath)
             });
+        }
+
+        [HttpGet("debug-gift-card-image")]
+        [AllowAnonymous] // Debug endpoint to test image loading
+        public async Task<ActionResult> DebugGiftCardImage()
+        {
+            try
+            {
+                var config = await _context.GiftCardConfigs.FirstOrDefaultAsync();
+                var backgroundPath = config?.BackgroundImagePath;
+                var fileUploadPath = _configuration["FileUpload:Path"];
+
+                var debugInfo = new
+                {
+                    configExists = config != null,
+                    backgroundPathFromDb = backgroundPath ?? "NULL",
+                    fileUploadPath = fileUploadPath ?? "NULL",
+                    paths = new List<object>()
+                };
+
+                if (!string.IsNullOrEmpty(backgroundPath) && !string.IsNullOrEmpty(fileUploadPath))
+                {
+                    // Test path 1: Current implementation
+                    var normalizedPath = backgroundPath.TrimStart('/', '\\');
+                    var pathParts = normalizedPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
+                    var fullImagePath1 = Path.Combine(new[] { fileUploadPath }.Concat(pathParts).ToArray());
+                    
+                    // Test path 2: Simple combine
+                    var fullImagePath2 = Path.Combine(fileUploadPath, backgroundPath.TrimStart('/'));
+                    
+                    // Test path 3: Extract filename only
+                    var fileName = Path.GetFileName(backgroundPath);
+                    var fullImagePath3 = Path.Combine(fileUploadPath, "images", fileName);
+
+                    debugInfo.paths.Add(new
+                    {
+                        method = "Current implementation (split path)",
+                        path = fullImagePath1,
+                        exists = System.IO.File.Exists(fullImagePath1),
+                        fileSize = System.IO.File.Exists(fullImagePath1) ? new FileInfo(fullImagePath1).Length : 0
+                    });
+
+                    debugInfo.paths.Add(new
+                    {
+                        method = "Simple combine",
+                        path = fullImagePath2,
+                        exists = System.IO.File.Exists(fullImagePath2),
+                        fileSize = System.IO.File.Exists(fullImagePath2) ? new FileInfo(fullImagePath2).Length : 0
+                    });
+
+                    debugInfo.paths.Add(new
+                    {
+                        method = "Filename only",
+                        path = fullImagePath3,
+                        exists = System.IO.File.Exists(fullImagePath3),
+                        fileSize = System.IO.File.Exists(fullImagePath3) ? new FileInfo(fullImagePath3).Length : 0
+                    });
+                }
+
+                return Ok(debugInfo);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message, stackTrace = ex.StackTrace });
+            }
         }
 
         [HttpPost("upload-gift-card-background")]
@@ -3049,6 +3117,12 @@ namespace DreamCleaningBackend.Controllers
                     await image.SaveAsync(filePath, encoder);
                 }
 
+                // Verify file was saved
+                if (!System.IO.File.Exists(filePath))
+                {
+                    return BadRequest(new { message = "Failed to save image file" });
+                }
+
                 // Update database with new image path
                 var relativePath = $"/images/{fileName}";
 
@@ -3066,13 +3140,21 @@ namespace DreamCleaningBackend.Controllers
                 {
                     // Delete old image if exists
                     if (!string.IsNullOrEmpty(config.BackgroundImagePath) &&
+                        config.BackgroundImagePath != "/images/mainImage.webp" &&
                         config.BackgroundImagePath != "/images/mainImage.png")
                     {
                         var oldFileName = Path.GetFileName(config.BackgroundImagePath);
                         var oldImagePath = Path.Combine(uploadPath, oldFileName);
                         if (System.IO.File.Exists(oldImagePath))
                         {
-                            System.IO.File.Delete(oldImagePath);
+                            try
+                            {
+                                System.IO.File.Delete(oldImagePath);
+                            }
+                            catch
+                            {
+                                // Ignore if old file can't be deleted - not critical
+                            }
                         }
                     }
 
@@ -3087,7 +3169,8 @@ namespace DreamCleaningBackend.Controllers
                     message = "Image uploaded and converted to WebP successfully",
                     imagePath = relativePath,
                     originalFormat = extension,
-                    convertedFormat = ".webp"
+                    convertedFormat = ".webp",
+                    fileSize = new FileInfo(filePath).Length
                 });
             }
             catch (Exception ex)

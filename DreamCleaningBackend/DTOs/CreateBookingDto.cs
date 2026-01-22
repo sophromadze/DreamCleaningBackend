@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace DreamCleaningBackend.DTOs
 {
@@ -79,5 +79,14 @@ namespace DreamCleaningBackend.DTOs
         public int? CustomCleaners { get; set; }
         public decimal? CustomDuration { get; set; }
         public List<PhotoUploadDto> UploadedPhotos { get; set; } = new List<PhotoUploadDto>();
+    }
+
+    public class CreateBookingForUserDto
+    {
+        [Required]
+        public int TargetUserId { get; set; }
+
+        [Required]
+        public CreateBookingDto BookingData { get; set; }
     }
 }

@@ -1,11 +1,11 @@
-﻿using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Services.Interfaces
 {
     public interface IGiftCardService
     {
-        Task<GiftCard> CreateGiftCard(int userId, CreateGiftCardDto createDto);
+        Task<GiftCard> CreateGiftCard(int? userId, CreateGiftCardDto createDto);
         Task<GiftCardValidationDto> ValidateGiftCard(string code);
         Task<decimal> ApplyGiftCardToOrder(string code, decimal orderAmount, int orderId, int userId); // ADD userId parameter
         Task<List<GiftCardDto>> GetUserGiftCards(int userId);

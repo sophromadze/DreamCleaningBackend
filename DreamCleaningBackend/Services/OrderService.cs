@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
@@ -37,6 +37,8 @@ namespace DreamCleaningBackend.Services
                 .OrderByDescending(o => o.OrderDate)
                 .ToListAsync();
 
+            await AutoCancelExpiredUnpaidOrdersIfNeeded(orders);
+
             return orders.Select(o => new OrderListDto
             {
                 Id = o.Id,
@@ -54,13 +56,17 @@ namespace DreamCleaningBackend.Services
                 OrderDate = o.OrderDate,
                 TotalDuration = o.TotalDuration,
                 Tips = o.Tips,
-                CompanyDevelopmentTips = o.CompanyDevelopmentTips
+                CompanyDevelopmentTips = o.CompanyDevelopmentTips,
+                IsPaid = o.IsPaid,
+                PaidAt = o.PaidAt
             }).ToList();
         }
 
         public async Task<List<OrderListDto>> GetUserOrders(int userId)
         {
             var orders = await _orderRepository.GetUserOrdersAsync(userId);
+
+            await AutoCancelExpiredUnpaidOrdersIfNeeded(orders);
 
             return orders.Select(o => new OrderListDto
             {
@@ -79,7 +85,9 @@ namespace DreamCleaningBackend.Services
                 OrderDate = o.OrderDate,
                 TotalDuration = o.TotalDuration,
                 Tips = o.Tips,
-                CompanyDevelopmentTips = o.CompanyDevelopmentTips
+                CompanyDevelopmentTips = o.CompanyDevelopmentTips,
+                IsPaid = o.IsPaid,
+                PaidAt = o.PaidAt
             }).ToList();
         }
 
@@ -90,7 +98,67 @@ namespace DreamCleaningBackend.Services
             if (order == null || order.UserId != userId)
                 throw new Exception("Order not found");
 
+            await AutoCancelExpiredUnpaidOrderIfNeeded(order);
+
             return MapOrderToDto(order);
+        }
+
+        private static DateTime GetServiceDateTimeUtc(Order order)
+        {
+            // ServiceDate is stored as a DateTime (usually date portion); ServiceTime is stored separately.
+            // Combine them to determine if the service datetime has passed.
+            var combined = order.ServiceDate.Date.Add(order.ServiceTime);
+            return combined.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(combined, DateTimeKind.Utc)
+                : combined.ToUniversalTime();
+        }
+
+        private async Task AutoCancelExpiredUnpaidOrdersIfNeeded(IReadOnlyCollection<Order> orders)
+        {
+            if (orders == null || orders.Count == 0) return;
+
+            var nowUtc = DateTime.UtcNow;
+            var changed = false;
+
+            foreach (var order in orders)
+            {
+                if (order == null) continue;
+                if (order.IsPaid) continue;
+                if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var serviceUtc = GetServiceDateTimeUtc(order);
+                if (serviceUtc < nowUtc)
+                {
+                    order.Status = "Cancelled";
+                    order.CancellationReason ??= "Order expired (unpaid)";
+                    order.UpdatedAt = nowUtc;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                await _context.SaveChangesAsync();
+            }
+        }
+
+        private async Task AutoCancelExpiredUnpaidOrderIfNeeded(Order order)
+        {
+            if (order == null) return;
+            if (order.IsPaid) return;
+            if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase)) return;
+            if (string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase)) return;
+
+            var nowUtc = DateTime.UtcNow;
+            var serviceUtc = GetServiceDateTimeUtc(order);
+            if (serviceUtc < nowUtc)
+            {
+                order.Status = "Cancelled";
+                order.CancellationReason ??= "Order expired (unpaid)";
+                order.UpdatedAt = nowUtc;
+                await _context.SaveChangesAsync();
+            }
         }
 
         public async Task<OrderDto> UpdateOrder(int orderId, int userId, UpdateOrderDto updateOrderDto)
@@ -606,8 +674,9 @@ namespace DreamCleaningBackend.Services
                 throw new Exception("Order is already cancelled");
             if (order.Status == "Done")
                 throw new Exception("Cannot cancel a completed order");
-            // Check if service date is not too close (e.g., within 24 hours)
-            if (order.ServiceDate <= DateTime.UtcNow.AddHours(48))
+            // Check if service date is not too close (e.g., within 48 hours)
+            // Only apply this restriction for paid orders - unpaid orders can be cancelled anytime
+            if (order.IsPaid && order.ServiceDate <= DateTime.UtcNow.AddHours(48))
                 throw new Exception("Cannot cancel order within 48 hours of service date");
             order.Status = "Cancelled";
             order.CancellationReason = cancelOrderDto.Reason;
@@ -965,7 +1034,9 @@ namespace DreamCleaningBackend.Services
                 OrderDate = o.OrderDate,
                 TotalDuration = o.TotalDuration,
                 Tips = o.Tips,
-                CompanyDevelopmentTips = o.CompanyDevelopmentTips
+                CompanyDevelopmentTips = o.CompanyDevelopmentTips,
+                IsPaid = o.IsPaid,
+                PaidAt = o.PaidAt
             }).ToList();
         }
 
