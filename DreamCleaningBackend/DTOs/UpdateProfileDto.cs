@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace DreamCleaningBackend.DTOs
 {
@@ -19,5 +19,8 @@ namespace DreamCleaningBackend.DTOs
 
         [StringLength(20)]
         public string? Phone { get; set; }
+
+        /// <summary>Optional. When provided, updates the user's preference to receive emails/SMS from the company.</summary>
+        public bool? CanReceiveCommunications { get; set; }
     }
 }

@@ -1,4 +1,4 @@
-﻿using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.DTOs;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -16,5 +16,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<List<OrderListDto>> GetUserOrdersForAdmin(int userId);
         Task<OrderDto> GetOrderByIdForAdmin(int orderId);
         Task<OrderUpdatePaymentDto> CreateUpdatePaymentIntent(int orderId, int userId, UpdateOrderDto updateOrderDto);
+        /// <summary>SuperAdmin-only: apply full order update without 48h or "can't reduce" checks. All changes are audit-logged by the caller.</summary>
+        Task SuperAdminFullUpdateOrder(int orderId, SuperAdminUpdateOrderDto dto);
     }
 }

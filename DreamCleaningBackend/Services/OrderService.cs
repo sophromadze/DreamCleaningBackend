@@ -1216,5 +1216,57 @@ namespace DreamCleaningBackend.Services
                 }).ToList() ?? new List<OrderExtraServiceDto>()
             };
         }
+
+        /// <summary>SuperAdmin-only: full order update without 48h or "can't reduce" checks. All changes must be audit-logged by the caller.</summary>
+        public async Task SuperAdminFullUpdateOrder(int orderId, SuperAdminUpdateOrderDto dto)
+        {
+            var order = await _orderRepository.GetByIdWithDetailsAsync(orderId);
+            if (order == null)
+                throw new Exception("Order not found");
+
+            if (dto.ContactFirstName != null) order.ContactFirstName = dto.ContactFirstName;
+            if (dto.ContactLastName != null) order.ContactLastName = dto.ContactLastName;
+            if (dto.ContactEmail != null) order.ContactEmail = dto.ContactEmail;
+            if (dto.ContactPhone != null) order.ContactPhone = dto.ContactPhone;
+            if (dto.ServiceAddress != null) order.ServiceAddress = dto.ServiceAddress;
+            if (dto.AptSuite != null) order.AptSuite = dto.AptSuite;
+            if (dto.City != null) order.City = dto.City;
+            if (dto.State != null) order.State = dto.State;
+            if (dto.ZipCode != null) order.ZipCode = dto.ZipCode;
+            if (dto.ServiceDate.HasValue) order.ServiceDate = dto.ServiceDate.Value;
+            if (dto.ServiceTime != null && TimeSpan.TryParse(dto.ServiceTime, out var st)) order.ServiceTime = st;
+            if (dto.MaidsCount.HasValue) order.MaidsCount = dto.MaidsCount.Value;
+            if (dto.TotalDuration.HasValue) order.TotalDuration = dto.TotalDuration.Value;
+            if (dto.EntryMethod != null) order.EntryMethod = dto.EntryMethod;
+            if (dto.SpecialInstructions != null) order.SpecialInstructions = dto.SpecialInstructions;
+            if (dto.Tips.HasValue) order.Tips = dto.Tips.Value;
+            if (dto.CompanyDevelopmentTips.HasValue) order.CompanyDevelopmentTips = dto.CompanyDevelopmentTips.Value;
+            if (dto.Status != null) order.Status = dto.Status;
+            if (dto.CancellationReason != null) order.CancellationReason = dto.CancellationReason;
+            if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
+            if (dto.Tax.HasValue) order.Tax = dto.Tax.Value;
+            if (dto.Total.HasValue) order.Total = dto.Total.Value;
+            if (dto.DiscountAmount.HasValue) order.DiscountAmount = dto.DiscountAmount.Value;
+
+            if (dto.Services != null)
+            {
+                foreach (var s in dto.Services)
+                {
+                    var os = order.OrderServices?.FirstOrDefault(x => x.Id == s.OrderServiceId);
+                    if (os != null) { os.Quantity = s.Quantity; os.Cost = s.Cost; }
+                }
+            }
+            if (dto.ExtraServices != null)
+            {
+                foreach (var e in dto.ExtraServices)
+                {
+                    var oes = order.OrderExtraServices?.FirstOrDefault(x => x.Id == e.OrderExtraServiceId);
+                    if (oes != null) { oes.Quantity = e.Quantity; oes.Hours = e.Hours; oes.Cost = e.Cost; }
+                }
+            }
+
+            order.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+        }
     }
 }

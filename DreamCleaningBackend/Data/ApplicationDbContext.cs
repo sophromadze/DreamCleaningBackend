@@ -36,6 +36,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<WebhookEvent> WebhookEvents { get; set; }
         public DbSet<ScheduledMail> ScheduledMails { get; set; }
         public DbSet<SentMailLog> SentMailLogs { get; set; }
+        public DbSet<ScheduledSms> ScheduledSms { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -392,51 +393,44 @@ namespace DreamCleaningBackend.Data
 
             // ScheduledMail configuration
             modelBuilder.Entity<ScheduledMail>(entity =>
-    {
-        entity.HasIndex(e => e.Status)
-            .HasDatabaseName("IX_ScheduledMails_Status");
-
-        entity.HasIndex(e => e.NextScheduledAt)
-            .HasDatabaseName("IX_ScheduledMails_NextScheduledAt");
-
-        entity.HasOne(e => e.CreatedBy)
-            .WithMany()
-            .HasForeignKey(e => e.CreatedById)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        entity.Property(e => e.TargetRoles)
-            .IsRequired();
-
-        entity.Property(e => e.Subject)
-            .IsRequired()
-            .HasMaxLength(200);
-
-        entity.Property(e => e.Content)
-            .IsRequired();
-    });
-
+            {
+                entity.HasIndex(e => e.CreatedById).HasDatabaseName("IX_ScheduledMails_CreatedById");
+                entity.HasIndex(e => e.NextScheduledAt).HasDatabaseName("IX_ScheduledMails_NextScheduledAt");
+                entity.HasIndex(e => e.Status).HasDatabaseName("IX_ScheduledMails_Status");
+                entity.Property(e => e.Subject).HasMaxLength(200);
+                entity.Property(e => e.ScheduleTimezone).HasMaxLength(100);
+                entity.HasOne(e => e.CreatedBy)
+                    .WithMany()
+                    .HasForeignKey(e => e.CreatedById)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
 
             // SentMailLog configuration
             modelBuilder.Entity<SentMailLog>(entity =>
-    {
-        entity.HasIndex(e => new { e.ScheduledMailId, e.SentAt })
-            .HasDatabaseName("IX_SentMailLogs_MailId_SentAt");
+            {
+                entity.HasIndex(e => new { e.ScheduledMailId, e.SentAt }).HasDatabaseName("IX_SentMailLogs_MailId_SentAt");
+                entity.Property(e => e.RecipientEmail).HasMaxLength(256);
+                entity.Property(e => e.RecipientName).HasMaxLength(200);
+                entity.Property(e => e.RecipientRole).HasMaxLength(50);
+                entity.HasOne(e => e.ScheduledMail)
+                    .WithMany(s => s.SentMailLogs)
+                    .HasForeignKey(e => e.ScheduledMailId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
 
-        entity.HasOne(e => e.ScheduledMail)
-            .WithMany(m => m.SentMailLogs)
-            .HasForeignKey(e => e.ScheduledMailId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        entity.Property(e => e.RecipientEmail)
-            .IsRequired()
-            .HasMaxLength(256);
-
-        entity.Property(e => e.RecipientName)
-            .HasMaxLength(200);
-
-        entity.Property(e => e.RecipientRole)
-            .HasMaxLength(50);
-    });
+            // ScheduledSms configuration
+            modelBuilder.Entity<ScheduledSms>(entity =>
+            {
+                entity.HasIndex(e => e.CreatedById).HasDatabaseName("IX_ScheduledSms_CreatedById");
+                entity.HasIndex(e => e.NextScheduledAt).HasDatabaseName("IX_ScheduledSms_NextScheduledAt");
+                entity.HasIndex(e => e.Status).HasDatabaseName("IX_ScheduledSms_Status");
+                entity.Property(e => e.Content).HasMaxLength(1600);
+                entity.Property(e => e.ScheduleTimezone).HasMaxLength(100);
+                entity.HasOne(e => e.CreatedBy)
+                    .WithMany()
+                    .HasForeignKey(e => e.CreatedById)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
 
             // Update Order entity for gift card tracking
             modelBuilder.Entity<Order>(entity =>

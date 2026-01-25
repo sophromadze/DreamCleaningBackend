@@ -1,30 +1,27 @@
-// DreamCleaningBackend/Controllers/MailAdminController.cs
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
-using System.Text.Json;
-using TimeZoneConverter;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json;
 
 namespace DreamCleaningBackend.Controllers
 {
-    [Route("api/admin/mails")]
+    [Route("api/Admin/mails")]
     [ApiController]
-    [Authorize(Roles = "Admin,SuperAdmin")]
+    [Authorize(Roles = "Admin,SuperAdmin,Moderator")]
     public class MailAdminController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
         private readonly IEmailService _emailService;
         private readonly ILogger<MailAdminController> _logger;
 
-        public MailAdminController(
-            ApplicationDbContext context,
-            IEmailService emailService,
-            ILogger<MailAdminController> logger)
+        public MailAdminController(ApplicationDbContext context, IEmailService emailService, ILogger<MailAdminController> logger)
         {
             _context = context;
             _emailService = emailService;
@@ -33,614 +30,308 @@ namespace DreamCleaningBackend.Controllers
 
         [HttpGet]
         [RequirePermission(Permission.View)]
-        public async Task<ActionResult<List<ScheduledMailDto>>> GetScheduledMails()
-{
-    var mails = await _context.ScheduledMails
-        .Include(m => m.CreatedBy)
-        .Include(m => m.SentMailLogs)
-        .OrderByDescending(m => m.CreatedAt)
-        .ToListAsync();
-
-    var result = mails.Select(m => new ScheduledMailDto
-    {
-        Id = m.Id,
-        Subject = m.Subject,
-        Content = m.Content,
-        TargetRoles = JsonSerializer.Deserialize<List<string>>(m.TargetRoles) ?? new List<string>(),
-        ScheduleType = m.ScheduleType.ToString(),
-        ScheduledDate = m.ScheduledDate,
-        ScheduledTime = m.ScheduledTime?.ToString() ?? null,
-        DayOfWeek = m.DayOfWeek,
-        DayOfMonth = m.DayOfMonth,
-        WeekOfMonth = m.WeekOfMonth,
-        Frequency = m.Frequency?.ToString() ?? null,
-        Status = m.Status.ToString(),
-        ScheduleTimezone = m.ScheduleTimezone, // Include timezone
-        CreatedBy = $"{m.CreatedBy.FirstName} {m.CreatedBy.LastName}",
-        CreatedAt = m.CreatedAt,
-        SentAt = m.SentAt,
-        RecipientCount = m.RecipientCount,
-        TimesSent = m.TimesSent
-    }).ToList();
-
-    return Ok(result);
-}
+        public async Task<ActionResult<List<ScheduledMailDto>>> GetMails([FromQuery] int? status)
+        {
+            var q = _context.ScheduledMails
+                .Include(m => m.CreatedBy)
+                .OrderByDescending(m => m.CreatedAt)
+                .AsQueryable();
+            if (status.HasValue)
+                q = q.Where(m => m.Status == (MailStatus)status.Value);
+            var list = await q.Select(m => MapToDto(m)).ToListAsync();
+            return Ok(list);
+        }
 
         [HttpGet("{id}")]
         [RequirePermission(Permission.View)]
-        public async Task<ActionResult<ScheduledMailDto>> GetScheduledMail(int id)
+        public async Task<ActionResult<ScheduledMailDto>> GetMail(int id)
         {
-            var mail = await _context.ScheduledMails
-                .Include(m => m.CreatedBy)
-                .Include(m => m.SentMailLogs)
-                .FirstOrDefaultAsync(m => m.Id == id);
-
-            if (mail == null)
-                return NotFound();
-
-            var dto = new ScheduledMailDto
-            {
-                Id = mail.Id,
-                Subject = mail.Subject,
-                Content = mail.Content,
-                TargetRoles = JsonSerializer.Deserialize<List<string>>(mail.TargetRoles) ?? new List<string>(),
-                ScheduleType = mail.ScheduleType.ToString(),
-                ScheduledDate = mail.ScheduledDate,
-                ScheduledTime = mail.ScheduledTime?.ToString() ?? null,
-                DayOfWeek = mail.DayOfWeek,
-                DayOfMonth = mail.DayOfMonth,
-                WeekOfMonth = mail.WeekOfMonth,
-                Frequency = mail.Frequency?.ToString() ?? null,
-                Status = mail.Status.ToString(),
-                CreatedBy = $"{mail.CreatedBy.FirstName} {mail.CreatedBy.LastName}",
-                CreatedAt = mail.CreatedAt,
-                SentAt = mail.SentAt,
-                RecipientCount = mail.RecipientCount,
-                TimesSent = mail.TimesSent,
-                SentLogs = mail.SentMailLogs.Select(log => new SentMailLogDto
-                {
-                    RecipientEmail = log.RecipientEmail,
-                    RecipientName = log.RecipientName,
-                    RecipientRole = log.RecipientRole,
-                    SentAt = log.SentAt,
-                    IsDelivered = log.IsDelivered,
-                    ErrorMessage = log.ErrorMessage
-                }).ToList()
-            };
-
-            return Ok(dto);
+            var m = await _context.ScheduledMails.Include(x => x.CreatedBy).FirstOrDefaultAsync(x => x.Id == id);
+            if (m == null) return NotFound();
+            return Ok(MapToDto(m));
         }
 
         [HttpPost]
         [RequirePermission(Permission.Create)]
-        public async Task<ActionResult<ScheduledMailDto>> CreateScheduledMail(CreateScheduledMailDto dto)
-{
-    if (!ModelState.IsValid)
-    {
-        _logger.LogWarning($"Model validation failed: {string.Join(", ", ModelState.Values.SelectMany(v => v.Errors).Select(e => e.ErrorMessage))}");
-        return BadRequest(ModelState);
-    }
-    
-    var userId = int.Parse(User.FindFirst("UserId")?.Value ?? "0");
-
-    var mail = new ScheduledMail
-    {
-        Subject = dto.Subject,
-        Content = dto.Content,
-        TargetRoles = JsonSerializer.Serialize(dto.TargetRoles),
-        ScheduleType = Enum.Parse<ScheduleType>(dto.ScheduleType, true),
-        ScheduledDate = dto.ScheduledDate,
-        ScheduledTime = !string.IsNullOrEmpty(dto.ScheduledTime) && TimeSpan.TryParse(dto.ScheduledTime, out var time) ? time : null,
-        DayOfWeek = dto.DayOfWeek,
-        DayOfMonth = dto.DayOfMonth,
-        WeekOfMonth = dto.WeekOfMonth,
-        Frequency = !string.IsNullOrEmpty(dto.Frequency) && Enum.TryParse<Frequency>(dto.Frequency, true, out var freq) ? freq : null,
-        Status = Enum.Parse<MailStatus>(dto.Status, true),
-        ScheduleTimezone = dto.ScheduleTimezone ?? "America/New_York", // Default to NYC timezone
-        CreatedById = userId,
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
-        IsActive = true,
-        RecipientCount = 0,
-        TimesSent = 0
-    };
-
-    // Calculate next scheduled time if applicable
-    if (mail.ScheduleType == ScheduleType.Scheduled)
-    {
-        mail.NextScheduledAt = CalculateNextScheduledTime(mail);
-    }
-
-    _context.ScheduledMails.Add(mail);
-    await _context.SaveChangesAsync();
-
-    // If immediate send, process it now
-    if (mail.ScheduleType == ScheduleType.Immediate && mail.Status == MailStatus.Sent)
-    {
-        await SendMailToRecipients(mail);
-    }
-
-    return CreatedAtAction(nameof(GetScheduledMail), new { id = mail.Id }, new { id = mail.Id });
-}
+        public async Task<ActionResult<ScheduledMailDto>> CreateMail([FromBody] CreateScheduledMailDto dto)
+        {
+            var userId = GetCurrentUserId();
+            if (userId == null) return Unauthorized();
+            var targetRoles = dto.TargetRoles ?? "[]";
+            var roles = ParseRoleNames(targetRoles);
+            var now = DateTime.UtcNow;
+            var mail = new ScheduledMail
+            {
+                Subject = dto.Subject.Trim(),
+                Content = dto.Content ?? "",
+                TargetRoles = targetRoles,
+                ScheduleType = (ScheduleType)dto.ScheduleType,
+                ScheduledDate = dto.ScheduledDate,
+                ScheduledTime = ParseTimeSpan(dto.ScheduledTime),
+                DayOfWeek = dto.DayOfWeek,
+                DayOfMonth = dto.DayOfMonth,
+                WeekOfMonth = dto.WeekOfMonth,
+                Frequency = dto.Frequency.HasValue ? (MailFrequency)dto.Frequency.Value : null,
+                ScheduleTimezone = string.IsNullOrWhiteSpace(dto.ScheduleTimezone) ? "Eastern Standard Time" : dto.ScheduleTimezone.Trim(),
+                Status = MailStatus.Draft,
+                CreatedById = userId.Value,
+                CreatedAt = now,
+                UpdatedAt = now,
+                RecipientCount = 0,
+                TimesSent = 0,
+                IsActive = true
+            };
+            // Compute recipient count (only users with CanReceiveCommunications and matching role)
+            mail.RecipientCount = await CountRecipients(roles);
+            if (dto.SendNow)
+            {
+                _context.ScheduledMails.Add(mail);
+                await _context.SaveChangesAsync();
+                await SendMailNow(mail);
+                return Ok(MapToDto(mail));
+            }
+            _context.ScheduledMails.Add(mail);
+            if (mail.ScheduleType == ScheduleType.Scheduled && mail.ScheduledDate.HasValue && mail.ScheduledTime.HasValue)
+            {
+                mail.Status = MailStatus.Scheduled;
+                mail.NextScheduledAt = ComputeNextScheduled(mail.ScheduledDate.Value, mail.ScheduledTime.Value, mail.Frequency, mail.DayOfWeek, mail.DayOfMonth, mail.WeekOfMonth, mail.ScheduleTimezone);
+            }
+            await _context.SaveChangesAsync();
+            return Ok(MapToDto(mail));
+        }
 
         [HttpPut("{id}")]
         [RequirePermission(Permission.Update)]
-        public async Task<ActionResult> UpdateScheduledMail(int id, UpdateScheduledMailDto dto)
+        public async Task<ActionResult<ScheduledMailDto>> UpdateMail(int id, [FromBody] UpdateScheduledMailDto dto)
         {
-            var mail = await _context.ScheduledMails.FindAsync(id);
-            if (mail == null)
-                return NotFound();
-
-            if (mail.Status == MailStatus.Sent)
-                return BadRequest(new { message = "Cannot edit sent emails" });
-
-            mail.Subject = dto.Subject;
-            mail.Content = dto.Content;
-            mail.TargetRoles = JsonSerializer.Serialize(dto.TargetRoles);
-            mail.ScheduleType = Enum.Parse<ScheduleType>(dto.ScheduleType, true);
-            mail.ScheduledDate = dto.ScheduledDate;
-            mail.ScheduledTime = !string.IsNullOrEmpty(dto.ScheduledTime) && TimeSpan.TryParse(dto.ScheduledTime, out var time) ? time : null;
-            mail.DayOfWeek = dto.DayOfWeek;
-            mail.DayOfMonth = dto.DayOfMonth;
-            mail.WeekOfMonth = dto.WeekOfMonth;
-            mail.Frequency = !string.IsNullOrEmpty(dto.Frequency) && Enum.TryParse<Frequency>(dto.Frequency, out var freq) ? freq : null;
-            mail.Status = Enum.Parse<MailStatus>(dto.Status, true);
+            var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
+            if (mail == null) return NotFound();
+            if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled) return BadRequest("Cannot update mail that is already sent or cancelled.");
+            if (dto.Subject != null) mail.Subject = dto.Subject.Trim();
+            if (dto.Content != null) mail.Content = dto.Content;
+            if (dto.TargetRoles != null) { mail.TargetRoles = dto.TargetRoles; mail.RecipientCount = await CountRecipients(ParseRoleNames(dto.TargetRoles)); }
+            if (dto.ScheduleType.HasValue) mail.ScheduleType = (ScheduleType)dto.ScheduleType.Value;
+            if (dto.ScheduledDate.HasValue) mail.ScheduledDate = dto.ScheduledDate;
+            if (dto.ScheduledTime != null) mail.ScheduledTime = ParseTimeSpan(dto.ScheduledTime);
+            if (dto.DayOfWeek.HasValue) mail.DayOfWeek = dto.DayOfWeek;
+            if (dto.DayOfMonth.HasValue) mail.DayOfMonth = dto.DayOfMonth;
+            if (dto.WeekOfMonth.HasValue) mail.WeekOfMonth = dto.WeekOfMonth;
+            if (dto.Frequency.HasValue) mail.Frequency = (MailFrequency)dto.Frequency.Value;
+            if (dto.ScheduleTimezone != null) mail.ScheduleTimezone = dto.ScheduleTimezone.Trim();
+            if (dto.IsActive.HasValue) mail.IsActive = dto.IsActive.Value;
             mail.UpdatedAt = DateTime.UtcNow;
-
-            // Recalculate next scheduled time
-            if (mail.ScheduleType == ScheduleType.Scheduled)
-            {
-                mail.NextScheduledAt = CalculateNextScheduledTime(mail);
-            }
-
+            if (mail.ScheduleType == ScheduleType.Scheduled && mail.ScheduledDate.HasValue && mail.ScheduledTime.HasValue)
+                mail.NextScheduledAt = ComputeNextScheduled(mail.ScheduledDate.Value, mail.ScheduledTime.Value, mail.Frequency, mail.DayOfWeek, mail.DayOfMonth, mail.WeekOfMonth, mail.ScheduleTimezone);
             await _context.SaveChangesAsync();
-            return Ok(new { message = "Mail updated successfully" });
+            return Ok(MapToDto(mail));
         }
 
         [HttpDelete("{id}")]
         [RequirePermission(Permission.Delete)]
-        public async Task<ActionResult> DeleteScheduledMail(int id)
+        public async Task<ActionResult> DeleteMail(int id)
         {
-            var mail = await _context.ScheduledMails
-                .Include(m => m.SentMailLogs)
-                .FirstOrDefaultAsync(m => m.Id == id);
-
-            if (mail == null)
-                return NotFound();
-
+            var mail = await _context.ScheduledMails.FindAsync(id);
+            if (mail == null) return NotFound();
+            if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled && mail.Status != MailStatus.Cancelled) return BadRequest("Cannot delete sent mail.");
             _context.ScheduledMails.Remove(mail);
             await _context.SaveChangesAsync();
-
-            return Ok(new { message = "Mail deleted successfully" });
+            return NoContent();
         }
 
         [HttpPost("{id}/send")]
         [RequirePermission(Permission.Create)]
-        public async Task<ActionResult> SendMail(int id)
+        public async Task<ActionResult<ScheduledMailDto>> SendNow(int id)
         {
-            var mail = await _context.ScheduledMails.FindAsync(id);
-            if (mail == null)
-                return NotFound();
-
-            var result = await SendMailToRecipients(mail);
-            
-            if (result.Success)
-            {
-                mail.Status = MailStatus.Sent;
-                mail.SentAt = DateTime.UtcNow;
-                mail.LastSentAt = DateTime.UtcNow;
-                mail.TimesSent++;
-                await _context.SaveChangesAsync();
-
-                return Ok(new { 
-                    message = $"Email sent successfully to {result.RecipientCount} recipients",
-                    recipientCount = result.RecipientCount 
-                });
-            }
-
-            return BadRequest(new { message = result.ErrorMessage });
+            var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
+            if (mail == null) return NotFound();
+            if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled) return BadRequest("Mail already sent or cancelled.");
+            await SendMailNow(mail);
+            return Ok(MapToDto(mail));
         }
 
         [HttpPost("{id}/cancel")]
         [RequirePermission(Permission.Update)]
-        public async Task<ActionResult> CancelScheduledMail(int id)
+        public async Task<ActionResult<ScheduledMailDto>> Cancel(int id)
         {
-            var mail = await _context.ScheduledMails.FindAsync(id);
-            if (mail == null)
-                return NotFound();
-
-            if (mail.Status != MailStatus.Scheduled)
-                return BadRequest(new { message = "Can only cancel scheduled emails" });
-
+            var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
+            if (mail == null) return NotFound();
+            if (mail.Status != MailStatus.Scheduled) return BadRequest("Only scheduled mails can be cancelled.");
             mail.Status = MailStatus.Cancelled;
-            mail.UpdatedAt = DateTime.UtcNow;
             mail.IsActive = false;
-            
+            mail.NextScheduledAt = null;
+            mail.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
-            return Ok(new { message = "Scheduled mail cancelled successfully" });
+            return Ok(MapToDto(mail));
         }
 
         [HttpGet("stats")]
         [RequirePermission(Permission.View)]
-        public async Task<ActionResult<MailStatsDto>> GetMailStats()
+        public async Task<ActionResult<MailStatsDto>> GetStats()
         {
-            var stats = new MailStatsDto
-            {
-                TotalSent = await _context.ScheduledMails.CountAsync(m => m.Status == MailStatus.Sent),
-                ScheduledCount = await _context.ScheduledMails.CountAsync(m => m.Status == MailStatus.Scheduled),
-                DraftCount = await _context.ScheduledMails.CountAsync(m => m.Status == MailStatus.Draft),
-                RecipientsByRole = await GetRecipientsByRole(),
-                SentByMonth = await GetSentByMonth()
-            };
-
-            return Ok(stats);
+            var draft = await _context.ScheduledMails.CountAsync(m => m.Status == MailStatus.Draft);
+            var scheduled = await _context.ScheduledMails.CountAsync(m => m.Status == MailStatus.Scheduled && m.IsActive);
+            var sent = await _context.ScheduledMails.CountAsync(m => m.Status == MailStatus.Sent);
+            var totalSent = await _context.ScheduledMails.Where(m => m.Status == MailStatus.Sent).SumAsync(m => m.TimesSent);
+            return Ok(new MailStatsDto { DraftCount = draft, ScheduledCount = scheduled, SentCount = sent, TotalMailsSent = totalSent });
         }
 
         [HttpGet("user-counts")]
-        // [RequirePermission(Permission.View)] // Temporarily removed for debugging
-        public async Task<ActionResult<Dictionary<string, int>>> GetUserCountsByRole()
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<MailUserCountDto>>> GetUserCounts()
+        {
+            var roles = Enum.GetNames(typeof(UserRole));
+            var list = new List<MailUserCountDto>();
+            foreach (var r in roles)
+            {
+                if (!Enum.TryParse<UserRole>(r, out var role)) continue;
+                var total = await _context.Users.CountAsync(u => u.Role == role && u.IsActive);
+                var canReceive = await _context.Users.CountAsync(u => u.Role == role && u.IsActive && u.CanReceiveCommunications);
+                list.Add(new MailUserCountDto { Role = r, Total = total, CanReceive = canReceive });
+            }
+            return Ok(list);
+        }
+
+        private int? GetCurrentUserId()
+        {
+            var sub = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return int.TryParse(sub, out var id) ? id : null;
+        }
+
+        private static TimeSpan? ParseTimeSpan(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            if (TimeSpan.TryParse(s, out var t)) return t;
+            return null;
+        }
+
+        private static List<UserRole> ParseRoleNames(string json)
         {
             try
             {
-                var counts = new Dictionary<string, int>();
-                
-                foreach (UserRole role in Enum.GetValues(typeof(UserRole)))
-                {
-                    var count = await _context.Users.CountAsync(u => u.Role == role && u.IsActive);
-                    counts[role.ToString()] = count;
-                    _logger.LogInformation($"Role {role}: {count} users");
-                }
-
-                // Add total count
-                var totalCount = await _context.Users.CountAsync(u => u.IsActive);
-                counts["all"] = totalCount;
-                _logger.LogInformation($"Total users: {totalCount}");
-
-                return Ok(counts);
+                var names = JsonConvert.DeserializeObject<string[]>(json);
+                if (names == null || names.Length == 0) return new List<UserRole>();
+                var list = new List<UserRole>();
+                foreach (var n in names)
+                    if (Enum.TryParse<UserRole>(n?.Trim(), true, out var r))
+                        list.Add(r);
+                return list;
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error getting user counts by role");
-                return StatusCode(500, new { message = "Error retrieving user counts" });
-            }
+            catch { return new List<UserRole>(); }
         }
 
-        [HttpGet("test-user-counts")]
-        public async Task<ActionResult> TestUserCounts()
+        private async Task<int> CountRecipients(List<UserRole> roles)
         {
-            try
-            {
-                var totalUsers = await _context.Users.CountAsync();
-                var activeUsers = await _context.Users.CountAsync(u => u.IsActive);
-                
-                _logger.LogInformation($"Total users in database: {totalUsers}");
-                _logger.LogInformation($"Active users in database: {activeUsers}");
-                
-                return Ok(new { 
-                    totalUsers = totalUsers, 
-                    activeUsers = activeUsers,
-                    message = "Check logs for detailed role counts"
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in test user counts");
-                return StatusCode(500, new { message = ex.Message });
-            }
+            if (roles == null || roles.Count == 0) return 0;
+            return await _context.Users
+                .Where(u => u.IsActive && u.CanReceiveCommunications && roles.Contains(u.Role))
+                .CountAsync();
         }
 
-
-        private async Task<SendMailResult> SendMailToRecipients(ScheduledMail mail)
+        private async Task<List<User>> GetRecipients(List<UserRole> roles)
         {
-            try
-            {
-                var targetRoles = JsonSerializer.Deserialize<List<string>>(mail.TargetRoles) ?? new List<string>();
-                var recipients = new List<User>();
-
-                if (targetRoles.Contains("all"))
-                {
-                    recipients = await _context.Users
-                        .Where(u => u.IsActive)
-                        .ToListAsync();
-                }
-                else
-                {
-                    var query = _context.Users.Where(u => u.IsActive);
-                    
-                    if (targetRoles.Contains("Customer"))
-                        recipients.AddRange(await query.Where(u => u.Role == UserRole.Customer).ToListAsync());
-                    if (targetRoles.Contains("Cleaner"))
-                        recipients.AddRange(await query.Where(u => u.Role == UserRole.Cleaner).ToListAsync());
-                    if (targetRoles.Contains("Admin"))
-                        recipients.AddRange(await query.Where(u => u.Role == UserRole.Admin).ToListAsync());
-                    if (targetRoles.Contains("SuperAdmin"))
-                        recipients.AddRange(await query.Where(u => u.Role == UserRole.SuperAdmin).ToListAsync());
-                    if (targetRoles.Contains("Moderator"))
-                        recipients.AddRange(await query.Where(u => u.Role == UserRole.Moderator).ToListAsync());
-                    
-                    recipients = recipients.Distinct().ToList();
-                }
-
-                var sentCount = 0;
-                var logs = new List<SentMailLog>();
-
-                foreach (var recipient in recipients)
-                {
-                    try
-                    {
-                        // Format the content to preserve line breaks and spacing
-                        var formattedContent = FormatEmailContent(mail.Content);
-                        
-                        await _emailService.SendEmailAsync(
-                            recipient.Email,
-                            mail.Subject,
-                            formattedContent
-                        );
-
-                        logs.Add(new SentMailLog
-                        {
-                            ScheduledMailId = mail.Id,
-                            RecipientEmail = recipient.Email,
-                            RecipientName = $"{recipient.FirstName} {recipient.LastName}",
-                            RecipientRole = recipient.Role.ToString(),
-                            SentAt = DateTime.UtcNow,
-                            IsDelivered = true
-                        });
-
-                        sentCount++;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"Failed to send email to {recipient.Email}");
-                        
-                        logs.Add(new SentMailLog
-                        {
-                            ScheduledMailId = mail.Id,
-                            RecipientEmail = recipient.Email,
-                            RecipientName = $"{recipient.FirstName} {recipient.LastName}",
-                            RecipientRole = recipient.Role.ToString(),
-                            SentAt = DateTime.UtcNow,
-                            IsDelivered = false,
-                            ErrorMessage = ex.Message
-                        });
-                    }
-                }
-
-                // Save logs
-                _context.SentMailLogs.AddRange(logs);
-                mail.RecipientCount = sentCount;
-                await _context.SaveChangesAsync();
-
-                return new SendMailResult
-                {
-                    Success = true,
-                    RecipientCount = sentCount
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to send scheduled mail");
-                return new SendMailResult
-                {
-                    Success = false,
-                    ErrorMessage = ex.Message
-                };
-            }
-        }
-
-        private string FormatEmailContent(string plainTextContent)
-        {
-            if (string.IsNullOrEmpty(plainTextContent))
-                return string.Empty;
-
-            // Escape HTML characters to prevent XSS
-            var escaped = System.Net.WebUtility.HtmlEncode(plainTextContent);
-            
-            // Convert line breaks to HTML line breaks
-            // Handle both \r\n (Windows) and \n (Unix/Mac) line breaks
-            var formatted = escaped
-                .Replace("\r\n", "<br/>")
-                .Replace("\n", "<br/>")
-                .Replace("\r", "<br/>");
-            
-            // Wrap in a proper HTML structure with styling to preserve formatting
-            return $@"
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            color: #333;
-            line-height: 1.6;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .content {{
-            word-wrap: break-word;
-        }}
-    </style>
-</head>
-<body>
-    <div class=""content"">{formatted}</div>
-</body>
-</html>";
-        }
-
-        private DateTime? CalculateNextScheduledTime(ScheduledMail mail)
-{
-    if (string.IsNullOrEmpty(mail.ScheduleTimezone))
-    {
-        mail.ScheduleTimezone = "America/New_York"; // Default timezone
-    }
-
-    try
-    {
-        var timezone = TZConvert.GetTimeZoneInfo(mail.ScheduleTimezone);
-        
-        if (mail.Frequency == Frequency.Once && mail.ScheduledDate.HasValue)
-        {
-            // The scheduled date is already in UTC (converted from frontend)
-            return mail.ScheduledDate.Value;
-        }
-
-        if (mail.Frequency == Frequency.Weekly && mail.DayOfWeek.HasValue)
-        {
-            // Get current time in the specified timezone
-            var nowInTimezone = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timezone);
-            
-            // Calculate next occurrence
-            var daysUntilTarget = ((int)mail.DayOfWeek.Value - (int)nowInTimezone.DayOfWeek + 7) % 7;
-            if (daysUntilTarget == 0) 
-            {
-                // If it's the same day, check if the time has passed
-                if (mail.ScheduledTime.HasValue)
-                {
-                    var todayWithTime = nowInTimezone.Date.Add(mail.ScheduledTime.Value);
-                    if (todayWithTime <= nowInTimezone)
-                    {
-                        daysUntilTarget = 7; // Schedule for next week
-                    }
-                }
-                else
-                {
-                    daysUntilTarget = 7; // Next week if no time specified
-                }
-            }
-            
-            var nextDateInTimezone = nowInTimezone.AddDays(daysUntilTarget).Date;
-            if (mail.ScheduledTime.HasValue)
-            {
-                nextDateInTimezone = nextDateInTimezone.Add(mail.ScheduledTime.Value);
-            }
-            
-            // Convert back to UTC
-            return TimeZoneInfo.ConvertTimeToUtc(nextDateInTimezone, timezone);
-        }
-
-        if (mail.Frequency == Frequency.Monthly && mail.DayOfMonth.HasValue)
-        {
-            // Get current time in the specified timezone
-            var nowInTimezone = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timezone);
-            
-            // Calculate next occurrence
-            var year = nowInTimezone.Year;
-            var month = nowInTimezone.Month;
-            var day = Math.Min(mail.DayOfMonth.Value, DateTime.DaysInMonth(year, month));
-            
-            var nextDateInTimezone = new DateTime(year, month, day);
-            
-            if (mail.ScheduledTime.HasValue)
-            {
-                nextDateInTimezone = nextDateInTimezone.Add(mail.ScheduledTime.Value);
-            }
-            
-            // If the date has passed this month, move to next month
-            if (nextDateInTimezone <= nowInTimezone)
-            {
-                if (month == 12)
-                {
-                    year++;
-                    month = 1;
-                }
-                else
-                {
-                    month++;
-                }
-                
-                day = Math.Min(mail.DayOfMonth.Value, DateTime.DaysInMonth(year, month));
-                nextDateInTimezone = new DateTime(year, month, day);
-                
-                if (mail.ScheduledTime.HasValue)
-                {
-                    nextDateInTimezone = nextDateInTimezone.Add(mail.ScheduledTime.Value);
-                }
-            }
-            
-            // Convert back to UTC
-            return TimeZoneInfo.ConvertTimeToUtc(nextDateInTimezone, timezone);
-        }
-    }
-    catch (Exception ex)
-    {
-        _logger.LogError(ex, $"Error calculating next scheduled time for mail {mail.Id}");
-    }
-
-    return null;
-}
-
-        private async Task<List<RecipientByRoleDto>> GetRecipientsByRole()
-        {
-            var result = new List<RecipientByRoleDto>();
-            
-            foreach (UserRole role in Enum.GetValues(typeof(UserRole)))
-            {
-                var count = await _context.Users.CountAsync(u => u.Role == role && u.IsActive);
-                result.Add(new RecipientByRoleDto
-                {
-                    Role = role.ToString(),
-                    Count = count
-                });
-            }
-
-            return result;
-        }
-
-        private async Task<List<SentByMonthDto>> GetSentByMonth()
-        {
-            var sixMonthsAgo = DateTime.UtcNow.AddMonths(-6);
-            
-            var sentMails = await _context.ScheduledMails
-                .Where(m => m.Status == MailStatus.Sent && m.SentAt >= sixMonthsAgo)
-                .GroupBy(m => new { m.SentAt.Value.Year, m.SentAt.Value.Month })
-                .Select(g => new SentByMonthDto
-                {
-                    Month = $"{g.Key.Month}/{g.Key.Year}",
-                    Count = g.Count()
-                })
-                .OrderBy(x => x.Month)
+            if (roles == null || roles.Count == 0) return new List<User>();
+            return await _context.Users
+                .Where(u => u.IsActive && u.CanReceiveCommunications && roles.Contains(u.Role))
                 .ToListAsync();
-
-            return sentMails;
         }
 
-        private class SendMailResult
+        private async Task SendMailNow(ScheduledMail mail)
         {
-            public bool Success { get; set; }
-            public int RecipientCount { get; set; }
-            public string ErrorMessage { get; set; } = string.Empty;
+            var roles = ParseRoleNames(mail.TargetRoles);
+            var recipients = await GetRecipients(roles);
+            var html = EmailFormatHelper.FormatEmailContentWithParagraphs(mail.Content);
+            var sentAt = DateTime.UtcNow;
+            foreach (var u in recipients)
+            {
+                bool delivered = false;
+                string err = "";
+                try
+                {
+                    await _emailService.SendEmailAsync(u.Email, mail.Subject, html);
+                    delivered = true;
+                }
+                catch (Exception ex)
+                {
+                    err = ex.Message;
+                    _logger.LogWarning(ex, "Mail send failed to {Email}", u.Email);
+                }
+                _context.SentMailLogs.Add(new SentMailLog
+                {
+                    ScheduledMailId = mail.Id,
+                    RecipientEmail = u.Email,
+                    RecipientName = $"{u.FirstName} {u.LastName}".Trim(),
+                    RecipientRole = u.Role.ToString(),
+                    SentAt = sentAt,
+                    IsDelivered = delivered,
+                    ErrorMessage = err
+                });
+            }
+            mail.SentAt = sentAt;
+            mail.LastSentAt = sentAt;
+            mail.TimesSent += 1;
+            mail.Status = MailStatus.Sent;
+            mail.NextScheduledAt = null;
+            mail.UpdatedAt = DateTime.UtcNow;
+            if (mail.Frequency.HasValue && mail.Frequency != MailFrequency.Once)
+                mail.NextScheduledAt = mail.Frequency == MailFrequency.Weekly ? sentAt.AddDays(7) : mail.Frequency == MailFrequency.Monthly ? sentAt.AddMonths(1) : null;
+            if (mail.NextScheduledAt.HasValue) { mail.Status = MailStatus.Scheduled; mail.IsActive = true; }
+            await _context.SaveChangesAsync();
         }
 
-        public static class TimezoneHelper
-{
-    public static DateTime ConvertToTimezone(DateTime utcDateTime, string timezoneId)
-    {
-        try
+        private static DateTime? ComputeNextScheduled(DateTime date, TimeSpan time, MailFrequency? freq, int? dayOfWeek, int? dayOfMonth, int? weekOfMonth, string tz)
         {
-            var timezone = TZConvert.GetTimeZoneInfo(timezoneId);
-            return TimeZoneInfo.ConvertTimeFromUtc(utcDateTime, timezone);
+            if (!freq.HasValue || freq == MailFrequency.Once) return null;
+            try
+            {
+                var tzi = TimeZoneInfo.FindSystemTimeZoneById(tz);
+                var local = DateTime.SpecifyKind(date.Date.Add(time), DateTimeKind.Unspecified);
+                var next = TimeZoneInfo.ConvertTimeToUtc(local, tzi);
+                var now = DateTime.UtcNow;
+                while (next <= now)
+                {
+                    if (freq == MailFrequency.Weekly)
+                        next = next.AddDays(7);
+                    else if (freq == MailFrequency.Monthly)
+                        next = next.AddMonths(1);
+                    else
+                        next = next.AddDays(7);
+                }
+                return next;
+            }
+            catch { return null; }
         }
-        catch
+
+        private static ScheduledMailDto MapToDto(ScheduledMail m)
         {
-            // Fallback to UTC if timezone is invalid
-            return utcDateTime;
+            return new ScheduledMailDto
+            {
+                Id = m.Id,
+                Subject = m.Subject,
+                Content = m.Content,
+                TargetRoles = m.TargetRoles,
+                ScheduleType = (int)m.ScheduleType,
+                ScheduledDate = m.ScheduledDate,
+                ScheduledTime = m.ScheduledTime,
+                DayOfWeek = m.DayOfWeek,
+                DayOfMonth = m.DayOfMonth,
+                WeekOfMonth = m.WeekOfMonth,
+                Frequency = m.Frequency.HasValue ? (int)m.Frequency.Value : null,
+                ScheduleTimezone = m.ScheduleTimezone,
+                Status = (int)m.Status,
+                CreatedById = m.CreatedById,
+                CreatedByEmail = m.CreatedBy?.Email,
+                CreatedAt = MarkUtc(m.CreatedAt),
+                UpdatedAt = MarkUtc(m.UpdatedAt),
+                SentAt = m.SentAt.HasValue ? MarkUtc(m.SentAt.Value) : null,
+                LastSentAt = m.LastSentAt.HasValue ? MarkUtc(m.LastSentAt.Value) : null,
+                NextScheduledAt = m.NextScheduledAt.HasValue ? MarkUtc(m.NextScheduledAt.Value) : null,
+                RecipientCount = m.RecipientCount,
+                TimesSent = m.TimesSent,
+                IsActive = m.IsActive
+            };
         }
-    }
-    
-    public static DateTime ConvertFromTimezone(DateTime localDateTime, string timezoneId)
-    {
-        try
-        {
-            var timezone = TZConvert.GetTimeZoneInfo(timezoneId);
-            return TimeZoneInfo.ConvertTimeToUtc(localDateTime, timezone);
-        }
-        catch
-        {
-            // Fallback to treating as UTC if timezone is invalid
-            return localDateTime;
-        }
-    }
-}
+
+        /// <summary>Marks a DateTime as UTC so JSON serialization emits "Z"; values from DB are stored in UTC but have Kind=Unspecified.</summary>
+        private static DateTime MarkUtc(DateTime d) => d.Kind == DateTimeKind.Utc ? d : DateTime.SpecifyKind(d, DateTimeKind.Utc);
     }
 }

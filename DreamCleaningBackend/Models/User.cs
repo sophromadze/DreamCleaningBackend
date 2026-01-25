@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace DreamCleaningBackend.Models
 {
@@ -75,5 +75,8 @@ namespace DreamCleaningBackend.Models
         public string? PendingEmail { get; set; }
         public string? EmailChangeToken { get; set; }
         public DateTime? EmailChangeTokenExpiry { get; set; }
+
+        /// <summary>When true, user can receive emails and (in future) SMS from the company. Used for both marketing and transactional communications.</summary>
+        public bool CanReceiveCommunications { get; set; } = true;
     }
 }

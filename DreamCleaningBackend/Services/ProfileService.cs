@@ -1,4 +1,4 @@
-﻿using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Repositories.Interfaces;
 using DreamCleaningBackend.Services.Interfaces;
@@ -44,6 +44,8 @@ namespace DreamCleaningBackend.Services
             user.LastName = updateProfileDto.LastName;
             user.Email = updateProfileDto.Email.ToLower();
             user.Phone = updateProfileDto.Phone;
+            if (updateProfileDto.CanReceiveCommunications.HasValue)
+                user.CanReceiveCommunications = updateProfileDto.CanReceiveCommunications.Value;
             user.UpdatedAt = DateTime.UtcNow;
 
             await _userRepository.UpdateAsync(user);
@@ -189,7 +191,8 @@ namespace DreamCleaningBackend.Services
                 SubscriptionName = user.Subscription?.Name,
                 SubscriptionDiscountPercentage = user.Subscription?.DiscountPercentage,
                 SubscriptionExpiryDate = user.SubscriptionExpiryDate,
-                Apartments = user.Apartments.Select(MapApartmentToDto).ToList()
+                Apartments = user.Apartments.Select(MapApartmentToDto).ToList(),
+                CanReceiveCommunications = user.CanReceiveCommunications
             };
         }
 

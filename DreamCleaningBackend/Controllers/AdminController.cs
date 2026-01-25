@@ -1965,7 +1965,8 @@ namespace DreamCleaningBackend.Controllers
                     SubscriptionName = u.Subscription != null ? u.Subscription.Name : null,
                     FirstTimeOrder = u.FirstTimeOrder,
                     IsActive = u.IsActive,
-                    CreatedAt = u.CreatedAt
+                    CreatedAt = u.CreatedAt,
+                    CanReceiveCommunications = u.CanReceiveCommunications
                 })
                 .ToListAsync();
 
@@ -2163,6 +2164,83 @@ namespace DreamCleaningBackend.Controllers
             }
 
             return Ok(new { message = $"User {(dto.IsActive ? "activated" : "deactivated")} successfully" });
+        }
+
+        /// <summary>SuperAdmin-only: edit any user field. All changes are audit-logged.</summary>
+        [HttpPut("users/{id}/superadmin-full-update")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> SuperAdminFullUpdateUser(int id, [FromBody] SuperAdminUpdateUserDto dto)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+
+            var targetUser = await _context.Users.FindAsync(id);
+            if (targetUser == null)
+                return NotFound();
+
+            var originalUser = new User
+            {
+                Id = targetUser.Id,
+                FirstName = targetUser.FirstName,
+                LastName = targetUser.LastName,
+                Email = targetUser.Email,
+                Phone = targetUser.Phone,
+                Role = targetUser.Role,
+                IsActive = targetUser.IsActive,
+                AuthProvider = targetUser.AuthProvider,
+                FirstTimeOrder = targetUser.FirstTimeOrder,
+                CanReceiveCommunications = targetUser.CanReceiveCommunications
+            };
+
+            if (!Enum.TryParse<UserRole>(dto.Role, out var newRole))
+                return BadRequest("Invalid role");
+
+            targetUser.FirstName = dto.FirstName;
+            targetUser.LastName = dto.LastName;
+            targetUser.Email = dto.Email;
+            targetUser.Phone = dto.Phone ?? targetUser.Phone;
+            targetUser.Role = newRole;
+            targetUser.IsActive = dto.IsActive;
+            targetUser.FirstTimeOrder = dto.FirstTimeOrder;
+            targetUser.CanReceiveCommunications = dto.CanReceiveCommunications;
+            targetUser.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _auditService.LogUpdateAsync(originalUser, targetUser);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Audit logging failed: {ex.Message}");
+            }
+
+            try
+            {
+                var userManagementService = HttpContext.RequestServices.GetRequiredService<IUserManagementService>();
+                await userManagementService.NotifyUserRoleChanged(id, newRole.ToString());
+                await Task.Delay(500);
+            }
+            catch { /* ignore */ }
+
+            return Ok(new { message = "User updated successfully" });
+        }
+
+        /// <summary>Admin or SuperAdmin: update a user's communication preference (emails/SMS). Requires canUpdate.</summary>
+        [HttpPatch("users/{id}/communication-preference")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> UpdateUserCommunicationPreference(int id, [FromBody] CommunicationPreferenceDto dto)
+        {
+            var targetUser = await _context.Users.FindAsync(id);
+            if (targetUser == null)
+                return NotFound();
+
+            targetUser.CanReceiveCommunications = dto.CanReceiveCommunications;
+            targetUser.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            return Ok(new { canReceiveCommunications = dto.CanReceiveCommunications, message = "Communication preference updated." });
         }
 
         [HttpGet("permissions")]
@@ -2525,6 +2603,55 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        /// <summary>SuperAdmin-only: edit any order field. All changes are audit-logged.</summary>
+        [HttpPut("orders/{orderId}/superadmin-full-update")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> SuperAdminFullUpdateOrder(int orderId, [FromBody] SuperAdminUpdateOrderDto dto)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+
+            var orderBefore = await _context.Orders
+                .AsNoTracking()
+                .Include(o => o.OrderServices)
+                    .ThenInclude(os => os.Service)
+                .Include(o => o.OrderExtraServices)
+                    .ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (orderBefore == null)
+                return NotFound();
+
+            try
+            {
+                await _orderService.SuperAdminFullUpdateOrder(orderId, dto);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+
+            var orderAfter = await _context.Orders
+                .Include(o => o.OrderServices)
+                    .ThenInclude(os => os.Service)
+                .Include(o => o.OrderExtraServices)
+                    .ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (orderAfter != null)
+            {
+                try
+                {
+                    await _auditService.LogUpdateAsync(orderBefore, orderAfter);
+                }
+                catch (Exception auditEx)
+                {
+                    Console.WriteLine($"Audit logging failed: {auditEx.Message}");
+                }
+            }
+
+            return Ok(new { message = "Order updated successfully" });
+        }
+
         [HttpGet("users/{userId}/orders")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<OrderListDto>>> GetUserOrders(int userId)
@@ -2641,6 +2768,7 @@ namespace DreamCleaningBackend.Controllers
                     SubscriptionName = user.Subscription?.Name,
                     SubscriptionExpiryDate = user.SubscriptionExpiryDate,
                     CreatedAt = user.CreatedAt,
+                    CanReceiveCommunications = user.CanReceiveCommunications,
                     TotalOrders = totalOrders,
                     TotalSpent = totalSpent,
                     LastOrderDate = lastOrderDate,

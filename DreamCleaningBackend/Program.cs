@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -19,7 +20,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddScoped<IPermissionService, PermissionService>();
 
 // Add services to the container.
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(o => { o.JsonSerializerOptions.PropertyNameCaseInsensitive = true; });
 builder.Services.AddEndpointsApiExplorer();
 
 // Swagger configuration
@@ -146,10 +148,10 @@ builder.Services.AddScoped<IOrderRepository, OrderRepository>();
 
 // Services
 builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<ISmsService, SmsService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 
 // Background Services
-builder.Services.AddHostedService<ScheduledMailService>();
 builder.Services.AddScoped<IProfileService, ProfileService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
@@ -166,6 +168,8 @@ builder.Services.AddSingleton<IBookingDataService, BookingDataService>();
 builder.Services.AddScoped<IStripeService, StripeService>();
 builder.Services.AddScoped<IMaintenanceModeService, MaintenanceModeService>();
 builder.Services.AddHostedService<AuditLogCleanupService>();
+builder.Services.AddHostedService<ScheduledMailService>();
+builder.Services.AddHostedService<ScheduledSmsService>();
 
 builder.Services.AddHttpClient();
 
@@ -219,6 +223,58 @@ using (var scope = app.Services.CreateScope())
             if (pendingMigrations.Any())
             {
                 await context.Database.MigrateAsync();
+            }
+
+            // Ensure ScheduledSms table exists (fixes: migration in __EFMigrationsHistory but table was never created)
+            // Only run when the table is missing to avoid "Duplicate key name" on indexes that already exist from the migration
+            try
+            {
+                var conn = context.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open)
+                    await conn.OpenAsync();
+                bool tableExists;
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'ScheduledSms' LIMIT 1";
+                    tableExists = await cmd.ExecuteScalarAsync() != null;
+                }
+
+                if (!tableExists)
+                {
+                    await context.Database.ExecuteSqlRawAsync(@"
+CREATE TABLE IF NOT EXISTS `ScheduledSms` (
+    `Id` int NOT NULL AUTO_INCREMENT,
+    `Content` varchar(1600) CHARACTER SET utf8mb4 NOT NULL,
+    `TargetRoles` longtext CHARACTER SET utf8mb4 NOT NULL,
+    `ScheduleType` int NOT NULL,
+    `ScheduledDate` datetime(6) NULL,
+    `ScheduledTime` time(6) NULL,
+    `DayOfWeek` int NULL,
+    `DayOfMonth` int NULL,
+    `WeekOfMonth` int NULL,
+    `Frequency` int NULL,
+    `ScheduleTimezone` varchar(100) CHARACTER SET utf8mb4 NOT NULL,
+    `Status` int NOT NULL,
+    `CreatedById` int NOT NULL,
+    `CreatedAt` datetime(6) NOT NULL,
+    `UpdatedAt` datetime(6) NOT NULL,
+    `SentAt` datetime(6) NULL,
+    `LastSentAt` datetime(6) NULL,
+    `NextScheduledAt` datetime(6) NULL,
+    `RecipientCount` int NOT NULL,
+    `TimesSent` int NOT NULL,
+    `IsActive` tinyint(1) NOT NULL,
+    PRIMARY KEY (`Id`),
+    CONSTRAINT `FK_ScheduledSms_Users_CreatedById` FOREIGN KEY (`CreatedById`) REFERENCES `Users` (`Id`) ON DELETE RESTRICT
+) CHARACTER SET utf8mb4");
+                    foreach (var (indexName, column) in new[] { ("IX_ScheduledSms_CreatedById", "CreatedById"), ("IX_ScheduledSms_NextScheduledAt", "NextScheduledAt"), ("IX_ScheduledSms_Status", "Status") })
+                        await context.Database.ExecuteSqlRawAsync($"CREATE INDEX `{indexName}` ON `ScheduledSms` (`{column}`)");
+                    await context.Database.ExecuteSqlRawAsync("INSERT IGNORE INTO `__EFMigrationsHistory` (`MigrationId`, `ProductVersion`) VALUES ('20260125190000_AddScheduledSms', '8.0.2')");
+                }
+            }
+            catch (Exception ensureEx)
+            {
+                logger.LogWarning(ensureEx, "Could not ensure ScheduledSms table.");
             }
         }
     }

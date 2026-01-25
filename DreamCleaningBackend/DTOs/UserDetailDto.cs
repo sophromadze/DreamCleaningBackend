@@ -1,4 +1,4 @@
-﻿namespace DreamCleaningBackend.DTOs
+namespace DreamCleaningBackend.DTOs
 {
     public class UserDetailDto
     {
@@ -16,6 +16,7 @@
         public string? SubscriptionName { get; set; }
         public DateTime? SubscriptionExpiryDate { get; set; }
         public DateTime CreatedAt { get; set; }
+        public bool CanReceiveCommunications { get; set; }
 
         // Statistics
         public int TotalOrders { get; set; }

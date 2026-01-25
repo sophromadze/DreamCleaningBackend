@@ -1,9 +1,8 @@
 namespace DreamCleaningBackend.DTOs
 {
-    public class ScheduledMailDto
+    public class ScheduledSmsDto
     {
         public int Id { get; set; }
-        public string Subject { get; set; } = "";
         public string Content { get; set; } = "";
         public string TargetRoles { get; set; } = "[]";
         public int ScheduleType { get; set; }
@@ -27,14 +26,12 @@ namespace DreamCleaningBackend.DTOs
         public bool IsActive { get; set; }
     }
 
-    public class CreateScheduledMailDto
+    public class CreateScheduledSmsDto
     {
-        public string Subject { get; set; } = "";
         public string Content { get; set; } = "";
-        public string TargetRoles { get; set; } = "[]"; // JSON array of role names
+        public string TargetRoles { get; set; } = "[]";
         public int ScheduleType { get; set; }
         public DateTime? ScheduledDate { get; set; }
-        /// <summary>Time as "HH:mm" or "HH:mm:ss" for JSON.</summary>
         public string? ScheduledTime { get; set; }
         public int? DayOfWeek { get; set; }
         public int? DayOfMonth { get; set; }
@@ -44,14 +41,12 @@ namespace DreamCleaningBackend.DTOs
         public bool SendNow { get; set; }
     }
 
-    public class UpdateScheduledMailDto
+    public class UpdateScheduledSmsDto
     {
-        public string? Subject { get; set; }
         public string? Content { get; set; }
         public string? TargetRoles { get; set; }
         public int? ScheduleType { get; set; }
         public DateTime? ScheduledDate { get; set; }
-        /// <summary>Time as "HH:mm" or "HH:mm:ss".</summary>
         public string? ScheduledTime { get; set; }
         public int? DayOfWeek { get; set; }
         public int? DayOfMonth { get; set; }
@@ -61,30 +56,20 @@ namespace DreamCleaningBackend.DTOs
         public bool? IsActive { get; set; }
     }
 
-    public class SentMailLogDto
-    {
-        public int Id { get; set; }
-        public int ScheduledMailId { get; set; }
-        public string RecipientEmail { get; set; } = "";
-        public string RecipientName { get; set; } = "";
-        public string RecipientRole { get; set; } = "";
-        public DateTime SentAt { get; set; }
-        public bool IsDelivered { get; set; }
-        public string ErrorMessage { get; set; } = "";
-    }
-
-    public class MailUserCountDto
-    {
-        public string Role { get; set; } = "";
-        public int Total { get; set; }
-        public int CanReceive { get; set; }
-    }
-
-    public class MailStatsDto
+    public class SmsStatsDto
     {
         public int DraftCount { get; set; }
         public int ScheduledCount { get; set; }
         public int SentCount { get; set; }
-        public int TotalMailsSent { get; set; }
+        public int TotalSmsSent { get; set; }
+    }
+
+    /// <summary>Per-role counts. WithValidPhone = users with valid 10+ digit phone who can receive SMS.</summary>
+    public class SmsUserCountDto
+    {
+        public string Role { get; set; } = "";
+        public int Total { get; set; }
+        public int CanReceive { get; set; }
+        public int WithValidPhone { get; set; }
     }
 }

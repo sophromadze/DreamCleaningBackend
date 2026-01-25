@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace DreamCleaningBackend.DTOs
 {
@@ -329,6 +329,8 @@ namespace DreamCleaningBackend.DTOs
         public bool FirstTimeOrder { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
+        /// <summary>When true, user can receive emails and (in future) SMS from the company.</summary>
+        public bool CanReceiveCommunications { get; set; }
     }
 
     public class UpdateUserRoleDto
@@ -364,5 +366,86 @@ namespace DreamCleaningBackend.DTOs
     {
         [Required]
         public string Status { get; set; }
+    }
+
+    // SuperAdmin-only: full user edit (all changes are audit-logged)
+    public class SuperAdminUpdateUserDto
+    {
+        [Required]
+        [StringLength(50)]
+        public string FirstName { get; set; }
+
+        [Required]
+        [StringLength(50)]
+        public string LastName { get; set; }
+
+        [Required]
+        [EmailAddress]
+        [StringLength(100)]
+        public string Email { get; set; }
+
+        [StringLength(20)]
+        public string? Phone { get; set; }
+
+        [Required]
+        public string Role { get; set; }
+
+        public bool IsActive { get; set; }
+
+        public bool FirstTimeOrder { get; set; }
+
+        /// <summary>When true, user can receive emails and (in future) SMS from the company.</summary>
+        public bool CanReceiveCommunications { get; set; }
+    }
+
+    /// <summary>Admin/SuperAdmin: update only the communication preference. Requires canUpdate.</summary>
+    public class CommunicationPreferenceDto
+    {
+        public bool CanReceiveCommunications { get; set; }
+    }
+
+    // SuperAdmin-only: full order edit (all changes are audit-logged)
+    public class SuperAdminUpdateOrderDto
+    {
+        public string? ContactFirstName { get; set; }
+        public string? ContactLastName { get; set; }
+        public string? ContactEmail { get; set; }
+        public string? ContactPhone { get; set; }
+        public string? ServiceAddress { get; set; }
+        public string? AptSuite { get; set; }
+        public string? City { get; set; }
+        public string? State { get; set; }
+        public string? ZipCode { get; set; }
+        public DateTime? ServiceDate { get; set; }
+        public string? ServiceTime { get; set; }
+        public int? MaidsCount { get; set; }
+        public decimal? TotalDuration { get; set; }
+        public string? EntryMethod { get; set; }
+        public string? SpecialInstructions { get; set; }
+        public decimal? Tips { get; set; }
+        public decimal? CompanyDevelopmentTips { get; set; }
+        public string? Status { get; set; }
+        public string? CancellationReason { get; set; }
+        public decimal? SubTotal { get; set; }
+        public decimal? Tax { get; set; }
+        public decimal? Total { get; set; }
+        public decimal? DiscountAmount { get; set; }
+        public List<SuperAdminOrderServiceUpdateDto>? Services { get; set; }
+        public List<SuperAdminOrderExtraServiceUpdateDto>? ExtraServices { get; set; }
+    }
+
+    public class SuperAdminOrderServiceUpdateDto
+    {
+        public int OrderServiceId { get; set; }
+        public int Quantity { get; set; }
+        public decimal Cost { get; set; }
+    }
+
+    public class SuperAdminOrderExtraServiceUpdateDto
+    {
+        public int OrderExtraServiceId { get; set; }
+        public int Quantity { get; set; }
+        public decimal Hours { get; set; }
+        public decimal Cost { get; set; }
     }
 }

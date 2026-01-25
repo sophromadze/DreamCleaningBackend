@@ -2,37 +2,16 @@ using System.ComponentModel.DataAnnotations;
 
 namespace DreamCleaningBackend.Models
 {
-    public enum ScheduleType
-    {
-        Immediate = 0,
-        Scheduled = 1
-    }
-
-    public enum MailFrequency
-    {
-        Once = 0,
-        Weekly = 1,
-        Monthly = 2
-    }
-
-    public enum MailStatus
-    {
-        Draft = 0,
-        Scheduled = 1,
-        Sent = 2,
-        Cancelled = 3,
-        Failed = 4
-    }
-
-    public class ScheduledMail
+    /// <summary>
+    /// Scheduled or sent SMS campaign by target roles. Reuses ScheduleType, MailFrequency, MailStatus.
+    /// Only users with a valid 10+ digit phone (NormalizePhoneToE164 != null) receive SMS.
+    /// </summary>
+    public class ScheduledSms
     {
         public int Id { get; set; }
 
         [Required]
-        [StringLength(200)]
-        public string Subject { get; set; } = "";
-
-        [Required]
+        [StringLength(1600)]
         public string Content { get; set; } = "";
 
         /// <summary>JSON array of role names, e.g. ["Customer","Cleaner","Admin"].</summary>
@@ -42,9 +21,9 @@ namespace DreamCleaningBackend.Models
         public ScheduleType ScheduleType { get; set; }
         public DateTime? ScheduledDate { get; set; }
         public TimeSpan? ScheduledTime { get; set; }
-        public int? DayOfWeek { get; set; }   // 0=Sunday for Weekly
-        public int? DayOfMonth { get; set; }  // 1-31 for Monthly
-        public int? WeekOfMonth { get; set; } // 1-5 for Monthly
+        public int? DayOfWeek { get; set; }
+        public int? DayOfMonth { get; set; }
+        public int? WeekOfMonth { get; set; }
         public MailFrequency? Frequency { get; set; }
 
         [Required]
@@ -59,10 +38,9 @@ namespace DreamCleaningBackend.Models
         public DateTime? SentAt { get; set; }
         public DateTime? LastSentAt { get; set; }
         public DateTime? NextScheduledAt { get; set; }
+        /// <summary>Number of users with valid phone (10+ digits) in target roles who can receive.</summary>
         public int RecipientCount { get; set; }
         public int TimesSent { get; set; }
         public bool IsActive { get; set; } = true;
-
-        public virtual ICollection<SentMailLog> SentMailLogs { get; set; } = new List<SentMailLog>();
     }
 }
