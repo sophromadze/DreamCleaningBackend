@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
 using DreamCleaningBackend.DTOs;
@@ -92,6 +92,109 @@ namespace DreamCleaningBackend.Controllers
             }
             catch (Exception ex)
             {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // Endpoint to receive Apple's POST request (form_post response mode)
+        // This endpoint must accept form data from Apple and redirect to Angular
+        [HttpPost("apple-callback")]
+        [IgnoreAntiforgeryToken] // Apple's POST doesn't include CSRF token
+        [Consumes("application/x-www-form-urlencoded", "multipart/form-data")]
+        public async Task<IActionResult> AppleCallback([FromForm] AppleCallbackFormDto? formData)
+        {
+            try
+            {
+                var frontendUrl = _configuration["Frontend:Url"] ?? "http://localhost:4200";
+                
+                // Handle case where formData might be null or fields are empty
+                // Apple sends form data with specific field names
+                if (formData == null || string.IsNullOrEmpty(formData.IdToken))
+                {
+                    // Try to read form data manually from request
+                    var form = await Request.ReadFormAsync();
+                    formData = new AppleCallbackFormDto
+                    {
+                        Code = form["code"].FirstOrDefault() ?? string.Empty,
+                        IdToken = form["id_token"].FirstOrDefault() ?? string.Empty,
+                        State = form["state"].FirstOrDefault() ?? string.Empty,
+                        User = form["user"].FirstOrDefault() ?? string.Empty,
+                        Error = form["error"].FirstOrDefault() ?? string.Empty,
+                        ErrorDescription = form["error_description"].FirstOrDefault() ?? string.Empty
+                    };
+                }
+                
+                // Check if we have an error from Apple
+                if (!string.IsNullOrEmpty(formData.Error))
+                {
+                    var errorRedirect = $"{frontendUrl}/auth/apple-callback?error={Uri.EscapeDataString(formData.Error)}";
+                    if (!string.IsNullOrEmpty(formData.ErrorDescription))
+                    {
+                        errorRedirect += $"&error_description={Uri.EscapeDataString(formData.ErrorDescription)}";
+                    }
+                    return Redirect(errorRedirect);
+                }
+
+                // Extract id_token and code from form data
+                if (string.IsNullOrEmpty(formData.IdToken))
+                {
+                    return Redirect($"{frontendUrl}/auth/apple-callback?error=missing_token");
+                }
+
+                // Redirect to Angular callback page with the token data
+                var redirectUrl = $"{frontendUrl}/auth/apple-callback?id_token={Uri.EscapeDataString(formData.IdToken)}";
+                if (!string.IsNullOrEmpty(formData.Code))
+                {
+                    redirectUrl += $"&code={Uri.EscapeDataString(formData.Code)}";
+                }
+                if (!string.IsNullOrEmpty(formData.User))
+                {
+                    redirectUrl += $"&user={Uri.EscapeDataString(formData.User)}";
+                }
+                if (!string.IsNullOrEmpty(formData.State))
+                {
+                    redirectUrl += $"&state={Uri.EscapeDataString(formData.State)}";
+                }
+
+                return Redirect(redirectUrl);
+            }
+            catch (Exception ex)
+            {
+                var frontendUrl = _configuration["Frontend:Url"] ?? "http://localhost:4200";
+                Console.WriteLine($"Apple callback error: {ex.Message}");
+                return Redirect($"{frontendUrl}/auth/apple-callback?error=server_error&error_description={Uri.EscapeDataString(ex.Message)}");
+            }
+        }
+
+        [HttpPost("apple-login")]
+        public async Task<ActionResult<AuthResponseDto>> AppleLogin(AppleLoginDto appleLoginDto)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(appleLoginDto.IdentityToken))
+                {
+                    return BadRequest(new { message = "Identity token is required" });
+                }
+
+                var response = await _authService.AppleLogin(appleLoginDto);
+                
+                if (_useCookieAuth)
+                {
+                    SetAuthCookies(response.Token, response.RefreshToken);
+                    return Ok(new { user = response.User });
+                }
+                
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                // Log the full exception for debugging
+                Console.WriteLine($"Apple login error: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                }
                 return BadRequest(new { message = ex.Message });
             }
         }

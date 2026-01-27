@@ -1,10 +1,12 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Linq;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
@@ -167,7 +169,7 @@ namespace DreamCleaningBackend.Services
                 var lastName = payload.FamilyName ?? "";
                 var profilePicture = payload.Picture; // Add this line
 
-                // Check if user exists
+                // Check if user exists by email (email is the primary identifier for account merging)
                 var user = await _context.Users
                     .Include(u => u.Subscription)
                     .FirstOrDefaultAsync(u => u.Email == email.ToLower());
@@ -181,8 +183,8 @@ namespace DreamCleaningBackend.Services
                         FirstName = firstName,
                         LastName = lastName,
                         AuthProvider = "Google",
-                        ExternalAuthId = googleId,
-                        ProfilePictureUrl = profilePicture, // Add this line
+                        ExternalAuthId = $"Google:{googleId}",
+                        ProfilePictureUrl = profilePicture,
                         CreatedAt = DateTime.UtcNow,
                         FirstTimeOrder = true,
                         IsActive = true,
@@ -191,30 +193,42 @@ namespace DreamCleaningBackend.Services
 
                     _context.Users.Add(user);
                 }
-                else if (user.AuthProvider != "Google")
-                {
-                    // Keep original AuthProvider (Local) but add Google support
-                    user.ExternalAuthId = googleId;
-                    user.IsEmailVerified = true;
-
-                    // Update profile picture from Google
-                    user.ProfilePictureUrl = profilePicture; // Add this line
-
-                    // Optionally update names if they were empty or different
-                    if (string.IsNullOrEmpty(user.FirstName) || user.FirstName == "User")
-                        user.FirstName = firstName;
-                    if (string.IsNullOrEmpty(user.LastName))
-                        user.LastName = lastName;
-
-                    user.UpdatedAt = DateTime.UtcNow;
-
-                    _logger.LogInformation("Linked Google to existing local account {Email}", email);
-                }
                 else
                 {
-                    // Existing Google user - update profile picture in case it changed
-                    user.ProfilePictureUrl = profilePicture; // Add this line
-                    user.UpdatedAt = DateTime.UtcNow;
+                // Account exists - same email = same user, allow login with any method
+                // Link Google to existing account (user can now use email/password, Google, OR Apple)
+                
+                if (user.AuthProvider == "Local")
+                {
+                    // Keep Local as primary, but allow Google login
+                    // Store Google ID for future Google logins
+                    user.ExternalAuthId = googleId;
+                    user.IsEmailVerified = true;
+                    user.ProfilePictureUrl = profilePicture;
+                    _logger.LogInformation("Linked Google to existing local account {Email}", email);
+                }
+                else if (user.AuthProvider == "Apple")
+                {
+                    // User already has Apple, now adding Google - same email = same user
+                    // Store Google ID (user can login with either Apple or Google now)
+                    user.ExternalAuthId = googleId; // Update to Google ID (or we could keep Apple ID, but Google is current login)
+                    user.ProfilePictureUrl = profilePicture;
+                    _logger.LogInformation("Linked Google to existing Apple account {Email}", email);
+                }
+                else if (user.AuthProvider == "Google")
+                {
+                    // Already a Google user, update profile picture and ensure ID is correct
+                    user.ExternalAuthId = googleId;
+                    user.ProfilePictureUrl = profilePicture;
+                }
+
+                // Update profile info if missing
+                if (string.IsNullOrEmpty(user.FirstName) || user.FirstName == "User")
+                    user.FirstName = firstName;
+                if (string.IsNullOrEmpty(user.LastName))
+                    user.LastName = lastName;
+
+                user.UpdatedAt = DateTime.UtcNow;
                 }
 
 
@@ -244,6 +258,207 @@ namespace DreamCleaningBackend.Services
             {
                 throw new Exception($"Google login failed: {ex.Message}");
             }
+        }
+
+        public async Task<AuthResponseDto> AppleLogin(AppleLoginDto appleLoginDto)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(appleLoginDto.IdentityToken))
+                {
+                    throw new Exception("Identity token is required");
+                }
+
+                var appleUser = await ValidateAppleToken(appleLoginDto.IdentityToken);
+                
+                if (appleUser == null)
+                    throw new Exception("Invalid Apple token - token validation failed");
+
+            var email = appleUser.Email;
+            var appleId = appleUser.Subject;
+            var firstName = appleLoginDto.User?.Name?.FirstName ?? "User";
+            var lastName = appleLoginDto.User?.Name?.LastName ?? "";
+
+            // PRIMARY: Find user by email (email is the main identifier - same email = same user)
+            // SECONDARY: Find by Apple ID only if email is not available (private relay email case)
+            User? user = null;
+            
+            if (!string.IsNullOrEmpty(email))
+            {
+                user = await _context.Users
+                    .Include(u => u.Subscription)
+                    .FirstOrDefaultAsync(u => u.Email == email.ToLower());
+            }
+            
+            // If not found by email, try by Apple ID (for private relay emails)
+            if (user == null)
+            {
+                user = await _context.Users
+                    .Include(u => u.Subscription)
+                    .FirstOrDefaultAsync(u => u.ExternalAuthId == appleId || 
+                                             (u.ExternalAuthId != null && u.ExternalAuthId.Contains(appleId)));
+            }
+
+            if (user == null)
+            {
+                // Create new user
+                user = new User
+                {
+                    Email = email?.ToLower() ?? $"{appleId}@privaterelay.appleid.com",
+                    FirstName = firstName,
+                    LastName = lastName,
+                    AuthProvider = "Apple",
+                    ExternalAuthId = appleId,
+                    CreatedAt = DateTime.UtcNow,
+                    FirstTimeOrder = true,
+                    IsActive = true,
+                    IsEmailVerified = true
+                };
+                _context.Users.Add(user);
+            }
+            else
+            {
+                // Account exists - same email = same user, allow login with any method
+                // Link Apple to existing account (user can now use email/password, Google, OR Apple)
+                
+                // Update email if it was a private relay and now we have real email
+                if (string.IsNullOrEmpty(user.Email) || user.Email.Contains("@privaterelay.appleid.com"))
+                {
+                    if (!string.IsNullOrEmpty(email))
+                    {
+                        user.Email = email.ToLower();
+                    }
+                }
+
+                // Store Apple ID (if not already stored)
+                // Since ExternalAuthId can only store one, we'll store the latest used provider
+                // But email matching ensures they can login with any method
+                if (string.IsNullOrEmpty(user.ExternalAuthId) || 
+                    (!user.ExternalAuthId.Contains(appleId) && user.AuthProvider != "Apple"))
+                {
+                    // If user has Local account, keep AuthProvider as Local but store Apple ID
+                    if (user.AuthProvider == "Local")
+                    {
+                        user.ExternalAuthId = appleId; // Store Apple ID for future Apple logins
+                        user.IsEmailVerified = true;
+                        _logger.LogInformation("Linked Apple to existing local account {Email}", email ?? user.Email);
+                    }
+                    // If user has Google, they can now also use Apple (same email = same user)
+                    else if (user.AuthProvider == "Google")
+                    {
+                        // Keep Google as primary AuthProvider, but store Apple ID
+                        // User can login with either Google or Apple now
+                        user.ExternalAuthId = appleId; // Update to Apple ID (or we could keep Google ID, but Apple is current login)
+                        _logger.LogInformation("Linked Apple to existing Google account {Email}", email ?? user.Email);
+                    }
+                    else
+                    {
+                        // Already Apple user, just ensure ID is correct
+                        user.ExternalAuthId = appleId;
+                    }
+                }
+
+                // Update profile info if missing
+                if (string.IsNullOrEmpty(user.FirstName) || user.FirstName == "User")
+                    user.FirstName = firstName;
+                if (string.IsNullOrEmpty(user.LastName))
+                    user.LastName = lastName;
+            }
+
+            user.RefreshToken = GenerateRefreshToken();
+            user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
+            user.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            // Only grant special offers to truly new users (not when linking accounts)
+            var isNewUser = user.CreatedAt > DateTime.UtcNow.AddMinutes(-1); // Created within last minute
+            if (isNewUser)
+            {
+                try
+                {
+                    await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to grant first-time offer to user {UserId}", user.Id);
+                    // Don't fail registration if special offer fails
+                }
+            }
+
+                return new AuthResponseDto
+                {
+                    User = MapUserToDto(user),
+                    Token = CreateToken(user),
+                    RefreshToken = user.RefreshToken
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Apple login failed: {Message}", ex.Message);
+                throw new Exception($"Apple login failed: {ex.Message}", ex);
+            }
+        }
+
+        private async Task<AppleTokenPayload?> ValidateAppleToken(string identityToken)
+        {
+            try
+            {
+                var handler = new JwtSecurityTokenHandler();
+                var jsonToken = handler.ReadToken(identityToken) as JwtSecurityToken;
+                
+                using var httpClient = new HttpClient();
+                var response = await httpClient.GetStringAsync("https://appleid.apple.com/auth/keys");
+                var appleKeys = System.Text.Json.JsonSerializer.Deserialize<AppleKeyResponse>(response);
+                
+                var kid = jsonToken?.Header.Kid;
+                var appleKey = appleKeys?.Keys.FirstOrDefault(k => k.Kid == kid);
+                
+                if (appleKey == null) return null;
+
+                var rsa = RSA.Create();
+                rsa.ImportParameters(new RSAParameters
+                {
+                    Modulus = Base64UrlDecode(appleKey.N),
+                    Exponent = Base64UrlDecode(appleKey.E)
+                });
+
+                var validationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer = true,
+                    ValidIssuer = "https://appleid.apple.com",
+                    ValidateAudience = true,
+                    ValidAudience = _configuration["Authentication:Apple:ClientId"],
+                    ValidateLifetime = true,
+                    IssuerSigningKey = new RsaSecurityKey(rsa)
+                };
+
+                var principal = handler.ValidateToken(identityToken, validationParameters, out _);
+                
+                return new AppleTokenPayload
+                {
+                    Subject = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
+                              ?? principal.FindFirst("sub")?.Value ?? "",
+                    Email = principal.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value 
+                            ?? principal.FindFirst("email")?.Value
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Apple token validation failed: {Message}", ex.Message);
+                return null;
+            }
+        }
+
+        private byte[] Base64UrlDecode(string input)
+        {
+            var output = input.Replace('-', '+').Replace('_', '/');
+            switch (output.Length % 4)
+            {
+                case 2: output += "=="; break;
+                case 3: output += "="; break;
+            }
+            return Convert.FromBase64String(output);
         }
 
         public async Task<AuthResponseDto> RefreshToken(RefreshTokenDto refreshTokenDto)
@@ -811,5 +1026,28 @@ namespace DreamCleaningBackend.Services
                 ProfilePictureUrl = user.ProfilePictureUrl
             };
         }
+    }
+
+    // Apple token validation helper classes
+    public class AppleKeyResponse
+    {
+        [JsonPropertyName("keys")]
+        public List<AppleKey> Keys { get; set; } = new();
+    }
+
+    public class AppleKey
+    {
+        [JsonPropertyName("kid")]
+        public string Kid { get; set; } = "";
+        [JsonPropertyName("n")]
+        public string N { get; set; } = "";
+        [JsonPropertyName("e")]
+        public string E { get; set; } = "";
+    }
+
+    public class AppleTokenPayload
+    {
+        public string Subject { get; set; } = "";
+        public string? Email { get; set; }
     }
 }

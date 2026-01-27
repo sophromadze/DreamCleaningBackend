@@ -1,4 +1,4 @@
-﻿using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.DTOs;
 
 namespace DreamCleaningBackend.Services.Interfaces
 {
@@ -19,5 +19,6 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<EmailChangeResponseDto> InitiateEmailChange(int userId, InitiateEmailChangeDto dto);
         Task<bool> ConfirmEmailChange(string token);
         Task<UserDto> GetUserById(int userId);
+        Task<AuthResponseDto> AppleLogin(AppleLoginDto appleLoginDto);
     }
 }
