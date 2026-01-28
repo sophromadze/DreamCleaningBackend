@@ -195,7 +195,11 @@ namespace DreamCleaningBackend.Services
                 }
                 else
                 {
-                // Account exists - same email = same user, allow login with any method
+                // Account exists - block inactive users (same as local login)
+                if (!user.IsActive)
+                    throw new Exception("Account is deactivated");
+
+                // Same email = same user, allow login with any method
                 // Link Google to existing account (user can now use email/password, Google, OR Apple)
                 
                 if (user.AuthProvider == "Local")
@@ -318,7 +322,11 @@ namespace DreamCleaningBackend.Services
             }
             else
             {
-                // Account exists - same email = same user, allow login with any method
+                // Account exists - block inactive users (same as local login)
+                if (!user.IsActive)
+                    throw new Exception("Account is deactivated");
+
+                // Same email = same user, allow login with any method
                 // Link Apple to existing account (user can now use email/password, Google, OR Apple)
                 
                 // Update email if it was a private relay and now we have real email

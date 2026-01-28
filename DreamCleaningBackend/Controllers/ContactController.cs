@@ -148,10 +148,11 @@ namespace DreamCleaningBackend.Controllers
                     return StatusCode(500, new { message = "Email service is not configured. Please contact support." });
                 }
 
-                var subject = $"New Free Quote Request from {quoteRequest.Name}";
-                var messageContent = !string.IsNullOrWhiteSpace(quoteRequest.Message) 
-                    ? quoteRequest.Message 
-                    : "No additional information provided.";
+                                var fullName = string.IsNullOrWhiteSpace(quoteRequest.LastName) 
+                    ? quoteRequest.FirstName 
+                    : $"{quoteRequest.FirstName} {quoteRequest.LastName}";
+                
+                var subject = $"New Free Quote Request from {fullName}";
 
                 var body = $@"
                     <h2>New Free Quote Request</h2>
@@ -159,18 +160,34 @@ namespace DreamCleaningBackend.Controllers
                     
                     <table style='width: 100%; border-collapse: collapse; margin: 20px 0;'>
                         <tr>
-                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; width: 30%;'>Name:</td>
-                            <td style='padding: 10px; border: 1px solid #ddd;'>{quoteRequest.Name}</td>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; width: 30%;'>First Name:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'>{quoteRequest.FirstName}</td>
                         </tr>
+                        {(!string.IsNullOrWhiteSpace(quoteRequest.LastName) ? $@"
+                        <tr>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Last Name:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'>{quoteRequest.LastName}</td>
+                        </tr>" : "")}
                         <tr>
                             <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Phone:</td>
                             <td style='padding: 10px; border: 1px solid #ddd;'><a href='tel:+1{quoteRequest.Phone}'>{FormatPhoneNumber(quoteRequest.Phone)}</a></td>
                         </tr>
-                        {(string.IsNullOrWhiteSpace(quoteRequest.Message) ? "" : $@"
                         <tr>
-                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; vertical-align: top;'>Additional Information:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Email:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'><a href='mailto:{quoteRequest.Email}'>{quoteRequest.Email}</a></td>
+                        </tr>
+                        <tr>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Home Address:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'>{quoteRequest.HomeAddress}</td>
+                        </tr>
+                        <tr>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold;'>Cleaning Type:</td>
+                            <td style='padding: 10px; border: 1px solid #ddd;'>{quoteRequest.CleaningType}</td>
+                        </tr>
+                        <tr>
+                            <td style='padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; vertical-align: top;'>Message:</td>
                             <td style='padding: 10px; border: 1px solid #ddd; white-space: pre-wrap;'>{quoteRequest.Message}</td>
-                        </tr>")}
+                        </tr>
                     </table>
                     
                     <div style='background: #e8f5e9; padding: 15px; border-radius: 8px; margin: 20px 0;'>
@@ -186,7 +203,7 @@ namespace DreamCleaningBackend.Controllers
                 // Send email to company
                 await _emailService.SendContactFormEmailAsync(companyEmail, subject, body);
 
-                _logger.LogInformation($"Quote request submitted by {quoteRequest.Name} (Phone: {FormatPhoneNumber(quoteRequest.Phone)})");
+                _logger.LogInformation($"Quote request submitted by {fullName} (Phone: {FormatPhoneNumber(quoteRequest.Phone)}, Email: {quoteRequest.Email})");
 
                 return Ok(new { message = "Your quote request has been received! We'll call you back soon." });
             }
