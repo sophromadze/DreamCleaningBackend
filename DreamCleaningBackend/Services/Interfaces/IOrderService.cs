@@ -17,6 +17,6 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<OrderDto> GetOrderByIdForAdmin(int orderId);
         Task<OrderUpdatePaymentDto> CreateUpdatePaymentIntent(int orderId, int userId, UpdateOrderDto updateOrderDto);
         /// <summary>SuperAdmin-only: apply full order update without 48h or "can't reduce" checks. All changes are audit-logged by the caller.</summary>
-        Task SuperAdminFullUpdateOrder(int orderId, SuperAdminUpdateOrderDto dto);
+        Task SuperAdminFullUpdateOrder(int orderId, int updatedByUserId, SuperAdminUpdateOrderDto dto);
     }
 }

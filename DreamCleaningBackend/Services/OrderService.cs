@@ -68,6 +68,22 @@ namespace DreamCleaningBackend.Services
 
             await AutoCancelExpiredUnpaidOrdersIfNeeded(orders);
 
+            // Precompute any unpaid "additional payments" created by order updates (admin/customer updates)
+            // These are only relevant once the base order has been paid.
+            var orderIds = orders.Where(o => o.IsPaid).Select(o => o.Id).ToList();
+            var pendingUpdates = await _context.OrderUpdateHistories
+                .Where(h => orderIds.Contains(h.OrderId) && !h.IsPaid && h.AdditionalAmount > 0.01m)
+                .GroupBy(h => h.OrderId)
+                .Select(g => new
+                {
+                    OrderId = g.Key,
+                    PendingAmount = g.Sum(x => x.AdditionalAmount),
+                    LatestHistoryId = g.OrderByDescending(x => x.UpdatedAt).Select(x => (int?)x.Id).FirstOrDefault()
+                })
+                .ToListAsync();
+
+            var pendingByOrderId = pendingUpdates.ToDictionary(x => x.OrderId, x => x);
+
             return orders.Select(o => new OrderListDto
             {
                 Id = o.Id,
@@ -87,7 +103,13 @@ namespace DreamCleaningBackend.Services
                 Tips = o.Tips,
                 CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                 IsPaid = o.IsPaid,
-                PaidAt = o.PaidAt
+                PaidAt = o.PaidAt,
+                PendingUpdateAmount = pendingByOrderId.TryGetValue(o.Id, out var pending)
+                    ? pending.PendingAmount
+                    : 0m,
+                PendingUpdateHistoryId = pendingByOrderId.TryGetValue(o.Id, out var pending2)
+                    ? pending2.LatestHistoryId
+                    : null
             }).ToList();
         }
 
@@ -100,7 +122,26 @@ namespace DreamCleaningBackend.Services
 
             await AutoCancelExpiredUnpaidOrderIfNeeded(order);
 
-            return MapOrderToDto(order);
+            var dto = MapOrderToDto(order);
+
+            // Attach pending update-payment info (if any). Only relevant after the base order is paid.
+            if (order.IsPaid)
+            {
+                var pendingHistories = await _context.OrderUpdateHistories
+                    .Where(h => h.OrderId == order.Id && !h.IsPaid && h.AdditionalAmount > 0.01m)
+                    .OrderByDescending(h => h.UpdatedAt)
+                    .ToListAsync();
+
+                dto.PendingUpdateAmount = pendingHistories.Sum(h => h.AdditionalAmount);
+                dto.PendingUpdateHistoryId = pendingHistories.FirstOrDefault()?.Id;
+            }
+            else
+            {
+                dto.PendingUpdateAmount = 0m;
+                dto.PendingUpdateHistoryId = null;
+            }
+
+            return dto;
         }
 
         private static DateTime GetServiceDateTimeUtc(Order order)
@@ -1218,11 +1259,18 @@ namespace DreamCleaningBackend.Services
         }
 
         /// <summary>SuperAdmin-only: full order update without 48h or "can't reduce" checks. All changes must be audit-logged by the caller.</summary>
-        public async Task SuperAdminFullUpdateOrder(int orderId, SuperAdminUpdateOrderDto dto)
+        public async Task SuperAdminFullUpdateOrder(int orderId, int updatedByUserId, SuperAdminUpdateOrderDto dto)
         {
             var order = await _orderRepository.GetByIdWithDetailsAsync(orderId);
             if (order == null)
                 throw new Exception("Order not found");
+
+            // Store original values for update-history/payment tracking
+            var originalSubTotal = order.SubTotal;
+            var originalTax = order.Tax;
+            var originalTips = order.Tips;
+            var originalCompanyDevelopmentTips = order.CompanyDevelopmentTips;
+            var originalTotal = order.Total;
 
             if (dto.ContactFirstName != null) order.ContactFirstName = dto.ContactFirstName;
             if (dto.ContactLastName != null) order.ContactLastName = dto.ContactLastName;
@@ -1244,9 +1292,22 @@ namespace DreamCleaningBackend.Services
             if (dto.Status != null) order.Status = dto.Status;
             if (dto.CancellationReason != null) order.CancellationReason = dto.CancellationReason;
             if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
-            if (dto.Tax.HasValue) order.Tax = dto.Tax.Value;
-            if (dto.Total.HasValue) order.Total = dto.Total.Value;
             if (dto.DiscountAmount.HasValue) order.DiscountAmount = dto.DiscountAmount.Value;
+
+            // Auto-calculate tax/total like booking does (so SuperAdmin only needs to edit SubTotal).
+            // discountedSubTotal = subTotal - discountAmount - subscriptionDiscountAmount
+            // tax = round(discountedSubTotal * 0.08875, 2)
+            // totalBeforeGiftCard = discountedSubTotal + tax + tips + companyTips
+            // total = max(0, totalBeforeGiftCard - giftCardAmountUsed)
+            const decimal salesTaxRate = 0.08875m;
+            var totalDiscountAmount = order.DiscountAmount + order.SubscriptionDiscountAmount;
+            var discountedSubTotal = order.SubTotal - totalDiscountAmount;
+            if (discountedSubTotal < 0) discountedSubTotal = 0;
+            order.Tax = Math.Round(discountedSubTotal * salesTaxRate, 2);
+            var totalBeforeGiftCard = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
+            var finalTotal = totalBeforeGiftCard - order.GiftCardAmountUsed;
+            if (finalTotal < 0) finalTotal = 0;
+            order.Total = Math.Round(finalTotal, 2);
 
             if (dto.Services != null)
             {
@@ -1266,6 +1327,68 @@ namespace DreamCleaningBackend.Services
             }
 
             order.UpdatedAt = DateTime.UtcNow;
+
+            // Track additional amount (if any) for this update
+            var additionalAmount = order.Total - originalTotal;
+            if (Math.Abs(additionalAmount) < 0.01m)
+            {
+                additionalAmount = 0m;
+            }
+
+            // If this update creates an additional payment for an already-paid order,
+            // move status Active -> Pending so admins can clearly see "awaiting payment".
+            // Once the customer pays, status will be switched back to Active.
+            if (additionalAmount > 0.01m &&
+                order.IsPaid &&
+                !string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.Equals(order.Status, "Active", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(order.Status, "Confirmed", StringComparison.OrdinalIgnoreCase))
+                {
+                    order.Status = "Pending";
+                }
+            }
+
+            // Create an update-history record (used to show "additional payments" + allow customer to pay later)
+            var updateHistory = new OrderUpdateHistory
+            {
+                OrderId = order.Id,
+                UpdatedByUserId = updatedByUserId,
+                UpdatedAt = DateTime.UtcNow,
+                OriginalSubTotal = originalSubTotal,
+                OriginalTax = originalTax,
+                OriginalTips = originalTips,
+                OriginalCompanyDevelopmentTips = originalCompanyDevelopmentTips,
+                OriginalTotal = originalTotal,
+                NewSubTotal = order.SubTotal,
+                NewTax = order.Tax,
+                NewTips = order.Tips,
+                NewCompanyDevelopmentTips = order.CompanyDevelopmentTips,
+                NewTotal = order.Total,
+                AdditionalAmount = additionalAmount,
+                IsPaid = additionalAmount <= 0.01m
+            };
+
+            _context.OrderUpdateHistories.Add(updateHistory);
+
+            // Notify customer by email when an extra payment is required (best-effort)
+            if (additionalAmount > 0.01m)
+            {
+                try
+                {
+                    await _emailService.SendOrderUpdateNotificationAsync(
+                        orderId: order.Id,
+                        customerEmail: order.ContactEmail,
+                        additionalAmount: additionalAmount
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to send SuperAdmin order update notification for Order #{order.Id}");
+                }
+            }
+
             await _context.SaveChangesAsync();
         }
     }

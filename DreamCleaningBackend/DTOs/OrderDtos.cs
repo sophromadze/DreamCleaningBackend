@@ -44,6 +44,10 @@ namespace DreamCleaningBackend.DTOs
         public int MaidsCount { get; set; }
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
+        /// <summary>Sum of unpaid additional payments created by order updates.</summary>
+        public decimal PendingUpdateAmount { get; set; }
+        /// <summary>Latest unpaid update-history id (if any).</summary>
+        public int? PendingUpdateHistoryId { get; set; }
         public decimal InitialSubTotal { get; set; }
         public decimal InitialTax { get; set; }
         public decimal InitialTips { get; set; }
@@ -102,6 +106,7 @@ namespace DreamCleaningBackend.DTOs
     {
         public int OrderId { get; set; }
         public decimal AdditionalAmount { get; set; }
+        public int? UpdateHistoryId { get; set; }
         public string PaymentIntentId { get; set; }
         public string PaymentClientSecret { get; set; }
     }
@@ -110,6 +115,11 @@ namespace DreamCleaningBackend.DTOs
     {
         public string PaymentIntentId { get; set; }
         public UpdateOrderDto UpdateOrderData { get; set; }
+    }
+
+    public class ConfirmPendingUpdatePaymentDto
+    {
+        public string PaymentIntentId { get; set; }
     }
 
     public class OrderListDto
@@ -132,6 +142,16 @@ namespace DreamCleaningBackend.DTOs
         public decimal CompanyDevelopmentTips { get; set; }
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
+
+        /// <summary>
+        /// Sum of unpaid additional payments created by order updates (e.g. admin increased total after initial payment).
+        /// </summary>
+        public decimal PendingUpdateAmount { get; set; }
+
+        /// <summary>
+        /// Convenience: latest unpaid update-history id (if any). Useful to create a payment intent.
+        /// </summary>
+        public int? PendingUpdateHistoryId { get; set; }
     }
 
     public class CancelOrderDto

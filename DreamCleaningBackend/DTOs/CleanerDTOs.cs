@@ -1,4 +1,4 @@
-﻿namespace DreamCleaningBackend.DTOs
+namespace DreamCleaningBackend.DTOs
 {
     public class CleanerCalendarDto
     {
@@ -11,6 +11,7 @@
         public decimal TotalDuration { get; set; }
         public string? TipsForCleaner { get; set; }
         public bool IsAssignedToCleaner { get; set; }
+        public string Status { get; set; } // Add status to distinguish completed orders
     }
 
     public class AvailableCleanerDto

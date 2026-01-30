@@ -206,6 +206,140 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        /// <summary>
+        /// Creates a Stripe PaymentIntent for any pending (unpaid) additional payments created by prior order updates.
+        /// This is used when an admin/superadmin increases the order total and the customer needs to pay the difference later.
+        /// </summary>
+        [HttpPost("{orderId}/create-pending-update-payment-intent")]
+        public async Task<ActionResult> CreatePendingUpdatePaymentIntent(int orderId)
+        {
+            try
+            {
+                var userId = GetUserId();
+
+                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
+                if (order == null)
+                    return NotFound(new { message = "Order not found" });
+
+                if (order.Status == "Cancelled" || order.Status == "Done")
+                    return BadRequest(new { message = $"Cannot pay for a {order.Status.ToLower()} order" });
+
+                var unpaidHistories = await _context.OrderUpdateHistories
+                    .Where(h => h.OrderId == orderId && !h.IsPaid && h.AdditionalAmount > 0.01m)
+                    .OrderByDescending(h => h.UpdatedAt)
+                    .ToListAsync();
+
+                if (!unpaidHistories.Any())
+                    return BadRequest(new { message = "No pending additional payment found for this order" });
+
+                var additionalAmount = unpaidHistories.Sum(h => h.AdditionalAmount);
+
+                var metadata = new Dictionary<string, string>
+                {
+                    { "orderId", order.Id.ToString() },
+                    { "userId", userId.ToString() },
+                    // Keep the same type used elsewhere so existing webhook logic applies.
+                    { "type", "order_update" },
+                    { "additionalAmount", additionalAmount.ToString("F2") }
+                };
+
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(additionalAmount, metadata);
+
+                // Attach the payment intent id to all unpaid histories so we can mark them paid consistently
+                foreach (var h in unpaidHistories)
+                {
+                    h.PaymentIntentId = paymentIntent.Id;
+                }
+                await _context.SaveChangesAsync();
+
+                return Ok(new OrderUpdatePaymentDto
+                {
+                    OrderId = order.Id,
+                    AdditionalAmount = additionalAmount,
+                    UpdateHistoryId = unpaidHistories.FirstOrDefault()?.Id,
+                    PaymentIntentId = paymentIntent.Id,
+                    PaymentClientSecret = paymentIntent.ClientSecret
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Confirms a pending additional payment (created by prior order updates) and marks the related update-history rows as paid.
+        /// </summary>
+        [HttpPost("{orderId}/confirm-pending-update-payment")]
+        public async Task<ActionResult> ConfirmPendingUpdatePayment(int orderId, [FromBody] ConfirmPendingUpdatePaymentDto dto)
+        {
+            try
+            {
+                var userId = GetUserId();
+
+                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
+                if (order == null)
+                    return NotFound(new { message = "Order not found" });
+
+                // Verify payment with Stripe
+                var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
+                if (paymentIntent.Status != "succeeded")
+                {
+                    return BadRequest(new { message = "Payment not completed" });
+                }
+
+                var historiesToMarkPaid = await _context.OrderUpdateHistories
+                    .Where(h => h.OrderId == orderId && !h.IsPaid && h.PaymentIntentId == dto.PaymentIntentId)
+                    .ToListAsync();
+
+                if (!historiesToMarkPaid.Any())
+                {
+                    // Fallback: mark the latest unpaid history if (for any reason) the PaymentIntentId wasn't stored yet.
+                    var latest = await _context.OrderUpdateHistories
+                        .Where(h => h.OrderId == orderId && !h.IsPaid && h.AdditionalAmount > 0.01m)
+                        .OrderByDescending(h => h.UpdatedAt)
+                        .FirstOrDefaultAsync();
+
+                    if (latest == null)
+                        return BadRequest(new { message = "No pending additional payment found for this order" });
+
+                    latest.PaymentIntentId = dto.PaymentIntentId;
+                    historiesToMarkPaid.Add(latest);
+                }
+
+                foreach (var h in historiesToMarkPaid)
+                {
+                    h.IsPaid = true;
+                    h.PaidAt = DateTime.UtcNow;
+                }
+
+                await _context.SaveChangesAsync();
+
+                // If there are no more unpaid update-payments, switch status Pending -> Active.
+                // (Don't touch Done/Cancelled.)
+                var hasRemainingUnpaid = await _context.OrderUpdateHistories.AnyAsync(h =>
+                    h.OrderId == orderId &&
+                    !h.IsPaid &&
+                    h.AdditionalAmount > 0.01m);
+
+                if (!hasRemainingUnpaid &&
+                    order.IsPaid &&
+                    string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
+                {
+                    order.Status = "Active";
+                    await _context.SaveChangesAsync();
+                }
+
+                // Return refreshed order details (pending amount should now be 0)
+                var refreshed = await _orderService.GetOrderById(orderId, userId);
+                return Ok(refreshed);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpPost("{orderId}/cancel")]
         public async Task<ActionResult> CancelOrder(int orderId, [FromBody] CancelOrderDto cancelOrderDto)
         {

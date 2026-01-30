@@ -19,15 +19,12 @@ namespace DreamCleaningBackend.Services
             _auditService = auditService;
         }
 
-        public async Task<List<CleanerCalendarDto>> GetCleanerCalendarAsync(int userId, string userRole)
+        public async Task<List<CleanerCalendarDto>> GetCleanerCalendarAsync(int userId, string userRole, DateTime startDate, DateTime endDate)
         {
-            var startDate = DateTime.Today;
-            var endDate = startDate.AddDays(30);
-
-            // Get ALL orders in the date range (not just Active status)
+            // Get ALL orders in the date range, including completed (Done) orders, but excluding cancelled
             var allOrders = await _context.Orders
                 .Where(o => o.ServiceDate >= startDate && o.ServiceDate <= endDate)
-                .Where(o => o.Status != "Cancelled" && o.Status != "Done") // Exclude cancelled and done orders
+                .Where(o => o.Status != "Cancelled") // Only exclude cancelled orders, include Done orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.OrderCleaners)
                 .ToListAsync(); // Execute query first
@@ -43,7 +40,8 @@ namespace DreamCleaningBackend.Services
                 ServiceTypeName = o.ServiceType.Name,
                 TotalDuration = o.TotalDuration,
                 TipsForCleaner = o.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == userId)?.TipsForCleaner,
-                IsAssignedToCleaner = o.OrderCleaners.Any(oc => oc.CleanerId == userId)
+                IsAssignedToCleaner = o.OrderCleaners.Any(oc => oc.CleanerId == userId),
+                Status = o.Status // Include status to distinguish completed orders
             })
             .OrderBy(o => o.ServiceDate)
             .ThenBy(o => o.ServiceTime)

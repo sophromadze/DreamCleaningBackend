@@ -28,6 +28,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IAuditService _auditService;
         private readonly IConfiguration _configuration;
         private readonly ICleanerService _cleanerService;
+        private readonly ISpecialOfferService _specialOfferService;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
@@ -35,7 +36,8 @@ namespace DreamCleaningBackend.Controllers
             IGiftCardService giftCardService,
             IAuditService auditService,
             IConfiguration configuration,
-            ICleanerService cleanerService)
+            ICleanerService cleanerService,
+            ISpecialOfferService specialOfferService)
         {
             _context = context;
             _permissionService = permissionService;
@@ -44,6 +46,7 @@ namespace DreamCleaningBackend.Controllers
             _auditService = auditService;
             _configuration = configuration;
             _cleanerService = cleanerService;
+            _specialOfferService = specialOfferService;
         }
 
         // Service Types Management
@@ -2623,7 +2626,8 @@ namespace DreamCleaningBackend.Controllers
 
             try
             {
-                await _orderService.SuperAdminFullUpdateOrder(orderId, dto);
+                var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                await _orderService.SuperAdminFullUpdateOrder(orderId, currentUserId, dto);
             }
             catch (Exception ex)
             {
@@ -2776,6 +2780,25 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 return Ok(userDetail);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpGet("users/{userId}/special-offers")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<UserSpecialOfferDto>>> GetUserSpecialOffers(int userId)
+        {
+            try
+            {
+                var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
+                if (!userExists)
+                    return NotFound(new { message = "User not found" });
+
+                var offers = await _specialOfferService.GetUserAvailableOffers(userId);
+                return Ok(offers);
             }
             catch (Exception ex)
             {

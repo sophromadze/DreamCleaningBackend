@@ -1,4 +1,4 @@
-﻿using Stripe;
+using Stripe;
 using Microsoft.AspNetCore.Mvc;
 using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
@@ -274,23 +274,67 @@ namespace DreamCleaningBackend.Controllers
                     _logger.LogInformation("Additional payment of ${AdditionalAmount} received for order {OrderId}", additionalAmount, updateOrderId);
 
                     // Mark the latest update history as paid
-                    var updateHistory = await _context.OrderUpdateHistories
-                        .Where(h => h.OrderId == updateOrderId && !h.IsPaid)
-                        .OrderByDescending(h => h.UpdatedAt)
-                        .FirstOrDefaultAsync(cancellationToken);
+                    // Prefer histories explicitly linked to this payment intent; otherwise fall back to latest unpaid.
+                    var linkedHistories = await _context.OrderUpdateHistories
+                        .Where(h => h.OrderId == updateOrderId && !h.IsPaid && h.PaymentIntentId == paymentIntent.Id)
+                        .ToListAsync(cancellationToken);
 
-                    if (updateHistory != null)
+                    if (linkedHistories.Any())
                     {
-                        updateHistory.PaymentIntentId = paymentIntent.Id;
-                        updateHistory.IsPaid = true;
-                        updateHistory.PaidAt = DateTime.UtcNow;
-                        await _context.SaveChangesAsync(cancellationToken);
+                        foreach (var h in linkedHistories)
+                        {
+                            h.IsPaid = true;
+                            h.PaidAt = DateTime.UtcNow;
+                        }
 
-                        _logger.LogInformation("Marked OrderUpdateHistory {UpdateHistoryId} as paid", updateHistory.Id);
+                        // If this clears all pending update payments, switch status Pending -> Active.
+                        var hasRemainingUnpaid = await _context.OrderUpdateHistories.AnyAsync(
+                            h => h.OrderId == updateOrderId && !h.IsPaid && h.AdditionalAmount > 0.01m,
+                            cancellationToken);
+
+                        if (!hasRemainingUnpaid &&
+                            order.IsPaid &&
+                            string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
+                        {
+                            order.Status = "Active";
+                        }
+
+                        await _context.SaveChangesAsync(cancellationToken);
+                        _logger.LogInformation("Marked {Count} OrderUpdateHistory rows as paid for PaymentIntent {PaymentIntentId}", linkedHistories.Count, paymentIntent.Id);
                     }
                     else
                     {
-                        _logger.LogWarning("No unpaid update history found for order {OrderId}", updateOrderId);
+                        var updateHistory = await _context.OrderUpdateHistories
+                            .Where(h => h.OrderId == updateOrderId && !h.IsPaid)
+                            .OrderByDescending(h => h.UpdatedAt)
+                            .FirstOrDefaultAsync(cancellationToken);
+
+                        if (updateHistory != null)
+                        {
+                            updateHistory.PaymentIntentId = paymentIntent.Id;
+                            updateHistory.IsPaid = true;
+                            updateHistory.PaidAt = DateTime.UtcNow;
+
+                            // If this clears all pending update payments, switch status Pending -> Active.
+                            var hasRemainingUnpaid = await _context.OrderUpdateHistories.AnyAsync(
+                                h => h.OrderId == updateOrderId && !h.IsPaid && h.AdditionalAmount > 0.01m,
+                                cancellationToken);
+
+                            if (!hasRemainingUnpaid &&
+                                order.IsPaid &&
+                                string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
+                            {
+                                order.Status = "Active";
+                            }
+
+                            await _context.SaveChangesAsync(cancellationToken);
+
+                            _logger.LogInformation("Marked OrderUpdateHistory {UpdateHistoryId} as paid", updateHistory.Id);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("No unpaid update history found for order {OrderId}", updateOrderId);
+                        }
                     }
                 }
                 else

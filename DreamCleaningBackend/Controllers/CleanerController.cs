@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Services.Interfaces;
@@ -19,13 +19,17 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpGet("calendar")]
-        public async Task<ActionResult<List<CleanerCalendarDto>>> GetCalendar()
+        public async Task<ActionResult<List<CleanerCalendarDto>>> GetCalendar([FromQuery] DateTime? startDate, [FromQuery] DateTime? endDate)
         {
             var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
             var userRole = User.FindFirst("Role")?.Value ?? "";
             
+            // If no dates provided, default to next 30 days from today
+            var start = startDate ?? DateTime.Today;
+            var end = endDate ?? DateTime.Today.AddDays(30);
+            
             // For non-cleaner roles, show all orders. For cleaner role, show only assigned orders
-            var calendar = await _cleanerService.GetCleanerCalendarAsync(userId, userRole);
+            var calendar = await _cleanerService.GetCleanerCalendarAsync(userId, userRole, start, end);
             return Ok(calendar);
         }
 

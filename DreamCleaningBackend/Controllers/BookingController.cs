@@ -71,6 +71,7 @@ namespace DreamCleaningBackend.Controllers
                     Name = st.Name,
                     BasePrice = st.BasePrice,
                     Description = st.Description,
+                    IsActive = st.IsActive,
                     DisplayOrder = st.DisplayOrder,
                     HasPoll = st.HasPoll,
                     IsCustom = st.IsCustom,
@@ -114,6 +115,7 @@ namespace DreamCleaningBackend.Controllers
                     IsSameDayService = es.IsSameDayService,
                     PriceMultiplier = es.PriceMultiplier,
                     IsAvailableForAll = es.IsAvailableForAll,
+                    IsActive = es.IsActive,
                     DisplayOrder = es.DisplayOrder
                 }));
 
@@ -133,6 +135,7 @@ namespace DreamCleaningBackend.Controllers
                     IsSameDayService = es.IsSameDayService,
                     PriceMultiplier = es.PriceMultiplier,
                     IsAvailableForAll = es.IsAvailableForAll,
+                    IsActive = es.IsActive,
                     DisplayOrder = es.DisplayOrder
                 }));
 
