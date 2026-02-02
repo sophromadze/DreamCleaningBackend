@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using DreamCleaningBackend.DTOs;
@@ -17,13 +17,20 @@ namespace DreamCleaningBackend.Controllers
         private readonly IProfileService _profileService;
         private readonly IAuditService _auditService; 
         private readonly ISpecialOfferService _specialOfferService;
+        private readonly ISubscriptionService _subscriptionService;
         private readonly ApplicationDbContext _context;
 
-        public ProfileController(IProfileService profileService, IAuditService auditService, ISpecialOfferService specialOfferService, ApplicationDbContext context)
+        public ProfileController(
+            IProfileService profileService,
+            IAuditService auditService,
+            ISpecialOfferService specialOfferService,
+            ISubscriptionService subscriptionService,
+            ApplicationDbContext context)
         {
             _profileService = profileService;
             _auditService = auditService;
             _specialOfferService = specialOfferService;
+            _subscriptionService = subscriptionService;
             _context = context; 
         }
 
@@ -33,6 +40,8 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var userId = GetUserId();
+                // Ensure expired subscriptions are cleared before returning profile data.
+                await _subscriptionService.CheckAndUpdateSubscriptionStatus(userId);
                 var profile = await _profileService.GetProfile(userId);
                 return Ok(profile);
             }

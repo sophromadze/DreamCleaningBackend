@@ -31,4 +31,11 @@
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
 		</Content>
 	</ItemGroup>
+
+  <!-- Prevent accidental build output folders inside project from being compiled -->
+  <ItemGroup>
+    <Compile Remove="bin-build-temp\**\*.cs" />
+    <Content Remove="bin-build-temp\**\*.*" />
+    <None Remove="bin-build-temp\**\*.*" />
+  </ItemGroup>
 </Project>

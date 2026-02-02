@@ -172,7 +172,7 @@ namespace DreamCleaningBackend.Controllers
         [Authorize]
         public async Task<ActionResult> GetUserSubscription()
         {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            var userId = GetUserId();
             if (userId == 0)
                 return Unauthorized();
 
@@ -206,7 +206,7 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                var userId = GetUserId();
                 if (userId == 0)
                     return Unauthorized();
 
@@ -324,7 +324,7 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                var userId = GetUserId();
                 if (userId == 0)
                     return Unauthorized();
 
@@ -873,13 +873,13 @@ namespace DreamCleaningBackend.Controllers
 
                         if (userSubscription != null)
                         {
-                            await _subscriptionService.ActivateSubscription(userId, userSubscription.Id);
+                            await _subscriptionService.ActivateSubscription(userId, userSubscription.Id, dto.ServiceDate);
                         }
                     }
                     else if (userForSubscription.SubscriptionId.HasValue)
                     {
                         // Renew existing subscription
-                        await _subscriptionService.RenewSubscription(userId);
+                        await _subscriptionService.RenewSubscription(userId, dto.ServiceDate);
                     }
                 }
 
@@ -922,7 +922,7 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                var adminUserId = GetUserId();
                 if (adminUserId == 0)
                     return Unauthorized();
 
@@ -1409,7 +1409,7 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                var userId = GetUserId();
                 if (userId == 0)
                     return Unauthorized();
 
@@ -1458,7 +1458,7 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                var userId = GetUserId();
                 if (userId == 0)
                     return Unauthorized();
 
@@ -1656,12 +1656,12 @@ namespace DreamCleaningBackend.Controllers
                             .FirstOrDefaultAsync(s => s.SubscriptionDays == subscription.SubscriptionDays);
                         if (userSubscription != null)
                         {
-                            await _subscriptionService.ActivateSubscription(userId, userSubscription.Id);
+                            await _subscriptionService.ActivateSubscription(userId, userSubscription.Id, order.ServiceDate);
                         }
                     }
                     else if (userForSubscription.SubscriptionId.HasValue)
                     {
-                        await _subscriptionService.RenewSubscription(userId);
+                        await _subscriptionService.RenewSubscription(userId, order.ServiceDate);
                     }
                 }
 
@@ -1687,6 +1687,13 @@ namespace DreamCleaningBackend.Controllers
                 Console.WriteLine($"Error in ConfirmPayment: {ex.Message}");
                 return BadRequest(new { message = "Failed to confirm payment: " + ex.Message });
             }
+        }
+
+        private int GetUserId()
+        {
+            // Some parts of the codebase use custom "UserId" claim; fall back to NameIdentifier.
+            var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            return int.TryParse(userIdClaim, out var userId) ? userId : 0;
         }
 
         [HttpGet("available-times")]
