@@ -305,7 +305,7 @@ namespace DreamCleaningBackend.Services
 
             if (user == null)
             {
-                // Create new user
+                var isRelayEmail = string.IsNullOrEmpty(email) || (email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true);
                 user = new User
                 {
                     Email = email?.ToLower() ?? $"{appleId}@privaterelay.appleid.com",
@@ -316,7 +316,8 @@ namespace DreamCleaningBackend.Services
                     CreatedAt = DateTime.UtcNow,
                     FirstTimeOrder = true,
                     IsActive = true,
-                    IsEmailVerified = true
+                    IsEmailVerified = !isRelayEmail,
+                    RequiresRealEmail = isRelayEmail
                 };
                 _context.Users.Add(user);
             }
@@ -332,9 +333,16 @@ namespace DreamCleaningBackend.Services
                 // Update email if it was a private relay and now we have real email
                 if (string.IsNullOrEmpty(user.Email) || user.Email.Contains("@privaterelay.appleid.com"))
                 {
-                    if (!string.IsNullOrEmpty(email))
+                    if (!string.IsNullOrEmpty(email) && !email.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase))
                     {
                         user.Email = email.ToLower();
+                        user.RequiresRealEmail = false;
+                        user.IsEmailVerified = true;
+                    }
+                    else
+                    {
+                        user.RequiresRealEmail = true;
+                        user.IsEmailVerified = false;
                     }
                 }
 
@@ -394,11 +402,13 @@ namespace DreamCleaningBackend.Services
                 }
             }
 
+                var requiresRealEmail = user.RequiresRealEmail || (user.Email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true);
                 return new AuthResponseDto
                 {
                     User = MapUserToDto(user),
                     Token = CreateToken(user),
-                    RefreshToken = user.RefreshToken
+                    RefreshToken = user.RefreshToken,
+                    RequiresRealEmail = requiresRealEmail
                 };
             }
             catch (Exception ex)
@@ -592,7 +602,7 @@ namespace DreamCleaningBackend.Services
             return await _context.Users.AnyAsync(u => u.Email == email.ToLower());
         }
 
-        private async Task<GoogleJsonWebSignature.Payload> ValidateGoogleToken(string idToken)
+        private async Task<GoogleJsonWebSignature.Payload?> ValidateGoogleToken(string idToken)
         {
             try
             {
@@ -608,6 +618,12 @@ namespace DreamCleaningBackend.Services
             {
                 return null;
             }
+        }
+
+        public async Task<string?> GetEmailFromGoogleTokenAsync(string idToken)
+        {
+            var payload = await ValidateGoogleToken(idToken);
+            return payload?.Email;
         }
 
         private ClaimsPrincipal GetPrincipalFromExpiredToken(string token)
@@ -667,7 +683,8 @@ namespace DreamCleaningBackend.Services
         new Claim("FirstName", user.FirstName),
         new Claim("LastName", user.LastName),
         new Claim("FirstTimeOrder", user.FirstTimeOrder.ToString()),
-        new Claim("AuthProvider", user.AuthProvider ?? "Local")
+        new Claim("AuthProvider", user.AuthProvider ?? "Local"),
+        new Claim("RequiresRealEmail", (user.RequiresRealEmail || (user.Email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true)).ToString())
     };
 
             if (user.SubscriptionId.HasValue)
@@ -737,6 +754,7 @@ namespace DreamCleaningBackend.Services
 
         private UserDto MapUserToDto(User user)
         {
+            var requiresRealEmail = user.RequiresRealEmail || (user.Email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true);
             return new UserDto
             {
                 Id = user.Id,
@@ -748,7 +766,8 @@ namespace DreamCleaningBackend.Services
                 SubscriptionId = user.SubscriptionId,
                 AuthProvider = user.AuthProvider,
                 Role = user.Role.ToString(),
-                ProfilePictureUrl = user.ProfilePictureUrl
+                ProfilePictureUrl = user.ProfilePictureUrl,
+                RequiresRealEmail = requiresRealEmail
             };
         }
 
@@ -1020,6 +1039,7 @@ namespace DreamCleaningBackend.Services
             }
 
             // Map User entity to UserDto
+            var requiresRealEmail = user.RequiresRealEmail || (user.Email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true);
             return new UserDto
             {
                 Id = user.Id,
@@ -1031,7 +1051,150 @@ namespace DreamCleaningBackend.Services
                 SubscriptionId = user.SubscriptionId,
                 AuthProvider = user.AuthProvider,
                 Role = user.Role.ToString(),
-                ProfilePictureUrl = user.ProfilePictureUrl
+                ProfilePictureUrl = user.ProfilePictureUrl,
+                RequiresRealEmail = requiresRealEmail
+            };
+        }
+
+        private static bool IsRelayEmail(string? email)
+        {
+            return !string.IsNullOrEmpty(email) && email.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public async Task RequestRealEmailVerification(int userId, string email)
+        {
+            var normalizedEmail = email.Trim().ToLower();
+            if (IsRelayEmail(normalizedEmail))
+                throw new Exception("Please enter your real email, not an Apple relay address.");
+            if (!System.Text.RegularExpressions.Regex.IsMatch(normalizedEmail, @"^[^@]+@[^@]+\.[^@]+$"))
+                throw new Exception("Please enter a valid email address.");
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+                throw new Exception("User not found");
+            if (!user.RequiresRealEmail)
+                throw new Exception("Your account does not require real email verification.");
+
+            // Allow sending code even when email belongs to another account — after verify we'll offer account merge
+            var code = new Random().Next(100000, 999999).ToString();
+            var expiry = DateTime.UtcNow.AddMinutes(10);
+
+            var existing = await _context.RealEmailVerifications.FirstOrDefaultAsync(r => r.UserId == userId);
+            if (existing != null)
+                _context.RealEmailVerifications.Remove(existing);
+
+            _context.RealEmailVerifications.Add(new RealEmailVerification
+            {
+                UserId = userId,
+                RequestedEmail = normalizedEmail,
+                VerificationCode = code,
+                ExpiresAt = expiry,
+                Attempts = 0,
+                CreatedAt = DateTime.UtcNow
+            });
+            await _context.SaveChangesAsync();
+
+            await _emailService.SendRealEmailVerificationCodeAsync(normalizedEmail, user.FirstName, code);
+        }
+
+        private const int MaxRealEmailVerificationAttempts = 5;
+
+        public async Task<VerifyRealEmailResultDto> VerifyRealEmailCode(int userId, string email, string code)
+        {
+            int currentUserId = userId; // use local to avoid shadowing in any inner scope
+            var normalizedEmail = email.Trim().ToLower();
+            var pending = await _context.RealEmailVerifications
+                .Include(r => r.User)
+                .FirstOrDefaultAsync(r => r.UserId == currentUserId && r.RequestedEmail == normalizedEmail);
+
+            if (pending == null)
+                throw new Exception("Invalid or expired code. Please request a new verification code.");
+            if (pending.ExpiresAt < DateTime.UtcNow)
+            {
+                _context.RealEmailVerifications.Remove(pending);
+                await _context.SaveChangesAsync();
+                throw new Exception("Code expired. Please request a new one.");
+            }
+            if (pending.Attempts >= MaxRealEmailVerificationAttempts)
+            {
+                _context.RealEmailVerifications.Remove(pending);
+                await _context.SaveChangesAsync();
+                throw new Exception("Too many failed attempts. Please request a new verification code.");
+            }
+
+            if (pending.VerificationCode != code.Trim())
+            {
+                pending.Attempts++;
+                await _context.SaveChangesAsync();
+                throw new Exception("Invalid code, please try again.");
+            }
+
+            _context.RealEmailVerifications.Remove(pending);
+
+            // Check if this email already belongs to another account → offer merge
+            var existingAccount = await _context.Users
+                .AsNoTracking()
+                .FirstOrDefaultAsync(u => u.Email == normalizedEmail && u.Id != currentUserId && !u.IsDeleted);
+            if (existingAccount != null)
+            {
+                var mergeCode = new Random().Next(100000, 999999).ToString();
+                var expiresAt = DateTime.UtcNow.AddMinutes(30);
+                _context.AccountMergeRequests.Add(new AccountMergeRequest
+                {
+                    NewAccountId = currentUserId,
+                    OldAccountId = existingAccount.Id,
+                    VerifiedRealEmail = normalizedEmail,
+                    VerificationCode = mergeCode,
+                    Status = AccountMergeRequestStatus.Pending,
+                    CreatedAt = DateTime.UtcNow,
+                    ExpiresAt = expiresAt
+                });
+                await _context.SaveChangesAsync();
+                await _emailService.SendAccountMergeConfirmationAsync(normalizedEmail, existingAccount.FirstName, mergeCode);
+                return new VerifyRealEmailResultDto
+                {
+                    IsMergeScenario = true,
+                    AccountExistsResponse = new AccountExistsResponseDto
+                    {
+                        ExistingAccountId = existingAccount.Id.ToString(),
+                        ExistingAccountEmail = existingAccount.Email,
+                        ExistingAccountName = $"{existingAccount.FirstName} {existingAccount.LastName}".Trim()
+                    }
+                };
+            }
+
+            // Reload user so we don't modify an entity that was attached via the pending we just removed
+            var user = await _context.Users.FindAsync(currentUserId);
+            if (user == null)
+                throw new Exception("User not found.");
+
+            // If a soft-deleted user holds this email, free it first (unique index applies to all rows)
+            var softDeletedWithEmail = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email == normalizedEmail && u.Id != currentUserId && u.IsDeleted);
+            if (softDeletedWithEmail != null)
+            {
+                softDeletedWithEmail.Email = $"merged-{softDeletedWithEmail.Id}@deleted.local";
+                softDeletedWithEmail.UpdatedAt = DateTime.UtcNow;
+            }
+
+            user.Email = normalizedEmail;
+            user.RequiresRealEmail = false;
+            user.IsEmailVerified = true;
+            user.UpdatedAt = DateTime.UtcNow;
+            user.RefreshToken = GenerateRefreshToken();
+            user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
+            await _context.SaveChangesAsync();
+
+            return new VerifyRealEmailResultDto
+            {
+                IsMergeScenario = false,
+                AuthResponse = new AuthResponseDto
+                {
+                    User = MapUserToDto(user),
+                    Token = CreateToken(user),
+                    RefreshToken = user.RefreshToken,
+                    RequiresRealEmail = false
+                }
             };
         }
     }

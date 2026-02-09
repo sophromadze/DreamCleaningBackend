@@ -95,6 +95,37 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(email, subject, body);
         }
 
+        public async Task SendRealEmailVerificationCodeAsync(string email, string firstName, string code)
+        {
+            var subject = "Your verification code - Dream Cleaning";
+            var body = $@"
+                <h2>Hi {firstName},</h2>
+                <p>Use this code to verify your email address for Dream Cleaning:</p>
+                <p style='font-size: 24px; font-weight: bold; letter-spacing: 4px; margin: 24px 0;'>{code}</p>
+                <p>This code expires in 10 minutes.</p>
+                <p>If you didn't request this, you can safely ignore this email.</p>
+                <br/>
+                <p>Best regards,<br/>Dream Cleaning Team</p>
+            ";
+            await SendEmailAsync(email, subject, body);
+        }
+
+        public async Task SendAccountMergeConfirmationAsync(string email, string firstName, string code)
+        {
+            var subject = "Confirm Account Merge — Dream Cleaning";
+            var body = $@"
+                <h2>Hi {firstName},</h2>
+                <p>Someone is trying to merge an Apple Sign In account with your Dream Cleaning account ({email}).</p>
+                <p>If this was you, enter this code to confirm:</p>
+                <p style='font-size: 24px; font-weight: bold; letter-spacing: 4px; margin: 24px 0;'>{code}</p>
+                <p>This code expires in 10 minutes.</p>
+                <p>If you did not request this, please ignore this email. Your account will not be changed.</p>
+                <br/>
+                <p>— Dream Cleaning Team</p>
+            ";
+            await SendEmailAsync(email, subject, body);
+        }
+
         public async Task SendEmailAsync(string to, string subject, string html)
         {
             // Check if email sending is disabled in configuration

@@ -5,6 +5,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -20,14 +21,18 @@ namespace DreamCleaningBackend.Controllers
     public class AuthController : ControllerBase
     {
         private readonly IAuthService _authService;
+        private readonly IAccountMergeService _accountMergeService;
         private readonly IConfiguration _configuration;
         private readonly bool _useCookieAuth;
+        private readonly IMemoryCache _cache;
 
-        public AuthController(IAuthService authService, IConfiguration configuration)
+        public AuthController(IAuthService authService, IAccountMergeService accountMergeService, IConfiguration configuration, IMemoryCache cache)
         {
             _authService = authService;
+            _accountMergeService = accountMergeService;
             _configuration = configuration;
             _useCookieAuth = configuration.GetValue<bool>("Authentication:UseCookieAuth", false);
+            _cache = cache;
         }
 
         [HttpPost("register")]
@@ -181,7 +186,7 @@ namespace DreamCleaningBackend.Controllers
                 if (_useCookieAuth)
                 {
                     SetAuthCookies(response.Token, response.RefreshToken);
-                    return Ok(new { user = response.User });
+                    return Ok(new { user = response.User, requiresRealEmail = response.RequiresRealEmail });
                 }
                 
                 return Ok(response);
@@ -396,6 +401,96 @@ namespace DreamCleaningBackend.Controllers
 
                 var response = await _authService.InitiateEmailChange(userId, dto);
                 return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("request-email-verification")]
+        [Authorize]
+        public async Task<ActionResult> RequestEmailVerification(RequestRealEmailVerificationDto dto)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (!int.TryParse(userIdClaim, out int userId))
+                    return Unauthorized();
+                await _authService.RequestRealEmailVerification(userId, dto.Email);
+                return Ok(new { message = "Verification code sent to your email." });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("verify-email-code")]
+        [Authorize]
+        public async Task<ActionResult> VerifyEmailCode(VerifyRealEmailCodeDto dto)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (!int.TryParse(userIdClaim, out int userId))
+                    return Unauthorized();
+                var result = await _authService.VerifyRealEmailCode(userId, dto.Email, dto.Code);
+                if (result.IsMergeScenario)
+                {
+                    return Ok(result.AccountExistsResponse);
+                }
+                var response = result.AuthResponse!;
+                if (_useCookieAuth)
+                {
+                    SetAuthCookies(response.Token, response.RefreshToken);
+                    return Ok(new { user = response.User });
+                }
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("confirm-account-merge")]
+        [Authorize]
+        public async Task<ActionResult<MergeResultDto>> ConfirmAccountMerge(ConfirmAccountMergeDto dto)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (!int.TryParse(userIdClaim, out int userId))
+                    return Unauthorized();
+                var result = await _accountMergeService.ConfirmAndMergeAsync(userId, dto.VerificationMethod, dto.VerificationToken);
+                if (_useCookieAuth)
+                {
+                    SetAuthCookies(result.NewToken, result.RefreshToken ?? "");
+                    return Ok(new { status = result.Status, message = result.Message, mergedData = result.MergedData, user = result.User });
+                }
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                var msg = ex.InnerException?.Message ?? ex.Message;
+                if (msg.Contains("entity changes") || msg.Contains("inner exception"))
+                    msg = "Merge failed. Please try again or use Merge with Email.";
+                return BadRequest(new { message = msg });
+            }
+        }
+
+        [HttpPost("resend-merge-code")]
+        [Authorize]
+        public async Task<ActionResult> ResendMergeCode()
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (!int.TryParse(userIdClaim, out int userId))
+                    return Unauthorized();
+                await _accountMergeService.ResendMergeCodeAsync(userId);
+                return Ok(new { message = "Merge confirmation code sent." });
             }
             catch (Exception ex)
             {

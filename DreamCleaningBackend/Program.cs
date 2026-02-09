@@ -19,6 +19,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddScoped<IPermissionService, PermissionService>();
 
+// Add memory cache for short-lived tokens (e.g. Google merge initiation)
+builder.Services.AddMemoryCache();
+
 // Add services to the container.
 builder.Services.AddControllers()
     .AddJsonOptions(o => { o.JsonSerializerOptions.PropertyNameCaseInsensitive = true; });
@@ -150,6 +153,7 @@ builder.Services.AddScoped<IOrderRepository, OrderRepository>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<ISmsService, SmsService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IAccountMergeService, AccountMergeService>();
 
 // Background Services
 builder.Services.AddScoped<IProfileService, ProfileService>();
@@ -276,6 +280,116 @@ CREATE TABLE IF NOT EXISTS `ScheduledSms` (
             {
                 logger.LogWarning(ensureEx, "Could not ensure ScheduledSms table.");
             }
+
+            // Ensure RequiresRealEmail column and RealEmailVerifications table exist (fixes migration not applied)
+            try
+            {
+                var conn = context.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open)
+                    await conn.OpenAsync();
+                bool columnExists;
+                using (var cmdCol = conn.CreateCommand())
+                {
+                    cmdCol.CommandText = "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'Users' AND column_name = 'RequiresRealEmail' LIMIT 1";
+                    columnExists = await cmdCol.ExecuteScalarAsync() != null;
+                }
+                if (!columnExists)
+                {
+                    await context.Database.ExecuteSqlRawAsync("ALTER TABLE `Users` ADD COLUMN `RequiresRealEmail` tinyint(1) NOT NULL DEFAULT 0");
+                    logger.LogInformation("Added RequiresRealEmail column to Users table.");
+                }
+                bool realEmailTableExists;
+                using (var cmdTbl = conn.CreateCommand())
+                {
+                    cmdTbl.CommandText = "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'RealEmailVerifications' LIMIT 1";
+                    realEmailTableExists = await cmdTbl.ExecuteScalarAsync() != null;
+                }
+                if (!realEmailTableExists)
+                {
+                    await context.Database.ExecuteSqlRawAsync(@"
+CREATE TABLE IF NOT EXISTS `RealEmailVerifications` (
+    `Id` int NOT NULL AUTO_INCREMENT,
+    `UserId` int NOT NULL,
+    `RequestedEmail` varchar(256) CHARACTER SET utf8mb4 NOT NULL,
+    `VerificationCode` varchar(10) CHARACTER SET utf8mb4 NOT NULL,
+    `ExpiresAt` datetime(6) NOT NULL,
+    `Attempts` int NOT NULL,
+    `CreatedAt` datetime(6) NOT NULL,
+    PRIMARY KEY (`Id`),
+    CONSTRAINT `FK_RealEmailVerifications_Users_UserId` FOREIGN KEY (`UserId`) REFERENCES `Users` (`Id`) ON DELETE CASCADE
+) CHARACTER SET utf8mb4");
+                    await context.Database.ExecuteSqlRawAsync("CREATE INDEX `IX_RealEmailVerifications_UserId` ON `RealEmailVerifications` (`UserId`)");
+                    await context.Database.ExecuteSqlRawAsync("INSERT IGNORE INTO `__EFMigrationsHistory` (`MigrationId`, `ProductVersion`) VALUES ('20260208140000_AddRequiresRealEmailAndRealEmailVerification', '8.0.2')");
+                    logger.LogInformation("Created RealEmailVerifications table.");
+                }
+            }
+            catch (Exception ensureEx)
+            {
+                logger.LogWarning(ensureEx, "Could not ensure RequiresRealEmail/RealEmailVerifications.");
+            }
+
+            // Ensure soft-delete columns exist on Users (IsDeleted, DeletedAt, DeletedReason)
+            try
+            {
+                var conn = context.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open)
+                    await conn.OpenAsync();
+                bool deletedAtExists;
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'Users' AND column_name = 'DeletedAt' LIMIT 1";
+                    deletedAtExists = await cmd.ExecuteScalarAsync() != null;
+                }
+                if (!deletedAtExists)
+                {
+                    await context.Database.ExecuteSqlRawAsync("ALTER TABLE `Users` ADD COLUMN `IsDeleted` tinyint(1) NOT NULL DEFAULT 0");
+                    await context.Database.ExecuteSqlRawAsync("ALTER TABLE `Users` ADD COLUMN `DeletedAt` datetime(6) NULL");
+                    await context.Database.ExecuteSqlRawAsync("ALTER TABLE `Users` ADD COLUMN `DeletedReason` varchar(500) CHARACTER SET utf8mb4 NULL");
+                    logger.LogInformation("Added IsDeleted, DeletedAt, DeletedReason columns to Users table.");
+                }
+            }
+            catch (Exception ensureEx)
+            {
+                logger.LogWarning(ensureEx, "Could not ensure User soft-delete columns.");
+            }
+
+            // Ensure AccountMergeRequests table exists (for real-email merge flow)
+            try
+            {
+                var conn = context.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open)
+                    await conn.OpenAsync();
+                bool tableExists;
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'AccountMergeRequests' LIMIT 1";
+                    tableExists = await cmd.ExecuteScalarAsync() != null;
+                }
+                if (!tableExists)
+                {
+                    await context.Database.ExecuteSqlRawAsync(@"
+CREATE TABLE IF NOT EXISTS `AccountMergeRequests` (
+    `Id` int NOT NULL AUTO_INCREMENT,
+    `NewAccountId` int NOT NULL,
+    `OldAccountId` int NOT NULL,
+    `VerificationCode` varchar(10) CHARACTER SET utf8mb4 NOT NULL,
+    `VerifiedRealEmail` varchar(256) CHARACTER SET utf8mb4 NOT NULL,
+    `Status` int NOT NULL,
+    `CreatedAt` datetime(6) NOT NULL,
+    `ExpiresAt` datetime(6) NOT NULL,
+    PRIMARY KEY (`Id`),
+    CONSTRAINT `FK_AccountMergeRequests_Users_NewAccountId` FOREIGN KEY (`NewAccountId`) REFERENCES `Users` (`Id`) ON DELETE RESTRICT,
+    CONSTRAINT `FK_AccountMergeRequests_Users_OldAccountId` FOREIGN KEY (`OldAccountId`) REFERENCES `Users` (`Id`) ON DELETE RESTRICT
+) CHARACTER SET utf8mb4");
+                    await context.Database.ExecuteSqlRawAsync("CREATE INDEX `IX_AccountMergeRequests_NewAccountId_Status` ON `AccountMergeRequests` (`NewAccountId`, `Status`)");
+                    await context.Database.ExecuteSqlRawAsync("CREATE INDEX `IX_AccountMergeRequests_ExpiresAt` ON `AccountMergeRequests` (`ExpiresAt`)");
+                    logger.LogInformation("Created AccountMergeRequests table.");
+                }
+            }
+            catch (Exception ensureEx)
+            {
+                logger.LogWarning(ensureEx, "Could not ensure AccountMergeRequests table.");
+            }
         }
     }
     catch (MySqlException ex) when (ex.Message.Contains("already exists"))
@@ -344,6 +458,46 @@ Console.WriteLine("Using DB: " + builder.Configuration.GetConnectionString("Defa
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Block API access for users who must verify real email (Apple relay), except verification endpoints and logout
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path.Value ?? "";
+    if (!path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+    {
+        await next();
+        return;
+    }
+    // Allow login and verification endpoints for users with RequiresRealEmail (Apple "Hide My Email")
+    var allowPaths = new[] { 
+        "/api/auth/apple-login",           // Must allow so user can complete Apple login and create temp account
+        "/api/auth/current-user",          // Needed so user can stay logged in and reach verify-email page
+        "/api/auth/request-email-verification", 
+        "/api/auth/verify-email-code", 
+        "/api/auth/confirm-account-merge", // Merge temp Apple account with existing account (email code only)
+        "/api/auth/resend-merge-code",     // Resend merge confirmation code
+        "/api/auth/logout" 
+    };
+    if (allowPaths.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+    {
+        await next();
+        return;
+    }
+    var requiresRealEmail = context.User.FindFirst("RequiresRealEmail")?.Value;
+    if (string.Equals(requiresRealEmail, "True", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.StatusCode = 403;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(new
+        {
+            error = "EMAIL_REQUIRED",
+            message = "Please verify your real email to continue"
+        }));
+        return;
+    }
+    await next();
+});
+
 app.MapControllers();
 
 // Map SignalR Hub

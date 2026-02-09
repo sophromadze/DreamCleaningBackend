@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace DreamCleaningBackend.Models
 {
@@ -39,7 +40,11 @@ namespace DreamCleaningBackend.Models
 
         // OAuth provider info
         public string? AuthProvider { get; set; } // "Local", "Google", "Apple"
-        public string? ExternalAuthId { get; set; } // ID from OAuth provider
+        public string? ExternalAuthId { get; set; } // ID from OAuth provider (Google ID when linked)
+        /// <summary>Apple Sign In subject (sub). NotMapped until migration AddAppleUserIdToUsers is applied to the database.</summary>
+        [NotMapped]
+        [StringLength(255)]
+        public string? AppleUserId { get; set; }
 
         // Subscription
         public int? SubscriptionId { get; set; }
@@ -64,6 +69,8 @@ namespace DreamCleaningBackend.Models
 
         // Email verification
         public bool IsEmailVerified { get; set; } = false;
+        /// <summary>True when user signed in with Apple "Hide My Email" and must provide a real email before using the platform.</summary>
+        public bool RequiresRealEmail { get; set; } = false;
         public string? EmailVerificationToken { get; set; }
         public DateTime? EmailVerificationTokenExpiry { get; set; }
 
@@ -78,5 +85,11 @@ namespace DreamCleaningBackend.Models
 
         /// <summary>When true, user can receive emails and (in future) SMS from the company. Used for both marketing and transactional communications.</summary>
         public bool CanReceiveCommunications { get; set; } = true;
+
+        // Soft delete (for merged accounts)
+        public bool IsDeleted { get; set; } = false;
+        public DateTime? DeletedAt { get; set; }
+        [StringLength(500)]
+        public string? DeletedReason { get; set; }
     }
 }

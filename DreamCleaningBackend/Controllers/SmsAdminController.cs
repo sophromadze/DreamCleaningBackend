@@ -2,6 +2,7 @@ using System.Security.Claims;
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
@@ -73,7 +74,7 @@ namespace DreamCleaningBackend.Controllers
                 DayOfMonth = dto.DayOfMonth,
                 WeekOfMonth = dto.WeekOfMonth,
                 Frequency = dto.Frequency.HasValue ? (MailFrequency)dto.Frequency.Value : null,
-                ScheduleTimezone = string.IsNullOrWhiteSpace(dto.ScheduleTimezone) ? "Eastern Standard Time" : dto.ScheduleTimezone.Trim(),
+                ScheduleTimezone = string.IsNullOrWhiteSpace(dto.ScheduleTimezone) ? ScheduleHelper.DefaultTimezone : dto.ScheduleTimezone.Trim(),
                 Status = MailStatus.Draft,
                 CreatedById = userId.Value,
                 CreatedAt = now,
@@ -91,11 +92,14 @@ namespace DreamCleaningBackend.Controllers
                 return Ok(MapToDto(sms));
             }
             _context.ScheduledSms.Add(sms);
-            if (sms.ScheduleType == ScheduleType.Scheduled && sms.ScheduledDate.HasValue && sms.ScheduledTime.HasValue)
+            if (sms.ScheduleType == ScheduleType.Scheduled && sms.ScheduledTime.HasValue &&
+                (sms.Frequency == MailFrequency.Once && sms.ScheduledDate.HasValue ||
+                 sms.Frequency == MailFrequency.Weekly && sms.DayOfWeek.HasValue ||
+                 sms.Frequency == MailFrequency.Monthly && sms.DayOfMonth.HasValue ||
+                 sms.Frequency != MailFrequency.Once && sms.ScheduledDate.HasValue))
             {
                 sms.Status = MailStatus.Scheduled;
-                sms.NextScheduledAt = ComputeNextScheduled(sms.ScheduledDate.Value, sms.ScheduledTime.Value, sms.Frequency, sms.DayOfWeek, sms.DayOfMonth, sms.WeekOfMonth, sms.ScheduleTimezone)
-                    ?? ComputeFirstScheduled(sms.ScheduledDate.Value, sms.ScheduledTime.Value, sms.ScheduleTimezone);
+                sms.NextScheduledAt = ScheduleHelper.ComputeNextScheduled(sms.ScheduledDate, sms.ScheduledTime.Value, sms.Frequency, sms.DayOfWeek, sms.DayOfMonth, sms.ScheduleTimezone);
             }
             await _context.SaveChangesAsync();
             return Ok(MapToDto(sms));
@@ -120,9 +124,12 @@ namespace DreamCleaningBackend.Controllers
             if (dto.ScheduleTimezone != null) sms.ScheduleTimezone = dto.ScheduleTimezone.Trim();
             if (dto.IsActive.HasValue) sms.IsActive = dto.IsActive.Value;
             sms.UpdatedAt = DateTime.UtcNow;
-            if (sms.ScheduleType == ScheduleType.Scheduled && sms.ScheduledDate.HasValue && sms.ScheduledTime.HasValue)
-                sms.NextScheduledAt = ComputeNextScheduled(sms.ScheduledDate.Value, sms.ScheduledTime.Value, sms.Frequency, sms.DayOfWeek, sms.DayOfMonth, sms.WeekOfMonth, sms.ScheduleTimezone)
-                    ?? ComputeFirstScheduled(sms.ScheduledDate.Value, sms.ScheduledTime.Value, sms.ScheduleTimezone);
+            if (sms.ScheduleType == ScheduleType.Scheduled && sms.ScheduledTime.HasValue &&
+                (sms.Frequency == MailFrequency.Once && sms.ScheduledDate.HasValue ||
+                 sms.Frequency == MailFrequency.Weekly && sms.DayOfWeek.HasValue ||
+                 sms.Frequency == MailFrequency.Monthly && sms.DayOfMonth.HasValue ||
+                 sms.Frequency != MailFrequency.Once && sms.ScheduledDate.HasValue))
+                sms.NextScheduledAt = ScheduleHelper.ComputeNextScheduled(sms.ScheduledDate, sms.ScheduledTime.Value, sms.Frequency, sms.DayOfWeek, sms.DayOfMonth, sms.ScheduleTimezone);
             await _context.SaveChangesAsync();
             return Ok(MapToDto(sms));
         }
@@ -264,11 +271,12 @@ namespace DreamCleaningBackend.Controllers
             sms.LastSentAt = sentAt;
             sms.TimesSent += 1;
             sms.UpdatedAt = DateTime.UtcNow;
-            if (sms.Frequency == MailFrequency.Weekly)
-                sms.NextScheduledAt = sentAt.AddDays(7);
-            else if (sms.Frequency == MailFrequency.Monthly)
-                sms.NextScheduledAt = sentAt.AddMonths(1);
-            else
+            if (sms.Frequency == MailFrequency.Weekly || sms.Frequency == MailFrequency.Monthly)
+            {
+                if (sms.ScheduledTime.HasValue)
+                    sms.NextScheduledAt = ScheduleHelper.NextRecurringUtc(sms.Frequency.Value, sms.DayOfWeek, sms.DayOfMonth, sms.ScheduledTime.Value, sms.ScheduleTimezone, sentAt);
+            }
+            if (!sms.NextScheduledAt.HasValue)
             {
                 sms.NextScheduledAt = null;
                 sms.Status = MailStatus.Sent;
@@ -277,41 +285,6 @@ namespace DreamCleaningBackend.Controllers
             if (sms.NextScheduledAt.HasValue) { sms.Status = MailStatus.Scheduled; sms.IsActive = true; }
             await _context.SaveChangesAsync();
             _logger.LogInformation("Scheduled SMS {Id} sent to {Count} recipients (with valid phone).", sms.Id, recipients.Count);
-        }
-
-        /// <summary>For one-time (Once): the single occurrence in UTC.</summary>
-        private static DateTime? ComputeFirstScheduled(DateTime date, TimeSpan time, string tz)
-        {
-            try
-            {
-                var tzi = TimeZoneInfo.FindSystemTimeZoneById(tz);
-                var local = DateTime.SpecifyKind(date.Date.Add(time), DateTimeKind.Unspecified);
-                return TimeZoneInfo.ConvertTimeToUtc(local, tzi);
-            }
-            catch { return null; }
-        }
-
-        private static DateTime? ComputeNextScheduled(DateTime date, TimeSpan time, MailFrequency? freq, int? dayOfWeek, int? dayOfMonth, int? weekOfMonth, string tz)
-        {
-            if (!freq.HasValue || freq == MailFrequency.Once) return null;
-            try
-            {
-                var tzi = TimeZoneInfo.FindSystemTimeZoneById(tz);
-                var local = DateTime.SpecifyKind(date.Date.Add(time), DateTimeKind.Unspecified);
-                var next = TimeZoneInfo.ConvertTimeToUtc(local, tzi);
-                var now = DateTime.UtcNow;
-                while (next <= now)
-                {
-                    if (freq == MailFrequency.Weekly)
-                        next = next.AddDays(7);
-                    else if (freq == MailFrequency.Monthly)
-                        next = next.AddMonths(1);
-                    else
-                        next = next.AddDays(7);
-                }
-                return next;
-            }
-            catch { return null; }
         }
 
         private static ScheduledSmsDto MapToDto(ScheduledSms s)

@@ -1969,9 +1969,35 @@ namespace DreamCleaningBackend.Controllers
                     FirstTimeOrder = u.FirstTimeOrder,
                     IsActive = u.IsActive,
                     CreatedAt = u.CreatedAt,
-                    CanReceiveCommunications = u.CanReceiveCommunications
+                    CanReceiveCommunications = u.CanReceiveCommunications,
+                    AdminNotes = null
                 })
                 .ToListAsync();
+
+            var userIds = users.Select(u => u.Id).ToList();
+            var notesDict = new Dictionary<int, string?>();
+            try
+            {
+                notesDict = await _context.AdminUserNotes
+                    .Where(n => userIds.Contains(n.UserId))
+                    .ToDictionaryAsync(n => n.UserId, n => n.Notes);
+            }
+            catch (MySqlConnector.MySqlException ex) when (ex.Message.Contains("doesn't exist"))
+            {
+                try
+                {
+                    await EnsureAdminUserNotesTableExistsAsync();
+                    notesDict = await _context.AdminUserNotes
+                        .Where(n => userIds.Contains(n.UserId))
+                        .ToDictionaryAsync(n => n.UserId, n => n.Notes);
+                }
+                catch
+                {
+                    notesDict = new Dictionary<int, string?>();
+                }
+            }
+            foreach (var u in users)
+                u.AdminNotes = notesDict.TryGetValue(u.Id, out var notes) ? notes : null;
 
             // Include current user role in response for frontend to use
             return Ok(new
@@ -2230,6 +2256,48 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = "User updated successfully" });
         }
 
+        /// <summary>SuperAdmin-only: permanently delete a user and all related data from the database.</summary>
+        [HttpDelete("users/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> DeleteUser(int id)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+
+            var currentUserId = int.Parse(User.FindFirst("UserId")?.Value ?? "0");
+            if (id == currentUserId)
+                return BadRequest(new { message = "You cannot delete your own account." });
+
+            var user = await _context.Users.FindAsync(id);
+            if (user == null)
+                return NotFound();
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                await _context.AccountMergeRequests.Where(r => r.NewAccountId == id || r.OldAccountId == id).ExecuteDeleteAsync();
+                await _context.OrderCleaners.Where(oc => oc.CleanerId == id || oc.AssignedBy == id).ExecuteDeleteAsync();
+                await _context.OrderUpdateHistories.Where(ouh => ouh.UpdatedByUserId == id).ExecuteDeleteAsync();
+                await _context.PollSubmissions.Where(ps => ps.UserId == id).ExecuteDeleteAsync();
+                await _context.GiftCardUsages.Where(g => g.UserId == id).ExecuteDeleteAsync();
+                await _context.NotificationLogs.Where(n => n.CustomerId == id).ExecuteDeleteAsync();
+                await _context.AuditLogs.Where(a => a.UserId == id).ExecuteDeleteAsync();
+                await _context.Orders.Where(o => o.UserId == id).ExecuteDeleteAsync();
+                _context.Users.Remove(user);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+                return Ok(new { message = "User deleted successfully." });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                var msg = ex.InnerException?.Message ?? ex.Message;
+                if (msg.Contains("foreign key") || msg.Contains("REFERENCE"))
+                    return BadRequest(new { message = "Cannot delete user: they have linked data (orders, assignments, etc.). Use Block instead." });
+                throw;
+            }
+        }
+
         /// <summary>Admin or SuperAdmin: update a user's communication preference (emails/SMS). Requires canUpdate.</summary>
         [HttpPatch("users/{id}/communication-preference")]
         [RequirePermission(Permission.Update)]
@@ -2244,6 +2312,48 @@ namespace DreamCleaningBackend.Controllers
             await _context.SaveChangesAsync();
 
             return Ok(new { canReceiveCommunications = dto.CanReceiveCommunications, message = "Communication preference updated." });
+        }
+
+        /// <summary>Admin or SuperAdmin: update admin notes for a user. Requires canUpdate.</summary>
+        [HttpPut("users/{id}/admin-notes")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> UpdateUserAdminNotes(int id, [FromBody] UpdateUserAdminNotesDto dto)
+        {
+            var userExists = await _context.Users.AnyAsync(u => u.Id == id);
+            if (!userExists)
+                return NotFound();
+
+            try
+            {
+                await EnsureAdminUserNotesTableExistsAsync();
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Could not create admin notes table. " + ex.Message });
+            }
+
+            var note = await _context.AdminUserNotes.FindAsync(id);
+            if (note == null)
+            {
+                note = new AdminUserNote { UserId = id, Notes = dto.AdminNotes };
+                _context.AdminUserNotes.Add(note);
+            }
+            else
+                note.Notes = dto.AdminNotes;
+            await _context.SaveChangesAsync();
+
+            return Ok(new { adminNotes = note.Notes, message = "Admin notes updated." });
+        }
+
+        private async Task EnsureAdminUserNotesTableExistsAsync()
+        {
+            await _context.Database.ExecuteSqlRawAsync(@"
+                CREATE TABLE IF NOT EXISTS AdminUserNotes (
+                    UserId INT NOT NULL,
+                    Notes VARCHAR(2000) NULL,
+                    PRIMARY KEY (UserId),
+                    CONSTRAINT FK_AdminUserNotes_Users_UserId FOREIGN KEY (UserId) REFERENCES Users (Id) ON DELETE CASCADE
+                )");
         }
 
         [HttpGet("permissions")]

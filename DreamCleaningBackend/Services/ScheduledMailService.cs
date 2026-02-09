@@ -79,11 +79,12 @@ namespace DreamCleaningBackend.Services
                 mail.LastSentAt = sentAt;
                 mail.TimesSent += 1;
                 mail.UpdatedAt = DateTime.UtcNow;
-                if (mail.Frequency == MailFrequency.Weekly)
-                    mail.NextScheduledAt = sentAt.AddDays(7);
-                else if (mail.Frequency == MailFrequency.Monthly)
-                    mail.NextScheduledAt = sentAt.AddMonths(1);
-                else
+                if (mail.Frequency == MailFrequency.Weekly || mail.Frequency == MailFrequency.Monthly)
+                {
+                    if (mail.ScheduledTime.HasValue)
+                        mail.NextScheduledAt = ScheduleHelper.NextRecurringUtc(mail.Frequency.Value, mail.DayOfWeek, mail.DayOfMonth, mail.ScheduledTime.Value, mail.ScheduleTimezone, sentAt);
+                }
+                if (!mail.NextScheduledAt.HasValue)
                 {
                     mail.NextScheduledAt = null;
                     mail.Status = MailStatus.Sent;

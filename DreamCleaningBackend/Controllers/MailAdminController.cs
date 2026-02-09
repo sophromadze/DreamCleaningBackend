@@ -72,7 +72,7 @@ namespace DreamCleaningBackend.Controllers
                 DayOfMonth = dto.DayOfMonth,
                 WeekOfMonth = dto.WeekOfMonth,
                 Frequency = dto.Frequency.HasValue ? (MailFrequency)dto.Frequency.Value : null,
-                ScheduleTimezone = string.IsNullOrWhiteSpace(dto.ScheduleTimezone) ? "Eastern Standard Time" : dto.ScheduleTimezone.Trim(),
+                ScheduleTimezone = string.IsNullOrWhiteSpace(dto.ScheduleTimezone) ? ScheduleHelper.DefaultTimezone : dto.ScheduleTimezone.Trim(),
                 Status = MailStatus.Draft,
                 CreatedById = userId.Value,
                 CreatedAt = now,
@@ -91,10 +91,14 @@ namespace DreamCleaningBackend.Controllers
                 return Ok(MapToDto(mail));
             }
             _context.ScheduledMails.Add(mail);
-            if (mail.ScheduleType == ScheduleType.Scheduled && mail.ScheduledDate.HasValue && mail.ScheduledTime.HasValue)
+            if (mail.ScheduleType == ScheduleType.Scheduled && mail.ScheduledTime.HasValue &&
+                (mail.Frequency == MailFrequency.Once && mail.ScheduledDate.HasValue ||
+                 mail.Frequency == MailFrequency.Weekly && mail.DayOfWeek.HasValue ||
+                 mail.Frequency == MailFrequency.Monthly && mail.DayOfMonth.HasValue ||
+                 mail.Frequency != MailFrequency.Once && mail.ScheduledDate.HasValue))
             {
                 mail.Status = MailStatus.Scheduled;
-                mail.NextScheduledAt = ComputeNextScheduled(mail.ScheduledDate.Value, mail.ScheduledTime.Value, mail.Frequency, mail.DayOfWeek, mail.DayOfMonth, mail.WeekOfMonth, mail.ScheduleTimezone);
+                mail.NextScheduledAt = ScheduleHelper.ComputeNextScheduled(mail.ScheduledDate, mail.ScheduledTime.Value, mail.Frequency, mail.DayOfWeek, mail.DayOfMonth, mail.ScheduleTimezone);
             }
             await _context.SaveChangesAsync();
             return Ok(MapToDto(mail));
@@ -120,8 +124,12 @@ namespace DreamCleaningBackend.Controllers
             if (dto.ScheduleTimezone != null) mail.ScheduleTimezone = dto.ScheduleTimezone.Trim();
             if (dto.IsActive.HasValue) mail.IsActive = dto.IsActive.Value;
             mail.UpdatedAt = DateTime.UtcNow;
-            if (mail.ScheduleType == ScheduleType.Scheduled && mail.ScheduledDate.HasValue && mail.ScheduledTime.HasValue)
-                mail.NextScheduledAt = ComputeNextScheduled(mail.ScheduledDate.Value, mail.ScheduledTime.Value, mail.Frequency, mail.DayOfWeek, mail.DayOfMonth, mail.WeekOfMonth, mail.ScheduleTimezone);
+            if (mail.ScheduleType == ScheduleType.Scheduled && mail.ScheduledTime.HasValue &&
+                (mail.Frequency == MailFrequency.Once && mail.ScheduledDate.HasValue ||
+                 mail.Frequency == MailFrequency.Weekly && mail.DayOfWeek.HasValue ||
+                 mail.Frequency == MailFrequency.Monthly && mail.DayOfMonth.HasValue ||
+                 mail.Frequency != MailFrequency.Once && mail.ScheduledDate.HasValue))
+                mail.NextScheduledAt = ScheduleHelper.ComputeNextScheduled(mail.ScheduledDate, mail.ScheduledTime.Value, mail.Frequency, mail.DayOfWeek, mail.DayOfMonth, mail.ScheduleTimezone);
             await _context.SaveChangesAsync();
             return Ok(MapToDto(mail));
         }
@@ -272,33 +280,14 @@ namespace DreamCleaningBackend.Controllers
             mail.Status = MailStatus.Sent;
             mail.NextScheduledAt = null;
             mail.UpdatedAt = DateTime.UtcNow;
-            if (mail.Frequency.HasValue && mail.Frequency != MailFrequency.Once)
-                mail.NextScheduledAt = mail.Frequency == MailFrequency.Weekly ? sentAt.AddDays(7) : mail.Frequency == MailFrequency.Monthly ? sentAt.AddMonths(1) : null;
+            if (mail.Frequency.HasValue && mail.Frequency != MailFrequency.Once && mail.ScheduledTime.HasValue)
+            {
+                mail.NextScheduledAt = ScheduleHelper.NextRecurringUtc(
+                    mail.Frequency.Value, mail.DayOfWeek, mail.DayOfMonth,
+                    mail.ScheduledTime.Value, mail.ScheduleTimezone, sentAt);
+            }
             if (mail.NextScheduledAt.HasValue) { mail.Status = MailStatus.Scheduled; mail.IsActive = true; }
             await _context.SaveChangesAsync();
-        }
-
-        private static DateTime? ComputeNextScheduled(DateTime date, TimeSpan time, MailFrequency? freq, int? dayOfWeek, int? dayOfMonth, int? weekOfMonth, string tz)
-        {
-            if (!freq.HasValue || freq == MailFrequency.Once) return null;
-            try
-            {
-                var tzi = TimeZoneInfo.FindSystemTimeZoneById(tz);
-                var local = DateTime.SpecifyKind(date.Date.Add(time), DateTimeKind.Unspecified);
-                var next = TimeZoneInfo.ConvertTimeToUtc(local, tzi);
-                var now = DateTime.UtcNow;
-                while (next <= now)
-                {
-                    if (freq == MailFrequency.Weekly)
-                        next = next.AddDays(7);
-                    else if (freq == MailFrequency.Monthly)
-                        next = next.AddMonths(1);
-                    else
-                        next = next.AddDays(7);
-                }
-                return next;
-            }
-            catch { return null; }
         }
 
         private static ScheduledMailDto MapToDto(ScheduledMail m)

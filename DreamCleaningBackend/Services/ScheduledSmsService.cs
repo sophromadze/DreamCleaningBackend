@@ -1,4 +1,5 @@
 using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
@@ -84,11 +85,12 @@ namespace DreamCleaningBackend.Services
                 sms.LastSentAt = sentAt;
                 sms.TimesSent += 1;
                 sms.UpdatedAt = DateTime.UtcNow;
-                if (sms.Frequency == MailFrequency.Weekly)
-                    sms.NextScheduledAt = sentAt.AddDays(7);
-                else if (sms.Frequency == MailFrequency.Monthly)
-                    sms.NextScheduledAt = sentAt.AddMonths(1);
-                else
+                if (sms.Frequency == MailFrequency.Weekly || sms.Frequency == MailFrequency.Monthly)
+                {
+                    if (sms.ScheduledTime.HasValue)
+                        sms.NextScheduledAt = ScheduleHelper.NextRecurringUtc(sms.Frequency.Value, sms.DayOfWeek, sms.DayOfMonth, sms.ScheduledTime.Value, sms.ScheduleTimezone, sentAt);
+                }
+                if (!sms.NextScheduledAt.HasValue)
                 {
                     sms.NextScheduledAt = null;
                     sms.Status = MailStatus.Sent;

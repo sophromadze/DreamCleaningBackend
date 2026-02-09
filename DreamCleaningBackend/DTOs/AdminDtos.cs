@@ -331,6 +331,8 @@ namespace DreamCleaningBackend.DTOs
         public DateTime CreatedAt { get; set; }
         /// <summary>When true, user can receive emails and (in future) SMS from the company.</summary>
         public bool CanReceiveCommunications { get; set; }
+        /// <summary>Admin-only notes about this user. Not visible to the user.</summary>
+        public string? AdminNotes { get; set; }
     }
 
     public class UpdateUserRoleDto
@@ -402,6 +404,13 @@ namespace DreamCleaningBackend.DTOs
     public class CommunicationPreferenceDto
     {
         public bool CanReceiveCommunications { get; set; }
+    }
+
+    /// <summary>Admin/SuperAdmin: update admin notes for a user. Requires canUpdate.</summary>
+    public class UpdateUserAdminNotesDto
+    {
+        [StringLength(2000)]
+        public string? AdminNotes { get; set; }
     }
 
     // SuperAdmin-only: full order edit (all changes are audit-logged)

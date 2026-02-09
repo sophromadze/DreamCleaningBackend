@@ -37,6 +37,9 @@ namespace DreamCleaningBackend.Data
         public DbSet<ScheduledMail> ScheduledMails { get; set; }
         public DbSet<SentMailLog> SentMailLogs { get; set; }
         public DbSet<ScheduledSms> ScheduledSms { get; set; }
+        public DbSet<RealEmailVerification> RealEmailVerifications { get; set; }
+        public DbSet<AccountMergeRequest> AccountMergeRequests { get; set; }
+        public DbSet<AdminUserNote> AdminUserNotes { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -63,6 +66,38 @@ namespace DreamCleaningBackend.Data
             modelBuilder.Entity<User>()
                 .Property(u => u.FirstTimeOrder)
                 .HasDefaultValue(true);
+
+            modelBuilder.Entity<RealEmailVerification>()
+                .HasOne(r => r.User)
+                .WithMany()
+                .HasForeignKey(r => r.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<RealEmailVerification>()
+                .HasIndex(r => r.UserId);
+
+            modelBuilder.Entity<AccountMergeRequest>()
+                .HasOne(m => m.NewAccount)
+                .WithMany()
+                .HasForeignKey(m => m.NewAccountId)
+                .OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<AccountMergeRequest>()
+                .HasOne(m => m.OldAccount)
+                .WithMany()
+                .HasForeignKey(m => m.OldAccountId)
+                .OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<AccountMergeRequest>()
+                .HasIndex(m => new { m.NewAccountId, m.Status });
+            modelBuilder.Entity<AccountMergeRequest>()
+                .HasIndex(m => m.ExpiresAt);
+
+            modelBuilder.Entity<AdminUserNote>(entity =>
+            {
+                entity.HasKey(e => e.UserId);
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
 
             // Apartment configuration
             modelBuilder.Entity<Apartment>()

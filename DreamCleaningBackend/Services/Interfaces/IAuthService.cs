@@ -20,5 +20,9 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<bool> ConfirmEmailChange(string token);
         Task<UserDto> GetUserById(int userId);
         Task<AuthResponseDto> AppleLogin(AppleLoginDto appleLoginDto);
+        Task RequestRealEmailVerification(int userId, string email);
+        Task<VerifyRealEmailResultDto> VerifyRealEmailCode(int userId, string email, string code);
+        /// <summary>Validates Google id_token and returns the email address, or null if invalid.</summary>
+        Task<string?> GetEmailFromGoogleTokenAsync(string idToken);
     }
 }
