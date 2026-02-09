@@ -779,7 +779,7 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(to, subject, html);
         }
 
-        public async Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName, int orderId)
+        public async Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName, int orderId, bool sendCopyToAdmin = false)
         {
             // Find the order by ID to ensure we get the correct order
             var order = await _context.Orders
@@ -858,8 +858,7 @@ namespace DreamCleaningBackend.Services
         <div style='background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
             <h3>👥 Client Information</h3>
             <p><strong>Client Name:</strong> {order.ContactFirstName} {order.ContactLastName}</p>
-            <p><strong>Email:</strong> {order.ContactEmail}</p>
-            <p><strong>Entry Method:</strong> {(string.IsNullOrEmpty(order.EntryMethod) ? "To be confirmed" : order.EntryMethod)}</p>
+            <p><strong>Entry Method / How to get in:</strong> {(string.IsNullOrEmpty(order.EntryMethod) ? "To be confirmed" : order.EntryMethod)}</p>
         </div>
         
         <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
@@ -918,6 +917,20 @@ namespace DreamCleaningBackend.Services
     ";
 
             await SendEmailAsync(email, subject, body);
+
+            // Optionally send one copy of the same email to one admin address (so admin gets exactly what the cleaner got, no second/different email)
+            if (sendCopyToAdmin)
+            {
+                var adminCopyTo = "hello@dreamcleaningnearme.com";
+                try
+                {
+                    await SendEmailAsync(adminCopyTo, subject, body);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to send cleaner assignment copy to admin {adminCopyTo}");
+                }
+            }
         }
 
         public async Task SendAdminCleanerAssignmentNotificationAsync(string cleanerEmail, string cleanerName,

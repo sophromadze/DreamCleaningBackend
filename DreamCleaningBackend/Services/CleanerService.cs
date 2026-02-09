@@ -342,21 +342,12 @@ namespace DreamCleaningBackend.Services
 
             foreach (var cleaner in cleaners)
             {
-                // Send notification to cleaner - pass orderId to ensure correct order is retrieved
+                // Send notification to cleaner; admin gets one copy of the same email (no separate admin email)
                 await _emailService.SendCleanerAssignmentNotificationAsync(
                     cleaner.Email,
                     cleaner.FirstName,
-                    orderId
-                );
-
-                // Send notification to admin
-                await _emailService.SendAdminCleanerAssignmentNotificationAsync(
-                    cleaner.Email,
-                    cleaner.FirstName,
-                    order.ServiceDate,
-                    order.ServiceTime.ToString(),
-                    formattedDuration,
-                    fullAddress
+                    orderId,
+                    sendCopyToAdmin: true
                 );
             }
         }

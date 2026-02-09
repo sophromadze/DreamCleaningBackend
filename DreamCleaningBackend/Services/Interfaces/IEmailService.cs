@@ -13,7 +13,7 @@ namespace DreamCleaningBackend.Services.Interfaces
             string recipientName, string recipientEmail, string giftCardCode,
             decimal amount, string message);
         Task SendContactFormEmailAsync(string to, string subject, string html);
-        Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName, int orderId);
+        Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName, int orderId, bool sendCopyToAdmin = false);
         Task SendAdminCleanerAssignmentNotificationAsync(string cleanerEmail, string cleanerName,
             DateTime serviceDate, string serviceTime, string formattedDuration, string fullAddress);
         Task SendCleanerReminderNotificationAsync(string email, string cleanerName,

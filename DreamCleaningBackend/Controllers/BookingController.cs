@@ -49,6 +49,9 @@ namespace DreamCleaningBackend.Controllers
                 .OrderBy(st => st.DisplayOrder)
                 .ToListAsync();
 
+            // Custom service type visibility is enforced on the frontend (Admin/SuperAdmin only).
+            // API returns all types so the client can show/hide based on role.
+
             // Get all extra services that are available for all
             var universalExtraServices = await _context.ExtraServices
                 .Where(es => es.IsActive && es.IsAvailableForAll && es.ServiceTypeId == null)
