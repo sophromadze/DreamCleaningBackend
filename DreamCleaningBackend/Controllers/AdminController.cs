@@ -1999,6 +1999,9 @@ namespace DreamCleaningBackend.Controllers
             foreach (var u in users)
                 u.AdminNotes = notesDict.TryGetValue(u.Id, out var notes) ? notes : null;
 
+            foreach (var u in users)
+                u.IsOnline = UserManagementHub.IsUserOnline(u.Id);
+
             // Include current user role in response for frontend to use
             return Ok(new
             {

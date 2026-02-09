@@ -333,6 +333,8 @@ namespace DreamCleaningBackend.DTOs
         public bool CanReceiveCommunications { get; set; }
         /// <summary>Admin-only notes about this user. Not visible to the user.</summary>
         public string? AdminNotes { get; set; }
+        /// <summary>True if user has an active SignalR connection (on site).</summary>
+        public bool IsOnline { get; set; }
     }
 
     public class UpdateUserRoleDto
