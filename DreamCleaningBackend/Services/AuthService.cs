@@ -278,10 +278,31 @@ namespace DreamCleaningBackend.Services
                 if (appleUser == null)
                     throw new Exception("Invalid Apple token - token validation failed");
 
-            var email = appleUser.Email;
+            // Get email: prefer user object (from Apple's first-auth response) when it's a real email.
+            // When user chooses "Share My Email", Apple sends real email in both token and user object.
+            // When user chooses "Hide My Email", both have relay. Prefer non-relay when we have both.
+            var tokenEmail = appleUser.Email;
+            var userObjEmail = appleLoginDto.User?.Email;
+            var email = tokenEmail;
+
+            if (!string.IsNullOrEmpty(userObjEmail) && !userObjEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase))
+            {
+                // User object has real email (user chose Share My Email) - trust it
+                email = userObjEmail;
+            }
+            else if (string.IsNullOrEmpty(email) && !string.IsNullOrEmpty(userObjEmail))
+            {
+                email = userObjEmail;
+            }
+
             var appleId = appleUser.Subject;
             var firstName = appleLoginDto.User?.Name?.FirstName ?? "User";
             var lastName = appleLoginDto.User?.Name?.LastName ?? "";
+
+            // Shared email = real address (not @privaterelay). Hide My Email = relay address.
+            // Use final email as source of truth: when user shared, we have real email from token or user object.
+            var isRelayEmail = string.IsNullOrEmpty(email)
+                || email.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
 
             // PRIMARY: Find user by email (email is the main identifier - same email = same user)
             // SECONDARY: Find by Apple ID only if email is not available (private relay email case)
@@ -305,7 +326,8 @@ namespace DreamCleaningBackend.Services
 
             if (user == null)
             {
-                var isRelayEmail = string.IsNullOrEmpty(email) || (email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true);
+                // Create new user
+                // If email is provided and is NOT a relay email, trust it (like Google login)
                 user = new User
                 {
                     Email = email?.ToLower() ?? $"{appleId}@privaterelay.appleid.com",
@@ -316,6 +338,7 @@ namespace DreamCleaningBackend.Services
                     CreatedAt = DateTime.UtcNow,
                     FirstTimeOrder = true,
                     IsActive = true,
+                    // Trust real emails from Apple (like Google) - no verification needed
                     IsEmailVerified = !isRelayEmail,
                     RequiresRealEmail = isRelayEmail
                 };
@@ -328,7 +351,7 @@ namespace DreamCleaningBackend.Services
                     throw new Exception("Account is deactivated");
 
                 // Same email = same user, allow login with any method
-                // Link Apple to existing account (user can now use email/password, Google, OR Apple)
+                // When existing account is found by email, just log in (no merge needed)
                 
                 // Update email if it was a private relay and now we have real email
                 if (string.IsNullOrEmpty(user.Email) || user.Email.Contains("@privaterelay.appleid.com"))
@@ -337,13 +360,19 @@ namespace DreamCleaningBackend.Services
                     {
                         user.Email = email.ToLower();
                         user.RequiresRealEmail = false;
-                        user.IsEmailVerified = true;
+                        user.IsEmailVerified = true; // Trust real emails from Apple
                     }
                     else
                     {
                         user.RequiresRealEmail = true;
                         user.IsEmailVerified = false;
                     }
+                }
+                else if (!isRelayEmail && !string.IsNullOrEmpty(email))
+                {
+                    // User logged in with shared email and account exists - ensure email is verified (trust Apple emails)
+                    user.IsEmailVerified = true;
+                    user.RequiresRealEmail = false;
                 }
 
                 // Store Apple ID (if not already stored)
@@ -453,12 +482,16 @@ namespace DreamCleaningBackend.Services
 
                 var principal = handler.ValidateToken(identityToken, validationParameters, out _);
                 
+                var isPrivateEmailClaim = principal.FindFirst("is_private_email")?.Value;
+                var isPrivateEmail = string.Equals(isPrivateEmailClaim, "true", StringComparison.OrdinalIgnoreCase);
+
                 return new AppleTokenPayload
                 {
                     Subject = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
                               ?? principal.FindFirst("sub")?.Value ?? "",
                     Email = principal.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value 
-                            ?? principal.FindFirst("email")?.Value
+                            ?? principal.FindFirst("email")?.Value,
+                    IsPrivateEmail = isPrivateEmail
                 };
             }
             catch (Exception ex)
@@ -773,16 +806,30 @@ namespace DreamCleaningBackend.Services
 
         public async Task<bool> VerifyEmail(string token)
         {
+            if (string.IsNullOrWhiteSpace(token))
+                throw new Exception("Invalid or expired verification token");
+
+            token = token.Trim();
+            var tokenHash = HashVerificationToken(token);
+
             var user = await _context.Users
                 .FirstOrDefaultAsync(u => u.EmailVerificationToken == token
                     && u.EmailVerificationTokenExpiry > DateTime.UtcNow);
 
             if (user == null)
+            {
+                // Same link clicked again (e.g. double-click, prefetch)? Check if this token was already used.
+                var alreadyVerifiedUser = await _context.Users
+                    .FirstOrDefaultAsync(u => u.LastEmailVerificationTokenHash == tokenHash && u.IsEmailVerified);
+                if (alreadyVerifiedUser != null)
+                    return true; // Already verified with this token — return success so user sees success UI
                 throw new Exception("Invalid or expired verification token");
+            }
 
             user.IsEmailVerified = true;
             user.EmailVerificationToken = null;
             user.EmailVerificationTokenExpiry = null;
+            user.LastEmailVerificationTokenHash = tokenHash;
             user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
@@ -791,6 +838,12 @@ namespace DreamCleaningBackend.Services
             await _emailService.SendWelcomeEmailAsync(user.Email, user.FirstName);
 
             return true;
+        }
+
+        private static string HashVerificationToken(string token)
+        {
+            var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+            return Convert.ToHexString(bytes);
         }
 
         public async Task<bool> ResendVerificationEmail(string email)
@@ -1220,5 +1273,10 @@ namespace DreamCleaningBackend.Services
     {
         public string Subject { get; set; } = "";
         public string? Email { get; set; }
+        /// <summary>
+        /// True when user chose "Hide My Email" (relay address).
+        /// False when user chose "Share My Email" (real email).
+        /// </summary>
+        public bool IsPrivateEmail { get; set; }
     }
 }

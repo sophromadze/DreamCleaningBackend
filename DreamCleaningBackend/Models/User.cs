@@ -73,6 +73,8 @@ namespace DreamCleaningBackend.Models
         public bool RequiresRealEmail { get; set; } = false;
         public string? EmailVerificationToken { get; set; }
         public DateTime? EmailVerificationTokenExpiry { get; set; }
+        /// <summary>Hash of the token that was used to verify (so re-clicking the same link returns success).</summary>
+        public string? LastEmailVerificationTokenHash { get; set; }
 
         // Password recovery
         public string? PasswordResetToken { get; set; }
