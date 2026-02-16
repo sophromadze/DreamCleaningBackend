@@ -1406,6 +1406,253 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        [HttpPost("prepare-payment")]
+        [Authorize]
+        public async Task<ActionResult<BookingResponseDto>> PreparePayment([FromBody] CreateBookingDto dto)
+        {
+            try
+            {
+                var userId = GetUserId();
+                if (userId == 0)
+                    return Unauthorized();
+
+                // Find the user
+                var user = await _context.Users.FindAsync(userId);
+                if (user == null)
+                    return Unauthorized();
+
+                // Get service type to check base price
+                var serviceType = await _context.ServiceTypes
+                    .Include(st => st.Services)
+                    .FirstOrDefaultAsync(st => st.Id == dto.ServiceTypeId);
+
+                if (serviceType == null)
+                    return BadRequest(new { message = "Invalid service type" });
+
+                // Determine gift card usage
+                string? giftCardCode = dto.GiftCardCode;
+                decimal giftCardAmountUsed = dto.GiftCardAmountToUse;
+                string? promoCode = dto.PromoCode;
+
+                // Check if the promo code is actually a gift card
+                if (!string.IsNullOrEmpty(dto.PromoCode) &&
+                    string.IsNullOrEmpty(dto.GiftCardCode) &&
+                    System.Text.RegularExpressions.Regex.IsMatch(dto.PromoCode, @"^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$"))
+                {
+                    giftCardCode = dto.PromoCode;
+                    promoCode = null;
+                }
+
+                // Calculate totals (reuse logic from CreateBooking but don't create order)
+                decimal subTotal = 0;
+                decimal totalDuration = 0;
+                decimal priceMultiplier = 1;
+                decimal deepCleaningFee = 0;
+
+                if (dto.IsCustomPricing)
+                {
+                    subTotal = dto.CustomAmount ?? serviceType.BasePrice;
+                    totalDuration = dto.CustomDuration ?? serviceType.TimeDuration;
+                }
+                else
+                {
+                    // Check for deep cleaning multipliers
+                    foreach (var extraServiceDto in dto.ExtraServices)
+                    {
+                        var extraService = await _context.ExtraServices.FindAsync(extraServiceDto.ExtraServiceId);
+                        if (extraService != null && (extraService.IsDeepCleaning || extraService.IsSuperDeepCleaning))
+                        {
+                            if (extraService.IsSuperDeepCleaning)
+                            {
+                                priceMultiplier = extraService.PriceMultiplier;
+                                deepCleaningFee = extraService.Price;
+                            }
+                            else if (extraService.IsDeepCleaning)
+                            {
+                                priceMultiplier = extraService.PriceMultiplier;
+                                deepCleaningFee = extraService.Price;
+                            }
+                        }
+                    }
+
+                    subTotal += serviceType.BasePrice * priceMultiplier;
+                    totalDuration += serviceType.TimeDuration;
+
+                    // Add services
+                    foreach (var serviceDto in dto.Services)
+                    {
+                        var service = await _context.Services.FindAsync(serviceDto.ServiceId);
+                        if (service != null)
+                        {
+                            decimal serviceCost = 0;
+                            decimal serviceDuration = 0;
+                            bool shouldAddToOrder = true;
+
+                            if (service.ServiceRelationType == "cleaner")
+                            {
+                                var hoursServiceDto = dto.Services.FirstOrDefault(s =>
+                                {
+                                    var svc = _context.Services.Find(s.ServiceId);
+                                    return svc?.ServiceRelationType == "hours" && svc.ServiceTypeId == service.ServiceTypeId;
+                                });
+
+                                if (hoursServiceDto != null)
+                                {
+                                    var hours = hoursServiceDto.Quantity;
+                                    var cleaners = serviceDto.Quantity;
+                                    var costPerCleanerPerHour = service.Cost * priceMultiplier;
+                                    serviceCost = costPerCleanerPerHour * cleaners * hours;
+                                    serviceDuration = hours * 60;
+                                }
+                                else
+                                {
+                                    serviceCost = service.Cost * serviceDto.Quantity * priceMultiplier;
+                                    serviceDuration = service.TimeDuration * serviceDto.Quantity;
+                                }
+                            }
+                            else if (service.ServiceKey == "bedrooms" && serviceDto.Quantity == 0)
+                            {
+                                serviceCost = 10 * priceMultiplier;
+                                serviceDuration = 20;
+                            }
+                            else if (service.ServiceRelationType == "hours")
+                            {
+                                shouldAddToOrder = false;
+                            }
+                            else
+                            {
+                                serviceCost = service.Cost * serviceDto.Quantity * priceMultiplier;
+                                serviceDuration = service.TimeDuration * serviceDto.Quantity;
+                            }
+
+                            if (shouldAddToOrder)
+                            {
+                                subTotal += serviceCost;
+                                totalDuration += serviceDuration;
+                            }
+                        }
+                    }
+
+                    // Add extra services
+                    foreach (var extraServiceDto in dto.ExtraServices)
+                    {
+                        var extraService = await _context.ExtraServices.FindAsync(extraServiceDto.ExtraServiceId);
+                        if (extraService != null)
+                        {
+                            decimal cost = 0;
+                            decimal duration = 0;
+
+                            if (extraService.IsDeepCleaning || extraService.IsSuperDeepCleaning)
+                            {
+                                cost = extraService.Price;
+                                duration = extraService.Duration;
+                            }
+                            else
+                            {
+                                var currentMultiplier = extraService.IsSameDayService ? 1 : priceMultiplier;
+
+                                if (extraService.HasHours)
+                                {
+                                    cost = extraService.Price * extraServiceDto.Hours * currentMultiplier;
+                                    duration = (int)(extraService.Duration * extraServiceDto.Hours);
+                                }
+                                else if (extraService.HasQuantity)
+                                {
+                                    if (extraService.Name == "Extra Cleaners")
+                                    {
+                                        decimal baseCostPerCleaner = 40m;
+                                        if (dto.ExtraServices.Any(es =>
+                                        {
+                                            var esService = _context.ExtraServices.Find(es.ExtraServiceId);
+                                            return esService?.IsSuperDeepCleaning == true;
+                                        }))
+                                        {
+                                            baseCostPerCleaner = 80m;
+                                        }
+                                        else if (dto.ExtraServices.Any(es =>
+                                        {
+                                            var esService = _context.ExtraServices.Find(es.ExtraServiceId);
+                                            return esService?.IsDeepCleaning == true;
+                                        }))
+                                        {
+                                            baseCostPerCleaner = 60m;
+                                        }
+                                        cost = baseCostPerCleaner * extraServiceDto.Quantity;
+                                        duration = 0;
+                                    }
+                                    else
+                                    {
+                                        cost = extraService.Price * extraServiceDto.Quantity * currentMultiplier;
+                                        duration = extraService.Duration * extraServiceDto.Quantity;
+                                    }
+                                }
+                                else
+                                {
+                                    cost = extraService.Price * currentMultiplier;
+                                    duration = extraService.Duration;
+                                }
+                            }
+
+                            if (!extraService.IsDeepCleaning && !extraService.IsSuperDeepCleaning)
+                            {
+                                subTotal += cost;
+                            }
+                            totalDuration += duration;
+                        }
+                    }
+
+                    subTotal += deepCleaningFee;
+                }
+
+                if (Math.Abs(dto.TotalDuration - totalDuration) > 5)
+                {
+                    totalDuration = dto.TotalDuration;
+                }
+
+                if (totalDuration < 60)
+                {
+                    totalDuration = 60;
+                }
+
+                // Calculate final totals
+                decimal discountAmount = dto.DiscountAmount;
+                decimal subscriptionDiscountAmount = dto.SubscriptionDiscountAmount;
+                decimal calculatedSubTotal = Math.Round(subTotal * 100) / 100;
+                var discountedSubTotal = calculatedSubTotal - discountAmount - subscriptionDiscountAmount;
+                decimal tax = Math.Round(discountedSubTotal * 0.08875m * 100) / 100;
+                var totalBeforeGiftCard = discountedSubTotal + tax + dto.Tips + dto.CompanyDevelopmentTips;
+                decimal total = Math.Round((totalBeforeGiftCard - giftCardAmountUsed) * 100) / 100;
+
+                // Store booking data temporarily (will be used to create order after payment succeeds)
+                var sessionId = $"prepare_payment_{userId}_{DateTime.UtcNow.Ticks}";
+                _bookingDataService.StoreBookingData(sessionId, dto);
+
+                // Create Stripe payment intent with sessionId in metadata
+                var metadata = new Dictionary<string, string>
+                {
+                    { "sessionId", sessionId },
+                    { "userId", userId.ToString() },
+                    { "type", "booking" }
+                };
+
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata);
+
+                return Ok(new BookingResponseDto
+                {
+                    OrderId = 0, // No order created yet
+                    Status = "Pending",
+                    Total = total,
+                    PaymentIntentId = paymentIntent.Id,
+                    PaymentClientSecret = paymentIntent.ClientSecret,
+                    SessionId = sessionId // Return sessionId so frontend can use it in confirm-payment
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = "Failed to prepare payment: " + ex.Message });
+            }
+        }
+
         [HttpPost("create-payment-intent/{orderId}")]
         [Authorize]
         public async Task<ActionResult<BookingResponseDto>> CreatePaymentIntentForOrder(int orderId)
@@ -1465,27 +1712,57 @@ namespace DreamCleaningBackend.Controllers
                 if (userId == 0)
                     return Unauthorized();
 
-                var order = await _context.Orders
-                    .Include(o => o.OrderServices)
-                    .Include(o => o.ServiceType)
-                    .FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
+                Order order = null;
+                CreateBookingDto bookingDataDto = null;
+                string sessionId = null;
 
-                if (order == null)
-                    return NotFound(new { message = "Order not found" });
-
-                if (order.IsPaid)
-                    return BadRequest(new { message = "Order is already paid" });
-
-                // Verify payment with Stripe
-                var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
-
-                if (paymentIntent.Status != "succeeded")
+                // If sessionId is provided, this is a new booking - create order first
+                if (!string.IsNullOrEmpty(dto.SessionId))
                 {
-                    return BadRequest(new { message = "Payment not completed" });
-                }
+                    sessionId = dto.SessionId;
+                    bookingDataDto = _bookingDataService.GetBookingData(sessionId);
+                    
+                    if (bookingDataDto == null)
+                    {
+                        return BadRequest(new { message = "Booking data not found. Please start over." });
+                    }
 
-                var sessionId = $"booking_{orderId}_{userId}";
-                var bookingData = _bookingDataService.GetBookingData(sessionId);
+                    // Verify payment with Stripe first before creating order
+                    var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
+                    if (paymentIntent.Status != "succeeded")
+                    {
+                        return BadRequest(new { message = "Payment not completed" });
+                    }
+
+                    // Now create the order using the booking data (reuse logic from CreateBooking)
+                    order = await CreateOrderFromBookingData(bookingDataDto, userId);
+                    orderId = order.Id; // Update orderId for later use
+                }
+                else
+                {
+                    // Existing order flow
+                    order = await _context.Orders
+                        .Include(o => o.OrderServices)
+                        .Include(o => o.ServiceType)
+                        .FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
+
+                    if (order == null)
+                        return NotFound(new { message = "Order not found" });
+
+                    if (order.IsPaid)
+                        return BadRequest(new { message = "Order is already paid" });
+
+                    // Verify payment with Stripe
+                    var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
+                    if (paymentIntent.Status != "succeeded")
+                    {
+                        return BadRequest(new { message = "Payment not completed" });
+                    }
+
+                    sessionId = $"booking_{orderId}_{userId}";
+                    var bookingData = _bookingDataService.GetBookingData(sessionId);
+                    bookingDataDto = bookingData;
+                }
 
                 // Get the user to update phone number and check apartments
                 var user = await _context.Users
@@ -1632,7 +1909,7 @@ namespace DreamCleaningBackend.Controllers
                             order.State,
                             order.ZipCode,
                             order.Id,
-                            bookingData?.UploadedPhotos
+                            bookingDataDto?.UploadedPhotos
                         );
                         Console.WriteLine($"Booking notification with photos sent to company email for order {order.Id}");
                     }
@@ -1690,6 +1967,293 @@ namespace DreamCleaningBackend.Controllers
                 Console.WriteLine($"Error in ConfirmPayment: {ex.Message}");
                 return BadRequest(new { message = "Failed to confirm payment: " + ex.Message });
             }
+        }
+
+        private async Task<Order> CreateOrderFromBookingData(CreateBookingDto dto, int userId)
+        {
+            // Get service type
+            var serviceType = await _context.ServiceTypes
+                .Include(st => st.Services)
+                .FirstOrDefaultAsync(st => st.Id == dto.ServiceTypeId);
+
+            if (serviceType == null)
+                throw new InvalidOperationException("Invalid service type");
+
+            // Determine gift card usage
+            string? giftCardCode = dto.GiftCardCode;
+            decimal giftCardAmountUsed = dto.GiftCardAmountToUse;
+            string? promoCode = dto.PromoCode;
+
+            if (!string.IsNullOrEmpty(dto.PromoCode) &&
+                string.IsNullOrEmpty(dto.GiftCardCode) &&
+                System.Text.RegularExpressions.Regex.IsMatch(dto.PromoCode, @"^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$"))
+            {
+                giftCardCode = dto.PromoCode;
+                promoCode = null;
+            }
+
+            // Create order object (reuse calculation logic from CreateBooking)
+            var order = new Order
+            {
+                UserId = userId,
+                ServiceTypeId = dto.ServiceTypeId,
+                ApartmentId = dto.ApartmentId,
+                ApartmentName = dto.ApartmentName,
+                ServiceAddress = dto.ServiceAddress,
+                AptSuite = dto.AptSuite,
+                City = dto.City,
+                State = dto.State,
+                ZipCode = dto.ZipCode,
+                ServiceDate = dto.ServiceDate,
+                ServiceTime = TimeSpan.Parse(dto.ServiceTime),
+                EntryMethod = dto.EntryMethod,
+                SpecialInstructions = dto.SpecialInstructions,
+                ContactFirstName = dto.ContactFirstName,
+                ContactLastName = dto.ContactLastName,
+                ContactEmail = dto.ContactEmail,
+                ContactPhone = dto.ContactPhone,
+                PromoCode = promoCode,
+                GiftCardCode = giftCardCode,
+                GiftCardAmountUsed = 0,
+                Tips = dto.Tips,
+                CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
+                Status = "Pending",
+                OrderDate = DateTime.UtcNow,
+                SubscriptionId = dto.SubscriptionId,
+                OrderServices = new List<Models.OrderService>(),
+                OrderExtraServices = new List<OrderExtraService>(),
+                CreatedAt = DateTime.UtcNow,
+                MaidsCount = dto.MaidsCount,
+                SubTotal = dto.SubTotal,
+                Tax = dto.Tax,
+                Total = dto.Total,
+                DiscountAmount = dto.DiscountAmount,
+                SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
+                TotalDuration = dto.IsCustomPricing ? (dto.CustomDuration ?? dto.TotalDuration) : dto.TotalDuration
+            };
+
+            // Calculate price multiplier and add services/extra services (simplified - using values from DTO)
+            decimal priceMultiplier = 1;
+            foreach (var extraServiceDto in dto.ExtraServices)
+            {
+                var extraService = await _context.ExtraServices.FindAsync(extraServiceDto.ExtraServiceId);
+                if (extraService != null && (extraService.IsDeepCleaning || extraService.IsSuperDeepCleaning))
+                {
+                    if (extraService.IsSuperDeepCleaning)
+                    {
+                        priceMultiplier = extraService.PriceMultiplier;
+                    }
+                    else if (extraService.IsDeepCleaning)
+                    {
+                        priceMultiplier = extraService.PriceMultiplier;
+                    }
+                }
+            }
+
+            // Add order services
+            foreach (var serviceDto in dto.Services)
+            {
+                var service = await _context.Services.FindAsync(serviceDto.ServiceId);
+                if (service != null)
+                {
+                    decimal serviceCost = 0;
+                    decimal serviceDuration = 0;
+                    bool shouldAddToOrder = true;
+
+                    if (service.ServiceRelationType == "cleaner")
+                    {
+                        var hoursServiceDto = dto.Services.FirstOrDefault(s =>
+                        {
+                            var svc = _context.Services.Find(s.ServiceId);
+                            return svc?.ServiceRelationType == "hours" && svc.ServiceTypeId == service.ServiceTypeId;
+                        });
+
+                        if (hoursServiceDto != null)
+                        {
+                            var hours = hoursServiceDto.Quantity;
+                            var cleaners = serviceDto.Quantity;
+                            var costPerCleanerPerHour = service.Cost * priceMultiplier;
+                            serviceCost = costPerCleanerPerHour * cleaners * hours;
+                            serviceDuration = hours * 60;
+                        }
+                        else
+                        {
+                            serviceCost = service.Cost * serviceDto.Quantity * priceMultiplier;
+                            serviceDuration = service.TimeDuration * serviceDto.Quantity;
+                        }
+                    }
+                    else if (service.ServiceKey == "bedrooms" && serviceDto.Quantity == 0)
+                    {
+                        serviceCost = 10 * priceMultiplier;
+                        serviceDuration = 20;
+                    }
+                    else if (service.ServiceRelationType == "hours")
+                    {
+                        shouldAddToOrder = false;
+                    }
+                    else
+                    {
+                        serviceCost = service.Cost * serviceDto.Quantity * priceMultiplier;
+                        serviceDuration = service.TimeDuration * serviceDto.Quantity;
+                    }
+
+                    if (shouldAddToOrder)
+                    {
+                        order.OrderServices.Add(new Models.OrderService
+                        {
+                            ServiceId = serviceDto.ServiceId,
+                            Quantity = serviceDto.Quantity,
+                            Cost = serviceCost,
+                            Duration = serviceDuration,
+                            PriceMultiplier = priceMultiplier,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+                }
+            }
+
+            // Add order extra services
+            foreach (var extraServiceDto in dto.ExtraServices)
+            {
+                var extraService = await _context.ExtraServices.FindAsync(extraServiceDto.ExtraServiceId);
+                if (extraService != null)
+                {
+                    decimal cost = 0;
+                    decimal duration = 0;
+                    var currentMultiplier = extraService.IsSameDayService ? 1 : priceMultiplier;
+
+                    if (extraService.IsDeepCleaning || extraService.IsSuperDeepCleaning)
+                    {
+                        cost = extraService.Price;
+                        duration = extraService.Duration;
+                    }
+                    else if (extraService.HasHours)
+                    {
+                        cost = extraService.Price * extraServiceDto.Hours * currentMultiplier;
+                        duration = (int)(extraService.Duration * extraServiceDto.Hours);
+                    }
+                    else if (extraService.HasQuantity)
+                    {
+                        if (extraService.Name == "Extra Cleaners")
+                        {
+                            decimal baseCostPerCleaner = 40m;
+                            if (dto.ExtraServices.Any(es =>
+                            {
+                                var esService = _context.ExtraServices.Find(es.ExtraServiceId);
+                                return esService?.IsSuperDeepCleaning == true;
+                            }))
+                            {
+                                baseCostPerCleaner = 80m;
+                            }
+                            else if (dto.ExtraServices.Any(es =>
+                            {
+                                var esService = _context.ExtraServices.Find(es.ExtraServiceId);
+                                return esService?.IsDeepCleaning == true;
+                            }))
+                            {
+                                baseCostPerCleaner = 60m;
+                            }
+                            cost = baseCostPerCleaner * extraServiceDto.Quantity;
+                            duration = 0;
+                        }
+                        else
+                        {
+                            cost = extraService.Price * extraServiceDto.Quantity * currentMultiplier;
+                            duration = extraService.Duration * extraServiceDto.Quantity;
+                        }
+                    }
+                    else
+                    {
+                        cost = extraService.Price * currentMultiplier;
+                        duration = extraService.Duration;
+                    }
+
+                    order.OrderExtraServices.Add(new OrderExtraService
+                    {
+                        ExtraServiceId = extraServiceDto.ExtraServiceId,
+                        Quantity = extraServiceDto.Quantity,
+                        Hours = extraServiceDto.Hours,
+                        Cost = cost,
+                        Duration = duration,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+            }
+
+            // Use transaction for order creation
+            using (var transaction = await _context.Database.BeginTransactionAsync())
+            {
+                try
+                {
+                    _context.Orders.Add(order);
+                    await _context.SaveChangesAsync();
+
+                    // Handle special offers
+                    if (dto.UserSpecialOfferId.HasValue && dto.UserSpecialOfferId.Value > 0)
+                    {
+                        var userSpecialOffer = await _context.UserSpecialOffers
+                            .FirstOrDefaultAsync(uso =>
+                                uso.Id == dto.UserSpecialOfferId.Value &&
+                                uso.UserId == userId &&
+                                !uso.IsUsed);
+
+                        if (userSpecialOffer != null)
+                        {
+                            userSpecialOffer.IsUsed = true;
+                            userSpecialOffer.UsedAt = DateTime.UtcNow;
+                            userSpecialOffer.UsedOnOrderId = order.Id;
+                            await _context.SaveChangesAsync();
+                        }
+
+                        var specialOfferDetails = await _context.UserSpecialOffers
+                            .Include(uso => uso.SpecialOffer)
+                            .FirstOrDefaultAsync(uso => uso.Id == dto.UserSpecialOfferId.Value);
+
+                        if (specialOfferDetails != null)
+                        {
+                            order.PromoCode = $"SPECIAL_OFFER:{specialOfferDetails.SpecialOffer.Name}";
+                            await _context.SaveChangesAsync();
+                        }
+                    }
+
+                    // Apply gift card if provided
+                    if (!string.IsNullOrEmpty(giftCardCode) && giftCardAmountUsed > 0)
+                    {
+                        var totalBeforeGiftCard = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount + order.Tax + order.Tips + order.CompanyDevelopmentTips;
+                        var actualAmountUsed = await _giftCardService.ApplyGiftCardToOrder(
+                            giftCardCode,
+                            totalBeforeGiftCard,
+                            order.Id,
+                            userId
+                        );
+
+                        if (actualAmountUsed != giftCardAmountUsed)
+                        {
+                            order.GiftCardAmountUsed = actualAmountUsed;
+                            order.Total = totalBeforeGiftCard - actualAmountUsed;
+                            await _context.SaveChangesAsync();
+                        }
+                        else
+                        {
+                            order.GiftCardAmountUsed = actualAmountUsed;
+                            await _context.SaveChangesAsync();
+                        }
+                    }
+
+                    await transaction.CommitAsync();
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    throw new InvalidOperationException($"Failed to create order: {ex.Message}");
+                }
+            }
+
+            // Reload order with related data
+            return await _context.Orders
+                .Include(o => o.OrderServices)
+                .Include(o => o.ServiceType)
+                .FirstOrDefaultAsync(o => o.Id == order.Id);
         }
 
         private int GetUserId()
