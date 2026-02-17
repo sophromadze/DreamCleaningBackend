@@ -22,6 +22,8 @@ namespace DreamCleaningBackend.Controllers
         private readonly IEmailService _emailService;
         private readonly IBookingDataService _bookingDataService;
         private readonly IStripeService _stripeService;
+        private readonly ISmsService _smsService;
+        private readonly ILogger<BookingController> _logger;
 
         public BookingController(ApplicationDbContext context,
             IConfiguration configuration, 
@@ -29,7 +31,9 @@ namespace DreamCleaningBackend.Controllers
             IGiftCardService giftCardService, 
             IEmailService emailService, 
             IBookingDataService bookingDataService,
-            IStripeService stripeService)
+            IStripeService stripeService,
+            ISmsService smsService,
+            ILogger<BookingController> logger)
         {
             _context = context;
             _configuration = configuration;
@@ -38,6 +42,8 @@ namespace DreamCleaningBackend.Controllers
             _emailService = emailService;
             _bookingDataService = bookingDataService;
             _stripeService = stripeService;
+            _smsService = smsService;
+            _logger = logger;
         }
 
         [HttpGet("service-types")]
@@ -1386,6 +1392,84 @@ namespace DreamCleaningBackend.Controllers
                 var sessionId = $"booking_{order.Id}_{dto.TargetUserId}";
                 _bookingDataService.StoreBookingData(sessionId, dto.BookingData);
 
+                // Send payment reminder notifications (SMS and Email)
+                try
+                {
+                    // Reload target user to get latest data
+                    targetUser = await _context.Users.FindAsync(dto.TargetUserId);
+                    if (targetUser != null)
+                    {
+                        var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+                        var orderLink = $"{frontendUrl}/order/{order.Id}/pay";
+                        
+                        // Capitalize first letter of names
+                        var capitalizedFirstName = CapitalizeName(targetUser.FirstName);
+                        var capitalizedLastName = CapitalizeName(targetUser.LastName);
+                        var customerName = $"{capitalizedFirstName} {capitalizedLastName}".Trim();
+                        if (string.IsNullOrWhiteSpace(customerName))
+                            customerName = capitalizedFirstName ?? "Valued Customer";
+
+                        // Check if email is not Apple hidden mail
+                        var isAppleHiddenMail = !string.IsNullOrEmpty(targetUser.Email) &&
+                                               targetUser.Email.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+
+                        // Send email if not Apple hidden mail
+                        if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(targetUser.Email))
+                        {
+                            try
+                            {
+                                await _emailService.SendPaymentReminderEmailAsync(
+                                    targetUser.Email,
+                                    customerName,
+                                    order.Total,
+                                    order.Id,
+                                    orderLink
+                                );
+                                _logger.LogInformation($"Payment reminder email sent to {targetUser.Email} for Order #{order.Id}");
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, $"Failed to send payment reminder email to {targetUser.Email} for Order #{order.Id}");
+                                // Don't throw - continue with SMS if email fails
+                            }
+                        }
+                        else if (isAppleHiddenMail)
+                        {
+                            _logger.LogInformation($"Skipping email payment reminder for Order #{order.Id} - user has Apple hidden mail");
+                        }
+
+                        // Send SMS if phone number exists
+                        if (!string.IsNullOrWhiteSpace(targetUser.Phone))
+                        {
+                            try
+                            {
+                                await _smsService.SendPaymentReminderSmsAsync(
+                                    targetUser.Phone,
+                                    customerName,
+                                    order.Total,
+                                    order.Id,
+                                    orderLink
+                                );
+                                _logger.LogInformation($"Payment reminder SMS sent to {targetUser.Phone} for Order #{order.Id}");
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, $"Failed to send payment reminder SMS to {targetUser.Phone} for Order #{order.Id}");
+                                // Don't throw - SMS failures shouldn't break booking creation
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogInformation($"Skipping SMS payment reminder for Order #{order.Id} - user has no phone number");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Error sending payment reminders for Order #{order.Id}");
+                    // Don't throw - payment reminder failures shouldn't break booking creation
+                }
+
                 Console.WriteLine($"=== ADMIN BOOKING CREATION END ===");
                 Console.WriteLine($"Order ID: {order.Id}");
                 Console.WriteLine($"Status: {order.Status}");
@@ -1868,27 +1952,70 @@ namespace DreamCleaningBackend.Controllers
                 order.Status = "Active";
                 order.PaymentIntentId = dto.PaymentIntentId;
 
-                // Send booking confirmation email to customer
+                // Send booking confirmation email and SMS to customer
+                var contactEmail = order.ContactEmail;
+                var contactPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : user?.Phone;
+                var customerName = CapitalizeName(order.ContactFirstName);
+                var addressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
+                var serviceTimeStr = order.ServiceTime.ToString();
+
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await _emailService.SendCustomerBookingConfirmationAsync(
-                            order.ContactEmail,
-                            order.ContactFirstName,
-                            order.ServiceDate,
-                            order.ServiceTime.ToString(),
-                            order.ServiceType.Name,
-                            $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}",
-                            order.Id
-                        );
-                        Console.WriteLine($"Booking confirmation email sent to {order.ContactEmail} for order {order.Id}");
+                        // Skip email if Apple hidden mail or no email
+                        var isAppleHiddenMail = !string.IsNullOrEmpty(contactEmail) &&
+                            contactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+
+                        if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(contactEmail))
+                        {
+                            await _emailService.SendCustomerBookingConfirmationAsync(
+                                contactEmail,
+                                customerName,
+                                order.ServiceDate,
+                                serviceTimeStr,
+                                order.ServiceType.Name,
+                                addressDisplay,
+                                order.Id
+                            );
+                            Console.WriteLine($"Booking confirmation email sent to {contactEmail} for order {order.Id}");
+                        }
+                        else if (isAppleHiddenMail)
+                        {
+                            Console.WriteLine($"Skipping booking confirmation email for order {order.Id} - Apple hidden mail");
+                        }
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Failed to send booking confirmation email: {ex.Message}");
                     }
                 });
+
+                // Send booking confirmation SMS if phone exists
+                if (!string.IsNullOrWhiteSpace(contactPhone))
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await _smsService.SendBookingConfirmationSmsAsync(
+                                contactPhone,
+                                customerName,
+                                order.ServiceDate,
+                                serviceTimeStr
+                            );
+                            Console.WriteLine($"Booking confirmation SMS sent to {contactPhone} for order {order.Id}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Failed to send booking confirmation SMS: {ex.Message}");
+                        }
+                    });
+                }
+                else
+                {
+                    Console.WriteLine($"Skipping booking confirmation SMS for order {order.Id} - no phone number");
+                }
 
                 // Send booking notification to company email with photos
                 _ = Task.Run(async () =>
@@ -2261,6 +2388,17 @@ namespace DreamCleaningBackend.Controllers
             // Some parts of the codebase use custom "UserId" claim; fall back to NameIdentifier.
             var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             return int.TryParse(userIdClaim, out var userId) ? userId : 0;
+        }
+
+        private string CapitalizeName(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return name ?? string.Empty;
+            
+            // Capitalize first letter, lowercase the rest
+            return name.Length > 1 
+                ? char.ToUpper(name[0]) + name.Substring(1).ToLower()
+                : name.ToUpper();
         }
 
         [HttpGet("available-times")]

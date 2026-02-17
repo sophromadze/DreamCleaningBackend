@@ -1435,5 +1435,76 @@ namespace DreamCleaningBackend.Services
                 // Don't throw - we don't want email failures to break the order update
             }
         }
+
+        public async Task SendPaymentReminderEmailAsync(string email, string customerName, decimal amount, int orderId, string orderLink)
+        {
+            try
+            {
+                var subject = $"Confirm Your Payment - Order #{orderId}";
+                var amountFormatted = amount.ToString("C");
+
+                var body = $@"
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                    .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid #4CAF50; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: #4CAF50; }}
+                    .button {{ background-color: #4CAF50; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
+                    .button a {{ color: white !important; }}
+                    .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
+                </style>
+            </head>
+            <body>
+                <div class='container'>
+                    <div class='header'>
+                        <h1 style='margin: 0;'>✨ Payment Confirmation Needed</h1>
+                    </div>
+                    <div class='content'>
+                        <h2>Hi {customerName}!</h2>
+                        <p>Great news! Your cleaning order has been created and is ready to be scheduled. To confirm your booking, please complete your payment.</p>
+                        
+                        <div class='amount-box'>
+                            <div style='color: #666; font-size: 14px; margin-bottom: 5px;'>Amount Due</div>
+                            <div class='amount'>{amountFormatted}</div>
+                        </div>
+
+                        <p style='text-align: center;'>
+                            <a href='{orderLink}' class='button' style='color: white !important; text-decoration: none;'>Confirm Payment & Schedule Order</a>
+                        </p>
+
+                        <p style='font-size: 14px; color: #666;'>Or copy and paste this link into your browser:</p>
+                        <p style='font-size: 12px; word-break: break-all; color: #007bff;'>{orderLink}</p>
+
+                        <p style='margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;'>
+                            <strong>Order Details:</strong><br/>
+                            Order ID: #{orderId}<br/>
+                            Amount: {amountFormatted}
+                        </p>
+
+                        <p style='color: #666; font-size: 14px; margin-top: 30px;'>
+                            Your order will be scheduled once payment is confirmed. If you have any questions, feel free to reach out to us!
+                        </p>
+                    </div>
+                    <div class='footer'>
+                        <p>Thank you for choosing Dream Cleaning!</p>
+                        <p>&copy; {DateTime.UtcNow.Year} Dream Cleaning. All rights reserved.</p>
+                    </div>
+                </div>
+            </body>
+            </html>";
+
+                await SendEmailAsync(email, subject, body);
+                _logger.LogInformation($"Payment reminder email sent successfully to {email} for Order #{orderId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send payment reminder email to {email} for Order #{orderId}");
+                // Don't throw - we don't want email failures to break the booking creation
+            }
+        }
     }
 }

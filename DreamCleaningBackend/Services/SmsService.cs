@@ -105,6 +105,16 @@ namespace DreamCleaningBackend.Services
             await SendSmsAsync(phoneNumber, msg);
         }
 
+        public async Task SendPaymentReminderSmsAsync(string phoneNumber, string customerName, decimal amount, int orderId, string orderLink)
+        {
+            // Create professional SMS message
+            var amountFormatted = amount.ToString("C");
+            // Extract first name only for greeting
+            var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
+            var msg = $"Hi {firstName}, thank you for choosing Dream Cleaning! To finalize order #{orderId}, please confirm your payment of {amountFormatted} here: {orderLink}\nWe look forward to making your space shine!";
+            await SendSmsAsync(phoneNumber, msg);
+        }
+
         /// <summary>
         /// Normalize US/NA phone to E.164 (e.g. +19295551234). Handles 10-digit, 11-digit with leading 1, or already E.164.
         /// </summary>

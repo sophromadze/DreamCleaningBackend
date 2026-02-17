@@ -33,5 +33,6 @@ namespace DreamCleaningBackend.Services.Interfaces
             string serviceTime, string serviceTypeName, string serviceAddress, string aptSuite, string city, string state, string zipCode, int orderId, List<PhotoUploadDto> uploadedPhotos = null);
         Task SendPollSubmissionEmailWithPhotosAsync(string toEmail, string subject, string htmlBody, List<PhotoUploadDto> uploadedPhotos = null);
         Task SendOrderUpdateNotificationAsync(int orderId, string customerEmail, decimal additionalAmount);
+        Task SendPaymentReminderEmailAsync(string email, string customerName, decimal amount, int orderId, string orderLink);
     }
 }

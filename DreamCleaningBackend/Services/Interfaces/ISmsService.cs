@@ -24,5 +24,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// Returns true if SMS is configured and enabled (RingCentral credentials and EnableSmsSending).
         /// </summary>
         bool IsSmsEnabled();
+
+        /// <summary>
+        /// Payment reminder SMS template for admin-created orders. Sends reminder to pay for the order.
+        /// </summary>
+        Task SendPaymentReminderSmsAsync(string phoneNumber, string customerName, decimal amount, int orderId, string orderLink);
     }
 }
