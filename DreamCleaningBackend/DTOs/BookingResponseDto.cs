@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace DreamCleaningBackend.DTOs
 {
     public class BookingResponseDto
@@ -12,7 +14,9 @@ namespace DreamCleaningBackend.DTOs
 
     public class ConfirmPaymentDto
     {
-        public string PaymentIntentId { get; set; }
-        public string SessionId { get; set; } // Optional: for new bookings, use sessionId instead of orderId
+        [JsonPropertyName("paymentIntentId")]
+        public string? PaymentIntentId { get; set; }
+        [JsonPropertyName("sessionId")]
+        public string? SessionId { get; set; } // Optional: for new bookings only; not sent for admin-scheduled / profile payments
     }
 }

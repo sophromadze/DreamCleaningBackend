@@ -1436,6 +1436,38 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        public async Task SendCompanyAdditionalPaymentReceivedAsync(int orderId, string customerEmail, string customerName, decimal amountPaid)
+        {
+            try
+            {
+                var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
+                if (string.IsNullOrWhiteSpace(companyEmail))
+                    return;
+
+                var subject = $"Additional Payment Received - Order #{orderId}";
+                var amountFormatted = amountPaid.ToString("C");
+
+                var body = $@"
+            <html>
+            <body style='font-family: Arial, sans-serif;'>
+                <h3>Additional Payment Received</h3>
+                <p>The customer has paid the additional amount for Order #{orderId}.</p>
+                <p><strong>Customer:</strong> {customerName}</p>
+                <p><strong>Customer Email:</strong> {customerEmail}</p>
+                <p><strong>Amount Paid:</strong> {amountFormatted}</p>
+                <p><strong>Paid at:</strong> {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC</p>
+            </body>
+            </html>";
+
+                await SendEmailAsync(companyEmail, subject, body);
+                _logger.LogInformation($"Company additional-payment-received notification sent for Order #{orderId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send company additional payment received notification for Order #{orderId}");
+            }
+        }
+
         public async Task SendPaymentReminderEmailAsync(string email, string customerName, decimal amount, int orderId, string orderLink)
         {
             try

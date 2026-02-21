@@ -229,7 +229,7 @@ namespace DreamCleaningBackend.Controllers
                 {
                     order.IsPaid = true;
                     order.PaidAt = DateTime.UtcNow;
-                    order.Status = "Confirmed";
+                    order.Status = "Active";
 
                     // Set initial values when order is first paid
                     if (order.InitialSubTotal == 0 && order.InitialTax == 0 && order.InitialTotal == 0)

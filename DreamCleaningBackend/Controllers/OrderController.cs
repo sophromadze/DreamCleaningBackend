@@ -20,13 +20,15 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly IAuditService _auditService;
         private readonly IStripeService _stripeService;
+        private readonly IEmailService _emailService;
 
-        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService)
+        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService)
         {
             _orderService = orderService;
             _context = context;
             _auditService = auditService;
             _stripeService = stripeService;
+            _emailService = emailService;
         }
 
         [HttpGet]
@@ -307,6 +309,8 @@ namespace DreamCleaningBackend.Controllers
                     historiesToMarkPaid.Add(latest);
                 }
 
+                var amountPaid = historiesToMarkPaid.Sum(h => h.AdditionalAmount);
+
                 foreach (var h in historiesToMarkPaid)
                 {
                     h.IsPaid = true;
@@ -314,6 +318,24 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 await _context.SaveChangesAsync();
+
+                // Notify company that customer paid the additional amount
+                if (amountPaid > 0.01m)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await _emailService.SendCompanyAdditionalPaymentReceivedAsync(
+                                order.Id,
+                                order.ContactEmail ?? "",
+                                $"{order.ContactFirstName} {order.ContactLastName}".Trim(),
+                                amountPaid
+                            );
+                        }
+                        catch { /* best-effort */ }
+                    });
+                }
 
                 // If there are no more unpaid update-payments, switch status Pending -> Active.
                 // (Don't touch Done/Cancelled.)

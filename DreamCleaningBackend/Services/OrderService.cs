@@ -1372,22 +1372,7 @@ namespace DreamCleaningBackend.Services
 
             _context.OrderUpdateHistories.Add(updateHistory);
 
-            // Notify customer by email when an extra payment is required (best-effort)
-            if (additionalAmount > 0.01m)
-            {
-                try
-                {
-                    await _emailService.SendOrderUpdateNotificationAsync(
-                        orderId: order.Id,
-                        customerEmail: order.ContactEmail,
-                        additionalAmount: additionalAmount
-                    );
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"Failed to send SuperAdmin order update notification for Order #{order.Id}");
-                }
-            }
+            // Do not send "order updated" email to company when admin updates - only when customer updates (see UpdateOrder).
 
             await _context.SaveChangesAsync();
         }

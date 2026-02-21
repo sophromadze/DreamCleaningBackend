@@ -1788,7 +1788,7 @@ namespace DreamCleaningBackend.Controllers
 
         [HttpPost("confirm-payment/{orderId}")]
         [Authorize]
-        public async Task<ActionResult> ConfirmPayment(int orderId, [FromBody] ConfirmPaymentDto dto)
+        public async Task<ActionResult> ConfirmPayment(int orderId, [FromBody] ConfirmPaymentDto dto, [FromQuery] string paymentIntentId = null)
         {
             try
             {
@@ -1796,14 +1796,21 @@ namespace DreamCleaningBackend.Controllers
                 if (userId == 0)
                     return Unauthorized();
 
+                // Body may not bind in some proxies; allow query fallback for existing-order flow
+                var effectivePaymentIntentId = !string.IsNullOrWhiteSpace(dto?.PaymentIntentId) ? dto.PaymentIntentId : paymentIntentId;
+                var effectiveSessionId = dto?.SessionId;
+
+                if (string.IsNullOrWhiteSpace(effectivePaymentIntentId))
+                    return BadRequest(new { message = "Payment intent ID is required." });
+
                 Order order = null;
                 CreateBookingDto bookingDataDto = null;
                 string sessionId = null;
 
                 // If sessionId is provided, this is a new booking - create order first
-                if (!string.IsNullOrEmpty(dto.SessionId))
+                if (!string.IsNullOrEmpty(effectiveSessionId))
                 {
-                    sessionId = dto.SessionId;
+                    sessionId = effectiveSessionId;
                     bookingDataDto = _bookingDataService.GetBookingData(sessionId);
                     
                     if (bookingDataDto == null)
@@ -1812,8 +1819,8 @@ namespace DreamCleaningBackend.Controllers
                     }
 
                     // Verify payment with Stripe first before creating order
-                    var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
-                    if (paymentIntent.Status != "succeeded")
+                    var paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
+                    if (paymentIntent.Status != "succeeded" && paymentIntent.Status != "processing")
                     {
                         return BadRequest(new { message = "Payment not completed" });
                     }
@@ -1824,7 +1831,7 @@ namespace DreamCleaningBackend.Controllers
                 }
                 else
                 {
-                    // Existing order flow
+                    // Existing order flow (admin-scheduled or profile payment) - same as booking confirm, just order already exists
                     order = await _context.Orders
                         .Include(o => o.OrderServices)
                         .Include(o => o.ServiceType)
@@ -1836,12 +1843,31 @@ namespace DreamCleaningBackend.Controllers
                     if (order.IsPaid)
                         return BadRequest(new { message = "Order is already paid" });
 
-                    // Verify payment with Stripe
-                    var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
-                    if (paymentIntent.Status != "succeeded")
+                    // Verify payment with Stripe - payment already succeeded in browser
+                    Stripe.PaymentIntent paymentIntent;
+                    try
                     {
-                        return BadRequest(new { message = "Payment not completed" });
+                        paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
                     }
+                    catch (Exception stripeEx)
+                    {
+                        Console.WriteLine($"ConfirmPayment Stripe GetPaymentIntent failed: {stripeEx.Message}");
+                        return BadRequest(new { message = "Could not verify payment with Stripe. Please ensure you're using the same Stripe account (test/live) as the payment page. " + stripeEx.Message });
+                    }
+
+                    var status = paymentIntent.Status ?? "";
+                    var paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase) || status.Equals("requires_capture", StringComparison.OrdinalIgnoreCase);
+                    if (!paid)
+                    {
+                        await Task.Delay(2000);
+                        paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
+                        status = paymentIntent.Status ?? "";
+                        paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase) || status.Equals("requires_capture", StringComparison.OrdinalIgnoreCase);
+                        if (!paid)
+                            return BadRequest(new { message = "Payment not completed. Status: " + status });
+                    }
+
+                    order.PaymentIntentId = effectivePaymentIntentId;
 
                     sessionId = $"booking_{orderId}_{userId}";
                     var bookingData = _bookingDataService.GetBookingData(sessionId);
@@ -1950,7 +1976,7 @@ namespace DreamCleaningBackend.Controllers
                 order.IsPaid = true;
                 order.PaidAt = DateTime.UtcNow;
                 order.Status = "Active";
-                order.PaymentIntentId = dto.PaymentIntentId;
+                order.PaymentIntentId = effectivePaymentIntentId;
 
                 // Send booking confirmation email and SMS to customer
                 var contactEmail = order.ContactEmail;
