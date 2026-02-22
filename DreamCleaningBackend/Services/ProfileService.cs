@@ -45,7 +45,15 @@ namespace DreamCleaningBackend.Services
             user.Email = updateProfileDto.Email.ToLower();
             user.Phone = updateProfileDto.Phone;
             if (updateProfileDto.CanReceiveCommunications.HasValue)
+            {
                 user.CanReceiveCommunications = updateProfileDto.CanReceiveCommunications.Value;
+                user.CanReceiveEmails = updateProfileDto.CanReceiveCommunications.Value;
+                user.CanReceiveMessages = updateProfileDto.CanReceiveCommunications.Value;
+            }
+            if (updateProfileDto.CanReceiveEmails.HasValue)
+                user.CanReceiveEmails = updateProfileDto.CanReceiveEmails.Value;
+            if (updateProfileDto.CanReceiveMessages.HasValue)
+                user.CanReceiveMessages = updateProfileDto.CanReceiveMessages.Value;
             user.UpdatedAt = DateTime.UtcNow;
 
             await _userRepository.UpdateAsync(user);
@@ -192,7 +200,9 @@ namespace DreamCleaningBackend.Services
                 SubscriptionDiscountPercentage = user.Subscription?.DiscountPercentage,
                 SubscriptionExpiryDate = user.SubscriptionExpiryDate,
                 Apartments = user.Apartments.Select(MapApartmentToDto).ToList(),
-                CanReceiveCommunications = user.CanReceiveCommunications
+                CanReceiveCommunications = user.CanReceiveCommunications,
+                CanReceiveEmails = user.CanReceiveEmails,
+                CanReceiveMessages = user.CanReceiveMessages
             };
         }
 

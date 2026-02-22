@@ -22,5 +22,11 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>Optional. When provided, updates the user's preference to receive emails/SMS from the company.</summary>
         public bool? CanReceiveCommunications { get; set; }
+
+        /// <summary>Optional. When provided, updates the user's preference to receive emails from the company.</summary>
+        public bool? CanReceiveEmails { get; set; }
+
+        /// <summary>Optional. When provided, updates the user's preference to receive SMS/messages from the company.</summary>
+        public bool? CanReceiveMessages { get; set; }
     }
 }

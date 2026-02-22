@@ -17,6 +17,12 @@ namespace DreamCleaningBackend.DTOs
         public List<ApartmentDto> Apartments { get; set; } = new List<ApartmentDto>();
         /// <summary>When true, user can receive emails and (in future) SMS. Used for both email and RingCentral messaging.</summary>
         public bool CanReceiveCommunications { get; set; }
+
+        /// <summary>When true, user can receive emails from the company.</summary>
+        public bool CanReceiveEmails { get; set; }
+
+        /// <summary>When true, user can receive SMS/messages from the company.</summary>
+        public bool CanReceiveMessages { get; set; }
         // Placeholder for future orders
         // public List<OrderDto> Orders { get; set; } = new List<OrderDto>();
     }

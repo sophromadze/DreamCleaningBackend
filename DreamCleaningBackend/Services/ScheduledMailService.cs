@@ -114,7 +114,7 @@ namespace DreamCleaningBackend.Services
         {
             if (roles == null || roles.Count == 0) return new List<User>();
             return await ctx.Users
-                .Where(u => u.IsActive && u.CanReceiveCommunications && roles.Contains(u.Role))
+                .Where(u => u.IsActive && u.CanReceiveEmails && roles.Contains(u.Role))
                 .ToListAsync();
         }
     }

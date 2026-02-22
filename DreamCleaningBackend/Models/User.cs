@@ -88,6 +88,12 @@ namespace DreamCleaningBackend.Models
         /// <summary>When true, user can receive emails and (in future) SMS from the company. Used for both marketing and transactional communications.</summary>
         public bool CanReceiveCommunications { get; set; } = true;
 
+        /// <summary>When true, user can receive emails (marketing and transactional) from the company.</summary>
+        public bool CanReceiveEmails { get; set; } = true;
+
+        /// <summary>When true, user can receive SMS/messages (e.g. RingCentral) from the company.</summary>
+        public bool CanReceiveMessages { get; set; } = true;
+
         // Soft delete (for merged accounts)
         public bool IsDeleted { get; set; } = false;
         public DateTime? DeletedAt { get; set; }

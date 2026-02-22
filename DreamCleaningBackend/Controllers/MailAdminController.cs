@@ -81,7 +81,7 @@ namespace DreamCleaningBackend.Controllers
                 TimesSent = 0,
                 IsActive = true
             };
-            // Compute recipient count (only users with CanReceiveCommunications and matching role)
+            // Compute recipient count (only users with CanReceiveEmails and matching role)
             mail.RecipientCount = await CountRecipients(roles);
             if (dto.SendNow)
             {
@@ -193,7 +193,7 @@ namespace DreamCleaningBackend.Controllers
             {
                 if (!Enum.TryParse<UserRole>(r, out var role)) continue;
                 var total = await _context.Users.CountAsync(u => u.Role == role && u.IsActive);
-                var canReceive = await _context.Users.CountAsync(u => u.Role == role && u.IsActive && u.CanReceiveCommunications);
+                var canReceive = await _context.Users.CountAsync(u => u.Role == role && u.IsActive && u.CanReceiveEmails);
                 list.Add(new MailUserCountDto { Role = r, Total = total, CanReceive = canReceive });
             }
             return Ok(list);
@@ -231,7 +231,7 @@ namespace DreamCleaningBackend.Controllers
         {
             if (roles == null || roles.Count == 0) return 0;
             return await _context.Users
-                .Where(u => u.IsActive && u.CanReceiveCommunications && roles.Contains(u.Role))
+                .Where(u => u.IsActive && u.CanReceiveEmails && roles.Contains(u.Role))
                 .CountAsync();
         }
 
@@ -239,7 +239,7 @@ namespace DreamCleaningBackend.Controllers
         {
             if (roles == null || roles.Count == 0) return new List<User>();
             return await _context.Users
-                .Where(u => u.IsActive && u.CanReceiveCommunications && roles.Contains(u.Role))
+                .Where(u => u.IsActive && u.CanReceiveEmails && roles.Contains(u.Role))
                 .ToListAsync();
         }
 

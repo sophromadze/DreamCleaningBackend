@@ -190,14 +190,14 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<List<SmsUserCountDto>>> GetUserCounts()
         {
             var roles = Enum.GetNames(typeof(UserRole));
-            var data = await _context.Users.Where(u => u.IsActive).Select(u => new { u.Role, u.CanReceiveCommunications, u.Phone }).ToListAsync();
+            var data = await _context.Users.Where(u => u.IsActive).Select(u => new { u.Role, u.CanReceiveMessages, u.Phone }).ToListAsync();
             var list = new List<SmsUserCountDto>();
             foreach (var r in roles)
             {
                 if (!Enum.TryParse<UserRole>(r, out var role)) continue;
                 var total = data.Count(x => x.Role == role);
-                var canReceive = data.Count(x => x.Role == role && x.CanReceiveCommunications);
-                var withValidPhone = data.Count(x => x.Role == role && x.CanReceiveCommunications && SmsService.NormalizePhoneToE164(x.Phone) != null);
+                var canReceive = data.Count(x => x.Role == role && x.CanReceiveMessages);
+                var withValidPhone = data.Count(x => x.Role == role && x.CanReceiveMessages && SmsService.NormalizePhoneToE164(x.Phone) != null);
                 list.Add(new SmsUserCountDto { Role = r, Total = total, CanReceive = canReceive, WithValidPhone = withValidPhone });
             }
             return Ok(list);
@@ -231,19 +231,19 @@ namespace DreamCleaningBackend.Controllers
             catch { return new List<UserRole>(); }
         }
 
-        /// <summary>Count users who would receive SMS: IsActive, CanReceiveCommunications, role in TargetRoles, and valid 10+ digit phone.</summary>
+        /// <summary>Count users who would receive SMS: IsActive, CanReceiveMessages, role in TargetRoles, and valid 10+ digit phone.</summary>
         private async Task<int> CountSmsRecipients(List<UserRole> roles)
         {
             var recipients = await GetRecipientsForSms(roles);
             return recipients.Count;
         }
 
-        /// <summary>Users who would receive SMS: same as mail (IsActive, CanReceiveCommunications, role) but filtered to those with NormalizePhoneToE164(Phone) != null.</summary>
+        /// <summary>Users who would receive SMS: same as mail (IsActive, CanReceiveMessages, role) but filtered to those with NormalizePhoneToE164(Phone) != null.</summary>
         private async Task<List<User>> GetRecipientsForSms(List<UserRole> roles)
         {
             if (roles == null || roles.Count == 0) return new List<User>();
             var candidates = await _context.Users
-                .Where(u => u.IsActive && u.CanReceiveCommunications && roles.Contains(u.Role))
+                .Where(u => u.IsActive && u.CanReceiveMessages && roles.Contains(u.Role))
                 .ToListAsync();
             return candidates.Where(u => SmsService.NormalizePhoneToE164(u.Phone) != null).ToList();
         }

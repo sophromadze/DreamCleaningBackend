@@ -122,7 +122,7 @@ namespace DreamCleaningBackend.Services
         {
             if (roles == null || roles.Count == 0) return new List<User>();
             var candidates = await ctx.Users
-                .Where(u => u.IsActive && u.CanReceiveCommunications && roles.Contains(u.Role))
+                .Where(u => u.IsActive && u.CanReceiveMessages && roles.Contains(u.Role))
                 .ToListAsync();
             return candidates.Where(u => SmsService.NormalizePhoneToE164(u.Phone) != null).ToList();
         }

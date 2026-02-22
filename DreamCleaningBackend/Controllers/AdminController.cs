@@ -1970,6 +1970,8 @@ namespace DreamCleaningBackend.Controllers
                     IsActive = u.IsActive,
                     CreatedAt = u.CreatedAt,
                     CanReceiveCommunications = u.CanReceiveCommunications,
+                    CanReceiveEmails = u.CanReceiveEmails,
+                    CanReceiveMessages = u.CanReceiveMessages,
                     AdminNotes = null
                 })
                 .ToListAsync();
@@ -2221,7 +2223,9 @@ namespace DreamCleaningBackend.Controllers
                 IsActive = targetUser.IsActive,
                 AuthProvider = targetUser.AuthProvider,
                 FirstTimeOrder = targetUser.FirstTimeOrder,
-                CanReceiveCommunications = targetUser.CanReceiveCommunications
+                CanReceiveCommunications = targetUser.CanReceiveCommunications,
+                CanReceiveEmails = targetUser.CanReceiveEmails,
+                CanReceiveMessages = targetUser.CanReceiveMessages
             };
 
             if (!Enum.TryParse<UserRole>(dto.Role, out var newRole))
@@ -2235,6 +2239,8 @@ namespace DreamCleaningBackend.Controllers
             targetUser.IsActive = dto.IsActive;
             targetUser.FirstTimeOrder = dto.FirstTimeOrder;
             targetUser.CanReceiveCommunications = dto.CanReceiveCommunications;
+            targetUser.CanReceiveEmails = dto.CanReceiveEmails;
+            targetUser.CanReceiveMessages = dto.CanReceiveMessages;
             targetUser.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
@@ -2310,11 +2316,20 @@ namespace DreamCleaningBackend.Controllers
             if (targetUser == null)
                 return NotFound();
 
-            targetUser.CanReceiveCommunications = dto.CanReceiveCommunications;
+            if (dto.CanReceiveEmails.HasValue)
+                targetUser.CanReceiveEmails = dto.CanReceiveEmails.Value;
+            if (dto.CanReceiveMessages.HasValue)
+                targetUser.CanReceiveMessages = dto.CanReceiveMessages.Value;
+            if (!dto.CanReceiveEmails.HasValue && !dto.CanReceiveMessages.HasValue)
+            {
+                targetUser.CanReceiveCommunications = dto.CanReceiveCommunications;
+                targetUser.CanReceiveEmails = dto.CanReceiveCommunications;
+                targetUser.CanReceiveMessages = dto.CanReceiveCommunications;
+            }
             targetUser.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            return Ok(new { canReceiveCommunications = dto.CanReceiveCommunications, message = "Communication preference updated." });
+            return Ok(new { canReceiveEmails = targetUser.CanReceiveEmails, canReceiveMessages = targetUser.CanReceiveMessages, message = "Communication preference updated." });
         }
 
         /// <summary>Admin or SuperAdmin: update admin notes for a user. Requires canUpdate.</summary>
@@ -2886,6 +2901,8 @@ namespace DreamCleaningBackend.Controllers
                     SubscriptionExpiryDate = user.SubscriptionExpiryDate,
                     CreatedAt = user.CreatedAt,
                     CanReceiveCommunications = user.CanReceiveCommunications,
+                    CanReceiveEmails = user.CanReceiveEmails,
+                    CanReceiveMessages = user.CanReceiveMessages,
                     TotalOrders = totalOrders,
                     TotalSpent = totalSpent,
                     LastOrderDate = lastOrderDate,

@@ -17,6 +17,8 @@ namespace DreamCleaningBackend.DTOs
         public DateTime? SubscriptionExpiryDate { get; set; }
         public DateTime CreatedAt { get; set; }
         public bool CanReceiveCommunications { get; set; }
+        public bool CanReceiveEmails { get; set; }
+        public bool CanReceiveMessages { get; set; }
 
         // Statistics
         public int TotalOrders { get; set; }

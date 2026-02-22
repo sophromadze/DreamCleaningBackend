@@ -331,6 +331,8 @@ namespace DreamCleaningBackend.DTOs
         public DateTime CreatedAt { get; set; }
         /// <summary>When true, user can receive emails and (in future) SMS from the company.</summary>
         public bool CanReceiveCommunications { get; set; }
+        public bool CanReceiveEmails { get; set; }
+        public bool CanReceiveMessages { get; set; }
         /// <summary>Admin-only notes about this user. Not visible to the user.</summary>
         public string? AdminNotes { get; set; }
         /// <summary>True if user has an active SignalR connection (on site).</summary>
@@ -400,12 +402,16 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>When true, user can receive emails and (in future) SMS from the company.</summary>
         public bool CanReceiveCommunications { get; set; }
+        public bool CanReceiveEmails { get; set; }
+        public bool CanReceiveMessages { get; set; }
     }
 
     /// <summary>Admin/SuperAdmin: update only the communication preference. Requires canUpdate.</summary>
     public class CommunicationPreferenceDto
     {
         public bool CanReceiveCommunications { get; set; }
+        public bool? CanReceiveEmails { get; set; }
+        public bool? CanReceiveMessages { get; set; }
     }
 
     /// <summary>Admin/SuperAdmin: update admin notes for a user. Requires canUpdate.</summary>

@@ -180,6 +180,8 @@ namespace DreamCleaningBackend.Services
                 if (!string.IsNullOrEmpty(oldAccount.ProfilePictureUrl))
                     newAccount.ProfilePictureUrl = oldAccount.ProfilePictureUrl;
                 newAccount.CanReceiveCommunications = oldAccount.CanReceiveCommunications;
+                newAccount.CanReceiveEmails = oldAccount.CanReceiveEmails;
+                newAccount.CanReceiveMessages = oldAccount.CanReceiveMessages;
 
                 // 6c. Transfer password for local login — so user can sign in with email/password after merge
                 if (!string.IsNullOrEmpty(oldAccount.PasswordHash) && !string.IsNullOrEmpty(oldAccount.PasswordSalt))
