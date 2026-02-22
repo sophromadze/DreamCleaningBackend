@@ -447,6 +447,7 @@ namespace DreamCleaningBackend.DTOs
         public decimal? Tax { get; set; }
         public decimal? Total { get; set; }
         public decimal? DiscountAmount { get; set; }
+        public decimal? SubscriptionDiscountAmount { get; set; }
         public List<SuperAdminOrderServiceUpdateDto>? Services { get; set; }
         public List<SuperAdminOrderExtraServiceUpdateDto>? ExtraServices { get; set; }
     }
@@ -460,7 +461,10 @@ namespace DreamCleaningBackend.DTOs
 
     public class SuperAdminOrderExtraServiceUpdateDto
     {
+        /// <summary>Existing row: set to OrderExtraService.Id. New row: set to 0.</summary>
         public int OrderExtraServiceId { get; set; }
+        /// <summary>Required when adding a new extra (OrderExtraServiceId == 0).</summary>
+        public int? ExtraServiceId { get; set; }
         public int Quantity { get; set; }
         public decimal Hours { get; set; }
         public decimal Cost { get; set; }

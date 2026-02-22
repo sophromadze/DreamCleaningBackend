@@ -527,7 +527,12 @@ namespace DreamCleaningBackend.Services
             // Recalculate totals
             order.SubTotal = newSubTotal;
 
-            // Reapply original discount
+            // Use recalculated discount from frontend when provided (so discount scales with subtotal)
+            if (updateOrderDto.DiscountAmount.HasValue)
+                order.DiscountAmount = updateOrderDto.DiscountAmount.Value;
+            if (updateOrderDto.SubscriptionDiscountAmount.HasValue)
+                order.SubscriptionDiscountAmount = updateOrderDto.SubscriptionDiscountAmount.Value;
+
             var totalDiscounts = order.DiscountAmount + (order.SubscriptionDiscountAmount == 0 ? 0 : order.SubscriptionDiscountAmount);
             var discountedSubTotal = newSubTotal - totalDiscounts;
             order.Tax = discountedSubTotal * 0.08875m; // 8.875% tax
@@ -996,8 +1001,10 @@ namespace DreamCleaningBackend.Services
                 newTotalDuration = updateOrderDto.TotalDuration;
             }
 
-            // Calculate new totals - DO NOT MODIFY THE ORDER OBJECT
-            var totalDiscounts = order.DiscountAmount + order.SubscriptionDiscountAmount;
+            // Use recalculated discount from DTO when provided (so additional amount matches frontend)
+            var discountAmount = updateOrderDto.DiscountAmount ?? order.DiscountAmount;
+            var subscriptionDiscountAmount = updateOrderDto.SubscriptionDiscountAmount ?? order.SubscriptionDiscountAmount;
+            var totalDiscounts = discountAmount + subscriptionDiscountAmount;
             var discountedSubTotal = newSubTotal - totalDiscounts;
             var newTax = Math.Round(discountedSubTotal * 0.08875m, 2); // 8.875% tax
             var newTotal = Math.Round(discountedSubTotal + newTax + updateOrderDto.Tips + updateOrderDto.CompanyDevelopmentTips, 2);
@@ -1293,6 +1300,7 @@ namespace DreamCleaningBackend.Services
             if (dto.CancellationReason != null) order.CancellationReason = dto.CancellationReason;
             if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
             if (dto.DiscountAmount.HasValue) order.DiscountAmount = dto.DiscountAmount.Value;
+            if (dto.SubscriptionDiscountAmount.HasValue) order.SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount.Value;
 
             // Auto-calculate tax/total like booking does (so SuperAdmin only needs to edit SubTotal).
             // discountedSubTotal = subTotal - discountAmount - subscriptionDiscountAmount
@@ -1319,10 +1327,39 @@ namespace DreamCleaningBackend.Services
             }
             if (dto.ExtraServices != null)
             {
+                var existingExtraIdsInDto = dto.ExtraServices.Where(x => x.OrderExtraServiceId != 0).Select(x => x.OrderExtraServiceId).ToHashSet();
                 foreach (var e in dto.ExtraServices)
                 {
-                    var oes = order.OrderExtraServices?.FirstOrDefault(x => x.Id == e.OrderExtraServiceId);
-                    if (oes != null) { oes.Quantity = e.Quantity; oes.Hours = e.Hours; oes.Cost = e.Cost; }
+                    if (e.OrderExtraServiceId != 0)
+                    {
+                        var oes = order.OrderExtraServices?.FirstOrDefault(x => x.Id == e.OrderExtraServiceId);
+                        if (oes != null) { oes.Quantity = e.Quantity; oes.Hours = e.Hours; oes.Cost = e.Cost; }
+                    }
+                    else if (e.ExtraServiceId.HasValue && e.ExtraServiceId.Value != 0)
+                    {
+                        // Add new extra service to the order
+                        var extraService = await _context.ExtraServices.FindAsync(e.ExtraServiceId.Value);
+                        if (extraService != null)
+                        {
+                            if (order.OrderExtraServices == null) order.OrderExtraServices = new List<OrderExtraService>();
+                            order.OrderExtraServices.Add(new OrderExtraService
+                            {
+                                Order = order,
+                                ExtraServiceId = extraService.Id,
+                                Quantity = e.Quantity,
+                                Hours = e.Hours,
+                                Cost = e.Cost,
+                                Duration = 0,
+                                CreatedAt = DateTime.UtcNow
+                            });
+                        }
+                    }
+                }
+                // Remove any order extra service that was removed in the admin form (no longer in DTO)
+                if (order.OrderExtraServices != null)
+                {
+                    foreach (var oes in order.OrderExtraServices.Where(x => !existingExtraIdsInDto.Contains(x.Id)).ToList())
+                        order.OrderExtraServices.Remove(oes);
                 }
             }
 

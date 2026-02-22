@@ -100,6 +100,10 @@ namespace DreamCleaningBackend.DTOs
         public List<BookingExtraServiceDto> ExtraServices { get; set; } = new List<BookingExtraServiceDto>();
         public decimal Tips { get; set; }
         public decimal CompanyDevelopmentTips { get; set; }
+        /// <summary>Recalculated discount when subtotal changes (e.g. order edit). If provided, used instead of existing order discount.</summary>
+        public decimal? DiscountAmount { get; set; }
+        /// <summary>Recalculated subscription discount when subtotal changes. If provided, used instead of existing.</summary>
+        public decimal? SubscriptionDiscountAmount { get; set; }
     }
 
     public class OrderUpdatePaymentDto
