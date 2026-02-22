@@ -3543,6 +3543,34 @@ namespace DreamCleaningBackend.Controllers
                 .Include(pq => pq.ServiceType)
                 .OrderBy(pq => pq.ServiceTypeId)
                 .ThenBy(pq => pq.DisplayOrder)
+                .ThenBy(pq => pq.Id)
+                .Select(pq => new PollQuestionDto
+                {
+                    Id = pq.Id,
+                    Question = pq.Question,
+                    QuestionType = pq.QuestionType,
+                    Options = pq.Options,
+                    IsRequired = pq.IsRequired,
+                    DisplayOrder = pq.DisplayOrder,
+                    IsActive = pq.IsActive,
+                    ServiceTypeId = pq.ServiceTypeId
+                })
+                .ToListAsync();
+
+            return Ok(questions);
+        }
+
+        /// <summary>
+        /// Get all poll questions for a service type (including inactive). Used by admin so questions are visible even when service type or question is inactive.
+        /// </summary>
+        [HttpGet("poll-questions/by-service-type/{serviceTypeId}")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<PollQuestionDto>>> GetPollQuestionsByServiceType(int serviceTypeId)
+        {
+            var questions = await _context.PollQuestions
+                .Where(pq => pq.ServiceTypeId == serviceTypeId)
+                .OrderBy(pq => pq.DisplayOrder)
+                .ThenBy(pq => pq.Id)
                 .Select(pq => new PollQuestionDto
                 {
                     Id = pq.Id,
