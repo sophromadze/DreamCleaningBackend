@@ -72,21 +72,31 @@ namespace DreamCleaningBackend.Services
 
             await AutoCancelExpiredUnpaidOrdersIfNeeded(orders);
 
-            // Precompute any unpaid "additional payments" created by order updates (admin/customer updates)
-            // These are only relevant once the base order has been paid.
+            // Pending additional payment = difference (current total − tips) − (original total − tips), not sum of update amounts.
+            // Only show when order is paid and there are unpaid update history rows.
             var orderIds = orders.Where(o => o.IsPaid).Select(o => o.Id).ToList();
-            var pendingUpdates = await _context.OrderUpdateHistories
+            var unpaidInfo = await _context.OrderUpdateHistories
                 .Where(h => orderIds.Contains(h.OrderId) && !h.IsPaid && h.AdditionalAmount > 0.01m)
                 .GroupBy(h => h.OrderId)
                 .Select(g => new
                 {
                     OrderId = g.Key,
-                    PendingAmount = g.Sum(x => x.AdditionalAmount),
                     LatestHistoryId = g.OrderByDescending(x => x.UpdatedAt).Select(x => (int?)x.Id).FirstOrDefault()
                 })
                 .ToListAsync();
-
-            var pendingByOrderId = pendingUpdates.ToDictionary(x => x.OrderId, x => x);
+            var unpaidOrderIds = new HashSet<int>(unpaidInfo.Select(x => x.OrderId));
+            var latestHistoryByOrderId = unpaidInfo.ToDictionary(x => x.OrderId, x => x.LatestHistoryId);
+            // When order.InitialTotal is 0, use the earliest (any) update history row's original values for the difference
+            var firstOriginalList = await _context.OrderUpdateHistories
+                .Where(h => unpaidOrderIds.Contains(h.OrderId))
+                .GroupBy(h => h.OrderId)
+                .Select(g => new
+                {
+                    OrderId = g.Key,
+                    FirstOriginalWithoutTips = g.OrderBy(x => x.UpdatedAt).Select(x => x.OriginalTotal - x.OriginalTips - x.OriginalCompanyDevelopmentTips).FirstOrDefault()
+                })
+                .ToListAsync();
+            var firstOriginalByOrderId = firstOriginalList.ToDictionary(x => x.OrderId, x => x.FirstOriginalWithoutTips);
 
             return orders.Select(o => new OrderListDto
             {
@@ -108,12 +118,13 @@ namespace DreamCleaningBackend.Services
                 CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                 IsPaid = o.IsPaid,
                 PaidAt = o.PaidAt,
-                PendingUpdateAmount = pendingByOrderId.TryGetValue(o.Id, out var pending)
-                    ? pending.PendingAmount
+                PendingUpdateAmount = o.IsPaid && unpaidOrderIds.Contains(o.Id)
+                    ? Math.Max(0m, (o.Total - o.Tips - o.CompanyDevelopmentTips) - (
+                        (o.InitialTotal != 0 || o.InitialTips != 0 || o.InitialCompanyDevelopmentTips != 0)
+                            ? (o.InitialTotal - o.InitialTips - o.InitialCompanyDevelopmentTips)
+                            : (firstOriginalByOrderId.TryGetValue(o.Id, out var firstOrig) ? firstOrig : 0m)))
                     : 0m,
-                PendingUpdateHistoryId = pendingByOrderId.TryGetValue(o.Id, out var pending2)
-                    ? pending2.LatestHistoryId
-                    : null
+                PendingUpdateHistoryId = latestHistoryByOrderId.TryGetValue(o.Id, out var lid) ? lid : null
             }).ToList();
         }
 
@@ -128,16 +139,39 @@ namespace DreamCleaningBackend.Services
 
             var dto = MapOrderToDto(order);
 
-            // Attach pending update-payment info (if any). Only relevant after the base order is paid.
+            // Pending additional payment = difference (current total − tips) − (original total − tips), not sum of update amounts.
             if (order.IsPaid)
             {
-                var pendingHistories = await _context.OrderUpdateHistories
-                    .Where(h => h.OrderId == order.Id && !h.IsPaid && h.AdditionalAmount > 0.01m)
-                    .OrderByDescending(h => h.UpdatedAt)
-                    .ToListAsync();
-
-                dto.PendingUpdateAmount = pendingHistories.Sum(h => h.AdditionalAmount);
-                dto.PendingUpdateHistoryId = pendingHistories.FirstOrDefault()?.Id;
+                var hasUnpaid = await _context.OrderUpdateHistories
+                    .AnyAsync(h => h.OrderId == order.Id && !h.IsPaid && h.AdditionalAmount > 0.01m);
+                if (hasUnpaid)
+                {
+                    var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
+                    decimal originalWithoutTips;
+                    if (order.InitialTotal != 0 || order.InitialTips != 0 || order.InitialCompanyDevelopmentTips != 0)
+                        originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
+                    else
+                    {
+                        var firstHist = await _context.OrderUpdateHistories
+                            .Where(h => h.OrderId == order.Id)
+                            .OrderBy(h => h.UpdatedAt)
+                            .Select(h => new { h.OriginalTotal, h.OriginalTips, h.OriginalCompanyDevelopmentTips })
+                            .FirstOrDefaultAsync();
+                        originalWithoutTips = firstHist != null ? (firstHist.OriginalTotal - firstHist.OriginalTips - firstHist.OriginalCompanyDevelopmentTips) : 0m;
+                    }
+                    dto.PendingUpdateAmount = Math.Max(0m, currentWithoutTips - originalWithoutTips);
+                    var latest = await _context.OrderUpdateHistories
+                        .Where(h => h.OrderId == order.Id && !h.IsPaid && h.AdditionalAmount > 0.01m)
+                        .OrderByDescending(h => h.UpdatedAt)
+                        .Select(h => (int?)h.Id)
+                        .FirstOrDefaultAsync();
+                    dto.PendingUpdateHistoryId = latest;
+                }
+                else
+                {
+                    dto.PendingUpdateAmount = 0m;
+                    dto.PendingUpdateHistoryId = null;
+                }
             }
             else
             {
@@ -1359,10 +1393,10 @@ namespace DreamCleaningBackend.Services
                         }
                     }
                 }
-                // Remove any order extra service that was removed in the admin form (no longer in DTO)
+                // Remove only existing (persisted) order extra services that are no longer in the DTO. Do not remove newly added items (Id == 0).
                 if (order.OrderExtraServices != null)
                 {
-                    foreach (var oes in order.OrderExtraServices.Where(x => !existingExtraIdsInDto.Contains(x.Id)).ToList())
+                    foreach (var oes in order.OrderExtraServices.Where(x => x.Id != 0 && !existingExtraIdsInDto.Contains(x.Id)).ToList())
                         order.OrderExtraServices.Remove(oes);
                 }
             }
@@ -1416,6 +1450,28 @@ namespace DreamCleaningBackend.Services
             // When this update requires additional payment, notify the customer by email and SMS with payment link.
             if (additionalAmount > 0.01m)
             {
+                // Notify with TOTAL pending additional amount (not just this update's delta).
+                // pendingTotal = (current total - tips) - (original total - tips)
+                // Prefer Order.Initial* snapshot; if missing (legacy), use earliest update-history original; else fallback to this update's original values.
+                var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
+                decimal originalWithoutTips;
+                if (order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m)
+                {
+                    originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
+                }
+                else
+                {
+                    var firstOrig = await _context.OrderUpdateHistories
+                        .Where(h => h.OrderId == order.Id)
+                        .OrderBy(h => h.UpdatedAt)
+                        .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
+                        .FirstOrDefaultAsync();
+                    originalWithoutTips = firstOrig ?? (originalTotal - originalTips - originalCompanyDevelopmentTips);
+                }
+                var pendingTotal = currentWithoutTips - originalWithoutTips;
+                if (pendingTotal < 0m) pendingTotal = 0m;
+                pendingTotal = Math.Round(pendingTotal, 2);
+
                 var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
                 var paymentLink = $"{frontendUrl}/order/{order.Id}/pay";
 
@@ -1433,7 +1489,7 @@ namespace DreamCleaningBackend.Services
                 {
                     try
                     {
-                        await _emailService.SendAdditionalPaymentRequiredEmailAsync(customerEmail, customerName, additionalAmount, order.Id, paymentLink);
+                        await _emailService.SendAdditionalPaymentRequiredEmailAsync(customerEmail, customerName, pendingTotal, order.Id, paymentLink);
                         _logger.LogInformation("Additional payment required email sent to {Email} for Order #{OrderId}", customerEmail, order.Id);
                     }
                     catch (Exception ex)
@@ -1446,7 +1502,7 @@ namespace DreamCleaningBackend.Services
                 {
                     try
                     {
-                        await _smsService.SendAdditionalPaymentRequiredSmsAsync(customerPhone, customerName, additionalAmount, order.Id, paymentLink);
+                        await _smsService.SendAdditionalPaymentRequiredSmsAsync(customerPhone, customerName, pendingTotal, order.Id, paymentLink);
                         _logger.LogInformation("Additional payment required SMS sent to customer for Order #{OrderId}", order.Id);
                     }
                     catch (Exception ex)
