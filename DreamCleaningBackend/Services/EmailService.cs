@@ -1538,5 +1538,73 @@ namespace DreamCleaningBackend.Services
                 // Don't throw - we don't want email failures to break the booking creation
             }
         }
+
+        public async Task SendAdditionalPaymentRequiredEmailAsync(string email, string customerName, decimal additionalAmount, int orderId, string paymentLink)
+        {
+            try
+            {
+                var subject = $"Additional Payment Required - Order #{orderId}";
+                var amountFormatted = additionalAmount.ToString("C");
+
+                var body = $@"
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                    .header {{ background-color: #2196F3; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid #2196F3; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: #2196F3; }}
+                    .button {{ background-color: #2196F3; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
+                    .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
+                </style>
+            </head>
+            <body>
+                <div class='container'>
+                    <div class='header'>
+                        <h1 style='margin: 0;'>Order Updated – Additional Payment Due</h1>
+                    </div>
+                    <div class='content'>
+                        <h2>Hi {customerName}!</h2>
+                        <p>Your order #{orderId} has been updated. An additional payment is required to complete the changes.</p>
+                        
+                        <div class='amount-box'>
+                            <div style='color: #666; font-size: 14px; margin-bottom: 5px;'>Additional Amount Due</div>
+                            <div class='amount'>{amountFormatted}</div>
+                        </div>
+
+                        <p style='text-align: center;'>
+                            <a href='{paymentLink}' class='button' style='color: white !important; text-decoration: none;'>Pay Now</a>
+                        </p>
+
+                        <p style='font-size: 14px; color: #666;'>Or copy and paste this link into your browser:</p>
+                        <p style='font-size: 12px; word-break: break-all; color: #007bff;'>{paymentLink}</p>
+
+                        <p style='margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;'>
+                            <strong>Order:</strong> #{orderId}<br/>
+                            <strong>Additional amount:</strong> {amountFormatted}
+                        </p>
+
+                        <p style='color: #666; font-size: 14px; margin-top: 30px;'>
+                            If you have any questions, please contact us.
+                        </p>
+                    </div>
+                    <div class='footer'>
+                        <p>Thank you for choosing Dream Cleaning!</p>
+                        <p>&copy; {DateTime.UtcNow.Year} Dream Cleaning. All rights reserved.</p>
+                    </div>
+                </div>
+            </body>
+            </html>";
+
+                await SendEmailAsync(email, subject, body);
+                _logger.LogInformation($"Additional payment required email sent to {email} for Order #{orderId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send additional payment required email to {email} for Order #{orderId}");
+            }
+        }
     }
 }

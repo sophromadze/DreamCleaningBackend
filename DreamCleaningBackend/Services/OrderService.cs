@@ -17,14 +17,18 @@ namespace DreamCleaningBackend.Services
         private readonly ApplicationDbContext _context;
         private readonly IStripeService _stripeService;
         private readonly IEmailService _emailService;
+        private readonly ISmsService _smsService;
+        private readonly IConfiguration _configuration;
         private readonly ILogger<OrderService> _logger;
 
-        public OrderService(IOrderRepository orderRepository, ApplicationDbContext context, IStripeService stripeService, IEmailService emailService, ILogger<OrderService> logger)
+        public OrderService(IOrderRepository orderRepository, ApplicationDbContext context, IStripeService stripeService, IEmailService emailService, ISmsService smsService, IConfiguration configuration, ILogger<OrderService> logger)
         {
             _orderRepository = orderRepository;
             _context = context;
             _stripeService = stripeService;
             _emailService = emailService;
+            _smsService = smsService;
+            _configuration = configuration;
             _logger = logger;
         }
 
@@ -1409,7 +1413,48 @@ namespace DreamCleaningBackend.Services
 
             _context.OrderUpdateHistories.Add(updateHistory);
 
-            // Do not send "order updated" email to company when admin updates - only when customer updates (see UpdateOrder).
+            // When this update requires additional payment, notify the customer by email and SMS with payment link.
+            if (additionalAmount > 0.01m)
+            {
+                var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+                var paymentLink = $"{frontendUrl}/order/{order.Id}/pay";
+
+                var user = await _context.Users.FindAsync(order.UserId);
+                var customerName = !string.IsNullOrWhiteSpace(order.ContactFirstName) || !string.IsNullOrWhiteSpace(order.ContactLastName)
+                    ? $"{order.ContactFirstName?.Trim()} {order.ContactLastName?.Trim()}".Trim()
+                    : (user != null ? $"{user.FirstName?.Trim()} {user.LastName?.Trim()}".Trim() : null);
+                if (string.IsNullOrWhiteSpace(customerName))
+                    customerName = user?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
+
+                var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : user?.Email;
+                var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : user?.Phone;
+
+                if (!string.IsNullOrWhiteSpace(customerEmail))
+                {
+                    try
+                    {
+                        await _emailService.SendAdditionalPaymentRequiredEmailAsync(customerEmail, customerName, additionalAmount, order.Id, paymentLink);
+                        _logger.LogInformation("Additional payment required email sent to {Email} for Order #{OrderId}", customerEmail, order.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to send additional payment required email to {Email} for Order #{OrderId}", customerEmail, order.Id);
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(customerPhone))
+                {
+                    try
+                    {
+                        await _smsService.SendAdditionalPaymentRequiredSmsAsync(customerPhone, customerName, additionalAmount, order.Id, paymentLink);
+                        _logger.LogInformation("Additional payment required SMS sent to customer for Order #{OrderId}", order.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to send additional payment required SMS for Order #{OrderId}", order.Id);
+                    }
+                }
+            }
 
             await _context.SaveChangesAsync();
         }

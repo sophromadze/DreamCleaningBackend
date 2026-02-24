@@ -35,5 +35,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendOrderUpdateNotificationAsync(int orderId, string customerEmail, decimal additionalAmount);
         Task SendCompanyAdditionalPaymentReceivedAsync(int orderId, string customerEmail, string customerName, decimal amountPaid);
         Task SendPaymentReminderEmailAsync(string email, string customerName, decimal amount, int orderId, string orderLink);
+        /// <summary>Notify customer that their order was updated and an additional payment is required. Includes payment link.</summary>
+        Task SendAdditionalPaymentRequiredEmailAsync(string email, string customerName, decimal additionalAmount, int orderId, string paymentLink);
     }
 }

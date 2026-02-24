@@ -29,5 +29,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// Payment reminder SMS template for admin-created orders. Sends reminder to pay for the order.
         /// </summary>
         Task SendPaymentReminderSmsAsync(string phoneNumber, string customerName, decimal amount, int orderId, string orderLink);
+
+        /// <summary>
+        /// Notify customer that their order was updated and an additional payment is required. Includes payment link.
+        /// </summary>
+        Task SendAdditionalPaymentRequiredSmsAsync(string phoneNumber, string customerName, decimal additionalAmount, int orderId, string paymentLink);
     }
 }

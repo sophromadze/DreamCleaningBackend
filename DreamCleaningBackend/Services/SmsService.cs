@@ -115,6 +115,14 @@ namespace DreamCleaningBackend.Services
             await SendSmsAsync(phoneNumber, msg);
         }
 
+        public async Task SendAdditionalPaymentRequiredSmsAsync(string phoneNumber, string customerName, decimal additionalAmount, int orderId, string paymentLink)
+        {
+            var amountFormatted = additionalAmount.ToString("C");
+            var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
+            var msg = $"Hi {firstName}, your order #{orderId} was updated. An additional payment of {amountFormatted} is required. Pay here: {paymentLink}";
+            await SendSmsAsync(phoneNumber, msg);
+        }
+
         /// <summary>
         /// Normalize US/NA phone to E.164 (e.g. +19295551234). Handles 10-digit, 11-digit with leading 1, or already E.164.
         /// </summary>
