@@ -1,4 +1,4 @@
-﻿using DreamCleaningBackend.Hubs;
+using DreamCleaningBackend.Hubs;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.SignalR;
 
@@ -30,9 +30,20 @@ namespace DreamCleaningBackend.Services
                 .SendAsync("RoleChanged", new
                 {
                     newRole = newRole,
-                    message = $"Your role has been updated to {newRole}. Please refresh to see the changes.",
+                    message = $"Your role has been updated to {newRole}. Please log in again to access your new permissions.",
                     timestamp = DateTime.UtcNow,
                     shouldRefresh = true
+                });
+        }
+
+        public async Task NotifyUserAccountUpdated(int userId, string title, string message)
+        {
+            await _hubContext.Clients.Group($"User_{userId}")
+                .SendAsync("AccountUpdated", new
+                {
+                    title = title,
+                    message = message,
+                    timestamp = DateTime.UtcNow
                 });
         }
 

@@ -29,6 +29,9 @@ namespace DreamCleaningBackend.Controllers
         private readonly IConfiguration _configuration;
         private readonly ICleanerService _cleanerService;
         private readonly ISpecialOfferService _specialOfferService;
+        private readonly IProfileService _profileService;
+        private readonly IEmailService _emailService;
+        private readonly ISmsService _smsService;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
@@ -37,7 +40,10 @@ namespace DreamCleaningBackend.Controllers
             IAuditService auditService,
             IConfiguration configuration,
             ICleanerService cleanerService,
-            ISpecialOfferService specialOfferService)
+            ISpecialOfferService specialOfferService,
+            IProfileService profileService,
+            IEmailService emailService,
+            ISmsService smsService)
         {
             _context = context;
             _permissionService = permissionService;
@@ -47,6 +53,9 @@ namespace DreamCleaningBackend.Controllers
             _configuration = configuration;
             _cleanerService = cleanerService;
             _specialOfferService = specialOfferService;
+            _profileService = profileService;
+            _emailService = emailService;
+            _smsService = smsService;
         }
 
         // Service Types Management
@@ -2257,8 +2266,29 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var userManagementService = HttpContext.RequestServices.GetRequiredService<IUserManagementService>();
-                await userManagementService.NotifyUserRoleChanged(id, newRole.ToString());
-                await Task.Delay(500);
+                var changes = new List<string>();
+                if (originalUser.FirstName != targetUser.FirstName || originalUser.LastName != targetUser.LastName)
+                    changes.Add("name");
+                if (originalUser.Email != targetUser.Email)
+                    changes.Add("email");
+                if (originalUser.Phone != targetUser.Phone)
+                    changes.Add("phone number");
+                if (originalUser.Role != targetUser.Role)
+                    changes.Add("role");
+                if (originalUser.IsActive != targetUser.IsActive)
+                    changes.Add("account status");
+                if (changes.Count > 0)
+                {
+                    var title = changes.Count == 1 ? "Account Updated" : "Account Updated";
+                    var what = changes.Count == 1
+                        ? changes[0]
+                        : string.Join(", ", changes.Take(changes.Count - 1)) + " and " + changes[changes.Count - 1];
+                    var message = $"Your {what} was updated. Please log in again to continue.";
+                    if (changes.Count > 1)
+                        message = $"Your {what} were updated. Please log in again to continue.";
+                    await userManagementService.NotifyUserAccountUpdated(id, title, message);
+                    await Task.Delay(500);
+                }
             }
             catch { /* ignore */ }
 
@@ -2855,6 +2885,71 @@ namespace DreamCleaningBackend.Controllers
                     .ToListAsync();
 
                 return Ok(apartments);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>SuperAdmin-only: add an address (apartment) for another user.</summary>
+        [HttpPost("users/{userId}/apartments")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<ApartmentDto>> AddUserApartment(int userId, [FromBody] CreateApartmentDto dto)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+            var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
+            if (!userExists)
+                return NotFound(new { message = "User not found" });
+            try
+            {
+                var apartment = await _profileService.AddApartment(userId, dto);
+                return Ok(apartment);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>SuperAdmin-only: update an address (apartment) for another user.</summary>
+        [HttpPut("users/{userId}/apartments/{apartmentId}")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<ApartmentDto>> UpdateUserApartment(int userId, int apartmentId, [FromBody] ApartmentDto dto)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+            var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
+            if (!userExists)
+                return NotFound(new { message = "User not found" });
+            if (dto.Id != 0 && dto.Id != apartmentId)
+                return BadRequest(new { message = "Apartment ID mismatch" });
+            try
+            {
+                var apartment = await _profileService.UpdateApartment(userId, apartmentId, dto);
+                return Ok(apartment);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>SuperAdmin-only: delete an address (apartment) for another user.</summary>
+        [HttpDelete("users/{userId}/apartments/{apartmentId}")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> DeleteUserApartment(int userId, int apartmentId)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+            var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
+            if (!userExists)
+                return NotFound(new { message = "User not found" });
+            try
+            {
+                await _profileService.DeleteApartment(userId, apartmentId);
+                return Ok(new { message = "Address deleted successfully" });
             }
             catch (Exception ex)
             {
@@ -3749,6 +3844,79 @@ namespace DreamCleaningBackend.Controllers
                 .ToListAsync();
 
             return Ok(history);
+        }
+
+        /// <summary>Send a gentle reminder (email + SMS) to the customer about their unpaid additional payment. Requires View or Update.</summary>
+        [HttpPost("orders/{orderId}/send-payment-reminder")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> SendPaymentReminder(int orderId)
+        {
+            var order = await _context.Orders
+                .Include(o => o.User)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
+            decimal originalWithoutTips;
+            if (order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m)
+                originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
+            else
+            {
+                var firstHist = await _context.OrderUpdateHistories
+                    .Where(h => h.OrderId == orderId)
+                    .OrderBy(h => h.UpdatedAt)
+                    .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
+                    .FirstOrDefaultAsync();
+                originalWithoutTips = firstHist ?? 0m;
+            }
+            var totalDelta = Math.Max(0m, currentWithoutTips - originalWithoutTips);
+            var alreadyPaid = await _context.OrderUpdateHistories
+                .Where(h => h.OrderId == orderId && h.IsPaid)
+                .SumAsync(h => h.AdditionalAmount);
+            var amountToSend = Math.Round(Math.Max(0m, totalDelta - alreadyPaid), 2);
+            if (amountToSend < 0.01m)
+                return BadRequest(new { message = "No unpaid additional payment for this order." });
+
+            var customerName = !string.IsNullOrWhiteSpace(order.ContactFirstName) || !string.IsNullOrWhiteSpace(order.ContactLastName)
+                ? $"{order.ContactFirstName?.Trim()} {order.ContactLastName?.Trim()}".Trim()
+                : (order.User != null ? $"{order.User.FirstName?.Trim()} {order.User.LastName?.Trim()}".Trim() : "Valued Customer");
+            if (string.IsNullOrWhiteSpace(customerName))
+                customerName = order.User?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
+            var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : order.User?.Email;
+            var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
+
+            var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+            var paymentLink = $"{frontendUrl.TrimEnd('/')}/order/{orderId}/pay";
+
+            if (!string.IsNullOrWhiteSpace(customerEmail))
+            {
+                try
+                {
+                    await _emailService.SendAdditionalPaymentReminderEmailAsync(customerEmail, customerName, amountToSend, orderId, paymentLink);
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(new { message = "Reminder email could not be sent: " + ex.Message });
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(customerPhone) && _smsService.IsSmsEnabled())
+            {
+                try
+                {
+                    var e164 = SmsService.NormalizePhoneToE164(customerPhone);
+                    if (!string.IsNullOrEmpty(e164))
+                        await _smsService.SendAdditionalPaymentReminderSmsAsync(e164, customerName, amountToSend, orderId, paymentLink);
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(new { message = "Reminder SMS could not be sent: " + ex.Message });
+                }
+            }
+            if (string.IsNullOrWhiteSpace(customerEmail) && (string.IsNullOrWhiteSpace(customerPhone) || !_smsService.IsSmsEnabled()))
+                return BadRequest(new { message = "No email or phone available to send the reminder." });
+
+            return Ok(new { message = "Payment reminder sent successfully." });
         }
     }
 }

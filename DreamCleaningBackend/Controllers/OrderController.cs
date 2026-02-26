@@ -226,28 +226,46 @@ namespace DreamCleaningBackend.Controllers
                 if (order.Status == "Cancelled" || order.Status == "Done")
                     return BadRequest(new { message = $"Cannot pay for a {order.Status.ToLower()} order" });
 
+                // Use same unpaid amount as displayed: (current total − tips) − (original total − tips) − already paid
+                var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
+                decimal originalWithoutTips;
+                if (order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m)
+                    originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
+                else
+                {
+                    var firstHist = await _context.OrderUpdateHistories
+                        .Where(h => h.OrderId == orderId)
+                        .OrderBy(h => h.UpdatedAt)
+                        .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
+                        .FirstOrDefaultAsync();
+                    originalWithoutTips = firstHist ?? 0m;
+                }
+                var totalDelta = Math.Max(0m, currentWithoutTips - originalWithoutTips);
+                var alreadyPaid = await _context.OrderUpdateHistories
+                    .Where(h => h.OrderId == orderId && h.IsPaid)
+                    .SumAsync(h => h.AdditionalAmount);
+                var amountToCharge = Math.Max(0m, totalDelta - alreadyPaid);
+                amountToCharge = Math.Round(amountToCharge, 2);
+
+                if (amountToCharge < 0.01m)
+                    return BadRequest(new { message = "No pending additional payment found for this order" });
+
                 var unpaidHistories = await _context.OrderUpdateHistories
                     .Where(h => h.OrderId == orderId && !h.IsPaid && h.AdditionalAmount > 0.01m)
                     .OrderByDescending(h => h.UpdatedAt)
                     .ToListAsync();
 
-                if (!unpaidHistories.Any())
-                    return BadRequest(new { message = "No pending additional payment found for this order" });
-
-                var additionalAmount = unpaidHistories.Sum(h => h.AdditionalAmount);
-
                 var metadata = new Dictionary<string, string>
                 {
                     { "orderId", order.Id.ToString() },
                     { "userId", userId.ToString() },
-                    // Keep the same type used elsewhere so existing webhook logic applies.
                     { "type", "order_update" },
-                    { "additionalAmount", additionalAmount.ToString("F2") }
+                    { "additionalAmount", amountToCharge.ToString("F2") }
                 };
 
-                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(additionalAmount, metadata);
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amountToCharge, metadata);
 
-                // Attach the payment intent id to all unpaid histories so we can mark them paid consistently
+                // Attach the payment intent id to all unpaid histories so we can mark them paid when they pay this amount
                 foreach (var h in unpaidHistories)
                 {
                     h.PaymentIntentId = paymentIntent.Id;
@@ -257,7 +275,7 @@ namespace DreamCleaningBackend.Controllers
                 return Ok(new OrderUpdatePaymentDto
                 {
                     OrderId = order.Id,
-                    AdditionalAmount = additionalAmount,
+                    AdditionalAmount = amountToCharge,
                     UpdateHistoryId = unpaidHistories.FirstOrDefault()?.Id,
                     PaymentIntentId = paymentIntent.Id,
                     PaymentClientSecret = paymentIntent.ClientSecret
