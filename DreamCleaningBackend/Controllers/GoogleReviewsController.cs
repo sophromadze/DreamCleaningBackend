@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 using System.Text.Json;
 
 namespace DreamCleaningBackend.Controllers
@@ -7,23 +8,36 @@ namespace DreamCleaningBackend.Controllers
     [ApiController]
     public class GoogleReviewsController : ControllerBase
     {
+        private const int CacheDurationHours = 168; // 7 days
+        private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(CacheDurationHours);
+
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
         private readonly ILogger<GoogleReviewsController> _logger;
+        private readonly IMemoryCache _cache;
 
         public GoogleReviewsController(
             IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
-            ILogger<GoogleReviewsController> logger)
+            ILogger<GoogleReviewsController> logger,
+            IMemoryCache cache)
         {
             _httpClient = httpClientFactory.CreateClient();
             _configuration = configuration;
             _logger = logger;
+            _cache = cache;
         }
 
         [HttpGet("{placeId}")]
         public async Task<IActionResult> GetGoogleReviews(string placeId)
         {
+            var cacheKey = $"GoogleReviews:{placeId}";
+
+            if (_cache.TryGetValue(cacheKey, out string? cachedContent))
+            {
+                return Content(cachedContent, "application/json");
+            }
+
             try
             {
                 var apiKey = _configuration["GoogleMaps:ApiKey"];
@@ -51,6 +65,8 @@ namespace DreamCleaningBackend.Controllers
                         _logger.LogError($"Google Maps API error: {errorMessage.GetString()}");
                         return BadRequest(new { error = errorMessage.GetString() });
                     }
+
+                    _cache.Set(cacheKey, content, new MemoryCacheEntryOptions().SetAbsoluteExpiration(CacheDuration));
 
                     return Ok(jsonDocument.RootElement);
                 }
