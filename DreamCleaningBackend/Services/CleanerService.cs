@@ -30,24 +30,25 @@ namespace DreamCleaningBackend.Services
                 .ToListAsync(); // Execute query first
 
             // Then map to DTOs in memory where we can use null propagating operators
-            var result = allOrders.Select(o => new CleanerCalendarDto
-            {
-                OrderId = o.Id,
-                ClientName = $"{o.ContactFirstName} {o.ContactLastName}",
-                ServiceDate = o.ServiceDate,
-                ServiceTime = o.ServiceTime.ToString(),
-                ServiceAddress = o.ServiceAddress ?? "Address not provided",
-                ServiceTypeName = o.ServiceType.Name,
-                TotalDuration = o.TotalDuration,
-                TipsForCleaner = o.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == userId)?.TipsForCleaner,
-                IsAssignedToCleaner = o.OrderCleaners.Any(oc => oc.CleanerId == userId),
-                Status = o.Status // Include status to distinguish completed orders
-            })
-            .OrderBy(o => o.ServiceDate)
-            .ThenBy(o => o.ServiceTime)
-            .ToList();
+            var result = allOrders
+                .Select(o => new CleanerCalendarDto
+                {
+                    OrderId = o.Id,
+                    ClientName = $"{o.ContactFirstName} {o.ContactLastName}",
+                    ServiceDate = o.ServiceDate,
+                    ServiceTime = o.ServiceTime.ToString(),
+                    ServiceAddress = o.ServiceAddress ?? "Address not provided",
+                    ServiceTypeName = o.ServiceType.Name,
+                    TotalDuration = o.TotalDuration,
+                    TipsForCleaner = o.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == userId)?.TipsForCleaner,
+                    IsAssignedToCleaner = o.OrderCleaners.Any(oc => oc.CleanerId == userId),
+                    Status = o.Status // Include status to distinguish completed orders
+                })
+                .Where(dto => userRole != "Cleaner" || dto.IsAssignedToCleaner) // Cleaners see only orders they are assigned to
+                .OrderBy(o => o.ServiceDate)
+                .ThenBy(o => o.ServiceTime)
+                .ToList();
 
-            // Show all orders to everyone, but IsAssignedToCleaner indicates if the current user is assigned
             return result;
         }
 
