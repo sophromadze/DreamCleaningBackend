@@ -110,7 +110,7 @@ namespace DreamCleaningBackend.Controllers
         {
             var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
             if (mail == null) return NotFound();
-            if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled) return BadRequest("Cannot update mail that is already sent or cancelled.");
+            if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled) return BadRequest("Cannot update mail that is already sent.");
             if (dto.Subject != null) mail.Subject = dto.Subject.Trim();
             if (dto.Content != null) mail.Content = dto.Content;
             if (dto.TargetRoles != null) { mail.TargetRoles = dto.TargetRoles; mail.RecipientCount = await CountRecipients(ParseRoleNames(dto.TargetRoles)); }
@@ -152,21 +152,32 @@ namespace DreamCleaningBackend.Controllers
         {
             var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
             if (mail == null) return NotFound();
-            if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled) return BadRequest("Mail already sent or cancelled.");
+            if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled) return BadRequest("Mail already sent.");
             await SendMailNow(mail);
             return Ok(MapToDto(mail));
         }
 
-        [HttpPost("{id}/cancel")]
+        [HttpPost("{id}/disable")]
         [RequirePermission(Permission.Update)]
-        public async Task<ActionResult<ScheduledMailDto>> Cancel(int id)
+        public async Task<ActionResult<ScheduledMailDto>> Disable(int id)
         {
             var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
             if (mail == null) return NotFound();
-            if (mail.Status != MailStatus.Scheduled) return BadRequest("Only scheduled mails can be cancelled.");
-            mail.Status = MailStatus.Cancelled;
+            if (mail.Status != MailStatus.Scheduled) return BadRequest("Only scheduled mails can be disabled.");
             mail.IsActive = false;
-            mail.NextScheduledAt = null;
+            mail.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+            return Ok(MapToDto(mail));
+        }
+
+        [HttpPost("{id}/enable")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<ScheduledMailDto>> Enable(int id)
+        {
+            var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
+            if (mail == null) return NotFound();
+            if (mail.Status != MailStatus.Scheduled) return BadRequest("Only scheduled mails can be enabled.");
+            mail.IsActive = true;
             mail.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
             return Ok(MapToDto(mail));

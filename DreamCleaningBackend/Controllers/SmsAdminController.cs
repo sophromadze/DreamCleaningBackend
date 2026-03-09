@@ -111,7 +111,7 @@ namespace DreamCleaningBackend.Controllers
         {
             var sms = await _context.ScheduledSms.Include(s => s.CreatedBy).FirstOrDefaultAsync(s => s.Id == id);
             if (sms == null) return NotFound();
-            if (sms.Status != MailStatus.Draft && sms.Status != MailStatus.Scheduled) return BadRequest("Cannot update SMS that is already sent or cancelled.");
+            if (sms.Status != MailStatus.Draft && sms.Status != MailStatus.Scheduled) return BadRequest("Cannot update SMS that is already sent.");
             if (dto.Content != null) sms.Content = dto.Content.Length > 1600 ? dto.Content[..1600] : dto.Content;
             if (dto.TargetRoles != null) { sms.TargetRoles = dto.TargetRoles; sms.RecipientCount = await CountSmsRecipients(ParseRoleNames(dto.TargetRoles)); }
             if (dto.ScheduleType.HasValue) sms.ScheduleType = (ScheduleType)dto.ScheduleType.Value;
@@ -152,23 +152,34 @@ namespace DreamCleaningBackend.Controllers
         {
             var sms = await _context.ScheduledSms.Include(s => s.CreatedBy).FirstOrDefaultAsync(s => s.Id == id);
             if (sms == null) return NotFound();
-            if (sms.Status != MailStatus.Draft && sms.Status != MailStatus.Scheduled) return BadRequest("SMS already sent or cancelled.");
+            if (sms.Status != MailStatus.Draft && sms.Status != MailStatus.Scheduled) return BadRequest("SMS already sent.");
             if (!_smsService.IsSmsEnabled())
                 return BadRequest("SMS is not configured or enabled.");
             await SendSmsNow(sms);
             return Ok(MapToDto(sms));
         }
 
-        [HttpPost("{id}/cancel")]
+        [HttpPost("{id}/disable")]
         [RequirePermission(Permission.Update)]
-        public async Task<ActionResult<ScheduledSmsDto>> Cancel(int id)
+        public async Task<ActionResult<ScheduledSmsDto>> Disable(int id)
         {
             var sms = await _context.ScheduledSms.Include(s => s.CreatedBy).FirstOrDefaultAsync(s => s.Id == id);
             if (sms == null) return NotFound();
-            if (sms.Status != MailStatus.Scheduled) return BadRequest("Only scheduled SMS can be cancelled.");
-            sms.Status = MailStatus.Cancelled;
+            if (sms.Status != MailStatus.Scheduled) return BadRequest("Only scheduled SMS can be disabled.");
             sms.IsActive = false;
-            sms.NextScheduledAt = null;
+            sms.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+            return Ok(MapToDto(sms));
+        }
+
+        [HttpPost("{id}/enable")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<ScheduledSmsDto>> Enable(int id)
+        {
+            var sms = await _context.ScheduledSms.Include(s => s.CreatedBy).FirstOrDefaultAsync(s => s.Id == id);
+            if (sms == null) return NotFound();
+            if (sms.Status != MailStatus.Scheduled) return BadRequest("Only scheduled SMS can be enabled.");
+            sms.IsActive = true;
             sms.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
             return Ok(MapToDto(sms));
