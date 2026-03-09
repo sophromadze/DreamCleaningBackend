@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 
 namespace DreamCleaningBackend.Helpers
 {
@@ -42,12 +42,19 @@ namespace DreamCleaningBackend.Helpers
                 return false;
             }
 
+            // Only printable ASCII (Latin letters, numbers, and common keyboard symbols) — no other scripts
+            if (!Regex.IsMatch(password, @"^[\x20-\x7E]+$"))
+            {
+                errorMessage = "Password may only contain Latin letters (A–Z, a–z), numbers, and common keyboard symbols (e.g. ! @ # $ %).";
+                return false;
+            }
+
             return true;
         }
 
         public static string GetPasswordRequirementsMessage()
         {
-            return "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number.";
+            return "Password must be 8+ characters, Latin letters, numbers, and common keyboard symbols allowed; at least one uppercase, one lowercase, and one number.";
         }
     }
 }

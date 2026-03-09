@@ -284,14 +284,31 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                // Get user ID from JWT token
-                var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-
+                var userId = int.Parse(User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
                 if (userId == 0)
                     return Unauthorized(new { message = "User not found" });
 
                 await _authService.ChangePassword(userId, changePasswordDto);
                 return Ok(new { message = "Password changed successfully" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("set-password")]
+        [Authorize]
+        public async Task<ActionResult> SetPassword(SetPasswordDto setPasswordDto)
+        {
+            try
+            {
+                var userId = int.Parse(User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                if (userId == 0)
+                    return Unauthorized(new { message = "User not found" });
+
+                await _authService.SetPassword(userId, setPasswordDto);
+                return Ok(new { message = "Password set successfully" });
             }
             catch (Exception ex)
             {
@@ -371,6 +388,15 @@ namespace DreamCleaningBackend.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        [HttpGet("reset-password-info")]
+        public async Task<ActionResult<object>> GetResetPasswordInfo([FromQuery] string token)
+        {
+            var info = await _authService.GetResetPasswordInfoAsync(token);
+            if (!info.HasValue || string.IsNullOrEmpty(info.Value.Email))
+                return NotFound(new { message = "Invalid or expired link" });
+            return Ok(new { email = info.Value.Email, isSetPassword = info.Value.IsSetPassword });
         }
 
         [HttpPost("reset-password")]

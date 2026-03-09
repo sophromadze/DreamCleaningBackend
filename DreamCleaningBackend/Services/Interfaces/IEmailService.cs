@@ -6,6 +6,7 @@ namespace DreamCleaningBackend.Services.Interfaces
     {
         Task SendEmailVerificationAsync(string email, string firstName, string verificationLink);
         Task SendPasswordResetAsync(string email, string firstName, string resetLink);
+        Task SendAdminWelcomeEmailAsync(string email, string firstName, string? setPasswordLink = null);
         Task SendWelcomeEmailAsync(string email, string firstName);
         Task SendGiftCardNotificationAsync(string recipientEmail, string recipientName,
             string senderName, string giftCardCode, decimal amount, string message, string senderEmail);

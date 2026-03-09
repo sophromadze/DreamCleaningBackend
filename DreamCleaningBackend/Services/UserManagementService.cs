@@ -66,5 +66,16 @@ namespace DreamCleaningBackend.Services
                     timestamp = DateTime.UtcNow
                 });
         }
+
+        public async Task NotifyUserDeleted(int userId, string message)
+        {
+            await _hubContext.Clients.Group($"User_{userId}")
+                .SendAsync("UserDeleted", new
+                {
+                    message = message,
+                    timestamp = DateTime.UtcNow,
+                    shouldLogout = true
+                });
+        }
     }
 }

@@ -121,7 +121,7 @@ namespace DreamCleaningBackend.Services
                 .Include(u => u.Subscription)
                 .FirstOrDefaultAsync(u => u.Email == loginDto.Email.ToLower());
 
-            if (user == null || user.AuthProvider != "Local")
+            if (user == null || user.PasswordHash == null)
                 throw new Exception("Invalid email or password");
 
             if (!user.IsActive)
@@ -785,6 +785,30 @@ namespace DreamCleaningBackend.Services
             return true;
         }
 
+        public async Task<bool> SetPassword(int userId, SetPasswordDto setPasswordDto)
+        {
+            var user = await _context.Users.FindAsync(userId);
+
+            if (user == null)
+                throw new Exception("User not found");
+
+            if (user.PasswordHash != null)
+                throw new Exception("You already have a password. Use Change password instead.");
+
+            if (!PasswordValidator.IsValidPassword(setPasswordDto.NewPassword, out string passwordError))
+                throw new Exception(passwordError);
+
+            CreatePasswordHash(setPasswordDto.NewPassword, out string passwordHash, out string passwordSalt);
+
+            user.PasswordHash = passwordHash;
+            user.PasswordSalt = passwordSalt;
+            user.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return true;
+        }
+
         private UserDto MapUserToDto(User user)
         {
             var requiresRealEmail = user.RequiresRealEmail || (user.Email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true);
@@ -800,7 +824,8 @@ namespace DreamCleaningBackend.Services
                 AuthProvider = user.AuthProvider,
                 Role = user.Role.ToString(),
                 ProfilePictureUrl = user.ProfilePictureUrl,
-                RequiresRealEmail = requiresRealEmail
+                RequiresRealEmail = requiresRealEmail,
+                HasPassword = user.PasswordHash != null
             };
         }
 
@@ -884,11 +909,20 @@ namespace DreamCleaningBackend.Services
 
         public async Task<bool> InitiatePasswordReset(string email)
         {
-            var user = await _context.Users
-                .FirstOrDefaultAsync(u => u.Email == email.ToLower());
+            var emailLower = email?.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(emailLower))
+                return true;
 
-            if (user == null || user.AuthProvider != "Local")
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email.ToLower() == emailLower);
+
+            if (user == null)
                 return true; // Don't reveal if user exists
+
+            // Send reset link for: Local (forgot password) or any user with no password (Admin-created, Google/Apple-only)
+            bool canSetOrResetPassword = user.AuthProvider == "Local" || user.PasswordHash == null;
+            if (!canSetOrResetPassword)
+                return true; // Don't reveal; OAuth-only accounts don't use password reset
 
             user.PasswordResetToken = GenerateVerificationToken();
             user.PasswordResetTokenExpiry = DateTime.UtcNow.AddHours(1);
@@ -898,21 +932,41 @@ namespace DreamCleaningBackend.Services
 
             var resetLink = $"{_configuration["Frontend:Url"]}/auth/reset-password?token={user.PasswordResetToken}";
 
-            // SEND EMAIL IN BACKGROUND - This makes the response instant!
-            _ = Task.Run(async () =>
+            try
             {
-                try
-                {
-                    await _emailService.SendPasswordResetAsync(user.Email, user.FirstName, resetLink);
-                    _logger.LogInformation($"Password reset email sent successfully to {user.Email}");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"Failed to send password reset email to {user.Email}");
-                }
-            });
+                await _emailService.SendPasswordResetAsync(user.Email, user.FirstName, resetLink);
+                _logger.LogInformation("Password reset email sent successfully to {Email}", user.Email);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send password reset email to {Email}", user.Email);
+                throw new Exception("Failed to send the reset link. Please try again later.");
+            }
 
             return true;
+        }
+
+        public async Task<(string? Email, bool IsSetPassword)?> GetResetPasswordInfoAsync(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return null;
+            var user = await _context.Users
+                .AsNoTracking()
+                .FirstOrDefaultAsync(u => u.PasswordResetToken == token
+                    && u.PasswordResetTokenExpiry > DateTime.UtcNow);
+            if (user == null) return null;
+            return (user.Email, user.PasswordHash == null);
+        }
+
+        public async Task<string> CreateSetPasswordTokenAsync(int userId)
+        {
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+                throw new Exception("User not found");
+            user.PasswordResetToken = GenerateVerificationToken();
+            user.PasswordResetTokenExpiry = DateTime.UtcNow.AddDays(7);
+            user.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+            return user.PasswordResetToken;
         }
 
         public async Task<bool> ResetPassword(ResetPasswordDto resetDto)
@@ -1105,7 +1159,8 @@ namespace DreamCleaningBackend.Services
                 AuthProvider = user.AuthProvider,
                 Role = user.Role.ToString(),
                 ProfilePictureUrl = user.ProfilePictureUrl,
-                RequiresRealEmail = requiresRealEmail
+                RequiresRealEmail = requiresRealEmail,
+                HasPassword = user.PasswordHash != null
             };
         }
 

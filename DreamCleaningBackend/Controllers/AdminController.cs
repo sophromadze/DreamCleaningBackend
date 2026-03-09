@@ -32,6 +32,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IProfileService _profileService;
         private readonly IEmailService _emailService;
         private readonly ISmsService _smsService;
+        private readonly IAuthService _authService;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
@@ -43,7 +44,8 @@ namespace DreamCleaningBackend.Controllers
             ISpecialOfferService specialOfferService,
             IProfileService profileService,
             IEmailService emailService,
-            ISmsService smsService)
+            ISmsService smsService,
+            IAuthService authService)
         {
             _context = context;
             _permissionService = permissionService;
@@ -56,6 +58,7 @@ namespace DreamCleaningBackend.Controllers
             _profileService = profileService;
             _emailService = emailService;
             _smsService = smsService;
+            _authService = authService;
         }
 
         // Service Types Management
@@ -2022,6 +2025,88 @@ namespace DreamCleaningBackend.Controllers
 
         }
 
+        [HttpPost("users/register")]
+        [RequirePermission(Permission.Create)]
+        public async Task<ActionResult<object>> RegisterUser([FromBody] AdminRegisterUserDto dto)
+        {
+            var emailLower = dto.Email.Trim().ToLowerInvariant();
+            var existing = await _context.Users.AnyAsync(u => u.Email.ToLower() == emailLower);
+            if (existing)
+                return StatusCode(409, new { message = "A user with this email already exists." });
+
+            var user = new User
+            {
+                FirstName = dto.FirstName.Trim(),
+                LastName = dto.LastName.Trim(),
+                Email = emailLower,
+                Phone = string.IsNullOrWhiteSpace(dto.Phone) ? null : dto.Phone.Trim(),
+                AuthProvider = "Admin",
+                PasswordHash = null,
+                PasswordSalt = null,
+                IsEmailVerified = true,
+                IsActive = true,
+                Role = UserRole.Customer,
+                FirstTimeOrder = true,
+                CreatedAt = DateTime.UtcNow,
+                RequiresRealEmail = false
+            };
+
+            _context.Users.Add(user);
+            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
+            }
+            catch (Exception ex)
+            {
+                // Log but don't fail registration
+                Console.WriteLine($"Failed to grant special offers to user {user.Id}: {ex.Message}");
+            }
+
+            string? setPasswordLink = null;
+            try
+            {
+                var token = await _authService.CreateSetPasswordTokenAsync(user.Id);
+                var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+                setPasswordLink = $"{frontendUrl}/auth/reset-password?token={token}";
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to create set-password token for user {user.Id}: {ex.Message}");
+            }
+
+            try
+            {
+                await _emailService.SendAdminWelcomeEmailAsync(user.Email, user.FirstName, setPasswordLink);
+            }
+            catch (Exception ex)
+            {
+                // Admin confirmed identity by phone; keep the user even if email fails
+                Console.WriteLine($"Failed to send admin welcome email to {user.Email}: {ex.Message}");
+            }
+
+            try
+            {
+                await _auditService.LogCreateAsync(user);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Audit log failed for user {user.Id}: {ex.Message}");
+            }
+
+            return Ok(new
+            {
+                id = user.Id,
+                firstName = user.FirstName,
+                lastName = user.LastName,
+                email = user.Email,
+                phone = user.Phone,
+                role = user.Role.ToString(),
+                authProvider = user.AuthProvider
+            });
+        }
+
         [HttpPut("users/{id}/role")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult> UpdateUserRole(int id, UpdateUserRoleDto dto)
@@ -2310,6 +2395,17 @@ namespace DreamCleaningBackend.Controllers
             var user = await _context.Users.FindAsync(id);
             if (user == null)
                 return NotFound();
+
+            try
+            {
+                var userManagementService = HttpContext.RequestServices.GetRequiredService<IUserManagementService>();
+                await userManagementService.NotifyUserDeleted(id, "Your account has been permanently deleted by an administrator.");
+                await Task.Delay(1500);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to notify user {id} before delete: {ex.Message}");
+            }
 
             using var transaction = await _context.Database.BeginTransactionAsync();
             try

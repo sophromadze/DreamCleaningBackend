@@ -202,7 +202,8 @@ namespace DreamCleaningBackend.Services
                 Apartments = user.Apartments.Select(MapApartmentToDto).ToList(),
                 CanReceiveCommunications = user.CanReceiveCommunications,
                 CanReceiveEmails = user.CanReceiveEmails,
-                CanReceiveMessages = user.CanReceiveMessages
+                CanReceiveMessages = user.CanReceiveMessages,
+                HasPassword = user.PasswordHash != null
             };
         }
 

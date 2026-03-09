@@ -23,6 +23,8 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>When true, user can receive SMS/messages from the company.</summary>
         public bool CanReceiveMessages { get; set; }
+        /// <summary>When true, user has a password set (Local or set via reset). When false, show "Set password" instead of "Change password".</summary>
+        public bool HasPassword { get; set; }
         // Placeholder for future orders
         // public List<OrderDto> Orders { get; set; } = new List<OrderDto>();
     }

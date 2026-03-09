@@ -315,6 +315,19 @@ namespace DreamCleaningBackend.DTOs
         public List<GiftCardUsageDto> Usages { get; set; } = new List<GiftCardUsageDto>();
     }
 
+    /// <summary>Admin/SuperAdmin: register a new customer manually (e.g. when they call and don't register themselves).</summary>
+    public class AdminRegisterUserDto
+    {
+        [Required]
+        public string FirstName { get; set; }
+        [Required]
+        public string LastName { get; set; }
+        [Required]
+        [EmailAddress]
+        public string Email { get; set; }
+        public string? Phone { get; set; }
+    }
+
     // User Management DTOs
     public class UserAdminDto
     {

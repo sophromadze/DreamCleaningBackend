@@ -12,9 +12,14 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<AuthResponseDto> RefreshToken(RefreshTokenDto refreshTokenDto);
         Task<AuthResponseDto> RefreshUserToken(int userId);
         Task<bool> ChangePassword(int userId, ChangePasswordDto changePasswordDto);
+        Task<bool> SetPassword(int userId, SetPasswordDto setPasswordDto);
         Task<bool> VerifyEmail(string token);
         Task<bool> ResendVerificationEmail(string email);
         Task<bool> InitiatePasswordReset(string email);
+        /// <summary>Returns the email and isSetPassword for a valid token, or null if invalid or expired. IsSetPassword is true when user has no password (e.g. admin-created).</summary>
+        Task<(string? Email, bool IsSetPassword)?> GetResetPasswordInfoAsync(string token);
+        /// <summary>Generates a set-password token for a user (e.g. admin-created). Token valid 7 days. Returns the token.</summary>
+        Task<string> CreateSetPasswordTokenAsync(int userId);
         Task<bool> ResetPassword(ResetPasswordDto resetDto);
         Task<EmailChangeResponseDto> InitiateEmailChange(int userId, InitiateEmailChangeDto dto);
         Task<bool> ConfirmEmailChange(string token);

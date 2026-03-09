@@ -14,5 +14,7 @@ namespace DreamCleaningBackend.DTOs
         public string Role { get; set; }
         /// <summary>True when user has Apple relay email and must verify a real email before using the platform.</summary>
         public bool RequiresRealEmail { get; set; }
+        /// <summary>True when user has a password set. When false, show "Set password" in profile.</summary>
+        public bool HasPassword { get; set; }
     }
 }
