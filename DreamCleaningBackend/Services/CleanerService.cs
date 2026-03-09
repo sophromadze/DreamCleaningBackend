@@ -55,6 +55,7 @@ namespace DreamCleaningBackend.Services
         public async Task<CleanerOrderDetailDto> GetOrderDetailsForCleanerAsync(int orderId, int userId, string userRole)
         {
             var order = await _context.Orders
+                .Include(o => o.User)
                 .Include(o => o.ServiceType)
                 .Include(o => o.OrderServices)
                     .ThenInclude(os => os.Service)
@@ -87,7 +88,8 @@ namespace DreamCleaningBackend.Services
                 OrderId = order.Id,
                 ClientName = $"{order.ContactFirstName} {order.ContactLastName}",
                 ClientEmail = order.ContactEmail,
-                ClientPhone = "", // Phone number hidden from cleaners for privacy
+                // Customer (order owner) phone only; hidden from cleaners. Use customer's profile phone, then order contact phone (never current user/admin).
+                ClientPhone = userRole == "Cleaner" ? "" : (!string.IsNullOrWhiteSpace(order.User?.Phone) ? order.User.Phone : (order.ContactPhone ?? "")),
                 ServiceDate = order.ServiceDate,
                 ServiceTime = order.ServiceTime.ToString(),
                 ServiceAddress = order.ServiceAddress,
