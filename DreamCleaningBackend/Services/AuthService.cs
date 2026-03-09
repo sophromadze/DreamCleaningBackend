@@ -760,9 +760,9 @@ namespace DreamCleaningBackend.Services
             if (user == null)
                 throw new Exception("User not found");
 
-            // Only allow password change for local accounts
-            if (user.AuthProvider != "Local")
-                throw new Exception("Password change is not allowed for OAuth accounts");
+            // User must have a password to change it (otherwise they should use Set password)
+            if (user.PasswordHash == null)
+                throw new Exception("You don't have a password set. Use Set password instead.");
 
             // Verify current password
             if (!VerifyPasswordHash(changePasswordDto.CurrentPassword, user.PasswordHash, user.PasswordSalt))
