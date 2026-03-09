@@ -2814,6 +2814,265 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = "Order updated successfully" });
         }
 
+        /// <summary>Admin-only: submit proposed order changes for SuperAdmin approval. SuperAdmins should use direct save.</summary>
+        [HttpPost("orders/{orderId}/pending-edit")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<PendingOrderEditListDto>> SubmitPendingOrderEdit(int orderId, [FromBody] SuperAdminUpdateOrderDto dto)
+        {
+            var order = await _context.Orders.FindAsync(orderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            var proposedJson = JsonConvert.SerializeObject(dto);
+
+            var pending = new PendingOrderEdit
+            {
+                OrderId = orderId,
+                RequestedByUserId = currentUserId,
+                RequestedAt = DateTime.UtcNow,
+                ProposedChangesJson = proposedJson,
+                Status = "Pending"
+            };
+            _context.PendingOrderEdits.Add(pending);
+            await _context.SaveChangesAsync();
+
+            var requestedBy = await _context.Users.FindAsync(currentUserId);
+            var summary = $"Order #{orderId} - {order.ContactFirstName} {order.ContactLastName} - {order.ServiceDate:yyyy-MM-dd}";
+            return CreatedAtAction(nameof(GetPendingOrderEditDetail), new { id = pending.Id }, new PendingOrderEditListDto
+            {
+                Id = pending.Id,
+                OrderId = pending.OrderId,
+                OrderSummary = summary,
+                RequestedByUserId = pending.RequestedByUserId,
+                RequestedByName = requestedBy != null ? $"{requestedBy.FirstName} {requestedBy.LastName}" : "",
+                RequestedAt = pending.RequestedAt,
+                Status = pending.Status
+            });
+        }
+
+        /// <summary>SuperAdmin-only: list all pending order edits.</summary>
+        [HttpGet("orders/pending-edits")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<List<PendingOrderEditListDto>>> GetPendingOrderEdits()
+        {
+            var list = await _context.PendingOrderEdits
+                .Where(poe => poe.Status == "Pending")
+                .Include(poe => poe.Order)
+                .Include(poe => poe.RequestedByUser)
+                .OrderByDescending(poe => poe.RequestedAt)
+                .Select(poe => new PendingOrderEditListDto
+                {
+                    Id = poe.Id,
+                    OrderId = poe.OrderId,
+                    OrderSummary = "Order #" + poe.Order.Id + " - " + poe.Order.ContactFirstName + " " + poe.Order.ContactLastName + " - " + poe.Order.ServiceDate.ToString("yyyy-MM-dd"),
+                    RequestedByUserId = poe.RequestedByUserId,
+                    RequestedByName = poe.RequestedByUser.FirstName + " " + poe.RequestedByUser.LastName,
+                    RequestedAt = poe.RequestedAt,
+                    Status = poe.Status
+                })
+                .ToListAsync();
+            return Ok(list);
+        }
+
+        /// <summary>SuperAdmin-only: get one pending edit with current order state and proposed changes (for diff and approve/reject).</summary>
+        [HttpGet("orders/pending-edits/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<PendingOrderEditDetailDto>> GetPendingOrderEditDetail(int id)
+        {
+            var pending = await _context.PendingOrderEdits
+                .Include(poe => poe.Order)
+                .Include(poe => poe.RequestedByUser)
+                .FirstOrDefaultAsync(poe => poe.Id == id);
+            if (pending == null)
+                return NotFound(new { message = "Pending edit not found" });
+            if (pending.Status != "Pending")
+                return BadRequest(new { message = "This edit was already approved or rejected" });
+
+            var order = await _context.Orders
+                .Include(o => o.ServiceType)
+                .Include(o => o.Subscription)
+                .Include(o => o.OrderServices).ThenInclude(os => os.Service)
+                .Include(o => o.OrderExtraServices).ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == pending.OrderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            var currentOrder = new OrderDto
+            {
+                Id = order.Id,
+                UserId = order.UserId,
+                ServiceTypeId = order.ServiceTypeId,
+                ServiceTypeName = order.ServiceType?.Name ?? "",
+                OrderDate = order.OrderDate,
+                ServiceDate = order.ServiceDate,
+                ServiceTime = order.ServiceTime,
+                Status = order.Status,
+                SubTotal = order.SubTotal,
+                Tax = order.Tax,
+                Tips = order.Tips,
+                CompanyDevelopmentTips = order.CompanyDevelopmentTips,
+                Total = order.Total,
+                InitialSubTotal = order.InitialSubTotal,
+                InitialTax = order.InitialTax,
+                InitialTips = order.InitialTips,
+                InitialCompanyDevelopmentTips = order.InitialCompanyDevelopmentTips,
+                InitialTotal = order.InitialTotal,
+                DiscountAmount = order.DiscountAmount,
+                SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
+                PromoCode = order.PromoCode,
+                GiftCardCode = order.GiftCardCode,
+                GiftCardAmountUsed = order.GiftCardAmountUsed,
+                SpecialOfferName = GetSpecialOfferName(order.PromoCode),
+                PromoCodeDetails = GetPromoCodeDetails(order.PromoCode),
+                GiftCardDetails = order.GiftCardCode != null ? $"{MaskGiftCardCode(order.GiftCardCode)} (${order.GiftCardAmountUsed:F2})" : null,
+                SubscriptionId = order.SubscriptionId,
+                SubscriptionName = order.Subscription?.Name ?? "",
+                EntryMethod = order.EntryMethod,
+                SpecialInstructions = order.SpecialInstructions,
+                ContactFirstName = order.ContactFirstName,
+                ContactLastName = order.ContactLastName,
+                ContactEmail = order.ContactEmail,
+                ContactPhone = order.ContactPhone,
+                ServiceAddress = order.ServiceAddress,
+                AptSuite = order.AptSuite,
+                City = order.City,
+                State = order.State,
+                ZipCode = order.ZipCode,
+                TotalDuration = order.TotalDuration,
+                MaidsCount = order.MaidsCount,
+                IsPaid = order.IsPaid,
+                PaidAt = order.PaidAt,
+                Services = order.OrderServices?.Select(os => new OrderServiceDto
+                {
+                    Id = os.Id,
+                    ServiceId = os.ServiceId,
+                    ServiceName = os.Service?.Name ?? "",
+                    Quantity = os.Quantity,
+                    Cost = os.Cost,
+                    Duration = os.Duration,
+                    PriceMultiplier = os.PriceMultiplier
+                }).ToList() ?? new List<OrderServiceDto>(),
+                ExtraServices = order.OrderExtraServices?.Select(oes => new OrderExtraServiceDto
+                {
+                    Id = oes.Id,
+                    ExtraServiceId = oes.ExtraServiceId,
+                    ExtraServiceName = oes.ExtraService?.Name ?? "",
+                    Quantity = oes.Quantity,
+                    Hours = oes.Hours,
+                    Cost = oes.Cost,
+                    Duration = oes.Duration
+                }).ToList() ?? new List<OrderExtraServiceDto>()
+            };
+
+            SuperAdminUpdateOrderDto? proposed = null;
+            try
+            {
+                proposed = JsonConvert.DeserializeObject<SuperAdminUpdateOrderDto>(pending.ProposedChangesJson);
+            }
+            catch { /* ignore */ }
+
+            return Ok(new PendingOrderEditDetailDto
+            {
+                Id = pending.Id,
+                OrderId = pending.OrderId,
+                RequestedByUserId = pending.RequestedByUserId,
+                RequestedByName = pending.RequestedByUser != null ? $"{pending.RequestedByUser.FirstName} {pending.RequestedByUser.LastName}" : "",
+                RequestedAt = pending.RequestedAt,
+                Status = pending.Status,
+                CurrentOrder = currentOrder,
+                ProposedChanges = proposed
+            });
+        }
+
+        /// <summary>SuperAdmin-only: approve and apply the pending order edit.</summary>
+        [HttpPost("orders/pending-edits/{id}/approve")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> ApprovePendingOrderEdit(int id)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+
+            var pending = await _context.PendingOrderEdits
+                .Include(poe => poe.Order)
+                .FirstOrDefaultAsync(poe => poe.Id == id);
+            if (pending == null)
+                return NotFound(new { message = "Pending edit not found" });
+            if (pending.Status != "Pending")
+                return BadRequest(new { message = "This edit was already approved or rejected" });
+
+            SuperAdminUpdateOrderDto? dto;
+            try
+            {
+                dto = JsonConvert.DeserializeObject<SuperAdminUpdateOrderDto>(pending.ProposedChangesJson);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = "Invalid proposed changes: " + ex.Message });
+            }
+            if (dto == null)
+                return BadRequest(new { message = "Invalid proposed changes" });
+
+            var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+
+            var orderBefore = await _context.Orders
+                .AsNoTracking()
+                .Include(o => o.OrderServices).ThenInclude(os => os.Service)
+                .Include(o => o.OrderExtraServices).ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == pending.OrderId);
+            if (orderBefore == null)
+                return NotFound(new { message = "Order not found" });
+
+            await _orderService.SuperAdminFullUpdateOrder(pending.OrderId, currentUserId, dto);
+
+            pending.Status = "Approved";
+            pending.ReviewedByUserId = currentUserId;
+            pending.ReviewedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            var orderAfter = await _context.Orders
+                .Include(o => o.OrderServices).ThenInclude(os => os.Service)
+                .Include(o => o.OrderExtraServices).ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == pending.OrderId);
+            if (orderAfter != null)
+            {
+                try
+                {
+                    await _auditService.LogUpdateAsync(orderBefore, orderAfter);
+                }
+                catch (Exception auditEx)
+                {
+                    Console.WriteLine($"Audit logging failed: {auditEx.Message}");
+                }
+            }
+
+            return Ok(new { message = "Order edit approved and applied successfully" });
+        }
+
+        /// <summary>SuperAdmin-only: reject the pending order edit.</summary>
+        [HttpPost("orders/pending-edits/{id}/reject")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> RejectPendingOrderEdit(int id, [FromBody] RejectPendingOrderEditDto? dto = null)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+
+            var pending = await _context.PendingOrderEdits.FindAsync(id);
+            if (pending == null)
+                return NotFound(new { message = "Pending edit not found" });
+            if (pending.Status != "Pending")
+                return BadRequest(new { message = "This edit was already approved or rejected" });
+
+            var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            pending.Status = "Rejected";
+            pending.ReviewedByUserId = currentUserId;
+            pending.ReviewedAt = DateTime.UtcNow;
+            pending.RejectReason = dto?.RejectReason;
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Order edit rejected" });
+        }
+
         [HttpGet("users/{userId}/orders")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<OrderListDto>>> GetUserOrders(int userId)

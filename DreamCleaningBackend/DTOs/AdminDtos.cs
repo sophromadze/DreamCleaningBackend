@@ -469,4 +469,35 @@ namespace DreamCleaningBackend.DTOs
         public decimal Hours { get; set; }
         public decimal Cost { get; set; }
     }
+
+    /// <summary>List item for pending order edits (SuperAdmin view).</summary>
+    public class PendingOrderEditListDto
+    {
+        public int Id { get; set; }
+        public int OrderId { get; set; }
+        public string OrderSummary { get; set; } = ""; // e.g. "Order #123 - John Doe - 2025-03-10"
+        public int RequestedByUserId { get; set; }
+        public string RequestedByName { get; set; } = "";
+        public DateTime RequestedAt { get; set; }
+        public string Status { get; set; } = "Pending";
+    }
+
+    /// <summary>Single pending edit with current order state and proposed changes (for diff/approve).</summary>
+    public class PendingOrderEditDetailDto
+    {
+        public int Id { get; set; }
+        public int OrderId { get; set; }
+        public int RequestedByUserId { get; set; }
+        public string RequestedByName { get; set; } = "";
+        public DateTime RequestedAt { get; set; }
+        public string Status { get; set; } = "Pending";
+        public OrderDto? CurrentOrder { get; set; }
+        public SuperAdminUpdateOrderDto? ProposedChanges { get; set; }
+    }
+
+    public class RejectPendingOrderEditDto
+    {
+        [StringLength(500)]
+        public string? RejectReason { get; set; }
+    }
 }

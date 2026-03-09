@@ -40,6 +40,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<RealEmailVerification> RealEmailVerifications { get; set; }
         public DbSet<AccountMergeRequest> AccountMergeRequests { get; set; }
         public DbSet<AdminUserNote> AdminUserNotes { get; set; }
+        public DbSet<PendingOrderEdit> PendingOrderEdits { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -186,6 +187,23 @@ namespace DreamCleaningBackend.Data
             modelBuilder.Entity<OrderUpdateHistory>()
                 .Property(ouh => ouh.IsPaid)
                 .HasDefaultValue(false);
+
+            // PendingOrderEdit configuration (Admin-submitted order edits awaiting SuperAdmin approval)
+            modelBuilder.Entity<PendingOrderEdit>()
+                .HasOne(poe => poe.Order)
+                .WithMany()
+                .HasForeignKey(poe => poe.OrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<PendingOrderEdit>()
+                .HasOne(poe => poe.RequestedByUser)
+                .WithMany()
+                .HasForeignKey(poe => poe.RequestedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<PendingOrderEdit>()
+                .HasOne(poe => poe.ReviewedByUser)
+                .WithMany()
+                .HasForeignKey(poe => poe.ReviewedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
 
             // Poll configuration
             modelBuilder.Entity<PollQuestion>()
