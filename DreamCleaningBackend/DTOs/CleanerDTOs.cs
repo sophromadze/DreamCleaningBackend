@@ -44,6 +44,7 @@ namespace DreamCleaningBackend.DTOs
         public string State { get; set; }
         public string ZipCode { get; set; }
         public string ServiceTypeName { get; set; }
+        public bool IsCustomServiceType { get; set; }
         public List<string> Services { get; set; } = new();
         public List<string> ExtraServices { get; set; } = new();
         public decimal TotalDuration { get; set; }

@@ -848,6 +848,8 @@ namespace DreamCleaningBackend.Services
 
             formattedDuration = FormatDurationRounded((int)durationPerCleaner);
 
+            var isCustomServiceType = order.ServiceType?.IsCustom ?? false;
+
             // Build full address string
             var fullAddressParts = new List<string>();
             if (!string.IsNullOrEmpty(order.ServiceAddress))
@@ -916,11 +918,15 @@ namespace DreamCleaningBackend.Services
             <p style='margin: 0; font-size: 1.2em; font-weight: bold; color: #155724; text-align: center;'>${order.Tips:F2}</p>
         </div>" : "")}
         
-        {(!string.IsNullOrEmpty(order.SpecialInstructions) ? $@"
+        {(!string.IsNullOrEmpty(order.SpecialInstructions) && !isCustomServiceType ? $@"
         <div style='background: #ffe6e6; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc3545;'>
             <h3>⚠️ Special Instructions from Client</h3>
             <p style='margin: 0; font-style: italic; color: #721c24;'>{order.SpecialInstructions}</p>
-        </div>" : "")}
+        </div>" : (!string.IsNullOrEmpty(order.SpecialInstructions) && isCustomServiceType ? $@"
+        <div style='background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
+            <h3>📝 Service Description (Custom)</h3>
+            <p style='margin: 0; font-style: italic; color: #155724;'>{order.SpecialInstructions}</p>
+        </div>" : ""))}
         
         {(!string.IsNullOrEmpty(cleanerAdditionalInstructions) ? $@"
         <div style='background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
@@ -1218,9 +1224,22 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task SendCustomerBookingConfirmationAsync(string email, string customerName,
-            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId)
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
+            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType)
         {
             var subject = "Booking Confirmed - Dream Cleaning Service Scheduled";
+
+            var itemsHtml = BuildCustomerSupplyChecklistHtml(hasCleaningSupplies, isDeepCleaning, isCustomServiceType);
+            var privacyPolicyUrl = $"{_configuration["Frontend:Url"]}/privacy-policy";
+            var privacyHtml = $@"
+        <div style='background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;'>
+            <p style='margin: 0; color: #666; font-size: 14px;'>
+                By booking with us, you agree to our <a href='{privacyPolicyUrl}'>Privacy Policy</a>. We're committed to keeping your information safe.
+                <span style='text-decoration: underline #dc3545; text-underline-offset: 3px; text-decoration-thickness: 2px;'>
+                    I also confirm that the booking details accurately reflect the cleaning requirements. If the actual condition differs from the described details, Dream Cleaning Team reserves the right to either leave or adjust the services to match the actual condition.
+                </span>
+            </p>
+        </div>";
 
             var body = $@"
         <h2>Hi {customerName},</h2>
@@ -1234,6 +1253,10 @@ namespace DreamCleaningBackend.Services
             <p><strong>Time:</strong> {serviceTime}</p>
             <p><strong>Address:</strong> {address}</p>
         </div>
+
+        {itemsHtml}
+
+        {privacyHtml}
         
         <div style='background: #fff3e0; padding: 15px; border-radius: 8px; margin: 20px 0;'>
             <h3>What's Next?</h3>
@@ -1255,6 +1278,43 @@ namespace DreamCleaningBackend.Services
     ";
 
             await SendEmailAsync(email, subject, body);
+        }
+
+        private static string BuildCustomerSupplyChecklistHtml(bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType)
+        {
+            // Custom service types don't use the regular cleaning-supplies workflow.
+            // Force the "customer provides only essentials" view (no Zep/Windex/cloths).
+            if (isCustomServiceType) {
+                hasCleaningSupplies = true;
+            }
+
+            // Always required items (always included, even if cleaning supplies selected)
+            var items = new List<string>
+            {
+                "Paper towels",
+                "Garbage bags",
+                "Broom or vacuum cleaner"
+            };
+
+            // If cleaning supplies were NOT selected, customer must also have these items ready.
+            if (!hasCleaningSupplies)
+            {
+                var zep = isDeepCleaning
+                    ? "Zep liquids: Green, Floor (or similar), Oven Cleaner (or similar)"
+                    : "Zep liquids: Green, Floor (or similar)";
+
+                items.Add(zep);
+                items.Add("Windex liquid (or similar)");
+                items.Add("Cleaning cloths, Sponge and Mop");
+            }
+
+            return $@"
+        <div style='background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid rgba(133, 100, 4, 0.25);'>
+            <p style='margin: 0 0 8px 0; font-weight: 700; color: #856404;'>Please provide the following items:</p>
+            <ul style='margin: 0; padding-left: 20px; color: #856404; font-weight: 600;'>
+                {string.Join("", items.Select(i => $"<li style='margin: 4px 0;'>{System.Net.WebUtility.HtmlEncode(i)}</li>"))}
+            </ul>
+        </div>";
         }
 
         private void AddPhotoAttachments(MimeMessage email, List<PhotoUploadDto> photos)
@@ -1294,7 +1354,8 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task SendCompanyBookingNotificationAsync(string contactFirstName, string contactLastName, string contactEmail, string contactPhone, DateTime serviceDate,
-            string serviceTime, string serviceTypeName, string serviceAddress, string aptSuite, string city, string state, string zipCode, int orderId, List<PhotoUploadDto> uploadedPhotos = null)
+            string serviceTime, string serviceTypeName, string serviceAddress, string aptSuite, string city, string state, string zipCode,
+            int orderId, bool isCustomServiceType, string? serviceDescription, List<PhotoUploadDto> uploadedPhotos = null)
         {
             var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
             var subject = $"New Booking Order #{orderId} - {contactFirstName} {contactLastName}";
@@ -1325,6 +1386,7 @@ namespace DreamCleaningBackend.Services
                     <h3>Service Details:</h3>
                     <p><strong>Order Number:</strong> #{orderId}</p>
                     <p><strong>Service Type:</strong> {serviceTypeName}</p>
+                    {(!string.IsNullOrEmpty(serviceDescription) && isCustomServiceType ? $@"<p><strong>Service Description:</strong> {serviceDescription}</p>" : "")}
                     <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
                     <p><strong>Time:</strong> {serviceTime}</p>
                 </div>

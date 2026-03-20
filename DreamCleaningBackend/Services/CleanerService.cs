@@ -98,6 +98,7 @@ namespace DreamCleaningBackend.Services
                 State = order.State,
                 ZipCode = order.ZipCode,
                 ServiceTypeName = order.ServiceType.Name,
+                IsCustomServiceType = order.ServiceType?.IsCustom ?? false,
                 Services = order.OrderServices.Select(os => $"{os.Service.Name} (x{os.Quantity})").ToList(),
                 ExtraServices = order.OrderExtraServices.Select(oes =>
                 {

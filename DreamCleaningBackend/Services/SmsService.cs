@@ -93,9 +93,43 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        public async Task SendBookingConfirmationSmsAsync(string phoneNumber, string customerName, DateTime serviceDate, string serviceTime)
+        public async Task SendBookingConfirmationSmsAsync(string phoneNumber, string customerName, DateTime serviceDate, string serviceTime,
+            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType)
         {
-            var msg = $"Hi {customerName}! Your Dream Cleaning appointment is confirmed for {serviceDate:MMM dd} at {serviceTime}. Reply STOP to opt-out.";
+            var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
+
+            // Custom service types don't use the regular cleaning-supplies workflow.
+            if (isCustomServiceType)
+            {
+                hasCleaningSupplies = true;
+            }
+
+            // Always required items (always included, even if cleaning supplies selected)
+            var items = new List<string>
+            {
+                "Paper towels",
+                "Garbage bags",
+                "Broom or vacuum cleaner"
+            };
+
+            // If cleaning supplies were NOT selected, customer must also have these items ready.
+            if (!hasCleaningSupplies)
+            {
+                var zep = isDeepCleaning
+                    ? "Zep liquids: Green, Floor (or similar), Oven Cleaner (or similar)"
+                    : "Zep liquids: Green, Floor (or similar)";
+
+                items.Add(zep);
+                items.Add("Windex liquid (or similar)");
+                items.Add("Cleaning cloths, Sponge and Mop");
+            }
+
+            var msg =
+                $"Hi {firstName}! Your Dream Cleaning appointment is confirmed for {serviceDate:MMM dd} at {serviceTime}." +
+                $"\nPlease provide the following items:" +
+                $"\n- {string.Join("\n- ", items)}" +
+                $"\nBy booking with us, you agree to our Privacy Policy: https://dreamcleaningnearme.com/privacy-policy. We're committed to keeping your information safe." +
+                $"\nReply STOP to opt-out.";
             await SendSmsAsync(phoneNumber, msg);
         }
 

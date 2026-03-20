@@ -7,6 +7,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Services;
+using System.Linq;
 using Stripe;
 
 namespace DreamCleaningBackend.Controllers
@@ -1834,6 +1835,8 @@ namespace DreamCleaningBackend.Controllers
                     // Existing order flow (admin-scheduled or profile payment) - same as booking confirm, just order already exists
                     order = await _context.Orders
                         .Include(o => o.OrderServices)
+                        .Include(o => o.OrderExtraServices)
+                            .ThenInclude(oes => oes.ExtraService)
                         .Include(o => o.ServiceType)
                         .FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
 
@@ -1978,12 +1981,26 @@ namespace DreamCleaningBackend.Controllers
                 order.Status = "Active";
                 order.PaymentIntentId = effectivePaymentIntentId;
 
+                // Ensure extra services are loaded for email/SMS templates (new-booking flow may not include navigation properties).
+                await _context.Entry(order).Collection(o => o.OrderExtraServices).Query().Include(oes => oes.ExtraService).LoadAsync();
+
                 // Send booking confirmation email and SMS to customer
                 var contactEmail = order.ContactEmail;
                 var contactPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : user?.Phone;
                 var customerName = CapitalizeName(order.ContactFirstName);
                 var addressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
                 var serviceTimeStr = order.ServiceTime.ToString();
+
+                var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
+                    .Select(x => x.ExtraService?.Name ?? "")
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .Select(n => n.ToLowerInvariant())
+                    .ToList();
+
+                var hasCleaningSupplies = extraNames.Any(n => n.Contains("cleaning supplies"));
+                var isDeepCleaning = extraNames.Any(n => n.Contains("super deep cleaning")) ||
+                                    extraNames.Any(n => n.Contains("deep cleaning") && !n.Contains("super"));
+                var isCustomServiceType = order.ServiceType.IsCustom;
 
                 _ = Task.Run(async () =>
                 {
@@ -2002,7 +2019,10 @@ namespace DreamCleaningBackend.Controllers
                                 serviceTimeStr,
                                 order.ServiceType.Name,
                                 addressDisplay,
-                                order.Id
+                                order.Id,
+                                hasCleaningSupplies,
+                                isDeepCleaning,
+                                isCustomServiceType
                             );
                             Console.WriteLine($"Booking confirmation email sent to {contactEmail} for order {order.Id}");
                         }
@@ -2028,7 +2048,10 @@ namespace DreamCleaningBackend.Controllers
                                 contactPhone,
                                 customerName,
                                 order.ServiceDate,
-                                serviceTimeStr
+                                serviceTimeStr,
+                                hasCleaningSupplies,
+                                isDeepCleaning,
+                                isCustomServiceType
                             );
                             Console.WriteLine($"Booking confirmation SMS sent to {contactPhone} for order {order.Id}");
                         }
@@ -2062,6 +2085,8 @@ namespace DreamCleaningBackend.Controllers
                             order.State,
                             order.ZipCode,
                             order.Id,
+                            order.ServiceType.IsCustom,
+                            order.SpecialInstructions,
                             bookingDataDto?.UploadedPhotos
                         );
                         Console.WriteLine($"Booking notification with photos sent to company email for order {order.Id}");
@@ -2430,13 +2455,18 @@ namespace DreamCleaningBackend.Controllers
         [HttpGet("available-times")]
         public ActionResult<List<string>> GetAvailableTimeSlots(DateTime date, int serviceTypeId)
         {
-            // Time slots from 8:00 AM to 6:00 PM (30-minute intervals) for all days
+            // Time slots from 8:00 AM to 6:00 PM (30-minute intervals) for all days.
+            // Weekend rule: earliest start is 9:30 AM on Saturdays and Sundays.
             var timeSlots = new List<string>
                 {
                     "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30",
                     "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30",
                     "16:00", "16:30", "17:00", "17:30", "18:00"
                 };
+
+            var isWeekend = date.DayOfWeek == DayOfWeek.Saturday || date.DayOfWeek == DayOfWeek.Sunday;
+            var minStartTime = isWeekend ? "09:30" : "08:00";
+            timeSlots = timeSlots.Where(t => String.Compare(t, minStartTime, StringComparison.Ordinal) >= 0).ToList();
 
             return Ok(timeSlots);
         }
