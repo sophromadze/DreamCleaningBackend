@@ -848,6 +848,11 @@ namespace DreamCleaningBackend.Services
 
             formattedDuration = FormatDurationRounded((int)durationPerCleaner);
 
+            // Calculate per-cleaner salary (total salary divided equally among all cleaners)
+            var perCleanerSalary = order.MaidsCount > 1
+                ? Math.Round(order.CleanerTotalSalary / order.MaidsCount, 2)
+                : order.CleanerTotalSalary;
+
             var isCustomServiceType = order.ServiceType?.IsCustom ?? false;
 
             // Build full address string
@@ -880,6 +885,13 @@ namespace DreamCleaningBackend.Services
             <p><strong>Time:</strong> {FormatTimeForEmail(order.ServiceTime)}</p>
             <p><strong>Duration:</strong> {formattedDuration}{(hasCleanersService ? "" : " per cleaner")}</p>
             <p><strong>Team Size:</strong> {order.MaidsCount} cleaner(s)</p>
+        </div>
+
+        <div style='background: #d4edda; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
+            <h3>💵 Your Compensation</h3>
+            <p><strong>Hourly Rate:</strong> ${order.CleanerHourlyRate:F2}/hr</p>
+            <p><strong>Your Duration:</strong> {formattedDuration}</p>
+            <p style='margin: 0; font-size: 1.2em; font-weight: bold; color: #155724; text-align: center;'>Your Salary: ${perCleanerSalary:F2}</p>
         </div>
         
         <div style='background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
@@ -1083,7 +1095,7 @@ namespace DreamCleaningBackend.Services
         public async Task SendCleanerReminderNotificationAsync(string email, string cleanerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDayBefore)
         {
-            var timeFrame = isDayBefore ? "tomorrow" : "in 4 hours";
+            var timeFrame = isDayBefore ? "in 2 days" : "in 4 hours";
             var subject = $"Cleaning Job Reminder - Service {timeFrame}";
 
             var body = $@"

@@ -461,6 +461,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal? Total { get; set; }
         public decimal? DiscountAmount { get; set; }
         public decimal? SubscriptionDiscountAmount { get; set; }
+        public decimal? CleanerHourlyRate { get; set; }
+        public decimal? CleanerTotalSalary { get; set; }
         public List<SuperAdminOrderServiceUpdateDto>? Services { get; set; }
         public List<SuperAdminOrderExtraServiceUpdateDto>? ExtraServices { get; set; }
     }
@@ -512,5 +514,28 @@ namespace DreamCleaningBackend.DTOs
     {
         [StringLength(500)]
         public string? RejectReason { get; set; }
+    }
+
+    /// <summary>Response DTO for order statistics (SuperAdmin only).</summary>
+    public class OrderStatisticsDto
+    {
+        public int TotalOrders { get; set; }
+        public decimal TotalAmount { get; set; }
+        public decimal TotalTaxes { get; set; }
+        public decimal TotalTips { get; set; }
+        public decimal TotalCleanersSalary { get; set; }
+        public decimal TotalCompanyRevenue { get; set; }
+    }
+
+    /// <summary>Daily data point for statistics chart.</summary>
+    public class DailyStatisticsDto
+    {
+        public string Date { get; set; } = "";
+        public int Orders { get; set; }
+        public decimal Amount { get; set; }
+        public decimal Taxes { get; set; }
+        public decimal Tips { get; set; }
+        public decimal CleanersSalary { get; set; }
+        public decimal CompanyRevenue { get; set; }
     }
 }

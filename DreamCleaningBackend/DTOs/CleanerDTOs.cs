@@ -28,6 +28,7 @@ namespace DreamCleaningBackend.DTOs
         public int OrderId { get; set; }
         public List<int> CleanerIds { get; set; } = new();
         public string? TipsForCleaner { get; set; }
+        public decimal? CleanerHourlyRate { get; set; }
     }
 
     public class CleanerOrderDetailDto

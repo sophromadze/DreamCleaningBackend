@@ -416,6 +416,7 @@ namespace DreamCleaningBackend.Controllers
                 decimal totalDuration = 0;
                 decimal priceMultiplier = 1;
                 decimal deepCleaningFee = 0;
+                bool hasCleanersService = false;
 
                 if (dto.IsCustomPricing)
                 {
@@ -482,6 +483,7 @@ namespace DreamCleaningBackend.Controllers
                             // Special handling for cleaner-hours relationship
                             if (service.ServiceRelationType == "cleaner")
                             {
+                                hasCleanersService = true;
                                 // Find the hours service in the same order
                                 var hoursServiceDto = dto.Services.FirstOrDefault(s =>
                                 {
@@ -762,6 +764,17 @@ namespace DreamCleaningBackend.Controllers
                     order.TotalDuration = totalDuration;
                 }
 
+                // Calculate cleaner salary defaults (use per-cleaner rounded duration)
+                order.CleanerHourlyRate = deepCleaningFee > 0 ? 21m : 20m;
+                {
+                    // For cleaner-hours service type, TotalDuration is per cleaner; for regular, it's total across all
+                    var perCleanerDuration = hasCleanersService
+                        ? order.TotalDuration
+                        : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
+                    var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
+                    order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
+                }
+
                 Console.WriteLine($"Final values saved to DB:");
                 Console.WriteLine($"- SubTotal: ${order.SubTotal}");
                 Console.WriteLine($"- DiscountAmount (promo/first-time): ${order.DiscountAmount}");
@@ -774,6 +787,8 @@ namespace DreamCleaningBackend.Controllers
                 Console.WriteLine($"- Total: ${order.Total}");
                 Console.WriteLine($"- Total Duration: {order.TotalDuration} minutes");
                 Console.WriteLine($"- Maids Count: {order.MaidsCount}");
+                Console.WriteLine($"- Cleaner Hourly Rate: ${order.CleanerHourlyRate}");
+                Console.WriteLine($"- Cleaner Total Salary: ${order.CleanerTotalSalary}");
                 Console.WriteLine($"=== BOOKING CREATION END ===\n");
 
                 // Use a transaction to ensure both order and gift card usage are saved together
@@ -977,6 +992,7 @@ namespace DreamCleaningBackend.Controllers
                 decimal totalDuration = 0;
                 decimal priceMultiplier = 1;
                 decimal deepCleaningFee = 0;
+                bool hasCleanersService = false;
 
                 if (dto.BookingData.IsCustomPricing)
                 {
@@ -1019,6 +1035,7 @@ namespace DreamCleaningBackend.Controllers
 
                             if (service.ServiceRelationType == "cleaner")
                             {
+                                hasCleanersService = true;
                                 var hoursServiceDto = dto.BookingData.Services.FirstOrDefault(s =>
                                 {
                                     var svc = _context.Services.Find(s.ServiceId);
@@ -1314,6 +1331,16 @@ namespace DreamCleaningBackend.Controllers
                     }
                 }
 
+                // Calculate cleaner salary defaults (use per-cleaner rounded duration)
+                order.CleanerHourlyRate = deepCleaningFee > 0 ? 21m : 20m;
+                {
+                    var perCleanerDuration = hasCleanersService
+                        ? order.TotalDuration
+                        : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
+                    var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
+                    order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
+                }
+
                 // Apply subscription discount
                 var subscription = await _context.Subscriptions.FindAsync(dto.BookingData.SubscriptionId);
 
@@ -1533,6 +1560,7 @@ namespace DreamCleaningBackend.Controllers
                 decimal totalDuration = 0;
                 decimal priceMultiplier = 1;
                 decimal deepCleaningFee = 0;
+                bool hasCleanersService = false;
 
                 if (dto.IsCustomPricing)
                 {
@@ -1575,6 +1603,7 @@ namespace DreamCleaningBackend.Controllers
 
                             if (service.ServiceRelationType == "cleaner")
                             {
+                                hasCleanersService = true;
                                 var hoursServiceDto = dto.Services.FirstOrDefault(s =>
                                 {
                                     var svc = _context.Services.Find(s.ServiceId);
@@ -2229,6 +2258,7 @@ namespace DreamCleaningBackend.Controllers
             }
 
             // Add order services
+            bool hasCleanersService = false;
             foreach (var serviceDto in dto.Services)
             {
                 var service = await _context.Services.FindAsync(serviceDto.ServiceId);
@@ -2240,6 +2270,7 @@ namespace DreamCleaningBackend.Controllers
 
                     if (service.ServiceRelationType == "cleaner")
                     {
+                        hasCleanersService = true;
                         var hoursServiceDto = dto.Services.FirstOrDefault(s =>
                         {
                             var svc = _context.Services.Find(s.ServiceId);
@@ -2356,6 +2387,22 @@ namespace DreamCleaningBackend.Controllers
                         CreatedAt = DateTime.UtcNow
                     });
                 }
+            }
+
+            // Calculate cleaner salary defaults
+            {
+                bool hasDeepCleaning = false;
+                foreach (var esd in dto.ExtraServices)
+                {
+                    var es = await _context.ExtraServices.FindAsync(esd.ExtraServiceId);
+                    if (es != null && es.IsDeepCleaning) { hasDeepCleaning = true; break; }
+                }
+                order.CleanerHourlyRate = hasDeepCleaning ? 21m : 20m;
+                var perCleanerDuration = hasCleanersService
+                    ? order.TotalDuration
+                    : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
+                var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
+                order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
             }
 
             // Use transaction for order creation

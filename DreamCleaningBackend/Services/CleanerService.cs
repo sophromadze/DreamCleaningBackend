@@ -158,6 +158,27 @@ namespace DreamCleaningBackend.Services
 
             try
             {
+                // Update hourly rate and recalculate total salary if provided
+                if (dto.CleanerHourlyRate.HasValue)
+                {
+                    var order = await _context.Orders
+                        .Include(o => o.OrderServices)
+                            .ThenInclude(os => os.Service)
+                        .FirstOrDefaultAsync(o => o.Id == dto.OrderId);
+                    if (order != null)
+                    {
+                        order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
+                        // For cleaner-hours service type, TotalDuration is per cleaner; for regular, it's total across all
+                        bool hasCleanersService = order.OrderServices.Any(os =>
+                            os.Service?.ServiceRelationType == "cleaner");
+                        var perCleanerDuration = hasCleanersService
+                            ? order.TotalDuration
+                            : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
+                        var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
+                        order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
+                    }
+                }
+
                 var assignedCleanerEmails = new List<string>();
                 var newlyAssignedCleanerIds = new List<int>();
 

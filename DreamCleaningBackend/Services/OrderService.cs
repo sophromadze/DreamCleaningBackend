@@ -1184,6 +1184,9 @@ namespace DreamCleaningBackend.Services
                 OrderDate = order.OrderDate,
                 SubscriptionId = order.SubscriptionId,
                 SubscriptionName = order.Subscription?.Name,
+                CleanerHourlyRate = order.CleanerHourlyRate,
+                CleanerTotalSalary = order.CleanerTotalSalary,
+                HasCleanersService = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false,
                 Services = order.OrderServices?.Select(os => new OrderServiceDto
                 {
                     Id = os.Id,
@@ -1292,6 +1295,9 @@ namespace DreamCleaningBackend.Services
                 MaidsCount = order.MaidsCount,
                 IsPaid = order.IsPaid,
                 PaidAt = order.PaidAt,
+                CleanerHourlyRate = order.CleanerHourlyRate,
+                CleanerTotalSalary = order.CleanerTotalSalary,
+                HasCleanersService = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false,
                 Services = order.OrderServices?.Select(os => new OrderServiceDto
                 {
                     Id = os.Id,
@@ -1350,6 +1356,24 @@ namespace DreamCleaningBackend.Services
             if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
             if (dto.DiscountAmount.HasValue) order.DiscountAmount = dto.DiscountAmount.Value;
             if (dto.SubscriptionDiscountAmount.HasValue) order.SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount.Value;
+            if (dto.CleanerHourlyRate.HasValue) order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
+            if (dto.CleanerTotalSalary.HasValue) order.CleanerTotalSalary = dto.CleanerTotalSalary.Value;
+
+            // Auto-recalculate cleaner total salary when hourly rate or duration or maids count changes
+            if (dto.CleanerHourlyRate.HasValue || dto.TotalDuration.HasValue || dto.MaidsCount.HasValue)
+            {
+                // Only auto-recalculate if CleanerTotalSalary was NOT explicitly provided
+                if (!dto.CleanerTotalSalary.HasValue)
+                {
+                    bool hasCleanersService = order.OrderServices.Any(os =>
+                        os.Service?.ServiceRelationType == "cleaner");
+                    var perCleanerDuration = hasCleanersService
+                        ? order.TotalDuration
+                        : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
+                    var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
+                    order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
+                }
+            }
 
             // Auto-calculate tax/total like booking does (so SuperAdmin only needs to edit SubTotal).
             // discountedSubTotal = subTotal - discountAmount - subscriptionDiscountAmount

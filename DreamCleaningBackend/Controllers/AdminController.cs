@@ -2606,6 +2606,9 @@ namespace DreamCleaningBackend.Controllers
                     MaidsCount = order.MaidsCount,
                     IsPaid = order.IsPaid,
                     PaidAt = order.PaidAt,
+                    CleanerHourlyRate = order.CleanerHourlyRate,
+                    CleanerTotalSalary = order.CleanerTotalSalary,
+                    HasCleanersService = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false,
                     Services = order.OrderServices?.Select(os => new OrderServiceDto
                     {
                         Id = os.Id,
@@ -3039,6 +3042,9 @@ namespace DreamCleaningBackend.Controllers
                 MaidsCount = order.MaidsCount,
                 IsPaid = order.IsPaid,
                 PaidAt = order.PaidAt,
+                CleanerHourlyRate = order.CleanerHourlyRate,
+                CleanerTotalSalary = order.CleanerTotalSalary,
+                HasCleanersService = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false,
                 Services = order.OrderServices?.Select(os => new OrderServiceDto
                 {
                     Id = os.Id,
@@ -4272,6 +4278,81 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "No email or phone available to send the reminder." });
 
             return Ok(new { message = "Payment reminder sent successfully." });
+        }
+
+        // ───── Statistics (SuperAdmin only) ─────
+
+        [HttpGet("statistics")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<OrderStatisticsDto>> GetOrderStatistics(
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to)
+        {
+            var query = _context.Orders
+                .Where(o => o.IsPaid && o.Status == "Done");
+
+            if (from.HasValue)
+                query = query.Where(o => o.ServiceDate >= from.Value.Date);
+
+            if (to.HasValue)
+                query = query.Where(o => o.ServiceDate < to.Value.Date.AddDays(1));
+
+            var stats = await query.GroupBy(_ => 1).Select(g => new OrderStatisticsDto
+            {
+                TotalOrders = g.Count(),
+                TotalAmount = g.Sum(o => o.SubTotal),
+                TotalTaxes = g.Sum(o => o.Tax),
+                TotalTips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
+                TotalCleanersSalary = g.Sum(o => o.CleanerTotalSalary),
+                TotalCompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary)
+            }).FirstOrDefaultAsync();
+
+            return Ok(stats ?? new OrderStatisticsDto());
+        }
+
+        [HttpGet("statistics/daily")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<List<DailyStatisticsDto>>> GetDailyStatistics(
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to)
+        {
+            var query = _context.Orders
+                .Where(o => o.IsPaid && o.Status == "Done");
+
+            if (from.HasValue)
+                query = query.Where(o => o.ServiceDate >= from.Value.Date);
+
+            if (to.HasValue)
+                query = query.Where(o => o.ServiceDate < to.Value.Date.AddDays(1));
+
+            var orders = await query
+                .Select(o => new
+                {
+                    o.ServiceDate,
+                    o.SubTotal,
+                    o.Tax,
+                    o.Tips,
+                    o.CompanyDevelopmentTips,
+                    o.CleanerTotalSalary
+                })
+                .ToListAsync();
+
+            var daily = orders
+                .GroupBy(o => o.ServiceDate.Date)
+                .Select(g => new DailyStatisticsDto
+                {
+                    Date = g.Key.ToString("yyyy-MM-dd"),
+                    Orders = g.Count(),
+                    Amount = g.Sum(o => o.SubTotal),
+                    Taxes = g.Sum(o => o.Tax),
+                    Tips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
+                    CleanersSalary = g.Sum(o => o.CleanerTotalSalary),
+                    CompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary)
+                })
+                .OrderBy(d => d.Date)
+                .ToList();
+
+            return Ok(daily);
         }
     }
 }

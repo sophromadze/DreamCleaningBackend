@@ -164,6 +164,13 @@ namespace DreamCleaningBackend.Models
         [Column(TypeName = "decimal(18,2)")]
         public decimal InitialTotal { get; set; }
 
+        // Cleaner salary fields
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal CleanerHourlyRate { get; set; } = 20m; // Default $20/hr for regular, $21 for deep cleaning
+
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal CleanerTotalSalary { get; set; } = 0m; // totalDuration (hrs) * hourlyRate * maidsCount
+
         // Navigation property for update history
         public virtual ICollection<OrderUpdateHistory> UpdateHistory { get; set; } = new List<OrderUpdateHistory>();
     }
