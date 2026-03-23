@@ -291,6 +291,17 @@ namespace DreamCleaningBackend.Services
             }
 
             _context.OrderCleaners.Remove(assignment);
+
+            // Clean up NotificationLog entries for the removed cleaner on this order
+            // so they won't receive any further reminders and can get fresh notifications if re-assigned
+            var staleNotifications = await _context.NotificationLogs
+                .Where(nl => nl.OrderId == orderId && nl.CleanerId == cleanerId)
+                .ToListAsync();
+            if (staleNotifications.Any())
+            {
+                _context.NotificationLogs.RemoveRange(staleNotifications);
+            }
+
             await _context.SaveChangesAsync();
 
             // OPTIMIZED: Send removal notification in background (fire and forget)

@@ -442,9 +442,55 @@ namespace DreamCleaningBackend.Controllers
                     {
                         Console.WriteLine($"Audit logging failed: {ex.Message}");
                     }
+
+                    // Send cancellation notification emails
+                    try
+                    {
+                        var user = await _context.Users.FindAsync(userId);
+                        var fullAddress = $"{orderAfter.ServiceAddress}{(!string.IsNullOrEmpty(orderAfter.AptSuite) ? $", {orderAfter.AptSuite}" : "")}, {orderAfter.City}, {orderAfter.State} {orderAfter.ZipCode}";
+
+                        // Send email to company
+                        await _emailService.SendCancellationNotificationToCompanyAsync(
+                            orderId,
+                            user?.Email ?? orderAfter.ContactEmail,
+                            userId,
+                            cancelOrderDto.Reason,
+                            orderAfter.IsLateCancellation,
+                            orderAfter.ServiceDate,
+                            orderAfter.ServiceTime.ToString(@"hh\:mm")
+                        );
+
+                        // Send email to assigned cleaners
+                        var assignedCleaners = await _context.OrderCleaners
+                            .Where(oc => oc.OrderId == orderId)
+                            .Include(oc => oc.Cleaner)
+                            .ToListAsync();
+
+                        foreach (var oc in assignedCleaners)
+                        {
+                            if (!string.IsNullOrEmpty(oc.Cleaner?.Email))
+                            {
+                                await _emailService.SendCancellationNotificationToCleanerAsync(
+                                    oc.Cleaner.Email,
+                                    orderId,
+                                    orderAfter.ServiceDate,
+                                    orderAfter.ServiceTime.ToString(@"hh\:mm"),
+                                    fullAddress
+                                );
+                            }
+                        }
+                    }
+                    catch (Exception emailEx)
+                    {
+                        Console.WriteLine($"Cancellation email failed: {emailEx.Message}");
+                    }
                 }
 
-                return Ok(new { message = "Order cancelled successfully. Refund will be processed within 7 working days." });
+                var message = orderAfter?.IsLateCancellation == true
+                    ? "Order cancelled successfully. A $70.00 late cancellation fee will be charged. The remaining balance will be refunded within 7 working days."
+                    : "Order cancelled successfully. Refund will be processed within 7 working days.";
+
+                return Ok(new { message, isLateCancellation = orderAfter?.IsLateCancellation ?? false });
             }
             catch (Exception ex)
             {

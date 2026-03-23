@@ -27,7 +27,8 @@ namespace DreamCleaningBackend.Services.Interfaces
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDaysBefore);
         Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
-            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType);
+            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType,
+            string? floorTypes = null, string? floorTypeOther = null);
         Task SendRealEmailVerificationCodeAsync(string email, string firstName, string code);
         Task SendAccountMergeConfirmationAsync(string email, string firstName, string code);
         Task SendEmailAsync(string to, string subject, string html);
@@ -42,5 +43,11 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendAdditionalPaymentRequiredEmailAsync(string email, string customerName, decimal additionalAmount, int orderId, string paymentLink);
         /// <summary>Gentle reminder that the customer has an unpaid additional amount. Same styling as required email.</summary>
         Task SendAdditionalPaymentReminderEmailAsync(string email, string customerName, decimal additionalAmount, int orderId, string paymentLink);
+        /// <summary>Notify the company about an order cancellation with reason, fee info, and user details.</summary>
+        Task SendCancellationNotificationToCompanyAsync(int orderId, string userEmail, int userId, string reason, bool isLateCancellation, DateTime serviceDate, string serviceTime);
+        /// <summary>Notify an assigned cleaner that their order has been cancelled.</summary>
+        Task SendCancellationNotificationToCleanerAsync(string cleanerEmail, int orderId, DateTime serviceDate, string serviceTime, string fullAddress);
+        /// <summary>Send a review request email to the customer after order completion.</summary>
+        Task SendReviewRequestEmailAsync(string email, string customerName);
     }
 }

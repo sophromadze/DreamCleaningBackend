@@ -36,6 +36,8 @@ namespace DreamCleaningBackend.Models
         [StringLength(500)]
         public string? CancellationReason { get; set; }
 
+        public bool IsLateCancellation { get; set; } = false;
+
         // Duration in minutes
         public decimal TotalDuration { get; set; }
 
@@ -88,6 +90,13 @@ namespace DreamCleaningBackend.Models
         // Special instructions
         [StringLength(500)]
         public string? SpecialInstructions { get; set; }
+
+        // Floor types (comma-separated, may include "other:custom text")
+        [StringLength(300)]
+        public string? FloorTypes { get; set; }
+
+        [StringLength(100)]
+        public string? FloorTypeOther { get; set; }
 
         // Contact info (stored separately in case different from user profile)
         [Required]

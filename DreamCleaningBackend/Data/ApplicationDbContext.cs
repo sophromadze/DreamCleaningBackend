@@ -41,6 +41,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<AccountMergeRequest> AccountMergeRequests { get; set; }
         public DbSet<AdminUserNote> AdminUserNotes { get; set; }
         public DbSet<PendingOrderEdit> PendingOrderEdits { get; set; }
+        public DbSet<OrderReminderAcknowledgment> OrderReminderAcknowledgments { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -204,6 +205,22 @@ namespace DreamCleaningBackend.Data
                 .WithMany()
                 .HasForeignKey(poe => poe.ReviewedByUserId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            // OrderReminderAcknowledgment configuration
+            modelBuilder.Entity<OrderReminderAcknowledgment>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.OrderId, e.Type })
+                    .HasDatabaseName("IX_OrderReminderAcknowledgments_OrderType");
+                entity.HasOne(e => e.Order)
+                    .WithMany()
+                    .HasForeignKey(e => e.OrderId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.AcknowledgedByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.AcknowledgedByUserId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
 
             // Poll configuration
             modelBuilder.Entity<PollQuestion>()

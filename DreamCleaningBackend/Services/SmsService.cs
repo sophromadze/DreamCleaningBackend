@@ -165,6 +165,13 @@ namespace DreamCleaningBackend.Services
             await SendSmsAsync(phoneNumber, msg);
         }
 
+        public async Task SendReviewRequestSmsAsync(string phoneNumber, string customerName)
+        {
+            var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
+            var msg = $"Hi {firstName}! Thank you so much for choosing Dream Cleaning — we hope your space feels fresh and spotless! ✨ If you're happy with the service, we'd truly appreciate a quick review. It only takes a moment and means the world to our small team!\n\nhttps://g.page/r/CSmN7-QdmiyoEAI/review\n\nThank you and have a wonderful day! 😊";
+            await SendSmsAsync(phoneNumber, msg);
+        }
+
         /// <summary>
         /// Normalize US/NA phone to E.164 (e.g. +19295551234). Handles 10-digit, 11-digit with leading 1, or already E.164.
         /// </summary>

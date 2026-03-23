@@ -7,6 +7,8 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Services;
+using DreamCleaningBackend.Hubs;
+using Microsoft.AspNetCore.SignalR;
 using System.Linq;
 using Stripe;
 
@@ -25,16 +27,18 @@ namespace DreamCleaningBackend.Controllers
         private readonly IStripeService _stripeService;
         private readonly ISmsService _smsService;
         private readonly ILogger<BookingController> _logger;
+        private readonly IHubContext<UserManagementHub> _hubContext;
 
         public BookingController(ApplicationDbContext context,
-            IConfiguration configuration, 
+            IConfiguration configuration,
             ISubscriptionService subscriptionService,
-            IGiftCardService giftCardService, 
-            IEmailService emailService, 
+            IGiftCardService giftCardService,
+            IEmailService emailService,
             IBookingDataService bookingDataService,
             IStripeService stripeService,
             ISmsService smsService,
-            ILogger<BookingController> logger)
+            ILogger<BookingController> logger,
+            IHubContext<UserManagementHub> hubContext)
         {
             _context = context;
             _configuration = configuration;
@@ -45,6 +49,7 @@ namespace DreamCleaningBackend.Controllers
             _stripeService = stripeService;
             _smsService = smsService;
             _logger = logger;
+            _hubContext = hubContext;
         }
 
         [HttpGet("service-types")]
@@ -387,6 +392,8 @@ namespace DreamCleaningBackend.Controllers
                     ServiceTime = TimeSpan.Parse(dto.ServiceTime),
                     EntryMethod = dto.EntryMethod,
                     SpecialInstructions = dto.SpecialInstructions,
+                    FloorTypes = dto.FloorTypes,
+                    FloorTypeOther = dto.FloorTypeOther,
                     ContactFirstName = dto.ContactFirstName,
                     ContactLastName = dto.ContactLastName,
                     ContactEmail = dto.ContactEmail,
@@ -871,6 +878,9 @@ namespace DreamCleaningBackend.Controllers
                         // Commit the transaction
                         await transaction.CommitAsync();
                         Console.WriteLine("Transaction committed successfully!");
+
+                        // Notify admins about new order
+                        await NotifyAdminsNewOrder(order.Id);
                     }
                     catch (Exception ex)
                     {
@@ -1176,6 +1186,8 @@ namespace DreamCleaningBackend.Controllers
                     ServiceTime = TimeSpan.Parse(dto.BookingData.ServiceTime),
                     EntryMethod = dto.BookingData.EntryMethod,
                     SpecialInstructions = dto.BookingData.SpecialInstructions,
+                    FloorTypes = dto.BookingData.FloorTypes,
+                    FloorTypeOther = dto.BookingData.FloorTypeOther,
                     ContactFirstName = dto.BookingData.ContactFirstName,
                     ContactLastName = dto.BookingData.ContactLastName,
                     ContactEmail = dto.BookingData.ContactEmail,
@@ -1405,6 +1417,9 @@ namespace DreamCleaningBackend.Controllers
                         }
 
                         await transaction.CommitAsync();
+
+                        // Notify admins about new order
+                        await NotifyAdminsNewOrder(order.Id);
                     }
                     catch (Exception ex)
                     {
@@ -2051,7 +2066,9 @@ namespace DreamCleaningBackend.Controllers
                                 order.Id,
                                 hasCleaningSupplies,
                                 isDeepCleaning,
-                                isCustomServiceType
+                                isCustomServiceType,
+                                order.FloorTypes,
+                                order.FloorTypeOther
                             );
                             Console.WriteLine($"Booking confirmation email sent to {contactEmail} for order {order.Id}");
                         }
@@ -2215,6 +2232,8 @@ namespace DreamCleaningBackend.Controllers
                 ServiceTime = TimeSpan.Parse(dto.ServiceTime),
                 EntryMethod = dto.EntryMethod,
                 SpecialInstructions = dto.SpecialInstructions,
+                FloorTypes = dto.FloorTypes,
+                FloorTypeOther = dto.FloorTypeOther,
                 ContactFirstName = dto.ContactFirstName,
                 ContactLastName = dto.ContactLastName,
                 ContactEmail = dto.ContactEmail,
@@ -2466,6 +2485,9 @@ namespace DreamCleaningBackend.Controllers
                     }
 
                     await transaction.CommitAsync();
+
+                    // Notify admins about new order
+                    await NotifyAdminsNewOrder(order.Id);
                 }
                 catch (Exception ex)
                 {
@@ -2516,6 +2538,30 @@ namespace DreamCleaningBackend.Controllers
             timeSlots = timeSlots.Where(t => String.Compare(t, minStartTime, StringComparison.Ordinal) >= 0).ToList();
 
             return Ok(timeSlots);
+        }
+
+        /// <summary>
+        /// Notify all admin/superadmin users about a new order via SignalR.
+        /// </summary>
+        private async Task NotifyAdminsNewOrder(int orderId)
+        {
+            try
+            {
+                var adminUserIds = await _context.Users
+                    .Where(u => u.Role == UserRole.Admin || u.Role == UserRole.SuperAdmin)
+                    .Select(u => u.Id)
+                    .ToListAsync();
+
+                foreach (var adminId in adminUserIds)
+                {
+                    await _hubContext.Clients.Group($"User_{adminId}")
+                        .SendAsync("NewOrderCreated", new { orderId });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to notify admins about new order {OrderId}", orderId);
+            }
         }
     }
 }

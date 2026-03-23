@@ -31,6 +31,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal GiftCardAmountUsed { get; set; }
         public string? EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
+        public string? FloorTypes { get; set; }
+        public string? FloorTypeOther { get; set; }
         public string ContactFirstName { get; set; }
         public string ContactLastName { get; set; }
         public string ContactEmail { get; set; }
@@ -56,6 +58,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal CleanerHourlyRate { get; set; }
         public decimal CleanerTotalSalary { get; set; }
         public bool HasCleanersService { get; set; }
+        public string? CancellationReason { get; set; }
+        public bool IsLateCancellation { get; set; }
         public List<OrderServiceDto> Services { get; set; } = new List<OrderServiceDto>();
         public List<OrderExtraServiceDto> ExtraServices { get; set; } = new List<OrderExtraServiceDto>();
     }
@@ -90,6 +94,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal TotalDuration { get; set; }
         public string EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
+        public string? FloorTypes { get; set; }
+        public string? FloorTypeOther { get; set; }
         public string ContactFirstName { get; set; }
         public string ContactLastName { get; set; }
         public string ContactEmail { get; set; }
@@ -159,6 +165,9 @@ namespace DreamCleaningBackend.DTOs
         /// Convenience: latest unpaid update-history id (if any). Useful to create a payment intent.
         /// </summary>
         public int? PendingUpdateHistoryId { get; set; }
+
+        public string? CancellationReason { get; set; }
+        public bool IsLateCancellation { get; set; }
     }
 
     public class CancelOrderDto

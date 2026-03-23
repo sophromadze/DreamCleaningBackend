@@ -79,6 +79,12 @@ namespace DreamCleaningBackend.DTOs
         public int? CustomCleaners { get; set; }
         public decimal? CustomDuration { get; set; }
         public List<PhotoUploadDto> UploadedPhotos { get; set; } = new List<PhotoUploadDto>();
+
+        [StringLength(300)]
+        public string? FloorTypes { get; set; }
+
+        [StringLength(100)]
+        public string? FloorTypeOther { get; set; }
     }
 
     public class CreateBookingForUserDto

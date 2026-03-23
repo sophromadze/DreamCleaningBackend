@@ -452,6 +452,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal? TotalDuration { get; set; }
         public string? EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
+        public string? FloorTypes { get; set; }
+        public string? FloorTypeOther { get; set; }
         public decimal? Tips { get; set; }
         public decimal? CompanyDevelopmentTips { get; set; }
         public string? Status { get; set; }

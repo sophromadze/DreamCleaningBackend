@@ -62,7 +62,9 @@ namespace DreamCleaningBackend.Services
                 Tips = o.Tips,
                 CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                 IsPaid = o.IsPaid,
-                PaidAt = o.PaidAt
+                PaidAt = o.PaidAt,
+                CancellationReason = o.CancellationReason,
+                IsLateCancellation = o.IsLateCancellation
             }).ToList();
         }
 
@@ -132,7 +134,9 @@ namespace DreamCleaningBackend.Services
                             : (firstOriginalByOrderId.TryGetValue(o.Id, out var firstOrig) ? firstOrig : 0m))
                         - (alreadyPaidByOrderId.TryGetValue(o.Id, out var paid) ? paid : 0m))
                     : 0m,
-                PendingUpdateHistoryId = latestHistoryByOrderId.TryGetValue(o.Id, out var lid) ? lid : null
+                PendingUpdateHistoryId = latestHistoryByOrderId.TryGetValue(o.Id, out var lid) ? lid : null,
+                CancellationReason = o.CancellationReason,
+                IsLateCancellation = o.IsLateCancellation
             }).ToList();
         }
 
@@ -311,6 +315,8 @@ namespace DreamCleaningBackend.Services
             order.ServiceTime = TimeSpan.Parse(updateOrderDto.ServiceTime);
             order.EntryMethod = updateOrderDto.EntryMethod;
             order.SpecialInstructions = updateOrderDto.SpecialInstructions;
+            order.FloorTypes = updateOrderDto.FloorTypes;
+            order.FloorTypeOther = updateOrderDto.FloorTypeOther;
             order.ContactFirstName = updateOrderDto.ContactFirstName;
             order.ContactLastName = updateOrderDto.ContactLastName;
             order.ContactEmail = updateOrderDto.ContactEmail;
@@ -769,15 +775,14 @@ namespace DreamCleaningBackend.Services
                 throw new Exception("Order is already cancelled");
             if (order.Status == "Done")
                 throw new Exception("Cannot cancel a completed order");
-            // Check if service date is not too close (e.g., within 48 hours)
-            // Only apply this restriction for paid orders - unpaid orders can be cancelled anytime
-            if (order.IsPaid && order.ServiceDate <= DateTime.UtcNow.AddHours(48))
-                throw new Exception("Cannot cancel order within 48 hours of service date");
+
+            // Determine if late cancellation fee applies (within 48 hours of service for paid orders)
+            bool isLateCancellation = order.IsPaid && order.ServiceDate <= DateTime.UtcNow.AddHours(48);
+
             order.Status = "Cancelled";
             order.CancellationReason = cancelOrderDto.Reason;
+            order.IsLateCancellation = isLateCancellation;
             order.UpdatedAt = DateTime.UtcNow;
-            // In a real system, you would initiate a refund process here
-            // For now, we'll just mark it as cancelled
             await _orderRepository.UpdateAsync(order);
             await _orderRepository.SaveChangesAsync();
 
@@ -1133,7 +1138,9 @@ namespace DreamCleaningBackend.Services
                 Tips = o.Tips,
                 CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                 IsPaid = o.IsPaid,
-                PaidAt = o.PaidAt
+                PaidAt = o.PaidAt,
+                CancellationReason = o.CancellationReason,
+                IsLateCancellation = o.IsLateCancellation
             }).ToList();
         }
 
@@ -1171,6 +1178,8 @@ namespace DreamCleaningBackend.Services
                 ContactEmail = order.ContactEmail,
                 ContactPhone = order.ContactPhone,
                 SpecialInstructions = order.SpecialInstructions,
+                FloorTypes = order.FloorTypes,
+                FloorTypeOther = order.FloorTypeOther,
                 MaidsCount = order.MaidsCount,
                 TotalDuration = order.TotalDuration,
                 SubTotal = order.SubTotal,
@@ -1187,6 +1196,8 @@ namespace DreamCleaningBackend.Services
                 CleanerHourlyRate = order.CleanerHourlyRate,
                 CleanerTotalSalary = order.CleanerTotalSalary,
                 HasCleanersService = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false,
+                CancellationReason = order.CancellationReason,
+                IsLateCancellation = order.IsLateCancellation,
                 Services = order.OrderServices?.Select(os => new OrderServiceDto
                 {
                     Id = os.Id,
@@ -1282,6 +1293,8 @@ namespace DreamCleaningBackend.Services
                 GiftCardAmountUsed = order.GiftCardAmountUsed,
                 EntryMethod = order.EntryMethod,
                 SpecialInstructions = order.SpecialInstructions,
+                FloorTypes = order.FloorTypes,
+                FloorTypeOther = order.FloorTypeOther,
                 ContactFirstName = order.ContactFirstName,
                 ContactLastName = order.ContactLastName,
                 ContactEmail = order.ContactEmail,
@@ -1298,6 +1311,8 @@ namespace DreamCleaningBackend.Services
                 CleanerHourlyRate = order.CleanerHourlyRate,
                 CleanerTotalSalary = order.CleanerTotalSalary,
                 HasCleanersService = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false,
+                CancellationReason = order.CancellationReason,
+                IsLateCancellation = order.IsLateCancellation,
                 Services = order.OrderServices?.Select(os => new OrderServiceDto
                 {
                     Id = os.Id,
@@ -1349,6 +1364,8 @@ namespace DreamCleaningBackend.Services
             if (dto.TotalDuration.HasValue) order.TotalDuration = dto.TotalDuration.Value;
             if (dto.EntryMethod != null) order.EntryMethod = dto.EntryMethod;
             if (dto.SpecialInstructions != null) order.SpecialInstructions = dto.SpecialInstructions;
+            if (dto.FloorTypes != null) order.FloorTypes = dto.FloorTypes;
+            if (dto.FloorTypeOther != null) order.FloorTypeOther = dto.FloorTypeOther;
             if (dto.Tips.HasValue) order.Tips = dto.Tips.Value;
             if (dto.CompanyDevelopmentTips.HasValue) order.CompanyDevelopmentTips = dto.CompanyDevelopmentTips.Value;
             if (dto.Status != null) order.Status = dto.Status;

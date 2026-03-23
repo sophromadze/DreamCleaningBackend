@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Services.Interfaces;
 using MailKit.Net.Smtp;
 using MailKit.Security;
@@ -930,6 +931,12 @@ namespace DreamCleaningBackend.Services
             <p style='margin: 0; font-size: 1.2em; font-weight: bold; color: #155724; text-align: center;'>${order.Tips:F2}</p>
         </div>" : "")}
         
+        {(!string.IsNullOrEmpty(order.FloorTypes) ? $@"
+        <div style='background: #f0f4ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;'>
+            <h3>🏠 Floor Types</h3>
+            <p style='margin: 0; font-weight: 600;'>{FloorTypeHelper.FormatFloorTypes(order.FloorTypes, order.FloorTypeOther)}</p>
+        </div>" : "")}
+
         {(!string.IsNullOrEmpty(order.SpecialInstructions) && !isCustomServiceType ? $@"
         <div style='background: #ffe6e6; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc3545;'>
             <h3>⚠️ Special Instructions from Client</h3>
@@ -939,7 +946,7 @@ namespace DreamCleaningBackend.Services
             <h3>📝 Service Description (Custom)</h3>
             <p style='margin: 0; font-style: italic; color: #155724;'>{order.SpecialInstructions}</p>
         </div>" : ""))}
-        
+
         {(!string.IsNullOrEmpty(cleanerAdditionalInstructions) ? $@"
         <div style='background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
             <h3>💡 Additional Instructions for You</h3>
@@ -1237,7 +1244,8 @@ namespace DreamCleaningBackend.Services
 
         public async Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
-            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType)
+            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType,
+            string? floorTypes = null, string? floorTypeOther = null)
         {
             var subject = "Booking Confirmed - Dream Cleaning Service Scheduled";
 
@@ -1264,6 +1272,7 @@ namespace DreamCleaningBackend.Services
             <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
             <p><strong>Time:</strong> {serviceTime}</p>
             <p><strong>Address:</strong> {address}</p>
+            {(!string.IsNullOrEmpty(floorTypes) ? $"<p><strong>Floor Types:</strong> {FloorTypeHelper.FormatFloorTypes(floorTypes, floorTypeOther)}</p>" : "")}
         </div>
 
         {itemsHtml}
@@ -1407,7 +1416,7 @@ namespace DreamCleaningBackend.Services
                     <h3>Service Address:</h3>
                     <p>{fullAddress}</p>
                 </div>
-                
+
                 {photoInfo}
                 
                 <p style='margin-top: 30px; color: #666; font-size: 14px;'>
@@ -1771,6 +1780,121 @@ namespace DreamCleaningBackend.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Failed to send additional payment reminder email to {email} for Order #{orderId}");
+            }
+        }
+
+        public async Task SendCancellationNotificationToCompanyAsync(int orderId, string userEmail, int userId, string reason, bool isLateCancellation, DateTime serviceDate, string serviceTime)
+        {
+            try
+            {
+                var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
+                var subject = $"Order #{orderId} Cancelled{(isLateCancellation ? " - Late Cancellation Fee Applies" : "")}";
+
+                var feeSection = isLateCancellation
+                    ? @"<div style='background: #fff3e0; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #ff9800;'>
+                           <p style='margin: 0; color: #e65100;'><strong>⚠ Late Cancellation Fee:</strong> A $70.00 cancellation fee should be charged. The order was cancelled less than 48 hours before the scheduled service.</p>
+                       </div>"
+                    : @"<div style='background: #e8f5e9; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #4caf50;'>
+                           <p style='margin: 0; color: #2e7d32;'><strong>No cancellation fee.</strong> The order was cancelled more than 48 hours before the scheduled service.</p>
+                       </div>";
+
+                var body = $@"
+                    <h2>Order Cancellation Notification</h2>
+
+                    <div style='background: #ffebee; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f44336;'>
+                        <h3 style='margin-top: 0;'>Order #{orderId} has been cancelled</h3>
+                        <p><strong>Cancelled by:</strong> User ID #{userId} ({userEmail})</p>
+                        <p><strong>Service Date:</strong> {serviceDate:dddd, MMMM dd, yyyy} at {serviceTime}</p>
+                    </div>
+
+                    {feeSection}
+
+                    <div style='background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;'>
+                        <h3 style='margin-top: 0;'>Reason for Cancellation:</h3>
+                        <p style='font-style: italic;'>""{reason}""</p>
+                    </div>
+
+                    <p style='color: #666; font-size: 14px; margin-top: 30px;'>
+                        This is an automated notification from Dream Cleaning.
+                    </p>
+                ";
+
+                await SendEmailAsync(companyEmail, subject, body);
+                _logger.LogInformation($"Cancellation notification sent to company for Order #{orderId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send cancellation notification to company for Order #{orderId}");
+            }
+        }
+
+        public async Task SendCancellationNotificationToCleanerAsync(string cleanerEmail, int orderId, DateTime serviceDate, string serviceTime, string fullAddress)
+        {
+            try
+            {
+                var subject = $"Order #{orderId} - Service Cancelled";
+
+                var body = $@"
+                    <h2>Service Cancellation Notice</h2>
+
+                    <p>The following service has been cancelled:</p>
+
+                    <div style='background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;'>
+                        <p><strong>Order Number:</strong> #{orderId}</p>
+                        <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
+                        <p><strong>Time:</strong> {serviceTime}</p>
+                        <p><strong>Address:</strong> {fullAddress}</p>
+                    </div>
+
+                    <p style='color: #666; font-size: 14px; margin-top: 30px;'>
+                        If you have any questions, please contact Dream Cleaning.
+                    </p>
+                    <br/>
+                    <p>Best regards,<br/>Dream Cleaning Team</p>
+                ";
+
+                await SendEmailAsync(cleanerEmail, subject, body);
+                _logger.LogInformation($"Cancellation notification sent to cleaner {cleanerEmail} for Order #{orderId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send cancellation notification to cleaner {cleanerEmail} for Order #{orderId}");
+            }
+        }
+
+        public async Task SendReviewRequestEmailAsync(string email, string customerName)
+        {
+            try
+            {
+                var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
+                var subject = "We'd Love Your Feedback! - Dream Cleaning";
+                var reviewUrl = "https://g.page/r/CSmN7-QdmiyoEAI/review";
+
+                var body = $@"
+                    <h2>Hi {firstName}!</h2>
+                    <p>Thank you so much for choosing Dream Cleaning — we hope your space feels fresh and spotless! ✨</p>
+
+                    <p>If you're happy with the service, we'd truly appreciate a quick review. It only takes a moment and means the world to our small team!</p>
+
+                    <div style='text-align: center; margin: 30px 0;'>
+                        <a href='{reviewUrl}'
+                           style='display: inline-block; background: #4caf50; color: #ffffff; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-size: 16px; font-weight: bold;'>
+                            Leave a Review
+                        </a>
+                    </div>
+
+                    <p>Thank you and have a wonderful day! 😊</p>
+
+                    <br/>
+                    <p>Best regards,<br/>Dream Cleaning Team</p>
+                ";
+
+                await SendEmailAsync(email, subject, body);
+                _logger.LogInformation($"Review request email sent to {email}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send review request email to {email}");
             }
         }
     }

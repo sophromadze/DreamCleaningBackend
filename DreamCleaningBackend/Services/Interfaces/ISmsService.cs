@@ -37,5 +37,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendAdditionalPaymentRequiredSmsAsync(string phoneNumber, string customerName, decimal additionalAmount, int orderId, string paymentLink);
         /// <summary>Gentle reminder that the customer has an unpaid additional amount.</summary>
         Task SendAdditionalPaymentReminderSmsAsync(string phoneNumber, string customerName, decimal additionalAmount, int orderId, string paymentLink);
+        /// <summary>Send a review request SMS to the customer after order completion.</summary>
+        Task SendReviewRequestSmsAsync(string phoneNumber, string customerName);
     }
 }

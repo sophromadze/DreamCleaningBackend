@@ -12,6 +12,7 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.Processing;
 using DreamCleaningBackend.Services;
+using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
 
 namespace DreamCleaningBackend.Controllers
@@ -33,6 +34,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IEmailService _emailService;
         private readonly ISmsService _smsService;
         private readonly IAuthService _authService;
+        private readonly IHubContext<UserManagementHub> _hubContext;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
@@ -45,7 +47,8 @@ namespace DreamCleaningBackend.Controllers
             IProfileService profileService,
             IEmailService emailService,
             ISmsService smsService,
-            IAuthService authService)
+            IAuthService authService,
+            IHubContext<UserManagementHub> hubContext)
         {
             _context = context;
             _permissionService = permissionService;
@@ -59,6 +62,7 @@ namespace DreamCleaningBackend.Controllers
             _emailService = emailService;
             _smsService = smsService;
             _authService = authService;
+            _hubContext = hubContext;
         }
 
         // Service Types Management
@@ -2593,6 +2597,8 @@ namespace DreamCleaningBackend.Controllers
                     SubscriptionName = order.Subscription?.Name ?? "",
                     EntryMethod = order.EntryMethod,
                     SpecialInstructions = order.SpecialInstructions,
+                    FloorTypes = order.FloorTypes,
+                    FloorTypeOther = order.FloorTypeOther,
                     ContactFirstName = order.ContactFirstName,
                     ContactLastName = order.ContactLastName,
                     ContactEmail = order.ContactEmail,
@@ -2609,6 +2615,8 @@ namespace DreamCleaningBackend.Controllers
                     CleanerHourlyRate = order.CleanerHourlyRate,
                     CleanerTotalSalary = order.CleanerTotalSalary,
                     HasCleanersService = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false,
+                    CancellationReason = order.CancellationReason,
+                    IsLateCancellation = order.IsLateCancellation,
                     Services = order.OrderServices?.Select(os => new OrderServiceDto
                     {
                         Id = os.Id,
@@ -2776,6 +2784,56 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        [HttpPost("orders/{orderId}/send-review-request")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> SendReviewRequest(int orderId)
+        {
+            try
+            {
+                var order = await _context.Orders
+                    .Include(o => o.User)
+                    .FirstOrDefaultAsync(o => o.Id == orderId);
+                if (order == null)
+                    return NotFound();
+
+                var customerName = $"{order.ContactFirstName} {order.ContactLastName}".Trim();
+                var email = order.ContactEmail;
+                var phone = order.User?.Phone ?? order.ContactPhone;
+
+                // Send email if available
+                if (!string.IsNullOrWhiteSpace(email))
+                {
+                    try
+                    {
+                        await _emailService.SendReviewRequestEmailAsync(email, customerName);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to send review email for order #{orderId}: {ex.Message}");
+                    }
+                }
+
+                // Send SMS if phone available and SMS enabled
+                if (!string.IsNullOrWhiteSpace(phone) && _smsService.IsSmsEnabled())
+                {
+                    try
+                    {
+                        await _smsService.SendReviewRequestSmsAsync(phone, customerName);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to send review SMS for order #{orderId}: {ex.Message}");
+                    }
+                }
+
+                return Ok(new { message = "Review request sent" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpPost("orders/{orderId}/cancel")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult> CancelOrder(int orderId, [FromBody] CancelOrderDto dto)
@@ -2806,9 +2864,13 @@ namespace DreamCleaningBackend.Controllers
                     UpdatedAt = order.UpdatedAt
                 };
 
+                // Determine if late cancellation fee applies
+                bool isLateCancellation = order.IsPaid && order.ServiceDate <= DateTime.UtcNow.AddHours(48);
+
                 // Update the order with cancellation info
                 order.Status = "Cancelled";
-                order.CancellationReason = dto.Reason; // Save the reason
+                order.CancellationReason = dto.Reason;
+                order.IsLateCancellation = isLateCancellation;
                 order.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
@@ -2824,7 +2886,6 @@ namespace DreamCleaningBackend.Controllers
                     userSpecialOffer.UsedOnOrderId = null;
                     await _context.SaveChangesAsync();
 
-                    // Log that we restored the special offer
                     Console.WriteLine($"Restored special offer {userSpecialOffer.SpecialOfferId} for user {userSpecialOffer.UserId} after admin cancelled order {orderId}");
                 }
 
@@ -2853,6 +2914,46 @@ namespace DreamCleaningBackend.Controllers
                 catch (Exception auditEx)
                 {
                     Console.WriteLine($"Audit logging failed: {auditEx.Message}");
+                }
+
+                // Send cancellation emails
+                try
+                {
+                    var user = await _context.Users.FindAsync(order.UserId);
+                    var fullAddress = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}, {order.City}, {order.State} {order.ZipCode}";
+
+                    await _emailService.SendCancellationNotificationToCompanyAsync(
+                        orderId,
+                        user?.Email ?? order.ContactEmail,
+                        order.UserId,
+                        dto.Reason,
+                        isLateCancellation,
+                        order.ServiceDate,
+                        order.ServiceTime.ToString(@"hh\:mm")
+                    );
+
+                    var assignedCleaners = await _context.OrderCleaners
+                        .Where(oc => oc.OrderId == orderId)
+                        .Include(oc => oc.Cleaner)
+                        .ToListAsync();
+
+                    foreach (var oc in assignedCleaners)
+                    {
+                        if (!string.IsNullOrEmpty(oc.Cleaner?.Email))
+                        {
+                            await _emailService.SendCancellationNotificationToCleanerAsync(
+                                oc.Cleaner.Email,
+                                orderId,
+                                order.ServiceDate,
+                                order.ServiceTime.ToString(@"hh\:mm"),
+                                fullAddress
+                            );
+                        }
+                    }
+                }
+                catch (Exception emailEx)
+                {
+                    Console.WriteLine($"Cancellation email failed: {emailEx.Message}");
                 }
 
                 return Ok(new { message = "Order cancelled successfully." });
@@ -3029,6 +3130,8 @@ namespace DreamCleaningBackend.Controllers
                 SubscriptionName = order.Subscription?.Name ?? "",
                 EntryMethod = order.EntryMethod,
                 SpecialInstructions = order.SpecialInstructions,
+                FloorTypes = order.FloorTypes,
+                FloorTypeOther = order.FloorTypeOther,
                 ContactFirstName = order.ContactFirstName,
                 ContactLastName = order.ContactLastName,
                 ContactEmail = order.ContactEmail,
@@ -3207,7 +3310,9 @@ namespace DreamCleaningBackend.Controllers
                         Tips = o.Tips,
                         CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                         IsPaid = o.IsPaid,
-                        PaidAt = o.PaidAt
+                        PaidAt = o.PaidAt,
+                        CancellationReason = o.CancellationReason,
+                        IsLateCancellation = o.IsLateCancellation
                     })
                     .ToListAsync();
 
@@ -4354,5 +4459,241 @@ namespace DreamCleaningBackend.Controllers
 
             return Ok(daily);
         }
+
+        // ── Order Reminder Acknowledgments ────────────────────
+
+        /// <summary>
+        /// Get all currently active (unacknowledged) order reminders.
+        /// Returns reminders for orders whose service window hasn't passed yet.
+        /// </summary>
+        [HttpGet("orders/active-reminders")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> GetActiveOrderReminders()
+        {
+            try
+            {
+                // Get NY time zone
+                var nyTz = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+                var nowNy = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, nyTz);
+
+                // Get all orders that are Pending or Active and have a service date today or in the future
+                var todayNy = nowNy.Date;
+
+                // Get acknowledged reminder keys (orderId + type) so we exclude them
+                // AcknowledgedAt is stored as UTC, so compare against UTC
+                var cutoffUtc = DateTime.UtcNow.AddDays(-1);
+                var acknowledged = await _context.OrderReminderAcknowledgments
+                    .Where(a => a.AcknowledgedAt >= cutoffUtc)
+                    .Select(a => new { a.OrderId, a.Type })
+                    .ToListAsync();
+
+                var acknowledgedKeys = acknowledged
+                    .Select(a => $"{a.OrderId}_{a.Type}")
+                    .ToHashSet();
+
+                // Get relevant orders
+                var orders = await _context.Orders
+                    .Where(o => o.Status != "Cancelled" && o.Status != "Done")
+                    .Where(o => o.ServiceDate >= todayNy.AddDays(-1))
+                    .Select(o => new { o.Id, o.ServiceDate, o.ServiceTime, o.TotalDuration })
+                    .ToListAsync();
+
+                var activeReminders = new List<object>();
+
+                foreach (var order in orders)
+                {
+                    var startNy = order.ServiceDate.Date.Add(order.ServiceTime);
+                    var endNy = startNy.AddMinutes((double)order.TotalDuration);
+
+                    // Check 30 min before start
+                    var alertStart = startNy.AddMinutes(-30);
+                    var startKey = $"{order.Id}_start";
+                    if (!acknowledgedKeys.Contains(startKey) && nowNy >= alertStart && nowNy <= startNy)
+                    {
+                        activeReminders.Add(new
+                        {
+                            orderId = order.Id,
+                            type = "start",
+                            triggeredAt = alertStart.ToString("o")
+                        });
+                    }
+
+                    // Check 30 min before end
+                    var alertEnd = endNy.AddMinutes(-30);
+                    var endKey = $"{order.Id}_end";
+                    if (!acknowledgedKeys.Contains(endKey) && nowNy >= alertEnd && nowNy <= endNy)
+                    {
+                        activeReminders.Add(new
+                        {
+                            orderId = order.Id,
+                            type = "end",
+                            triggeredAt = alertEnd.ToString("o")
+                        });
+                    }
+                }
+
+                return Ok(activeReminders);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Acknowledge an order reminder. Broadcasts to all connected admins via SignalR.
+        /// </summary>
+        [HttpPost("orders/{orderId}/acknowledge-reminder")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> AcknowledgeOrderReminder(int orderId, [FromBody] AcknowledgeReminderDto dto)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst("UserId")?.Value;
+                if (!int.TryParse(userIdClaim, out int userId))
+                    return Unauthorized();
+
+                // Check order exists
+                var orderExists = await _context.Orders.AnyAsync(o => o.Id == orderId);
+                if (!orderExists)
+                    return NotFound(new { message = "Order not found" });
+
+                // Check if already acknowledged
+                var alreadyAcked = await _context.OrderReminderAcknowledgments
+                    .AnyAsync(a => a.OrderId == orderId && a.Type == dto.Type);
+
+                if (!alreadyAcked)
+                {
+                    // Save acknowledgment to DB
+                    var ack = new OrderReminderAcknowledgment
+                    {
+                        OrderId = orderId,
+                        Type = dto.Type,
+                        AcknowledgedByUserId = userId,
+                        AcknowledgedAt = DateTime.UtcNow,
+                        TriggeredAt = DateTime.UtcNow
+                    };
+                    _context.OrderReminderAcknowledgments.Add(ack);
+                    await _context.SaveChangesAsync();
+                }
+
+                // Broadcast to ALL connected admin/superadmin users via SignalR
+                var adminUserIds = await _context.Users
+                    .Where(u => u.Role == UserRole.Admin || u.Role == UserRole.SuperAdmin)
+                    .Select(u => u.Id)
+                    .ToListAsync();
+
+                foreach (var adminId in adminUserIds)
+                {
+                    await _hubContext.Clients.Group($"User_{adminId}")
+                        .SendAsync("OrderReminderAcknowledged", new
+                        {
+                            orderId = orderId,
+                            type = dto.Type,
+                            acknowledgedByUserId = userId
+                        });
+                }
+
+                return Ok(new { message = "Reminder acknowledged" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Get order IDs that have not been viewed by any admin yet.
+        /// </summary>
+        [HttpGet("orders/unviewed-new")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> GetUnviewedNewOrders()
+        {
+            try
+            {
+                // Get all order IDs that have been acknowledged with type "new_order"
+                var viewedOrderIds = await _context.OrderReminderAcknowledgments
+                    .Where(a => a.Type == "new_order")
+                    .Select(a => a.OrderId)
+                    .Distinct()
+                    .ToListAsync();
+
+                // Get all non-cancelled order IDs that haven't been viewed
+                var unviewedOrderIds = await _context.Orders
+                    .Where(o => o.Status != "Cancelled" && !viewedOrderIds.Contains(o.Id))
+                    .OrderByDescending(o => o.CreatedAt)
+                    .Select(o => o.Id)
+                    .ToListAsync();
+
+                return Ok(unviewedOrderIds);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Mark a new order as viewed. Broadcasts to all admins via SignalR.
+        /// </summary>
+        [HttpPost("orders/{orderId}/mark-viewed")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> MarkOrderViewed(int orderId)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst("UserId")?.Value;
+                if (!int.TryParse(userIdClaim, out int userId))
+                    return Unauthorized();
+
+                var orderExists = await _context.Orders.AnyAsync(o => o.Id == orderId);
+                if (!orderExists)
+                    return NotFound(new { message = "Order not found" });
+
+                // Check if already marked as viewed
+                var alreadyViewed = await _context.OrderReminderAcknowledgments
+                    .AnyAsync(a => a.OrderId == orderId && a.Type == "new_order");
+
+                if (!alreadyViewed)
+                {
+                    var ack = new OrderReminderAcknowledgment
+                    {
+                        OrderId = orderId,
+                        Type = "new_order",
+                        AcknowledgedByUserId = userId,
+                        AcknowledgedAt = DateTime.UtcNow,
+                        TriggeredAt = DateTime.UtcNow
+                    };
+                    _context.OrderReminderAcknowledgments.Add(ack);
+                    await _context.SaveChangesAsync();
+                }
+
+                // Broadcast to all admins so their indicators update in real-time
+                var adminUserIds = await _context.Users
+                    .Where(u => u.Role == UserRole.Admin || u.Role == UserRole.SuperAdmin)
+                    .Select(u => u.Id)
+                    .ToListAsync();
+
+                foreach (var adminId in adminUserIds)
+                {
+                    await _hubContext.Clients.Group($"User_{adminId}")
+                        .SendAsync("NewOrderViewed", new { orderId });
+                }
+
+                return Ok(new { message = "Order marked as viewed" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+    }
+}
+
+namespace DreamCleaningBackend.DTOs
+{
+    public class AcknowledgeReminderDto
+    {
+        public string Type { get; set; } = string.Empty;
     }
 }
