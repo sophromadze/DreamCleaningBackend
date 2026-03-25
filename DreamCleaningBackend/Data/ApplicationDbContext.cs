@@ -42,6 +42,11 @@ namespace DreamCleaningBackend.Data
         public DbSet<AdminUserNote> AdminUserNotes { get; set; }
         public DbSet<PendingOrderEdit> PendingOrderEdits { get; set; }
         public DbSet<OrderReminderAcknowledgment> OrderReminderAcknowledgments { get; set; }
+        public DbSet<AdminTask> AdminTasks { get; set; }
+        public DbSet<ClientInteraction> ClientInteractions { get; set; }
+        public DbSet<HandoverNote> HandoverNotes { get; set; }
+        public DbSet<AdminShift> AdminShifts { get; set; }
+        public DbSet<PersonalAdminTask> PersonalAdminTasks { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -738,6 +743,74 @@ namespace DreamCleaningBackend.Data
                     CreatedAt = DateTime.UtcNow
                 }
             );
+
+            // AdminTask configuration
+            modelBuilder.Entity<AdminTask>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Status).HasDatabaseName("IX_AdminTasks_Status");
+                entity.HasIndex(e => e.Priority).HasDatabaseName("IX_AdminTasks_Priority");
+                entity.HasOne(e => e.CreatedByAdmin)
+                    .WithMany()
+                    .HasForeignKey(e => e.CreatedByAdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ClientInteraction configuration
+            modelBuilder.Entity<ClientInteraction>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.AdminId).HasDatabaseName("IX_ClientInteractions_AdminId");
+                entity.HasIndex(e => e.InteractionDate).HasDatabaseName("IX_ClientInteractions_Date");
+                entity.HasOne(e => e.Admin)
+                    .WithMany()
+                    .HasForeignKey(e => e.AdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // HandoverNote configuration
+            modelBuilder.Entity<HandoverNote>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.AdminId).HasDatabaseName("IX_HandoverNotes_AdminId");
+                entity.HasOne(e => e.Admin)
+                    .WithMany()
+                    .HasForeignKey(e => e.AdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // PersonalAdminTask configuration
+            modelBuilder.Entity<PersonalAdminTask>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.AssignedToAdminId).HasDatabaseName("IX_PersonalAdminTasks_AssignedTo");
+                entity.HasIndex(e => e.CreatedByAdminId).HasDatabaseName("IX_PersonalAdminTasks_CreatedBy");
+                entity.HasIndex(e => e.Status).HasDatabaseName("IX_PersonalAdminTasks_Status");
+                entity.HasOne(e => e.AssignedToAdmin)
+                    .WithMany()
+                    .HasForeignKey(e => e.AssignedToAdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.CreatedByAdmin)
+                    .WithMany()
+                    .HasForeignKey(e => e.CreatedByAdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // AdminShift configuration
+            modelBuilder.Entity<AdminShift>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.ShiftDate).HasDatabaseName("IX_AdminShifts_ShiftDate");
+                entity.HasIndex(e => new { e.ShiftDate, e.AdminId }).IsUnique().HasDatabaseName("IX_AdminShifts_Date_Admin");
+                entity.HasOne(e => e.Admin)
+                    .WithMany()
+                    .HasForeignKey(e => e.AdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.CreatedByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.CreatedByUserId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
         }
     }
 }

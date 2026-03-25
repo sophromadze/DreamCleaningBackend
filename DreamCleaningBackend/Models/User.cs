@@ -94,6 +94,10 @@ namespace DreamCleaningBackend.Models
         /// <summary>When true, user can receive SMS/messages (e.g. RingCentral) from the company.</summary>
         public bool CanReceiveMessages { get; set; } = true;
 
+        /// <summary>Hex color chosen by the admin for the shift calendar (e.g. "#4f46e5").</summary>
+        [StringLength(10)]
+        public string? ShiftColor { get; set; }
+
         // Soft delete (for merged accounts)
         public bool IsDeleted { get; set; } = false;
         public DateTime? DeletedAt { get; set; }
