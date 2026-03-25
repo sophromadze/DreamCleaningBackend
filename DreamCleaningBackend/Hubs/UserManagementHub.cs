@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.SignalR;
 using System.Collections.Concurrent;
 using System.Security.Claims;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging;
 
 namespace DreamCleaningBackend.Hubs
 {
@@ -43,6 +42,14 @@ namespace DreamCleaningBackend.Hubs
                 // Join user to their personal group
                 await Groups.AddToGroupAsync(Context.ConnectionId, $"User_{userId}");
                 _logger.LogInformation($"SignalR: User {userId} added to group User_{userId}");
+
+                // Join admins to "Admins" group based on role
+                var roleClaim = Context.User?.FindFirst(ClaimTypes.Role)?.Value;
+                if (roleClaim == "Admin" || roleClaim == "SuperAdmin")
+                {
+                    await Groups.AddToGroupAsync(Context.ConnectionId, "Admins");
+                    _logger.LogInformation($"SignalR: User {userId} added to Admins group");
+                }
             }
             else
             {

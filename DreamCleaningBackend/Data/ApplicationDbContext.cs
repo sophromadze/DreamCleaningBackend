@@ -47,6 +47,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<HandoverNote> HandoverNotes { get; set; }
         public DbSet<AdminShift> AdminShifts { get; set; }
         public DbSet<PersonalAdminTask> PersonalAdminTasks { get; set; }
+        public DbSet<TaskActivityLog> TaskActivityLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -793,6 +794,19 @@ namespace DreamCleaningBackend.Data
                 entity.HasOne(e => e.CreatedByAdmin)
                     .WithMany()
                     .HasForeignKey(e => e.CreatedByAdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // TaskActivityLog configuration
+            modelBuilder.Entity<TaskActivityLog>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.EntityType).HasDatabaseName("IX_TaskActivityLogs_EntityType");
+                entity.HasIndex(e => e.AdminId).HasDatabaseName("IX_TaskActivityLogs_AdminId");
+                entity.HasIndex(e => e.CreatedAt).HasDatabaseName("IX_TaskActivityLogs_CreatedAt");
+                entity.HasOne(e => e.Admin)
+                    .WithMany()
+                    .HasForeignKey(e => e.AdminId)
                     .OnDelete(DeleteBehavior.Restrict);
             });
 

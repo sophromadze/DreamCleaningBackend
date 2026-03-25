@@ -186,6 +186,14 @@ namespace DreamCleaningBackend.DTOs
         public string TargetAudience { get; set; } = "ForNextAdmin";
     }
 
+    public class UpdateHandoverNoteDto
+    {
+        public string? Content { get; set; }
+
+        [StringLength(50)]
+        public string? TargetAudience { get; set; }
+    }
+
     // ── PersonalAdminTask DTOs ──
 
     public class PersonalAdminTaskDto
@@ -246,6 +254,22 @@ namespace DreamCleaningBackend.DTOs
 
         [StringLength(2000)]
         public string? CompletionNote { get; set; }
+    }
+
+    // ── TaskActivityLog DTOs ──
+
+    public class TaskActivityLogDto
+    {
+        public long Id { get; set; }
+        public string EntityType { get; set; } = string.Empty;
+        public int EntityId { get; set; }
+        public string? EntityTitle { get; set; }
+        public string Action { get; set; } = string.Empty;
+        public string? Changes { get; set; }
+        public int AdminId { get; set; }
+        public string AdminName { get; set; } = string.Empty;
+        public string AdminRole { get; set; } = string.Empty;
+        public DateTime CreatedAt { get; set; }
     }
 
     // ── Search DTOs ──
