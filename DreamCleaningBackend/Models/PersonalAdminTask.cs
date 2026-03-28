@@ -39,6 +39,7 @@ namespace DreamCleaningBackend.Models
         public string? CompletionNote { get; set; }
 
         public DateTime? CompletedAt { get; set; }
+        public bool CheckedByCreator { get; set; } = false;
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     }

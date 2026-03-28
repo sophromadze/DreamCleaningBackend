@@ -212,6 +212,7 @@ namespace DreamCleaningBackend.DTOs
         public string CreatedByAdminRole { get; set; } = string.Empty;
         public string? CompletionNote { get; set; }
         public DateTime? CompletedAt { get; set; }
+        public bool CheckedByCreator { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
     }

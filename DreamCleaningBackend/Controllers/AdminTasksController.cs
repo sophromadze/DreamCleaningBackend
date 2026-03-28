@@ -437,6 +437,36 @@ namespace DreamCleaningBackend.Controllers
             return Ok(count);
         }
 
+        [HttpGet("personal-tasks/unchecked-done-count")]
+        public async Task<ActionResult<int>> GetUncheckedDoneCount()
+        {
+            var userId = GetUserId();
+            var count = await _context.PersonalAdminTasks
+                .CountAsync(t => t.CreatedByAdminId == userId && t.Status == "Done" && !t.CheckedByCreator);
+            return Ok(count);
+        }
+
+        [HttpPut("personal-tasks/{id}/mark-checked")]
+        public async Task<ActionResult<PersonalAdminTaskDto>> MarkTaskCheckedByCreator(int id)
+        {
+            var userId = GetUserId();
+            var task = await _context.PersonalAdminTasks
+                .Include(t => t.AssignedToAdmin)
+                .Include(t => t.CreatedByAdmin)
+                .FirstOrDefaultAsync(t => t.Id == id);
+
+            if (task == null) return NotFound();
+            if (task.CreatedByAdminId != userId) return Forbid();
+
+            task.CheckedByCreator = true;
+            task.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            await _hubContext.Clients.Group("Admins").SendAsync("TasksUpdated", new { type = "personal" });
+
+            return Ok(MapPersonalTaskToDto(task));
+        }
+
         [HttpPut("personal-tasks/{id}")]
         public async Task<ActionResult<PersonalAdminTaskDto>> UpdatePersonalTask(int id, [FromBody] UpdatePersonalAdminTaskDto dto)
         {
@@ -511,6 +541,7 @@ namespace DreamCleaningBackend.Controllers
 
             task.Status = dto.Status;
             task.CompletedAt = dto.Status == "Done" ? DateTime.UtcNow : null;
+            if (dto.Status == "Done") task.CheckedByCreator = false;
             if (dto.CompletionNote != null) task.CompletionNote = dto.CompletionNote;
             task.UpdatedAt = DateTime.UtcNow;
 
@@ -917,6 +948,7 @@ namespace DreamCleaningBackend.Controllers
         {
             Id = t.Id,
             Title = t.Title,
+            CheckedByCreator = t.CheckedByCreator,
             Description = t.Description,
             Priority = t.Priority,
             Status = t.Status,
