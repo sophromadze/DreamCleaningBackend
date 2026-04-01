@@ -9,6 +9,7 @@ using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Repositories.Interfaces;
 using DreamCleaningBackend.Repositories;
 using DreamCleaningBackend.Hubs;
+using DreamCleaningBackend.Services;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using MySqlConnector;
 using Microsoft.AspNetCore.Diagnostics;
@@ -75,7 +76,11 @@ builder.Services.AddAntiforgery(options =>
 });
 
 // Add SignalR
-builder.Services.AddSignalR();
+builder.Services.AddSignalR()
+    .AddHubOptions<LiveChatHub>(options =>
+    {
+        options.MaximumReceiveMessageSize = 6 * 1024 * 1024; // 6MB to support base64 images up to ~4.5MB
+    });
 
 // Database Configuration
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
@@ -174,6 +179,11 @@ builder.Services.AddScoped<IMaintenanceModeService, MaintenanceModeService>();
 builder.Services.AddHostedService<AuditLogCleanupService>();
 builder.Services.AddHostedService<ScheduledMailService>();
 builder.Services.AddHostedService<ScheduledSmsService>();
+
+// LiveChat services
+builder.Services.AddSingleton<LiveChatSessionManager>();
+builder.Services.AddSingleton<TelegramBotService>();
+builder.Services.AddHostedService<LiveChatCleanupService>();
 
 builder.Services.AddHttpClient();
 
@@ -329,8 +339,12 @@ app.MapControllers();
 // Map SignalR Hub
 app.MapHub<UserManagementHub>("/userManagementHub");
 
+// Map LiveChat SignalR Hub (anonymous access — no auth required)
+app.MapHub<LiveChatHub>("/liveChatHub");
+
 // Add logging to see if hub is registered
 Console.WriteLine("SignalR Hub mapped to: /userManagementHub");
+Console.WriteLine("SignalR Hub mapped to: /liveChatHub");
 
 // REMOVE THIS ENTIRE SECTION - Not needed since Nginx handles HTTPS
 /*
@@ -361,5 +375,17 @@ app.Use(async (context, next) =>
     }
     await next();
 });
+
+// Register Telegram webhook on startup (production only — bot token is only in appsettings.Production.json)
+if (!app.Environment.IsDevelopment())
+{
+    using var scope = app.Services.CreateScope();
+    var telegramBot = scope.ServiceProvider.GetRequiredService<TelegramBotService>();
+    if (telegramBot.IsConfigured)
+    {
+        var webhookBase = builder.Configuration["TelegramBot:WebhookBaseUrl"] ?? "https://dreamcleaningnearme.com";
+        await telegramBot.SetWebhook($"{webhookBase}/api/telegram/webhook");
+    }
+}
 
 app.Run();
