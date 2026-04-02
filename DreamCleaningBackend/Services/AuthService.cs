@@ -617,16 +617,7 @@ namespace DreamCleaningBackend.Services
             {
                 Token = token,
                 RefreshToken = refreshToken,
-                User = new UserDto
-                {
-                    Id = user.Id,
-                    FirstName = user.FirstName,
-                    LastName = user.LastName,
-                    Email = user.Email,
-                    Phone = user.Phone,
-                    Role = user.Role.ToString(),
-                    FirstTimeOrder = user.FirstTimeOrder
-                }
+                User = MapUserToDto(user)
             };
         }
 
@@ -993,6 +984,153 @@ namespace DreamCleaningBackend.Services
             await _context.SaveChangesAsync();
 
             return true;
+        }
+
+        public async Task<(bool Exists, bool HasPassword)> CheckEmailStatusAsync(string email)
+        {
+            var emailLower = email?.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(emailLower))
+                return (false, false);
+
+            var user = await _context.Users
+                .AsNoTracking()
+                .FirstOrDefaultAsync(u => u.Email == emailLower && !u.IsDeleted);
+
+            if (user == null)
+                return (false, false);
+
+            return (true, user.PasswordHash != null);
+        }
+
+        public async Task SendLoginOtpAsync(string email)
+        {
+            var emailLower = email?.Trim().ToLowerInvariant();
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email == emailLower && !u.IsDeleted);
+
+            if (user == null)
+                throw new Exception("User not found");
+
+            if (user.PasswordHash != null)
+                throw new Exception("This account already has a password. Please log in with your password.");
+
+            if (!user.IsActive)
+                throw new Exception("Account is deactivated");
+
+            // Generate 6-digit OTP
+            var otp = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
+
+            user.LoginOtpCode = otp;
+            user.LoginOtpExpiry = DateTime.UtcNow.AddMinutes(10);
+            user.LoginOtpAttempts = 0;
+            user.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            await _emailService.SendLoginOtpAsync(user.Email, user.FirstName, otp);
+        }
+
+        public async Task<AuthResponseDto> VerifyLoginOtpAsync(string email, string code)
+        {
+            var emailLower = email?.Trim().ToLowerInvariant();
+            var user = await _context.Users
+                .Include(u => u.Subscription)
+                .FirstOrDefaultAsync(u => u.Email == emailLower && !u.IsDeleted);
+
+            if (user == null)
+                throw new Exception("Invalid code");
+
+            if (!user.IsActive)
+                throw new Exception("Account is deactivated");
+
+            if (user.LoginOtpCode == null || user.LoginOtpExpiry == null)
+                throw new Exception("No active login code. Please request a new one.");
+
+            if (user.LoginOtpExpiry < DateTime.UtcNow)
+                throw new Exception("Code has expired. Please request a new one.");
+
+            if (user.LoginOtpAttempts >= 5)
+                throw new Exception("Too many failed attempts. Please request a new code.");
+
+            if (user.LoginOtpCode != code.Trim())
+            {
+                user.LoginOtpAttempts++;
+                await _context.SaveChangesAsync();
+                throw new Exception("Invalid code");
+            }
+
+            // Clear OTP
+            user.LoginOtpCode = null;
+            user.LoginOtpExpiry = null;
+            user.LoginOtpAttempts = 0;
+
+            // Generate refresh token so user is logged in
+            user.RefreshToken = GenerateRefreshToken();
+            user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
+            user.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return new AuthResponseDto
+            {
+                User = MapUserToDto(user),
+                Token = CreateToken(user),
+                RefreshToken = user.RefreshToken,
+                RequiresPasswordSetup = true
+            };
+        }
+
+        public async Task<AuthResponseDto> CreateOrGetGuestUserAsync(string firstName, string lastName, string email, string phone)
+        {
+            var emailLower = email?.Trim().ToLowerInvariant();
+
+            var existingUser = await _context.Users
+                .Include(u => u.Subscription)
+                .FirstOrDefaultAsync(u => u.Email == emailLower && !u.IsDeleted);
+
+            User user;
+            if (existingUser != null)
+            {
+                user = existingUser;
+                // Update phone if user has none
+                if (string.IsNullOrEmpty(user.Phone) && !string.IsNullOrEmpty(phone))
+                {
+                    user.Phone = phone;
+                    user.UpdatedAt = DateTime.UtcNow;
+                }
+            }
+            else
+            {
+                // Auto-create guest account with no password
+                user = new User
+                {
+                    FirstName = firstName?.Trim() ?? "",
+                    LastName = lastName?.Trim() ?? "",
+                    Email = emailLower,
+                    Phone = phone,
+                    AuthProvider = "Local",
+                    IsEmailVerified = true,
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    FirstTimeOrder = true
+                };
+                _context.Users.Add(user);
+                await _context.SaveChangesAsync();
+            }
+
+            // Generate tokens for the guest auto-login
+            user.RefreshToken = GenerateRefreshToken();
+            user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
+            user.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            return new AuthResponseDto
+            {
+                User = MapUserToDto(user),
+                Token = CreateToken(user),
+                RefreshToken = user.RefreshToken,
+                RequiresPasswordSetup = user.PasswordHash == null
+            };
         }
 
         private string GenerateVerificationToken()

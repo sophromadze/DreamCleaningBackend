@@ -75,19 +75,19 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(email, subject, body);
         }
 
-        public async Task SendAdminWelcomeEmailAsync(string email, string firstName, string? setPasswordLink = null)
+        public async Task SendAdminWelcomeEmailAsync(string email, string firstName, string? loginLink = null)
         {
-            var link = setPasswordLink ?? $"{_configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com"}/auth/forgot-password";
+            var link = loginLink ?? $"{_configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com"}/login";
             var subject = "Welcome to Dream Cleaning!";
             var body = $@"
                 <h2>Hi {firstName},</h2>
                 <p>An account has been created for you at Dream Cleaning.</p>
-                <p>Click the button below to set your password and sign in:</p>
+                <p>To sign in, visit the login page and enter your email address. You will receive a 6-digit code to set up your password.</p>
                 <p style='margin: 30px 0;'>
-                    <a href='{link}' 
-                       style='background-color: #2196F3; color: white; padding: 14px 20px; 
+                    <a href='{link}'
+                       style='background-color: #2196F3; color: white; padding: 14px 20px;
                               text-decoration: none; border-radius: 4px; display: inline-block;'>
-                        Set Your Password
+                        Go to Login
                     </a>
                 </p>
                 <p>Or copy and paste this link into your browser:</p>
@@ -128,6 +128,21 @@ namespace DreamCleaningBackend.Services
                 <h2>Hi {firstName},</h2>
                 <p>Use this code to verify your email address for Dream Cleaning:</p>
                 <p style='font-size: 24px; font-weight: bold; letter-spacing: 4px; margin: 24px 0;'>{code}</p>
+                <p>This code expires in 10 minutes.</p>
+                <p>If you didn't request this, you can safely ignore this email.</p>
+                <br/>
+                <p>Best regards,<br/>Dream Cleaning Team</p>
+            ";
+            await SendEmailAsync(email, subject, body);
+        }
+
+        public async Task SendLoginOtpAsync(string email, string firstName, string code)
+        {
+            var subject = "Your login code - Dream Cleaning";
+            var body = $@"
+                <h2>Hi {firstName},</h2>
+                <p>Use this 6-digit code to sign in to Dream Cleaning and set up your password:</p>
+                <p style='font-size: 32px; font-weight: bold; letter-spacing: 8px; margin: 24px 0; color: #2196F3;'>{code}</p>
                 <p>This code expires in 10 minutes.</p>
                 <p>If you didn't request this, you can safely ignore this email.</p>
                 <br/>

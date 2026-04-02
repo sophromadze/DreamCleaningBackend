@@ -2068,21 +2068,11 @@ namespace DreamCleaningBackend.Controllers
                 Console.WriteLine($"Failed to grant special offers to user {user.Id}: {ex.Message}");
             }
 
-            string? setPasswordLink = null;
             try
             {
-                var token = await _authService.CreateSetPasswordTokenAsync(user.Id);
                 var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
-                setPasswordLink = $"{frontendUrl}/auth/reset-password?token={token}";
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to create set-password token for user {user.Id}: {ex.Message}");
-            }
-
-            try
-            {
-                await _emailService.SendAdminWelcomeEmailAsync(user.Email, user.FirstName, setPasswordLink);
+                var loginUrl = $"{frontendUrl}/login";
+                await _emailService.SendAdminWelcomeEmailAsync(user.Email, user.FirstName, loginUrl);
             }
             catch (Exception ex)
             {

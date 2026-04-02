@@ -49,5 +49,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendCancellationNotificationToCleanerAsync(string cleanerEmail, int orderId, DateTime serviceDate, string serviceTime, string fullAddress);
         /// <summary>Send a review request email to the customer after order completion.</summary>
         Task SendReviewRequestEmailAsync(string email, string customerName);
+        /// <summary>Send a 6-digit login OTP to a user who has no password set.</summary>
+        Task SendLoginOtpAsync(string email, string firstName, string code);
     }
 }

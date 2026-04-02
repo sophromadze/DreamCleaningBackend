@@ -80,8 +80,8 @@ namespace DreamCleaningBackend.Models
         public string? SpecialOfferName { get; set; }
 
         // Subscription
-        public int SubscriptionId { get; set; }
-        public virtual Subscription Subscription { get; set; }
+        public int? SubscriptionId { get; set; }
+        public virtual Subscription? Subscription { get; set; }
 
         // Entry method
         [StringLength(100)]

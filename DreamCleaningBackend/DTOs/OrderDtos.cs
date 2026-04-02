@@ -25,7 +25,7 @@ namespace DreamCleaningBackend.DTOs
         public int? UserSpecialOfferId { get; set; }
         public string? PromoCodeDetails { get; set; }
         public string? GiftCardDetails { get; set; }
-        public int SubscriptionId { get; set; } 
+        public int? SubscriptionId { get; set; }
         public string SubscriptionName { get; set; }
         public string? GiftCardCode { get; set; }
         public decimal GiftCardAmountUsed { get; set; }

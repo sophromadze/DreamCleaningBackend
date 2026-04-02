@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260401124324_AddLoginOtpToUsers")]
+    partial class AddLoginOtpToUsers
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -447,7 +450,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 1,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3137),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2796),
                             Description = "Thorough cleaning of all surfaces and hard-to-reach areas",
                             DisplayOrder = 1,
                             Duration = 60m,
@@ -466,7 +469,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 2,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3140),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2798),
                             Description = "Most intensive cleaning service available",
                             DisplayOrder = 2,
                             Duration = 120m,
@@ -485,7 +488,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 3,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3141),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2800),
                             Description = "Get your cleaning done today",
                             DisplayOrder = 3,
                             Duration = 0m,
@@ -504,7 +507,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 4,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3143),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2802),
                             Description = "Interior window cleaning",
                             DisplayOrder = 4,
                             Duration = 20m,
@@ -523,7 +526,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 5,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3145),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2804),
                             Description = "Spot cleaning of walls",
                             DisplayOrder = 5,
                             Duration = 30m,
@@ -542,7 +545,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 6,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3147),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2805),
                             Description = "Professional organizing of your space",
                             DisplayOrder = 6,
                             Duration = 30m,
@@ -561,7 +564,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 7,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3149),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2807),
                             Description = "Washing and folding service",
                             DisplayOrder = 7,
                             Duration = 45m,
@@ -581,7 +584,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 8,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3150),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2809),
                             Description = "Deep cleaning inside and outside",
                             DisplayOrder = 8,
                             Duration = 30m,
@@ -600,7 +603,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 9,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3152),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2810),
                             Description = "Deep cleaning of oven interior",
                             DisplayOrder = 9,
                             Duration = 45m,
@@ -1020,7 +1023,7 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<decimal>("SubscriptionDiscountAmount")
                         .HasColumnType("decimal(65,30)");
 
-                    b.Property<int?>("SubscriptionId")
+                    b.Property<int>("SubscriptionId")
                         .HasColumnType("int");
 
                     b.Property<decimal>("Tax")
@@ -1947,7 +1950,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 1,
                             Cost = 25m,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3095),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2744),
                             DisplayOrder = 1,
                             InputType = "dropdown",
                             IsActive = true,
@@ -1964,7 +1967,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 2,
                             Cost = 35m,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3098),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2747),
                             DisplayOrder = 2,
                             InputType = "dropdown",
                             IsActive = true,
@@ -1981,7 +1984,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 3,
                             Cost = 0.10m,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3102),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2751),
                             DisplayOrder = 3,
                             InputType = "slider",
                             IsActive = true,
@@ -1999,7 +2002,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 4,
                             Cost = 40m,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3119),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2774),
                             DisplayOrder = 1,
                             InputType = "dropdown",
                             IsActive = true,
@@ -2018,7 +2021,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 5,
                             Cost = 0m,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 576, DateTimeKind.Utc).AddTicks(3121),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 98, DateTimeKind.Utc).AddTicks(2776),
                             DisplayOrder = 2,
                             InputType = "dropdown",
                             IsActive = true,
@@ -2084,7 +2087,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 1,
                             BasePrice = 120m,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 575, DateTimeKind.Utc).AddTicks(8446),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 97, DateTimeKind.Utc).AddTicks(6204),
                             Description = "Complete home cleaning service",
                             DisplayOrder = 1,
                             HasPoll = false,
@@ -2097,7 +2100,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 2,
                             BasePrice = 200m,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 575, DateTimeKind.Utc).AddTicks(8448),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 97, DateTimeKind.Utc).AddTicks(6207),
                             Description = "Professional office cleaning service",
                             DisplayOrder = 2,
                             HasPoll = false,
@@ -2216,7 +2219,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 1,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 575, DateTimeKind.Utc).AddTicks(8325),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 97, DateTimeKind.Utc).AddTicks(6015),
                             Description = "Single cleaning service",
                             DiscountPercentage = 0m,
                             DisplayOrder = 1,
@@ -2227,7 +2230,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 2,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 575, DateTimeKind.Utc).AddTicks(8329),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 97, DateTimeKind.Utc).AddTicks(6021),
                             Description = "Cleaning every week",
                             DiscountPercentage = 15m,
                             DisplayOrder = 2,
@@ -2238,7 +2241,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 3,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 575, DateTimeKind.Utc).AddTicks(8330),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 97, DateTimeKind.Utc).AddTicks(6023),
                             Description = "Cleaning every two weeks",
                             DiscountPercentage = 10m,
                             DisplayOrder = 3,
@@ -2249,7 +2252,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 4,
-                            CreatedAt = new DateTime(2026, 4, 2, 8, 54, 43, 575, DateTimeKind.Utc).AddTicks(8331),
+                            CreatedAt = new DateTime(2026, 4, 1, 12, 43, 24, 97, DateTimeKind.Utc).AddTicks(6024),
                             Description = "Cleaning once a month",
                             DiscountPercentage = 5m,
                             DisplayOrder = 4,
@@ -2720,7 +2723,8 @@ namespace DreamCleaningBackend.Migrations
                     b.HasOne("DreamCleaningBackend.Models.Subscription", "Subscription")
                         .WithMany("Orders")
                         .HasForeignKey("SubscriptionId")
-                        .OnDelete(DeleteBehavior.Restrict);
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
 
                     b.HasOne("DreamCleaningBackend.Models.User", "User")
                         .WithMany("Orders")

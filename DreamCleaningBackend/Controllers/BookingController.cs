@@ -28,6 +28,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly ISmsService _smsService;
         private readonly ILogger<BookingController> _logger;
         private readonly IHubContext<UserManagementHub> _hubContext;
+        private readonly IAuthService _authService;
 
         public BookingController(ApplicationDbContext context,
             IConfiguration configuration,
@@ -38,7 +39,8 @@ namespace DreamCleaningBackend.Controllers
             IStripeService stripeService,
             ISmsService smsService,
             ILogger<BookingController> logger,
-            IHubContext<UserManagementHub> hubContext)
+            IHubContext<UserManagementHub> hubContext,
+            IAuthService authService)
         {
             _context = context;
             _configuration = configuration;
@@ -50,6 +52,7 @@ namespace DreamCleaningBackend.Controllers
             _smsService = smsService;
             _logger = logger;
             _hubContext = hubContext;
+            _authService = authService;
         }
 
         [HttpGet("service-types")]
@@ -405,7 +408,7 @@ namespace DreamCleaningBackend.Controllers
                     CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                     Status = "Pending",
                     OrderDate = DateTime.UtcNow,
-                    SubscriptionId = dto.SubscriptionId,
+                    SubscriptionId = dto.SubscriptionId == 0 ? null : (int?)dto.SubscriptionId,
                     OrderServices = new List<Models.OrderService>(),
                     OrderExtraServices = new List<OrderExtraService>(),
                     CreatedAt = DateTime.UtcNow,
@@ -1199,7 +1202,7 @@ namespace DreamCleaningBackend.Controllers
                     CompanyDevelopmentTips = dto.BookingData.CompanyDevelopmentTips,
                     Status = "Pending",
                     OrderDate = DateTime.UtcNow,
-                    SubscriptionId = dto.BookingData.SubscriptionId,
+                    SubscriptionId = dto.BookingData.SubscriptionId == 0 ? null : (int?)dto.BookingData.SubscriptionId,
                     OrderServices = new List<Models.OrderService>(),
                     OrderExtraServices = new List<OrderExtraService>(),
                     CreatedAt = DateTime.UtcNow,
@@ -1534,14 +1537,28 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("prepare-payment")]
-        [Authorize]
+        [AllowAnonymous]
         public async Task<ActionResult<BookingResponseDto>> PreparePayment([FromBody] CreateBookingDto dto)
         {
             try
             {
                 var userId = GetUserId();
+                AuthResponseDto? guestAuth = null;
+
                 if (userId == 0)
-                    return Unauthorized();
+                {
+                    // Guest flow: auto-create or find user from booking contact info
+                    if (string.IsNullOrWhiteSpace(dto.ContactEmail))
+                        return BadRequest(new { message = "Contact email is required." });
+
+                    guestAuth = await _authService.CreateOrGetGuestUserAsync(
+                        dto.ContactFirstName,
+                        dto.ContactLastName,
+                        dto.ContactEmail,
+                        dto.ContactPhone);
+
+                    userId = guestAuth.User.Id;
+                }
 
                 // Find the user
                 var user = await _context.Users.FindAsync(userId);
@@ -1773,7 +1790,11 @@ namespace DreamCleaningBackend.Controllers
                     Total = total,
                     PaymentIntentId = paymentIntent.Id,
                     PaymentClientSecret = paymentIntent.ClientSecret,
-                    SessionId = sessionId // Return sessionId so frontend can use it in confirm-payment
+                    SessionId = sessionId, // Return sessionId so frontend can use it in confirm-payment
+                    // Guest booking: include auth token so frontend can authenticate before calling confirm-payment
+                    GuestToken = guestAuth?.Token,
+                    GuestRefreshToken = guestAuth?.RefreshToken,
+                    GuestUser = guestAuth?.User
                 });
             }
             catch (Exception ex)
@@ -1832,12 +1853,40 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("confirm-payment/{orderId}")]
-        [Authorize]
+        [AllowAnonymous]
         public async Task<ActionResult> ConfirmPayment(int orderId, [FromBody] ConfirmPaymentDto dto, [FromQuery] string paymentIntentId = null)
         {
             try
             {
                 var userId = GetUserId();
+
+                // Body may not bind in some proxies; allow query fallback for existing-order flow
+                var effectivePaymentIntentIdEarly = !string.IsNullOrWhiteSpace(dto?.PaymentIntentId) ? dto.PaymentIntentId : paymentIntentId;
+                var effectiveSessionIdEarly = dto?.SessionId;
+
+                // For guest bookings (no JWT), resolve userId from sessionId or payment intent metadata
+                if (userId == 0)
+                {
+                    if (!string.IsNullOrEmpty(effectiveSessionIdEarly))
+                    {
+                        // sessionId format: prepare_payment_{userId}_{ticks}
+                        var parts = effectiveSessionIdEarly.Split('_');
+                        if (parts.Length >= 3 && int.TryParse(parts[2], out var parsedId) && parsedId > 0)
+                            userId = parsedId;
+                    }
+
+                    if (userId == 0 && !string.IsNullOrEmpty(effectivePaymentIntentIdEarly))
+                    {
+                        try
+                        {
+                            var pi = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentIdEarly);
+                            if (pi.Metadata != null && pi.Metadata.TryGetValue("userId", out var uidStr))
+                                int.TryParse(uidStr, out userId);
+                        }
+                        catch { /* ignore Stripe errors here; will fail below */ }
+                    }
+                }
+
                 if (userId == 0)
                     return Unauthorized();
 
@@ -2245,7 +2294,7 @@ namespace DreamCleaningBackend.Controllers
                 CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                 Status = "Pending",
                 OrderDate = DateTime.UtcNow,
-                SubscriptionId = dto.SubscriptionId,
+                SubscriptionId = dto.SubscriptionId == 0 ? null : (int?)dto.SubscriptionId,
                 OrderServices = new List<Models.OrderService>(),
                 OrderExtraServices = new List<OrderExtraService>(),
                 CreatedAt = DateTime.UtcNow,
@@ -2492,7 +2541,8 @@ namespace DreamCleaningBackend.Controllers
                 catch (Exception ex)
                 {
                     await transaction.RollbackAsync();
-                    throw new InvalidOperationException($"Failed to create order: {ex.Message}");
+                    var innerMsg = ex.InnerException?.InnerException?.Message ?? ex.InnerException?.Message ?? "";
+                    throw new InvalidOperationException($"Failed to create order: {ex.Message} | Detail: {innerMsg}");
                 }
             }
 

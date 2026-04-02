@@ -376,6 +376,55 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        [HttpPost("check-email-status")]
+        public async Task<ActionResult<CheckEmailStatusResponse>> CheckEmailStatus(CheckEmailStatusDto dto)
+        {
+            try
+            {
+                var (exists, hasPassword) = await _authService.CheckEmailStatusAsync(dto.Email);
+                return Ok(new CheckEmailStatusResponse { Exists = exists, HasPassword = hasPassword });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("send-login-otp")]
+        public async Task<ActionResult> SendLoginOtp(SendLoginOtpDto dto)
+        {
+            try
+            {
+                await _authService.SendLoginOtpAsync(dto.Email);
+                return Ok(new { message = "A 6-digit code has been sent to your email." });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("verify-login-otp")]
+        public async Task<ActionResult<AuthResponseDto>> VerifyLoginOtp(VerifyLoginOtpDto dto)
+        {
+            try
+            {
+                var response = await _authService.VerifyLoginOtpAsync(dto.Email, dto.Code);
+
+                if (_useCookieAuth)
+                {
+                    SetAuthCookies(response.Token, response.RefreshToken);
+                    return Ok(new { user = response.User, requiresPasswordSetup = response.RequiresPasswordSetup });
+                }
+
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpPost("forgot-password")]
         public async Task<ActionResult> ForgotPassword(ForgotPasswordDto forgotDto)
         {

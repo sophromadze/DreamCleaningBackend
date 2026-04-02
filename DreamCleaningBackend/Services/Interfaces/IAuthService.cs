@@ -29,5 +29,13 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<VerifyRealEmailResultDto> VerifyRealEmailCode(int userId, string email, string code);
         /// <summary>Validates Google id_token and returns the email address, or null if invalid.</summary>
         Task<string?> GetEmailFromGoogleTokenAsync(string idToken);
+        /// <summary>Returns whether a user exists and whether they have a password set.</summary>
+        Task<(bool Exists, bool HasPassword)> CheckEmailStatusAsync(string email);
+        /// <summary>Generates a 6-digit OTP and emails it to the user (only valid for no-password accounts).</summary>
+        Task SendLoginOtpAsync(string email);
+        /// <summary>Verifies the 6-digit OTP and returns an auth response with RequiresPasswordSetup=true.</summary>
+        Task<AuthResponseDto> VerifyLoginOtpAsync(string email, string code);
+        /// <summary>Creates a new user account from booking contact info (no password), or returns an auth token for an existing user with the same email.</summary>
+        Task<AuthResponseDto> CreateOrGetGuestUserAsync(string firstName, string lastName, string email, string phone);
     }
 }

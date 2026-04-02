@@ -103,5 +103,11 @@ namespace DreamCleaningBackend.Models
         public DateTime? DeletedAt { get; set; }
         [StringLength(500)]
         public string? DeletedReason { get; set; }
+
+        // Login OTP (for admin-created users without a password)
+        [StringLength(6)]
+        public string? LoginOtpCode { get; set; }
+        public DateTime? LoginOtpExpiry { get; set; }
+        public int LoginOtpAttempts { get; set; } = 0;
     }
 }

@@ -11,7 +11,39 @@ namespace DreamCleaningBackend.DTOs
         public bool RequiresEmailVerification { get; set; }
         /// <summary>True when user has Apple relay email and must verify a real email before using the platform.</summary>
         public bool RequiresRealEmail { get; set; }
+        /// <summary>True when user has no password set (admin-created) and must set one before using the platform.</summary>
+        public bool RequiresPasswordSetup { get; set; }
         public string Message { get; set; }
+    }
+
+    public class CheckEmailStatusDto
+    {
+        [Required]
+        [EmailAddress]
+        public string Email { get; set; }
+    }
+
+    public class CheckEmailStatusResponse
+    {
+        public bool Exists { get; set; }
+        public bool HasPassword { get; set; }
+    }
+
+    public class SendLoginOtpDto
+    {
+        [Required]
+        [EmailAddress]
+        public string Email { get; set; }
+    }
+
+    public class VerifyLoginOtpDto
+    {
+        [Required]
+        [EmailAddress]
+        public string Email { get; set; }
+        [Required]
+        [StringLength(6, MinimumLength = 6)]
+        public string Code { get; set; }
     }
 
     public class RequestRealEmailVerificationDto
