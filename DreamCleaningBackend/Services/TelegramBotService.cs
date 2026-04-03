@@ -26,7 +26,19 @@ public class TelegramBotService
             return;
         }
 
-        _bot = new TelegramBotClient(token);
+        var httpClient = new HttpClient(new SocketsHttpHandler
+{
+    ConnectCallback = async (context, cancellationToken) =>
+    {
+        var socket = new System.Net.Sockets.Socket(
+            System.Net.Sockets.AddressFamily.InterNetwork, // Force IPv4
+            System.Net.Sockets.SocketType.Stream,
+            System.Net.Sockets.ProtocolType.Tcp);
+        await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+        return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+    }
+});
+_bot = new TelegramBotClient(token, httpClient);
         _groupChatId = long.Parse(chatId);
         _isConfigured = true;
     }
