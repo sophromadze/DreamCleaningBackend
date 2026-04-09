@@ -16,5 +16,7 @@ namespace DreamCleaningBackend.DTOs
         public bool RequiresRealEmail { get; set; }
         /// <summary>True when user has a password set. When false, show "Set password" in profile.</summary>
         public bool HasPassword { get; set; }
+        /// <summary>True when user's email has been verified.</summary>
+        public bool IsEmailVerified { get; set; }
     }
 }

@@ -390,6 +390,20 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        [HttpPost("send-email-verification-otp")]
+        public async Task<ActionResult> SendEmailVerificationOtp(SendLoginOtpDto dto)
+        {
+            try
+            {
+                await _authService.SendEmailVerificationOtpAsync(dto.Email);
+                return Ok(new { message = "A 6-digit verification code has been sent to your email." });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpPost("send-login-otp")]
         public async Task<ActionResult> SendLoginOtp(SendLoginOtpDto dto)
         {

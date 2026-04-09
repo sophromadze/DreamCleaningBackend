@@ -33,9 +33,11 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<(bool Exists, bool HasPassword)> CheckEmailStatusAsync(string email);
         /// <summary>Generates a 6-digit OTP and emails it to the user (only valid for no-password accounts).</summary>
         Task SendLoginOtpAsync(string email);
-        /// <summary>Verifies the 6-digit OTP and returns an auth response with RequiresPasswordSetup=true.</summary>
+        /// <summary>Generates a 6-digit OTP for email verification and emails it. Works for accounts with passwords.</summary>
+        Task SendEmailVerificationOtpAsync(string email);
+        /// <summary>Verifies the 6-digit OTP, marks email as verified, and returns an auth response. RequiresPasswordSetup reflects whether the user still needs to set a password.</summary>
         Task<AuthResponseDto> VerifyLoginOtpAsync(string email, string code);
         /// <summary>Creates a new user account from booking contact info (no password), or returns an auth token for an existing user with the same email.</summary>
-        Task<AuthResponseDto> CreateOrGetGuestUserAsync(string firstName, string lastName, string email, string phone);
+        Task<AuthResponseDto> CreateOrGetGuestUserAsync(string firstName, string lastName, string email, string phone, string? referralCode = null);
     }
 }

@@ -7,6 +7,7 @@ using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Hubs;
+using System.Linq;
 using Newtonsoft.Json;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
@@ -35,6 +36,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly ISmsService _smsService;
         private readonly IAuthService _authService;
         private readonly IHubContext<UserManagementHub> _hubContext;
+        private readonly IBubblePointsService _bubblePointsService;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
@@ -48,7 +50,8 @@ namespace DreamCleaningBackend.Controllers
             IEmailService emailService,
             ISmsService smsService,
             IAuthService authService,
-            IHubContext<UserManagementHub> hubContext)
+            IHubContext<UserManagementHub> hubContext,
+            IBubblePointsService bubblePointsService)
         {
             _context = context;
             _permissionService = permissionService;
@@ -63,6 +66,7 @@ namespace DreamCleaningBackend.Controllers
             _smsService = smsService;
             _authService = authService;
             _hubContext = hubContext;
+            _bubblePointsService = bubblePointsService;
         }
 
         // Service Types Management
@@ -2579,6 +2583,9 @@ namespace DreamCleaningBackend.Controllers
                     PromoCode = order.PromoCode,
                     GiftCardCode = order.GiftCardCode,
                     GiftCardAmountUsed = order.GiftCardAmountUsed,
+                    PointsRedeemed = order.PointsRedeemed,
+                    PointsRedeemedDiscount = order.PointsRedeemedDiscount,
+                    RewardBalanceUsed = order.RewardBalanceUsed,
                     SpecialOfferName = GetSpecialOfferName(order.PromoCode),
                     PromoCodeDetails = GetPromoCodeDetails(order.PromoCode),
                     GiftCardDetails = order.GiftCardCode != null ?
@@ -2707,6 +2714,20 @@ namespace DreamCleaningBackend.Controllers
 
                 // Save changes FIRST
                 await _context.SaveChangesAsync();
+
+                // Bubble Rewards: process order completion when status changes to Done
+                if (dto.Status == "Done" && previousStatus != "Done")
+                {
+                    try { await _bubblePointsService.ProcessOrderCompletion(orderId); }
+                    catch (Exception rewardsEx) { Console.WriteLine($"[BubbleRewards] ProcessOrderCompletion failed for order {orderId}: {rewardsEx.Message}"); }
+                }
+
+                // Bubble Rewards: reverse points when order moves away from Done
+                if (previousStatus == "Done" && dto.Status != "Done")
+                {
+                    try { await _bubblePointsService.ReverseOrderCompletion(orderId); }
+                    catch (Exception rewardsEx) { Console.WriteLine($"[BubbleRewards] ReverseOrderCompletion failed for order {orderId}: {rewardsEx.Message}"); }
+                }
 
                 // Handle special offer re-marking when reactivating from cancelled status
                 if (previousStatus == "Cancelled" && dto.Status == "Active")
@@ -3113,6 +3134,9 @@ namespace DreamCleaningBackend.Controllers
                 PromoCode = order.PromoCode,
                 GiftCardCode = order.GiftCardCode,
                 GiftCardAmountUsed = order.GiftCardAmountUsed,
+                PointsRedeemed = order.PointsRedeemed,
+                PointsRedeemedDiscount = order.PointsRedeemedDiscount,
+                RewardBalanceUsed = order.RewardBalanceUsed,
                 SpecialOfferName = GetSpecialOfferName(order.PromoCode),
                 PromoCodeDetails = GetPromoCodeDetails(order.PromoCode),
                 GiftCardDetails = order.GiftCardCode != null ? $"{MaskGiftCardCode(order.GiftCardCode)} (${order.GiftCardAmountUsed:F2})" : null,
@@ -3302,7 +3326,13 @@ namespace DreamCleaningBackend.Controllers
                         IsPaid = o.IsPaid,
                         PaidAt = o.PaidAt,
                         CancellationReason = o.CancellationReason,
-                        IsLateCancellation = o.IsLateCancellation
+                        IsLateCancellation = o.IsLateCancellation,
+                        PointsRedeemed = o.PointsRedeemed,
+                        PointsRedeemedDiscount = o.PointsRedeemedDiscount,
+                        RewardBalanceUsed = o.RewardBalanceUsed,
+                        PointsEarned = _context.BubblePointsHistories
+                            .Where(h => h.OrderId == o.Id && h.UserId == userId && h.Points > 0)
+                            .Sum(h => (int?)h.Points) ?? 0
                     })
                     .ToListAsync();
 

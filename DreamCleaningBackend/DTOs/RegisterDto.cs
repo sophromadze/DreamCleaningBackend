@@ -26,5 +26,8 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         [Compare("Password")]
         public string ConfirmPassword { get; set; }
+
+        [StringLength(20)]
+        public string? ReferralCode { get; set; }
     }
 }

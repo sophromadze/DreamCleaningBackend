@@ -107,6 +107,17 @@ namespace DreamCleaningBackend.Services
                 .ToListAsync();
             var alreadyPaidByOrderId = alreadyPaidList.ToDictionary(x => x.OrderId, x => x.AlreadyPaid);
 
+            // Points earned per order (positive history rows only)
+            var allOrderIds = orders.Select(o => o.Id).ToList();
+            var pointsEarnedByOrderId = await _context.BubblePointsHistories
+                .Where(h => allOrderIds.Contains(h.OrderId ?? -1) && h.Points > 0)
+                .GroupBy(h => h.OrderId)
+                .Select(g => new { OrderId = g.Key, Points = g.Sum(h => h.Points) })
+                .ToListAsync();
+            var pointsEarnedMap = pointsEarnedByOrderId
+                .Where(x => x.OrderId.HasValue)
+                .ToDictionary(x => x.OrderId!.Value, x => x.Points);
+
             return orders.Select(o => new OrderListDto
             {
                 Id = o.Id,
@@ -136,7 +147,8 @@ namespace DreamCleaningBackend.Services
                     : 0m,
                 PendingUpdateHistoryId = latestHistoryByOrderId.TryGetValue(o.Id, out var lid) ? lid : null,
                 CancellationReason = o.CancellationReason,
-                IsLateCancellation = o.IsLateCancellation
+                IsLateCancellation = o.IsLateCancellation,
+                PointsEarned = pointsEarnedMap.TryGetValue(o.Id, out var pe) ? pe : 0
             }).ToList();
         }
 
@@ -1061,7 +1073,7 @@ namespace DreamCleaningBackend.Services
             var totalDiscounts = discountAmount + subscriptionDiscountAmount;
             var discountedSubTotal = newSubTotal - totalDiscounts;
             var newTax = Math.Round(discountedSubTotal * 0.08875m, 2); // 8.875% tax
-            var newTotal = Math.Round(discountedSubTotal + newTax + updateOrderDto.Tips + updateOrderDto.CompanyDevelopmentTips, 2);
+            var newTotal = Math.Round(discountedSubTotal + newTax + updateOrderDto.Tips + updateOrderDto.CompanyDevelopmentTips - order.PointsRedeemedDiscount - order.RewardBalanceUsed, 2);
 
             Console.WriteLine($"\nNEW VALUES:");
             Console.WriteLine($"  New SubTotal: ${newSubTotal:F2}");
@@ -1072,6 +1084,8 @@ namespace DreamCleaningBackend.Services
             Console.WriteLine($"  New Tax: ${newTax:F2}");
             Console.WriteLine($"  New Tips: ${updateOrderDto.Tips:F2}");
             Console.WriteLine($"  New Company Tips: ${updateOrderDto.CompanyDevelopmentTips:F2}");
+            Console.WriteLine($"  Points Redeemed Discount: ${order.PointsRedeemedDiscount:F2}");
+            Console.WriteLine($"  Reward Balance Used: ${order.RewardBalanceUsed:F2}");
             Console.WriteLine($"  New Total: ${newTotal:F2}");
 
             var finalAdditionalAmount = newTotal - originalTotal;
@@ -1291,6 +1305,12 @@ namespace DreamCleaningBackend.Services
                 SubscriptionName = order.Subscription?.Name ?? "",
                 GiftCardCode = order.GiftCardCode,
                 GiftCardAmountUsed = order.GiftCardAmountUsed,
+                PointsRedeemed = order.PointsRedeemed,
+                PointsRedeemedDiscount = order.PointsRedeemedDiscount,
+                RewardBalanceUsed = order.RewardBalanceUsed,
+                PointsEarned = _context.BubblePointsHistories
+                    .Where(h => h.OrderId == order.Id && h.Points > 0)
+                    .Sum(h => h.Points),
                 EntryMethod = order.EntryMethod,
                 SpecialInstructions = order.SpecialInstructions,
                 FloorTypes = order.FloorTypes,
@@ -1384,7 +1404,9 @@ namespace DreamCleaningBackend.Services
                 {
                     bool hasCleanersService = order.OrderServices.Any(os =>
                         os.Service?.ServiceRelationType == "cleaner");
-                    var perCleanerDuration = hasCleanersService
+                    // Custom Pricing mode also stores TotalDuration as per cleaner (not total across maids).
+                    bool isCustomMode = order.ServiceType?.IsCustom == true;
+                    var perCleanerDuration = (hasCleanersService || isCustomMode)
                         ? order.TotalDuration
                         : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
                     var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
@@ -1403,7 +1425,7 @@ namespace DreamCleaningBackend.Services
             if (discountedSubTotal < 0) discountedSubTotal = 0;
             order.Tax = Math.Round(discountedSubTotal * salesTaxRate, 2);
             var totalBeforeGiftCard = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
-            var finalTotal = totalBeforeGiftCard - order.GiftCardAmountUsed;
+            var finalTotal = totalBeforeGiftCard - order.GiftCardAmountUsed - order.PointsRedeemedDiscount - order.RewardBalanceUsed;
             if (finalTotal < 0) finalTotal = 0;
             order.Total = Math.Round(finalTotal, 2);
 

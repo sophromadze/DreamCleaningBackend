@@ -203,6 +203,31 @@ namespace DreamCleaningBackend.Services
                 // 10. AuditLog (UserId) — optional, move for consistency
                 await _context.AuditLogs.Where(a => a.UserId == oldAccountId).ExecuteUpdateAsync(s => s.SetProperty(a => a.UserId, newAccountId));
 
+                // 10b. Bubble Rewards — merge old into new
+                // Re-assign all history entries from old account to new account
+                await _context.BubblePointsHistories
+                    .Where(h => h.UserId == oldAccountId)
+                    .ExecuteUpdateAsync(s => s.SetProperty(h => h.UserId, newAccountId));
+
+                // Combine numeric fields
+                newAccount.BubblePoints += oldAccount.BubblePoints;
+                newAccount.BubbleCredits += oldAccount.BubbleCredits;
+                newAccount.TotalSpentAmount += oldAccount.TotalSpentAmount;
+                newAccount.ConsecutiveOrderCount += oldAccount.ConsecutiveOrderCount;
+
+                // Keep the later LastCompletedOrderDate
+                if (oldAccount.LastCompletedOrderDate.HasValue &&
+                    (!newAccount.LastCompletedOrderDate.HasValue || oldAccount.LastCompletedOrderDate > newAccount.LastCompletedOrderDate))
+                    newAccount.LastCompletedOrderDate = oldAccount.LastCompletedOrderDate;
+
+                // Bonus flags: once granted on either account, consider it granted
+                if (oldAccount.WelcomeBonusGranted) newAccount.WelcomeBonusGranted = true;
+                if (oldAccount.ReviewBonusGranted) newAccount.ReviewBonusGranted = true;
+
+                // Referral: if new account has no referrer but old account does, carry it over
+                if (!newAccount.ReferredByUserId.HasValue && oldAccount.ReferredByUserId.HasValue)
+                    newAccount.ReferredByUserId = oldAccount.ReferredByUserId;
+
                 // 11. Soft-delete Old account and clear its email first (avoids unique Email constraint when we assign verified email to New)
                 oldAccount.Email = $"merged-{oldAccountId}@deleted.local";
                 oldAccount.IsDeleted = true;

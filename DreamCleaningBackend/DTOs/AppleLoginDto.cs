@@ -7,6 +7,7 @@ namespace DreamCleaningBackend.DTOs
         public string IdentityToken { get; set; } = string.Empty;
         public string AuthorizationCode { get; set; } = string.Empty;
         public AppleUserDto? User { get; set; }
+        public string? ReferralCode { get; set; }
     }
 
     public class AppleUserDto

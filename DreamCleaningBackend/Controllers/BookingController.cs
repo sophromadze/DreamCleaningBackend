@@ -7,6 +7,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Services;
+using Microsoft.Extensions.DependencyInjection;
 using DreamCleaningBackend.Hubs;
 using Microsoft.AspNetCore.SignalR;
 using System.Linq;
@@ -29,6 +30,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly ILogger<BookingController> _logger;
         private readonly IHubContext<UserManagementHub> _hubContext;
         private readonly IAuthService _authService;
+        private readonly IReferralService _referralService;
 
         public BookingController(ApplicationDbContext context,
             IConfiguration configuration,
@@ -40,7 +42,8 @@ namespace DreamCleaningBackend.Controllers
             ISmsService smsService,
             ILogger<BookingController> logger,
             IHubContext<UserManagementHub> hubContext,
-            IAuthService authService)
+            IAuthService authService,
+            IReferralService referralService)
         {
             _context = context;
             _configuration = configuration;
@@ -53,6 +56,7 @@ namespace DreamCleaningBackend.Controllers
             _logger = logger;
             _hubContext = hubContext;
             _authService = authService;
+            _referralService = referralService;
         }
 
         [HttpGet("service-types")]
@@ -777,8 +781,9 @@ namespace DreamCleaningBackend.Controllers
                 // Calculate cleaner salary defaults (use per-cleaner rounded duration)
                 order.CleanerHourlyRate = deepCleaningFee > 0 ? 21m : 20m;
                 {
-                    // For cleaner-hours service type, TotalDuration is per cleaner; for regular, it's total across all
-                    var perCleanerDuration = hasCleanersService
+                    // For cleaner-hours service type AND Custom Pricing mode, TotalDuration is per cleaner;
+                    // for regular, it's total across all maids and we divide.
+                    var perCleanerDuration = (hasCleanersService || dto.IsCustomPricing)
                         ? order.TotalDuration
                         : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
                     var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
@@ -1349,7 +1354,8 @@ namespace DreamCleaningBackend.Controllers
                 // Calculate cleaner salary defaults (use per-cleaner rounded duration)
                 order.CleanerHourlyRate = deepCleaningFee > 0 ? 21m : 20m;
                 {
-                    var perCleanerDuration = hasCleanersService
+                    // Custom Pricing mode also stores TotalDuration as per cleaner.
+                    var perCleanerDuration = (hasCleanersService || dto.BookingData.IsCustomPricing)
                         ? order.TotalDuration
                         : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
                     var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
@@ -1551,13 +1557,28 @@ namespace DreamCleaningBackend.Controllers
                     if (string.IsNullOrWhiteSpace(dto.ContactEmail))
                         return BadRequest(new { message = "Contact email is required." });
 
+                    // Pass referral code so it's bound immediately on new account creation
                     guestAuth = await _authService.CreateOrGetGuestUserAsync(
                         dto.ContactFirstName,
                         dto.ContactLastName,
                         dto.ContactEmail,
-                        dto.ContactPhone);
+                        dto.ContactPhone,
+                        dto.ReferralCode);
 
                     userId = guestAuth.User.Id;
+                }
+
+                // For logged-in users: process referral (idempotent — skips if already referred)
+                if (guestAuth == null && !string.IsNullOrWhiteSpace(dto.ReferralCode))
+                {
+                    try
+                    {
+                        await _referralService.ProcessReferralRegistration(userId, dto.ReferralCode);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to process referral for logged-in user {UserId}", userId);
+                    }
                 }
 
                 // Find the user
@@ -1767,7 +1788,33 @@ namespace DreamCleaningBackend.Controllers
                 var discountedSubTotal = calculatedSubTotal - discountAmount - subscriptionDiscountAmount;
                 decimal tax = Math.Round(discountedSubTotal * 0.08875m * 100) / 100;
                 var totalBeforeGiftCard = discountedSubTotal + tax + dto.Tips + dto.CompanyDevelopmentTips;
-                decimal total = Math.Round((totalBeforeGiftCard - giftCardAmountUsed) * 100) / 100;
+                decimal pointsCredit = 0;
+                if (dto.PointsToRedeem > 0 && userId > 0)
+                {
+                    var bubbleSvc = HttpContext.RequestServices.GetService<IBubblePointsService>();
+                    if (bubbleSvc != null)
+                    {
+                        var pointsUser = await _context.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => new { u.BubblePoints }).FirstOrDefaultAsync();
+                        if (pointsUser != null && pointsUser.BubblePoints >= dto.PointsToRedeem)
+                        {
+                            var (credit, valid, _) = await bubbleSvc.GetPointsCreditForBooking(dto.PointsToRedeem);
+                            if (valid) pointsCredit = credit;
+                        }
+                    }
+                }
+                // Apply bubble credits
+                decimal creditsApplied = 0;
+                if (dto.UseCredits && userId > 0)
+                {
+                    var creditUser = await _context.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => new { u.BubbleCredits }).FirstOrDefaultAsync();
+                    if (creditUser != null && creditUser.BubbleCredits > 0)
+                    {
+                        creditsApplied = Math.Min(creditUser.BubbleCredits, totalBeforeGiftCard - giftCardAmountUsed - pointsCredit);
+                        creditsApplied = Math.Round(creditsApplied, 2);
+                    }
+                }
+                decimal total = Math.Round((totalBeforeGiftCard - giftCardAmountUsed - pointsCredit - creditsApplied) * 100) / 100;
+                total = Math.Max(0, total);
 
                 // Store booking data temporarily (will be used to create order after payment succeeds)
                 var sessionId = $"prepare_payment_{userId}_{DateTime.UtcNow.Ticks}";
@@ -2074,6 +2121,34 @@ namespace DreamCleaningBackend.Controllers
                 order.Status = "Active";
                 order.PaymentIntentId = effectivePaymentIntentId;
 
+                // Deduct bubble points if used in booking (inline, same DbContext, before SaveChanges below)
+                if (bookingDataDto != null && bookingDataDto.PointsToRedeem > 0 && userId > 0)
+                {
+                    try
+                    {
+                        var bubbleSvc = HttpContext.RequestServices.GetService<IBubblePointsService>();
+                        if (bubbleSvc != null) await bubbleSvc.DeductPointsForBooking(userId, bookingDataDto.PointsToRedeem, order.Id);
+                    }
+                    catch (Exception ex) { Console.WriteLine($"[BubblePoints] Deduct failed: {ex.Message}"); }
+                }
+
+                // Deduct bubble reward balance (credits) if used in booking
+                if (bookingDataDto != null && bookingDataDto.UseCredits && bookingDataDto.CreditsToApply > 0 && userId > 0)
+                {
+                    try
+                    {
+                        var creditUser = await _context.Users.FindAsync(userId);
+                        if (creditUser != null && creditUser.BubbleCredits > 0)
+                        {
+                            var deducted = Math.Min(creditUser.BubbleCredits, bookingDataDto.CreditsToApply);
+                            creditUser.BubbleCredits = Math.Max(0, creditUser.BubbleCredits - deducted);
+                            order.RewardBalanceUsed = deducted;
+                            await _context.SaveChangesAsync();
+                        }
+                    }
+                    catch (Exception ex) { Console.WriteLine($"[BubbleCredits] Deduct failed: {ex.Message}"); }
+                }
+
                 // Ensure extra services are loaded for email/SMS templates (new-booking flow may not include navigation properties).
                 await _context.Entry(order).Collection(o => o.OrderExtraServices).Query().Include(oes => oes.ExtraService).LoadAsync();
 
@@ -2219,6 +2294,7 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 // Update first-time order status if this is their first order
+                var wasFirstTimeOrder = user.FirstTimeOrder;
                 if (user.FirstTimeOrder)
                 {
                     user.FirstTimeOrder = false;
@@ -2226,6 +2302,24 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 await _context.SaveChangesAsync();
+
+                // Bubble Rewards: safety net — welcome bonus is granted at registration; this covers legacy accounts created before that
+                if (wasFirstTimeOrder && userId > 0)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var bubbleService = HttpContext.RequestServices.GetService<IBubblePointsService>();
+                            if (bubbleService != null)
+                                await bubbleService.GrantWelcomeBonus(userId);
+                        }
+                        catch (Exception rewardsEx)
+                        {
+                            Console.WriteLine($"[BubbleRewards] GrantWelcomeBonus failed for user {userId}: {rewardsEx.Message}");
+                        }
+                    });
+                }
 
                 return Ok(new
                 {
@@ -2466,7 +2560,8 @@ namespace DreamCleaningBackend.Controllers
                     if (es != null && es.IsDeepCleaning) { hasDeepCleaning = true; break; }
                 }
                 order.CleanerHourlyRate = hasDeepCleaning ? 21m : 20m;
-                var perCleanerDuration = hasCleanersService
+                // Custom Pricing mode also stores TotalDuration as per cleaner.
+                var perCleanerDuration = (hasCleanersService || dto.IsCustomPricing)
                     ? order.TotalDuration
                     : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
                 var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);

@@ -74,6 +74,16 @@ namespace DreamCleaningBackend.Models
         [StringLength(14)]
         public string? GiftCardCode { get; set; }
 
+        // Bubble points redemption on this order
+        public int PointsRedeemed { get; set; } = 0;
+
+        [Column(TypeName = "decimal(10,2)")]
+        public decimal PointsRedeemedDiscount { get; set; } = 0;
+
+        // Bubble reward balance (credits) used on this order
+        [Column(TypeName = "decimal(10,2)")]
+        public decimal RewardBalanceUsed { get; set; } = 0;
+
         public int? UserSpecialOfferId { get; set; }
 
         [StringLength(100)]

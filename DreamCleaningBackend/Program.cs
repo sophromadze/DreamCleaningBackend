@@ -9,7 +9,6 @@ using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Repositories.Interfaces;
 using DreamCleaningBackend.Repositories;
 using DreamCleaningBackend.Hubs;
-using DreamCleaningBackend.Services;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using MySqlConnector;
 using Microsoft.AspNetCore.Diagnostics;
@@ -168,7 +167,7 @@ builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<IGiftCardService, GiftCardService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuditService, AuditService>();
-builder.Services.AddHostedService<UnverifiedUserCleanupService>();
+// UnverifiedUserCleanupService removed — email verification now uses OTP, accounts are never auto-deleted
 builder.Services.AddScoped<ISpecialOfferService, SpecialOfferService>();
 builder.Services.AddScoped<ICleanerService, CleanerService>();
 builder.Services.AddHostedService<CleanerNotificationService>();
@@ -179,6 +178,11 @@ builder.Services.AddScoped<IMaintenanceModeService, MaintenanceModeService>();
 builder.Services.AddHostedService<AuditLogCleanupService>();
 builder.Services.AddHostedService<ScheduledMailService>();
 builder.Services.AddHostedService<ScheduledSmsService>();
+
+// Bubble Rewards Services
+builder.Services.AddScoped<IBubbleRewardsSettingsService, BubbleRewardsSettingsService>();
+builder.Services.AddScoped<IReferralService, ReferralService>();
+builder.Services.AddScoped<IBubblePointsService, BubblePointsService>();
 
 // LiveChat services
 builder.Services.AddSingleton<LiveChatSessionManager>();

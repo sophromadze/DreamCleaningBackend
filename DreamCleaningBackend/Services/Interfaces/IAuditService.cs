@@ -9,5 +9,6 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task LogDeleteAsync<T>(T entity) where T : class;
         Task<List<AuditLog>> GetEntityHistoryAsync(string entityType, long entityId);
         Task LogCleanerAssignmentAsync(int orderId, string cleanerEmail, string action, int adminId);
+        Task LogBubblePointsAdjustmentAsync(int targetUserId, string targetUserName, int points, string? reason, int adminId, string adminName);
     }
 }

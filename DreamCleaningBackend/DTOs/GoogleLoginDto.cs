@@ -6,5 +6,6 @@ namespace DreamCleaningBackend.DTOs
     {
         [Required]
         public string IdToken { get; set; }
+        public string? ReferralCode { get; set; }
     }
 }

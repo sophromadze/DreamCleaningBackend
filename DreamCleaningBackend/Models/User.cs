@@ -109,5 +109,18 @@ namespace DreamCleaningBackend.Models
         public string? LoginOtpCode { get; set; }
         public DateTime? LoginOtpExpiry { get; set; }
         public int LoginOtpAttempts { get; set; } = 0;
+
+        // Bubble Rewards
+        [StringLength(20)]
+        public string? ReferralCode { get; set; }
+        public int? ReferredByUserId { get; set; }
+        public virtual User? ReferredBy { get; set; }
+        public int BubblePoints { get; set; } = 0;
+        public decimal BubbleCredits { get; set; } = 0;
+        public decimal TotalSpentAmount { get; set; } = 0;
+        public int ConsecutiveOrderCount { get; set; } = 0;
+        public DateTime? LastCompletedOrderDate { get; set; }
+        public bool ReviewBonusGranted { get; set; } = false;
+        public bool WelcomeBonusGranted { get; set; } = false;
     }
 }

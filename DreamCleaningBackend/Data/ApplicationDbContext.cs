@@ -49,6 +49,11 @@ namespace DreamCleaningBackend.Data
         public DbSet<PersonalAdminTask> PersonalAdminTasks { get; set; }
         public DbSet<TaskActivityLog> TaskActivityLogs { get; set; }
 
+        // Bubble Rewards
+        public DbSet<BubbleRewardsSetting> BubbleRewardsSettings { get; set; }
+        public DbSet<BubblePointsHistory> BubblePointsHistories { get; set; }
+        public DbSet<Referral> Referrals { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -825,6 +830,121 @@ namespace DreamCleaningBackend.Data
                     .HasForeignKey(e => e.CreatedByUserId)
                     .OnDelete(DeleteBehavior.Restrict);
             });
+
+            // BubbleRewardsSetting configuration
+            modelBuilder.Entity<BubbleRewardsSetting>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.SettingKey).IsUnique().HasDatabaseName("IX_BubbleRewardsSettings_Key");
+                entity.Property(e => e.UpdatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.Category).HasDefaultValue("General");
+            });
+
+            // Seed BubbleRewardsSettings
+            var seedDate = new DateTime(2026, 4, 4, 0, 0, 0, DateTimeKind.Utc);
+            modelBuilder.Entity<BubbleRewardsSetting>().HasData(
+                // Points
+                new BubbleRewardsSetting { Id = 1, SettingKey = "PointsPerDollar", SettingValue = "2", Description = "How many bubble points per $1 spent", Category = "Points", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 2, SettingKey = "PointsSystemEnabled", SettingValue = "true", Description = "Master on/off switch for entire rewards system", Category = "Points", UpdatedAt = seedDate },
+                // Tiers
+                new BubbleRewardsSetting { Id = 3, SettingKey = "TierBubbleMaxSpent", SettingValue = "999", Description = "Max total spent for Bubble tier", Category = "Tiers", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 4, SettingKey = "TierSuperBubbleMinSpent", SettingValue = "1000", Description = "Min total spent for Super Bubble tier", Category = "Tiers", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 5, SettingKey = "TierSuperBubbleMaxSpent", SettingValue = "1999", Description = "Max total spent for Super Bubble tier", Category = "Tiers", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 6, SettingKey = "TierUltraBubbleMinSpent", SettingValue = "3000", Description = "Min total spent for Ultra Bubble tier", Category = "Tiers", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 7, SettingKey = "TierBubbleMultiplier", SettingValue = "1.0", Description = "Points multiplier for Bubble tier", Category = "Tiers", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 8, SettingKey = "TierSuperBubbleMultiplier", SettingValue = "1.5", Description = "Points multiplier for Super Bubble tier", Category = "Tiers", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 9, SettingKey = "TierUltraBubbleMultiplier", SettingValue = "2.0", Description = "Points multiplier for Ultra Bubble tier", Category = "Tiers", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 10, SettingKey = "UltraBubblePermanentDiscountPercent", SettingValue = "0", Description = "Permanent discount % for Ultra Bubble (0 = disabled)", Category = "Tiers", UpdatedAt = seedDate },
+                // Redemption
+                new BubbleRewardsSetting { Id = 11, SettingKey = "Redemption200Points", SettingValue = "10", Description = "Dollar credit for Tier 1 redemption", Category = "Redemption", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 12, SettingKey = "Redemption500Points", SettingValue = "30", Description = "Dollar credit for Tier 2 redemption", Category = "Redemption", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 13, SettingKey = "Redemption1000Points", SettingValue = "90", Description = "Dollar credit for Tier 3 redemption", Category = "Redemption", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 14, SettingKey = "RedemptionMinOrderAmount", SettingValue = "100", Description = "Minimum order $ to use points", Category = "Redemption", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 15, SettingKey = "RedemptionMaxOrderPercent", SettingValue = "30", Description = "Max % of order that can be paid with points", Category = "Redemption", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 36, SettingKey = "RedemptionTier1Points", SettingValue = "1000", Description = "Points required for Tier 1 redemption", Category = "Redemption", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 37, SettingKey = "RedemptionTier2Points", SettingValue = "2000", Description = "Points required for Tier 2 redemption", Category = "Redemption", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 38, SettingKey = "RedemptionTier3Points", SettingValue = "4000", Description = "Points required for Tier 3 redemption", Category = "Redemption", UpdatedAt = seedDate },
+                // Bonuses
+                new BubbleRewardsSetting { Id = 16, SettingKey = "WelcomeBonusPoints", SettingValue = "50", Description = "Points given on first registration", Category = "Bonuses", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 17, SettingKey = "WelcomeBonusEnabled", SettingValue = "true", Description = "Enable/disable welcome bonus", Category = "Bonuses", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 18, SettingKey = "RecurringBonusPercent", SettingValue = "15", Description = "Extra % points for recurring customers", Category = "Bonuses", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 19, SettingKey = "RecurringBonusEnabled", SettingValue = "true", Description = "Enable/disable recurring bonus", Category = "Bonuses", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 20, SettingKey = "ReviewBonusPoints", SettingValue = "40", Description = "Points for leaving a Google review", Category = "Bonuses", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 21, SettingKey = "ReviewBonusEnabled", SettingValue = "true", Description = "Enable/disable review bonus", Category = "Bonuses", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 22, SettingKey = "NextOrderBoosterPercent", SettingValue = "20", Description = "Extra % points if booked within N days", Category = "Bonuses", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 23, SettingKey = "NextOrderBoosterDays", SettingValue = "7", Description = "Days window for next order booster", Category = "Bonuses", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 24, SettingKey = "NextOrderBoosterEnabled", SettingValue = "true", Description = "Enable/disable next order booster", Category = "Bonuses", UpdatedAt = seedDate },
+                // Streak
+                new BubbleRewardsSetting { Id = 25, SettingKey = "StreakEnabled", SettingValue = "true", Description = "Enable/disable streak system", Category = "Streak", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 26, SettingKey = "Streak3ConsecutiveBonus", SettingValue = "50", Description = "Bonus points for 3 consecutive bookings", Category = "Streak", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 27, SettingKey = "Streak6ConsecutiveBonus", SettingValue = "100", Description = "Bonus points for 6 consecutive bookings", Category = "Streak", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 28, SettingKey = "StreakMaxDaysBetweenOrders", SettingValue = "45", Description = "Max days between orders to keep streak", Category = "Streak", UpdatedAt = seedDate },
+                // Referral
+                new BubbleRewardsSetting { Id = 29, SettingKey = "ReferralEnabled", SettingValue = "true", Description = "Enable/disable referral system", Category = "Referral", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 30, SettingKey = "ReferralRegistrationBonusEnabled", SettingValue = "false", Description = "Give points when referred user registers (DISABLED by default)", Category = "Referral", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 31, SettingKey = "ReferralRegistrationBonusPoints", SettingValue = "50", Description = "Points for referrer when referred user registers", Category = "Referral", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 32, SettingKey = "ReferralOrderCompletedCreditAmount", SettingValue = "10", Description = "Dollar credit for referrer when referred user completes first order", Category = "Referral", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 33, SettingKey = "ReferralOrderCompletedBonusEnabled", SettingValue = "true", Description = "Enable/disable order completion bonus", Category = "Referral", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 34, SettingKey = "ReferralNewUserBonusPoints", SettingValue = "50", Description = "Extra bonus points for new user who used a referral link (in addition to welcome bonus)", Category = "Referral", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 35, SettingKey = "ReferralNewUserBonusEnabled", SettingValue = "true", Description = "Enable/disable extra bonus for referred new user", Category = "Referral", UpdatedAt = seedDate }
+            );
+
+            // BubblePointsHistory configuration
+            modelBuilder.Entity<BubblePointsHistory>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.UserId).HasDatabaseName("IX_BubblePointsHistory_UserId");
+                entity.HasIndex(e => e.CreatedAt).HasDatabaseName("IX_BubblePointsHistory_CreatedAt");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.Order)
+                    .WithMany()
+                    .HasForeignKey(e => e.OrderId)
+                    .OnDelete(DeleteBehavior.SetNull)
+                    .IsRequired(false);
+            });
+
+            // Referral configuration
+            modelBuilder.Entity<Referral>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.ReferrerUserId).HasDatabaseName("IX_Referrals_ReferrerUserId");
+                entity.HasIndex(e => e.ReferredUserId).HasDatabaseName("IX_Referrals_ReferredUserId");
+                entity.HasOne(e => e.Referrer)
+                    .WithMany()
+                    .HasForeignKey(e => e.ReferrerUserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.Referred)
+                    .WithMany()
+                    .HasForeignKey(e => e.ReferredUserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // User ReferralCode unique index
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.ReferralCode)
+                .IsUnique()
+                .HasFilter("ReferralCode IS NOT NULL")
+                .HasDatabaseName("IX_Users_ReferralCode");
+
+            // User self-referral FK
+            modelBuilder.Entity<User>()
+                .HasOne(u => u.ReferredBy)
+                .WithMany()
+                .HasForeignKey(u => u.ReferredByUserId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .IsRequired(false);
+
+            // BubbleCredits and TotalSpentAmount decimal precision
+            modelBuilder.Entity<User>()
+                .Property(u => u.BubbleCredits)
+                .HasColumnType("decimal(10,2)");
+
+            modelBuilder.Entity<User>()
+                .Property(u => u.TotalSpentAmount)
+                .HasColumnType("decimal(10,2)");
         }
     }
 }

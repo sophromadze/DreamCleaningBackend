@@ -29,6 +29,10 @@ namespace DreamCleaningBackend.DTOs
         public string SubscriptionName { get; set; }
         public string? GiftCardCode { get; set; }
         public decimal GiftCardAmountUsed { get; set; }
+        public int PointsRedeemed { get; set; }
+        public decimal PointsRedeemedDiscount { get; set; }
+        public decimal RewardBalanceUsed { get; set; }
+        public int PointsEarned { get; set; }
         public string? EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
         public string? FloorTypes { get; set; }
@@ -168,6 +172,10 @@ namespace DreamCleaningBackend.DTOs
 
         public string? CancellationReason { get; set; }
         public bool IsLateCancellation { get; set; }
+        public int PointsRedeemed { get; set; }
+        public decimal PointsRedeemedDiscount { get; set; }
+        public decimal RewardBalanceUsed { get; set; }
+        public int PointsEarned { get; set; }
     }
 
     public class CancelOrderDto

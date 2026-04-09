@@ -14,6 +14,7 @@ using Google.Apis.Auth;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Repositories.Interfaces;
+using System.Security.Cryptography;
 
 namespace DreamCleaningBackend.Services
 {
@@ -26,8 +27,10 @@ namespace DreamCleaningBackend.Services
         private readonly ISpecialOfferService _specialOfferService;
         private readonly IAuditService _auditService;
         private readonly IUserRepository _userRepository;
+        private readonly IReferralService _referralService;
+        private readonly IBubblePointsService _bubblePointsService;
 
-        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService, IUserRepository userRepository)
+        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService, IUserRepository userRepository, IReferralService referralService, IBubblePointsService bubblePointsService)
         {
             _context = context;
             _configuration = configuration;
@@ -36,6 +39,20 @@ namespace DreamCleaningBackend.Services
             _specialOfferService = specialOfferService;
             _auditService = auditService;
             _userRepository = userRepository;
+            _referralService = referralService;
+            _bubblePointsService = bubblePointsService;
+        }
+
+        private async Task TryGrantWelcomeBonusAsync(int userId)
+        {
+            try
+            {
+                await _bubblePointsService.GrantWelcomeBonus(userId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GrantWelcomeBonus failed for user {UserId}", userId);
+            }
         }
 
         // Update your AuthService.cs Register method with better error handling
@@ -64,13 +81,22 @@ namespace DreamCleaningBackend.Services
                     AuthProvider = "Local",
                     CreatedAt = DateTime.UtcNow,
                     FirstTimeOrder = true,
-                    IsEmailVerified = false,
-                    EmailVerificationToken = GenerateVerificationToken(),
-                    EmailVerificationTokenExpiry = DateTime.UtcNow.AddHours(24)
+                    IsEmailVerified = false
                 };
 
                 _context.Users.Add(user);
                 await _context.SaveChangesAsync();
+
+                // Generate referral code for new user
+                try
+                {
+                    user.ReferralCode = await GenerateUniqueReferralCode();
+                    await _context.SaveChangesAsync();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to generate referral code for user {UserId}", user.Id);
+                }
 
                 try
                 {
@@ -82,29 +108,49 @@ namespace DreamCleaningBackend.Services
                     // Don't fail registration if special offer fails
                 }
 
+                await TryGrantWelcomeBonusAsync(user.Id);
+
+                // Process referral if a code was provided (adds extra points for friend when enabled)
+                if (!string.IsNullOrWhiteSpace(registerDto.ReferralCode))
+                {
+                    try
+                    {
+                        await _referralService.ProcessReferralRegistration(user.Id, registerDto.ReferralCode);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to process referral for user {UserId}", user.Id);
+                        // Don't fail registration
+                    }
+                }
+
+                // Generate and send OTP for email verification
+                var otp = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
+                user.LoginOtpCode = otp;
+                user.LoginOtpExpiry = DateTime.UtcNow.AddMinutes(10);
+                user.LoginOtpAttempts = 0;
+
+                // Auto-login: generate token so user is immediately signed in
+                user.RefreshToken = GenerateRefreshToken();
+                user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
+                user.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
                 try
                 {
-                    // Send verification email
-                    var verificationLink = $"{_configuration["Frontend:Url"]}/auth/verify-email?token={user.EmailVerificationToken}";
-                    await _emailService.SendEmailVerificationAsync(user.Email, user.FirstName, verificationLink);
+                    await _emailService.SendLoginOtpAsync(user.Email, user.FirstName, otp);
                 }
                 catch (Exception emailEx)
                 {
-                    _logger.LogError(emailEx, "Failed to send verification email to {Email}", user.Email);
-
-                    // Delete the user if email sending fails
-                    _context.Users.Remove(user);
-                    await _context.SaveChangesAsync();
-
-                    throw new Exception("Failed to send verification email. Please check your email address and try again.");
+                    _logger.LogError(emailEx, "Failed to send verification OTP to {Email}", user.Email);
                 }
 
-                // Return response WITHOUT token - user must verify email first
+                // Return token immediately — user is logged in but email not yet verified
                 return new AuthResponseDto
                 {
                     User = MapUserToDto(user),
-                    Token = null, // No token until email is verified
-                    RefreshToken = null, // No refresh token until email is verified
+                    Token = CreateToken(user),
+                    RefreshToken = user.RefreshToken,
                     RequiresEmailVerification = true
                 };
             }
@@ -133,7 +179,7 @@ namespace DreamCleaningBackend.Services
             // Check if email is verified
             if (!user.IsEmailVerified)
             {
-                throw new Exception("Please verify your email before logging in. Check your inbox for the verification link.");
+                throw new Exception("Please verify your email before logging in. Check your inbox for the 6-digit verification code.");
             }
 
             // Update refresh token
@@ -174,9 +220,11 @@ namespace DreamCleaningBackend.Services
                     .Include(u => u.Subscription)
                     .FirstOrDefaultAsync(u => u.Email == email.ToLower());
 
+                var isNewGoogleUser = false;
                 if (user == null)
                 {
                     // Create new user
+                    isNewGoogleUser = true;
                     user = new User
                     {
                         Email = email.ToLower(),
@@ -239,16 +287,32 @@ namespace DreamCleaningBackend.Services
                 // Update refresh token
                 user.RefreshToken = GenerateRefreshToken();
                 user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
+
+                // Generate referral code for new OAuth users
+                if (string.IsNullOrEmpty(user.ReferralCode))
+                {
+                    try { user.ReferralCode = await GenerateUniqueReferralCode(); } catch { }
+                }
+
                 await _context.SaveChangesAsync();
 
-                try
+                if (isNewGoogleUser)
                 {
-                    await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to grant first-time offer to user {UserId}", user.Id);
-                    // Don't fail registration if special offer fails
+                    await TryGrantWelcomeBonusAsync(user.Id);
+                    try
+                    {
+                        await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to grant first-time offer to user {UserId}", user.Id);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(googleLoginDto.ReferralCode))
+                    {
+                        try { await _referralService.ProcessReferralRegistration(user.Id, googleLoginDto.ReferralCode); }
+                        catch (Exception ex) { _logger.LogError(ex, "Failed to process referral for Google user {UserId}", user.Id); }
+                    }
                 }
 
                 return new AuthResponseDto
@@ -414,12 +478,19 @@ namespace DreamCleaningBackend.Services
             user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
             user.UpdatedAt = DateTime.UtcNow;
 
+            // Generate referral code for new Apple users
+            if (string.IsNullOrEmpty(user.ReferralCode))
+            {
+                try { user.ReferralCode = await GenerateUniqueReferralCode(); } catch { }
+            }
+
             await _context.SaveChangesAsync();
 
             // Only grant special offers to truly new users (not when linking accounts)
             var isNewUser = user.CreatedAt > DateTime.UtcNow.AddMinutes(-1); // Created within last minute
             if (isNewUser)
             {
+                await TryGrantWelcomeBonusAsync(user.Id);
                 try
                 {
                     await _specialOfferService.GrantAllActiveOffersToNewUser(user.Id);
@@ -427,7 +498,12 @@ namespace DreamCleaningBackend.Services
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to grant first-time offer to user {UserId}", user.Id);
-                    // Don't fail registration if special offer fails
+                }
+
+                if (!string.IsNullOrWhiteSpace(appleLoginDto.ReferralCode))
+                {
+                    try { await _referralService.ProcessReferralRegistration(user.Id, appleLoginDto.ReferralCode); }
+                    catch (Exception ex) { _logger.LogError(ex, "Failed to process referral for Apple user {UserId}", user.Id); }
                 }
             }
 
@@ -816,7 +892,8 @@ namespace DreamCleaningBackend.Services
                 Role = user.Role.ToString(),
                 ProfilePictureUrl = user.ProfilePictureUrl,
                 RequiresRealEmail = requiresRealEmail,
-                HasPassword = user.PasswordHash != null
+                HasPassword = user.PasswordHash != null,
+                IsEmailVerified = user.IsEmailVerified
             };
         }
 
@@ -866,32 +943,31 @@ namespace DreamCleaningBackend.Services
         {
             var user = await _context.Users
                 .FirstOrDefaultAsync(u => u.Email == email.ToLower()
-                    && !u.IsEmailVerified
-                    && u.AuthProvider == "Local");
+                    && !u.IsEmailVerified);
 
             if (user == null)
                 return false; // Don't throw exception - for security
 
-            // Generate new verification token
-            user.EmailVerificationToken = GenerateVerificationToken();
-            user.EmailVerificationTokenExpiry = DateTime.UtcNow.AddHours(24);
+            // Generate new OTP
+            var otp = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
+            user.LoginOtpCode = otp;
+            user.LoginOtpExpiry = DateTime.UtcNow.AddMinutes(10);
+            user.LoginOtpAttempts = 0;
             user.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
-            var verificationLink = $"{_configuration["Frontend:Url"]}/auth/verify-email?token={user.EmailVerificationToken}";
-
-            // SEND EMAIL IN BACKGROUND
+            // SEND OTP IN BACKGROUND
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await _emailService.SendEmailVerificationAsync(user.Email, user.FirstName, verificationLink);
-                    _logger.LogInformation($"Verification email sent successfully to {user.Email}");
+                    await _emailService.SendLoginOtpAsync(user.Email, user.FirstName, otp);
+                    _logger.LogInformation($"Verification OTP sent successfully to {user.Email}");
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send verification email to {user.Email}");
+                    _logger.LogError(ex, $"Failed to send verification OTP to {user.Email}");
                 }
             });
 
@@ -1002,6 +1078,35 @@ namespace DreamCleaningBackend.Services
             return (true, user.PasswordHash != null);
         }
 
+        /// <summary>Sends a verification OTP to a user who registered locally (has a password). Used for email verification after registration.</summary>
+        public async Task SendEmailVerificationOtpAsync(string email)
+        {
+            var emailLower = email?.Trim().ToLowerInvariant();
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email == emailLower && !u.IsDeleted);
+
+            if (user == null)
+                throw new Exception("User not found");
+
+            if (!user.IsActive)
+                throw new Exception("Account is deactivated");
+
+            if (user.IsEmailVerified)
+                throw new Exception("Email is already verified.");
+
+            // Generate 6-digit OTP
+            var otp = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
+
+            user.LoginOtpCode = otp;
+            user.LoginOtpExpiry = DateTime.UtcNow.AddMinutes(10);
+            user.LoginOtpAttempts = 0;
+            user.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            await _emailService.SendLoginOtpAsync(user.Email, user.FirstName, otp);
+        }
+
         public async Task SendLoginOtpAsync(string email)
         {
             var emailLower = email?.Trim().ToLowerInvariant();
@@ -1064,6 +1169,9 @@ namespace DreamCleaningBackend.Services
             user.LoginOtpExpiry = null;
             user.LoginOtpAttempts = 0;
 
+            // Mark email as verified
+            user.IsEmailVerified = true;
+
             // Generate refresh token so user is logged in
             user.RefreshToken = GenerateRefreshToken();
             user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
@@ -1071,16 +1179,19 @@ namespace DreamCleaningBackend.Services
 
             await _context.SaveChangesAsync();
 
+            // If user already has a password (local registration), no password setup needed
+            var requiresPasswordSetup = user.PasswordHash == null;
+
             return new AuthResponseDto
             {
                 User = MapUserToDto(user),
                 Token = CreateToken(user),
                 RefreshToken = user.RefreshToken,
-                RequiresPasswordSetup = true
+                RequiresPasswordSetup = requiresPasswordSetup
             };
         }
 
-        public async Task<AuthResponseDto> CreateOrGetGuestUserAsync(string firstName, string lastName, string email, string phone)
+        public async Task<AuthResponseDto> CreateOrGetGuestUserAsync(string firstName, string lastName, string email, string phone, string? referralCode = null)
         {
             var emailLower = email?.Trim().ToLowerInvariant();
 
@@ -1116,6 +1227,14 @@ namespace DreamCleaningBackend.Services
                 };
                 _context.Users.Add(user);
                 await _context.SaveChangesAsync();
+
+                await TryGrantWelcomeBonusAsync(user.Id);
+
+                if (!string.IsNullOrWhiteSpace(referralCode))
+                {
+                    try { await _referralService.ProcessReferralRegistration(user.Id, referralCode); }
+                    catch (Exception ex) { _logger.LogError(ex, "Failed to process referral for guest user {UserId}", user.Id); }
+                }
             }
 
             // Generate tokens for the guest auto-login
@@ -1144,6 +1263,24 @@ namespace DreamCleaningBackend.Services
                     .Replace("/", "")
                     .Replace("=", "");
             }
+        }
+
+        private async Task<string> GenerateUniqueReferralCode()
+        {
+            const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            var random = new Random();
+            string code;
+            int attempts = 0;
+            do
+            {
+                var suffix = new string(Enumerable.Repeat(chars, 5)
+                    .Select(s => s[random.Next(s.Length)]).ToArray());
+                code = $"DREAM-{suffix}";
+                attempts++;
+                if (attempts > 50) break;
+            }
+            while (await _context.Users.AnyAsync(u => u.ReferralCode == code));
+            return code;
         }
 
         public async Task<EmailChangeResponseDto> InitiateEmailChange(int userId, InitiateEmailChangeDto dto)
@@ -1298,7 +1435,8 @@ namespace DreamCleaningBackend.Services
                 Role = user.Role.ToString(),
                 ProfilePictureUrl = user.ProfilePictureUrl,
                 RequiresRealEmail = requiresRealEmail,
-                HasPassword = user.PasswordHash != null
+                HasPassword = user.PasswordHash != null,
+                IsEmailVerified = user.IsEmailVerified
             };
         }
 

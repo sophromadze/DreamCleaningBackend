@@ -418,6 +418,41 @@ namespace DreamCleaningBackend.Services
             return changedFields;
         }
 
+        public async Task LogBubblePointsAdjustmentAsync(int targetUserId, string targetUserName, int points, string? reason, int adminId, string adminName)
+        {
+            try
+            {
+                var auditLog = new AuditLog
+                {
+                    EntityType = "BubblePointsAdjustment",
+                    EntityId = targetUserId,
+                    Action = points >= 0 ? "PointsAdded" : "PointsDeducted",
+                    OldValues = null,
+                    NewValues = JsonConvert.SerializeObject(new
+                    {
+                        TargetUserId = targetUserId,
+                        TargetUserName = targetUserName,
+                        Points = points,
+                        Reason = reason ?? "No reason provided",
+                        AdjustedBy = adminName,
+                        AdjustedByAdminId = adminId
+                    }, _jsonSettings),
+                    ChangedFields = JsonConvert.SerializeObject(new[] { "BubblePoints" }, _jsonSettings),
+                    UserId = adminId,
+                    IpAddress = GetIpAddress(),
+                    UserAgent = GetUserAgent(),
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.AuditLogs.Add(auditLog);
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Bubble points audit logging failed: {ex.Message}");
+            }
+        }
+
         public async Task LogCleanerAssignmentAsync(int orderId, string cleanerEmail, string action, int adminId)
         {
             try

@@ -58,6 +58,7 @@ namespace DreamCleaningBackend.DTOs
         public string? ApartmentName { get; set; }
         public string? PromoCode { get; set; }
         public string? GiftCardCode { get; set; }
+        public string? ReferralCode { get; set; }
         public decimal GiftCardAmountToUse { get; set; }
         public int? UserSpecialOfferId { get; set; }
 
@@ -79,6 +80,9 @@ namespace DreamCleaningBackend.DTOs
         public int? CustomCleaners { get; set; }
         public decimal? CustomDuration { get; set; }
         public List<PhotoUploadDto> UploadedPhotos { get; set; } = new List<PhotoUploadDto>();
+        public int PointsToRedeem { get; set; } = 0;
+        public bool UseCredits { get; set; } = false;
+        public decimal CreditsToApply { get; set; } = 0;
 
         [StringLength(300)]
         public string? FloorTypes { get; set; }
