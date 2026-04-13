@@ -38,11 +38,18 @@ namespace DreamCleaningBackend.Models
 
         public bool IsLateCancellation { get; set; } = false;
 
+        // When true, auto-cancellation of unpaid orders is disabled (e.g. admin reactivated this order)
+        public bool IsAutoCancelExempt { get; set; } = false;
+
         // Duration in minutes
         public decimal TotalDuration { get; set; }
 
         // Number of maids/cleaners for this order
         public int MaidsCount { get; set; }
+
+        // Informational only for cleaner+hours/custom modes (does not affect pricing/duration)
+        public int? BedroomsQuantity { get; set; }
+        public int? BathroomsQuantity { get; set; }
 
         // Pricing
         [Column(TypeName = "decimal(18,2)")]

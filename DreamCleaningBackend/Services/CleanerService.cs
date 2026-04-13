@@ -179,9 +179,6 @@ namespace DreamCleaningBackend.Services
                     }
                 }
 
-                var assignedCleanerEmails = new List<string>();
-                var newlyAssignedCleanerIds = new List<int>();
-
                 // DON'T remove existing assignments - just add new ones or update existing ones
                 foreach (var cleanerId in dto.CleanerIds)
                 {
@@ -205,7 +202,6 @@ namespace DreamCleaningBackend.Services
                         };
 
                         _context.OrderCleaners.Add(orderCleaner);
-                        newlyAssignedCleanerIds.Add(cleanerId); // Track newly assigned cleaners
 
                         // LOG CLEANER ASSIGNMENT TO AUDIT
                         if (cleaner != null)
@@ -225,10 +221,6 @@ namespace DreamCleaningBackend.Services
                             }
                         }
 
-                        if (cleaner != null)
-                        {
-                            assignedCleanerEmails.Add(cleaner.Email);
-                        }
                     }
                     else
                     {
@@ -241,12 +233,6 @@ namespace DreamCleaningBackend.Services
 
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
-
-                // KEEP ASSIGNMENT EMAILS SYNCHRONOUS (only newly assigned cleaners)
-                if (newlyAssignedCleanerIds.Any())
-                {
-                    await SendCleanerAssignmentNotifications(dto.OrderId, newlyAssignedCleanerIds);
-                }
 
                 return true;
             }
@@ -326,91 +312,58 @@ namespace DreamCleaningBackend.Services
             return true;
         }
 
-        private async Task SendCleanerAssignmentNotifications(int orderId, List<int> cleanerIds)
+        public async Task<SendCleanerAssignmentMailsResultDto?> SendPendingCleanerAssignmentMailsAsync(int orderId)
         {
-            var order = await _context.Orders
-                .Include(o => o.ServiceType)
-                .Include(o => o.OrderServices)
-                    .ThenInclude(os => os.Service)
-                .Include(o => o.OrderCleaners)
-                .FirstOrDefaultAsync(o => o.Id == orderId);
+            var orderExists = await _context.Orders.AnyAsync(o => o.Id == orderId);
+            if (!orderExists)
+                return null;
 
-            if (order == null) return;
-
-            var cleaners = await _context.Users
-                .Where(u => cleanerIds.Contains(u.Id))
+            var pendingAssignments = await _context.OrderCleaners
+                .Where(oc => oc.OrderId == orderId && oc.AssignmentNotificationSentAt == null)
+                .Include(oc => oc.Cleaner)
                 .ToListAsync();
 
-            // Calculate duration per cleaner (same logic as in EmailService)
-            bool hasCleanersService = order.OrderServices.Any(os =>
-                os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
-
-            decimal durationPerCleaner = 0;
-            string formattedDuration = "";
-
-            if (hasCleanersService)
+            if (!pendingAssignments.Any())
             {
-                durationPerCleaner = order.TotalDuration;
-            }
-            else
-            {
-                durationPerCleaner = (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
+                return new SendCleanerAssignmentMailsResultDto
+                {
+                    EmailsSent = 0,
+                    Message = "All assigned cleaners already received the assignment email."
+                };
             }
 
-            formattedDuration = FormatDurationRounded((int)durationPerCleaner);
-
-            // Build full address string
-            var fullAddressParts = new List<string>();
-            if (!string.IsNullOrEmpty(order.ServiceAddress))
-                fullAddressParts.Add(order.ServiceAddress);
-            if (!string.IsNullOrEmpty(order.AptSuite))
-                fullAddressParts.Add($"Apt/Suite: {order.AptSuite}");
-            if (!string.IsNullOrEmpty(order.City))
-                fullAddressParts.Add(order.City);
-            if (!string.IsNullOrEmpty(order.State))
-                fullAddressParts.Add(order.State);
-            if (!string.IsNullOrEmpty(order.ZipCode))
-                fullAddressParts.Add(order.ZipCode);
-
-            var fullAddress = fullAddressParts.Any() 
-                ? string.Join(", ", fullAddressParts) 
-                : (order.ApartmentName ?? "Address provided separately");
-
-            foreach (var cleaner in cleaners)
+            var sent = 0;
+            foreach (var assignment in pendingAssignments)
             {
-                // Send notification to cleaner; admin gets one copy of the same email (no separate admin email)
+                if (assignment.Cleaner == null || string.IsNullOrWhiteSpace(assignment.Cleaner.Email))
+                    continue;
+
                 await _emailService.SendCleanerAssignmentNotificationAsync(
-                    cleaner.Email,
-                    cleaner.FirstName,
+                    assignment.Cleaner.Email,
+                    assignment.Cleaner.FirstName,
                     orderId,
-                    sendCopyToAdmin: true
-                );
-            }
-        }
+                    sendCopyToAdmin: true);
 
-        private string FormatDurationRounded(int minutes)
-        {
-            // Round to nearest 15 minutes (same as EmailService)
-            var roundedMinutes = (int)Math.Round(minutes / 15.0) * 15;
-            var hours = roundedMinutes / 60;
-            var mins = roundedMinutes % 60;
+                assignment.AssignmentNotificationSentAt = DateTime.UtcNow;
+                sent++;
+            }
 
-            if (hours == 0 && mins == 0)
+            await _context.SaveChangesAsync();
+
+            if (sent == 0)
             {
-                return "0 minutes";
+                return new SendCleanerAssignmentMailsResultDto
+                {
+                    EmailsSent = 0,
+                    Message = "No cleaners with a valid email address needed an assignment email."
+                };
             }
-            else if (hours == 0)
+
+            return new SendCleanerAssignmentMailsResultDto
             {
-                return $"{mins} minutes";
-            }
-            else if (mins == 0)
-            {
-                return $"{hours}h";
-            }
-            else
-            {
-                return $"{hours}h {mins}min";
-            }
+                EmailsSent = sent,
+                Message = $"Assignment email sent to {sent} cleaner(s)."
+            };
         }
     }
 }

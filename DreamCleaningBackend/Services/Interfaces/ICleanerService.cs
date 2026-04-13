@@ -9,5 +9,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<List<AvailableCleanerDto>> GetAvailableCleanersAsync(DateTime serviceDate, string serviceTime);
         Task<bool> AssignCleanersToOrderAsync(AssignCleanersDto dto, int assignedBy);
         Task<bool> UnassignCleanerFromOrderAsync(int orderId, int cleanerId, int removedBy);
+
+        /// <summary>
+        /// Sends assignment emails only to cleaners on this order who have not been emailed yet, then sets AssignmentNotificationSentAt.
+        /// </summary>
+        Task<SendCleanerAssignmentMailsResultDto?> SendPendingCleanerAssignmentMailsAsync(int orderId);
     }
 }

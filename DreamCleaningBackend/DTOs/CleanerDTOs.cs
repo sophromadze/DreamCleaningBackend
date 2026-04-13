@@ -57,4 +57,10 @@ namespace DreamCleaningBackend.DTOs
         public string? TipsForCleaner { get; set; } // Additional admin instructions
         public List<string> AssignedCleaners { get; set; } = new();
     }
+
+    public class SendCleanerAssignmentMailsResultDto
+    {
+        public int EmailsSent { get; set; }
+        public string Message { get; set; } = "";
+    }
 }

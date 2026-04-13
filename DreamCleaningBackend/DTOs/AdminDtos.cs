@@ -450,6 +450,8 @@ namespace DreamCleaningBackend.DTOs
         public string? ServiceTime { get; set; }
         public int? MaidsCount { get; set; }
         public decimal? TotalDuration { get; set; }
+        public int? BedroomsQuantity { get; set; }
+        public int? BathroomsQuantity { get; set; }
         public string? EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
         public string? FloorTypes { get; set; }

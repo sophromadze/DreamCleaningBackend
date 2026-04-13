@@ -82,6 +82,14 @@ namespace DreamCleaningBackend.Services
             var systemEnabled = await _settings.GetSetting<bool>("PointsSystemEnabled", true);
             if (!systemEnabled) return;
 
+            // Only award points for orders created after the points system launch date
+            var cutoffRaw = await _settings.GetSetting("PointsSystemLaunchDate", "");
+            if (!string.IsNullOrEmpty(cutoffRaw) && DateTime.TryParse(cutoffRaw, out var cutoffDate))
+            {
+                var order0 = await _context.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId);
+                if (order0 != null && order0.OrderDate < cutoffDate) return;
+            }
+
             var order = await _context.Orders
                 .Include(o => o.User)
                 .Include(o => o.Subscription)

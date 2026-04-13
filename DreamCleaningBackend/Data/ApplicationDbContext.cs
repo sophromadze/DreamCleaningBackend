@@ -49,6 +49,9 @@ namespace DreamCleaningBackend.Data
         public DbSet<PersonalAdminTask> PersonalAdminTasks { get; set; }
         public DbSet<TaskActivityLog> TaskActivityLogs { get; set; }
 
+        // Scheduling
+        public DbSet<BlockedTimeSlot> BlockedTimeSlots { get; set; }
+
         // Bubble Rewards
         public DbSet<BubbleRewardsSetting> BubbleRewardsSettings { get; set; }
         public DbSet<BubblePointsHistory> BubblePointsHistories { get; set; }
@@ -69,6 +72,13 @@ namespace DreamCleaningBackend.Data
 
                 entity.HasIndex(e => e.UserId)
                     .HasDatabaseName("IX_AuditLogs_UserId");
+            });
+
+            // BlockedTimeSlot configuration
+            modelBuilder.Entity<BlockedTimeSlot>(entity =>
+            {
+                entity.HasIndex(e => e.Date)
+                    .HasDatabaseName("IX_BlockedTimeSlots_Date");
             });
 
             // User configuration

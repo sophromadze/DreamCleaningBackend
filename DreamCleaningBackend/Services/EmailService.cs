@@ -901,6 +901,9 @@ namespace DreamCleaningBackend.Services
             <p><strong>Time:</strong> {FormatTimeForEmail(order.ServiceTime)}</p>
             <p><strong>Duration:</strong> {formattedDuration}{(hasCleanersService ? "" : " per cleaner")}</p>
             <p><strong>Team Size:</strong> {order.MaidsCount} cleaner(s)</p>
+            {(order.BedroomsQuantity.HasValue || order.BathroomsQuantity.HasValue
+                ? $"<p><strong>Bedrooms:</strong> {(order.BedroomsQuantity == 0 ? "Studio" : (order.BedroomsQuantity?.ToString() ?? "N/A"))} | <strong>Bathrooms:</strong> {(order.BathroomsQuantity?.ToString() ?? "N/A")}</p>"
+                : "")}
         </div>
 
         <div style='background: #d4edda; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
@@ -1265,6 +1268,15 @@ namespace DreamCleaningBackend.Services
             var subject = "Booking Confirmed - Dream Cleaning Service Scheduled";
 
             var itemsHtml = BuildCustomerSupplyChecklistHtml(hasCleaningSupplies, isDeepCleaning, isCustomServiceType);
+            var communicationPolicyHtml = @"
+        <div style='background: #fff5f5; padding: 18px; border-radius: 8px; margin: 20px 0; border: 2px solid #dc3545;'>
+            <h3 style='margin: 0 0 10px 0; color: #b42318; font-size: 18px;'>⚠️ Important Policy</h3>
+            <p style='margin: 0; color: #7a271a; font-size: 15px; line-height: 1.55; font-weight: 600;'>
+                All communication, changes, and service-related matters must go through Dream Cleaning directly.
+                Do not make any arrangements, requests, or agreements with your cleaning professional.
+                Any arrangements made outside of the company will not be recognized.
+            </p>
+        </div>";
             var privacyPolicyUrl = $"{_configuration["Frontend:Url"]}/privacy-policy";
             var privacyHtml = $@"
         <div style='background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;'>
@@ -1291,6 +1303,8 @@ namespace DreamCleaningBackend.Services
         </div>
 
         {itemsHtml}
+
+        {communicationPolicyHtml}
 
         {privacyHtml}
         

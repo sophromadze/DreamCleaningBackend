@@ -422,7 +422,9 @@ namespace DreamCleaningBackend.Controllers
                     Tax = dto.Tax,
                     Total = dto.Total,
                     DiscountAmount = dto.DiscountAmount,
-                    SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount
+                    SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
+                    BedroomsQuantity = dto.BedroomsQuantity,
+                    BathroomsQuantity = dto.BathroomsQuantity
                 };
 
                 // Calculate subtotal
@@ -1218,7 +1220,9 @@ namespace DreamCleaningBackend.Controllers
                     DiscountAmount = dto.BookingData.DiscountAmount,
                     SubscriptionDiscountAmount = dto.BookingData.SubscriptionDiscountAmount,
                     IsPaid = false, // Mark as unpaid
-                    TotalDuration = dto.BookingData.IsCustomPricing ? (dto.BookingData.CustomDuration ?? totalDuration) : totalDuration
+                    TotalDuration = dto.BookingData.IsCustomPricing ? (dto.BookingData.CustomDuration ?? totalDuration) : totalDuration,
+                    BedroomsQuantity = dto.BookingData.BedroomsQuantity,
+                    BathroomsQuantity = dto.BookingData.BathroomsQuantity
                 };
 
                 // Add order services
@@ -2398,7 +2402,9 @@ namespace DreamCleaningBackend.Controllers
                 Total = dto.Total,
                 DiscountAmount = dto.DiscountAmount,
                 SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
-                TotalDuration = dto.IsCustomPricing ? (dto.CustomDuration ?? dto.TotalDuration) : dto.TotalDuration
+                TotalDuration = dto.IsCustomPricing ? (dto.CustomDuration ?? dto.TotalDuration) : dto.TotalDuration,
+                BedroomsQuantity = dto.BedroomsQuantity,
+                BathroomsQuantity = dto.BathroomsQuantity
             };
 
             // Calculate price multiplier and add services/extra services (simplified - using values from DTO)
@@ -2707,6 +2713,37 @@ namespace DreamCleaningBackend.Controllers
             {
                 _logger.LogError(ex, "Failed to notify admins about new order {OrderId}", orderId);
             }
+        }
+
+        /// <summary>
+        /// Public endpoint: returns blocked time slots for a date range so the booking UI
+        /// can prevent users from selecting unavailable dates/hours.
+        /// </summary>
+        [HttpGet("blocked-time-slots")]
+        public async Task<ActionResult> GetBlockedTimeSlots([FromQuery] string? from, [FromQuery] string? to)
+        {
+            var fromDate = DateTime.Today;
+            var toDate = DateTime.Today.AddMonths(3);
+
+            if (!string.IsNullOrEmpty(from) && DateTime.TryParse(from, out var parsedFrom))
+                fromDate = parsedFrom.Date;
+            if (!string.IsNullOrEmpty(to) && DateTime.TryParse(to, out var parsedTo))
+                toDate = parsedTo.Date;
+
+            var blocked = await _context.BlockedTimeSlots
+                .Where(b => b.Date >= fromDate && b.Date <= toDate)
+                .OrderBy(b => b.Date)
+                .Select(b => new
+                {
+                    b.Id,
+                    date = b.Date.ToString("yyyy-MM-dd"),
+                    b.IsFullDay,
+                    b.BlockedHours,
+                    b.Reason
+                })
+                .ToListAsync();
+
+            return Ok(blocked);
         }
     }
 }

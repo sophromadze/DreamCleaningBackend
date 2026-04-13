@@ -211,12 +211,12 @@ namespace DreamCleaningBackend.Services
 
         private static DateTime GetServiceDateTimeUtc(Order order)
         {
-            // ServiceDate is stored as a DateTime (usually date portion); ServiceTime is stored separately.
-            // Combine them to determine if the service datetime has passed.
+            // ServiceDate is stored as a DateTime (date portion); ServiceTime is stored separately.
+            // Combine them and convert from business timezone (Eastern) to UTC.
             var combined = order.ServiceDate.Date.Add(order.ServiceTime);
-            return combined.Kind == DateTimeKind.Unspecified
-                ? DateTime.SpecifyKind(combined, DateTimeKind.Utc)
-                : combined.ToUniversalTime();
+            var eastern = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+            var localTime = DateTime.SpecifyKind(combined, DateTimeKind.Unspecified);
+            return TimeZoneInfo.ConvertTimeToUtc(localTime, eastern);
         }
 
         private async Task AutoCancelExpiredUnpaidOrdersIfNeeded(IReadOnlyCollection<Order> orders)
@@ -230,6 +230,7 @@ namespace DreamCleaningBackend.Services
             {
                 if (order == null) continue;
                 if (order.IsPaid) continue;
+                if (order.IsAutoCancelExempt) continue;
                 if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -253,6 +254,7 @@ namespace DreamCleaningBackend.Services
         {
             if (order == null) return;
             if (order.IsPaid) return;
+            if (order.IsAutoCancelExempt) return;
             if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase)) return;
             if (string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase)) return;
 
@@ -340,6 +342,10 @@ namespace DreamCleaningBackend.Services
             order.ZipCode = updateOrderDto.ZipCode;
             order.Tips = updateOrderDto.Tips;
             order.CompanyDevelopmentTips = updateOrderDto.CompanyDevelopmentTips;
+            if (updateOrderDto.BedroomsQuantity.HasValue)
+                order.BedroomsQuantity = updateOrderDto.BedroomsQuantity.Value;
+            if (updateOrderDto.BathroomsQuantity.HasValue)
+                order.BathroomsQuantity = updateOrderDto.BathroomsQuantity.Value;
             order.UpdatedAt = DateTime.UtcNow;
 
             // Update user's phone number if they don't have one
@@ -1196,6 +1202,8 @@ namespace DreamCleaningBackend.Services
                 FloorTypeOther = order.FloorTypeOther,
                 MaidsCount = order.MaidsCount,
                 TotalDuration = order.TotalDuration,
+                BedroomsQuantity = order.BedroomsQuantity,
+                BathroomsQuantity = order.BathroomsQuantity,
                 SubTotal = order.SubTotal,
                 Tax = order.Tax,
                 DiscountAmount = order.DiscountAmount,
@@ -1326,6 +1334,8 @@ namespace DreamCleaningBackend.Services
                 ZipCode = order.ZipCode,
                 TotalDuration = order.TotalDuration,
                 MaidsCount = order.MaidsCount,
+                BedroomsQuantity = order.BedroomsQuantity,
+                BathroomsQuantity = order.BathroomsQuantity,
                 IsPaid = order.IsPaid,
                 PaidAt = order.PaidAt,
                 CleanerHourlyRate = order.CleanerHourlyRate,
@@ -1382,13 +1392,24 @@ namespace DreamCleaningBackend.Services
             if (dto.ServiceTime != null && TimeSpan.TryParse(dto.ServiceTime, out var st)) order.ServiceTime = st;
             if (dto.MaidsCount.HasValue) order.MaidsCount = dto.MaidsCount.Value;
             if (dto.TotalDuration.HasValue) order.TotalDuration = dto.TotalDuration.Value;
+            if (dto.BedroomsQuantity.HasValue) order.BedroomsQuantity = dto.BedroomsQuantity.Value;
+            if (dto.BathroomsQuantity.HasValue) order.BathroomsQuantity = dto.BathroomsQuantity.Value;
             if (dto.EntryMethod != null) order.EntryMethod = dto.EntryMethod;
             if (dto.SpecialInstructions != null) order.SpecialInstructions = dto.SpecialInstructions;
             if (dto.FloorTypes != null) order.FloorTypes = dto.FloorTypes;
             if (dto.FloorTypeOther != null) order.FloorTypeOther = dto.FloorTypeOther;
             if (dto.Tips.HasValue) order.Tips = dto.Tips.Value;
             if (dto.CompanyDevelopmentTips.HasValue) order.CompanyDevelopmentTips = dto.CompanyDevelopmentTips.Value;
-            if (dto.Status != null) order.Status = dto.Status;
+            if (dto.Status != null)
+            {
+                // When reactivating a cancelled order, exempt it from auto-cancellation
+                if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(dto.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                {
+                    order.IsAutoCancelExempt = true;
+                }
+                order.Status = dto.Status;
+            }
             if (dto.CancellationReason != null) order.CancellationReason = dto.CancellationReason;
             if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
             if (dto.DiscountAmount.HasValue) order.DiscountAmount = dto.DiscountAmount.Value;

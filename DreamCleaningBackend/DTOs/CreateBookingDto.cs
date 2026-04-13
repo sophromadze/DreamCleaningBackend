@@ -79,6 +79,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal? CustomAmount { get; set; }
         public int? CustomCleaners { get; set; }
         public decimal? CustomDuration { get; set; }
+        public int? BedroomsQuantity { get; set; }
+        public int? BathroomsQuantity { get; set; }
         public List<PhotoUploadDto> UploadedPhotos { get; set; } = new List<PhotoUploadDto>();
         public int PointsToRedeem { get; set; } = 0;
         public bool UseCredits { get; set; } = false;

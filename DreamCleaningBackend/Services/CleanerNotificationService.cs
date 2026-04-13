@@ -77,7 +77,8 @@ namespace DreamCleaningBackend.Services
                 .Include(oc => oc.Order)
                     .ThenInclude(o => o.ServiceType)
                 .Include(oc => oc.Cleaner)
-                .Where(oc => oc.Order.ServiceDate.Date == twoDaysFromNow.Date &&
+                .Where(oc => oc.AssignmentNotificationSentAt != null &&
+                           oc.Order.ServiceDate.Date == twoDaysFromNow.Date &&
                            oc.Order.Status == "Active" &&
                            !context.NotificationLogs.Any(nl =>
                                nl.OrderId == oc.OrderId &&
@@ -90,7 +91,8 @@ namespace DreamCleaningBackend.Services
                 .Include(oc => oc.Order)
                     .ThenInclude(o => o.ServiceType)
                 .Include(oc => oc.Cleaner)
-                .Where(oc => oc.Order.ServiceDate.Date == now.Date &&
+                .Where(oc => oc.AssignmentNotificationSentAt != null &&
+                           oc.Order.ServiceDate.Date == now.Date &&
                            oc.Order.Status == "Active" &&
                            !context.NotificationLogs.Any(nl =>
                                nl.OrderId == oc.OrderId &&

@@ -31,5 +31,11 @@ namespace DreamCleaningBackend.Models
         // Tips for cleaner (visible to cleaners)
         [StringLength(1000)]
         public string? TipsForCleaner { get; set; }
+
+        /// <summary>
+        /// When the admin sent the assignment notification email to this cleaner for this order.
+        /// Null until "Send assignment email" is used; reminders only run after this is set.
+        /// </summary>
+        public DateTime? AssignmentNotificationSentAt { get; set; }
     }
 }

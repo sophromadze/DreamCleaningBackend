@@ -6,6 +6,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using System.Security.Claims;
+using System.Text.Json;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -14,6 +15,8 @@ namespace DreamCleaningBackend.Controllers
     [Authorize(Roles = "SuperAdmin,Admin")]
     public class AdminRewardsController : ControllerBase
     {
+        private const string BubbleResetSnapshotEntityType = "BubblePointsResetSnapshot";
+        private static readonly TimeSpan ResetUndoWindow = TimeSpan.FromHours(48);
         private readonly IBubbleRewardsSettingsService _settingsService;
         private readonly IBubblePointsService _pointsService;
         private readonly IReferralService _referralService;
@@ -413,18 +416,64 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                if (dto.UserId.HasValue)
+                var usersToReset = dto.UserId.HasValue
+                    ? await _context.Users.Where(u => u.Id == dto.UserId.Value).ToListAsync()
+                    : await _context.Users.Where(u => !u.IsDeleted).ToListAsync();
+
+                if (usersToReset.Count == 0)
                 {
-                    var user = await _context.Users.FindAsync(dto.UserId.Value);
-                    if (user == null) return NotFound(new { message = "User not found." });
+                    return dto.UserId.HasValue
+                        ? NotFound(new { message = "User not found." })
+                        : BadRequest(new { message = "No users found to reset." });
+                }
+
+                var targetUserIds = usersToReset.Select(u => u.Id).ToList();
+                var histories = await _context.BubblePointsHistories
+                    .Where(h => targetUserIds.Contains(h.UserId))
+                    .ToListAsync();
+
+                var snapshot = new ResetSnapshotPayload
+                {
+                    Scope = dto.UserId.HasValue ? "specific" : "all",
+                    TargetUserId = dto.UserId,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    Users = usersToReset.Select(u => new ResetSnapshotUserData
+                    {
+                        UserId = u.Id,
+                        BubblePoints = u.BubblePoints,
+                        BubbleCredits = u.BubbleCredits,
+                        TotalSpentAmount = u.TotalSpentAmount,
+                        ConsecutiveOrderCount = u.ConsecutiveOrderCount,
+                        LastCompletedOrderDate = u.LastCompletedOrderDate,
+                        WelcomeBonusGranted = u.WelcomeBonusGranted,
+                        ReviewBonusGranted = u.ReviewBonusGranted
+                    }).ToList(),
+                    Histories = histories.Select(h => new ResetSnapshotHistoryData
+                    {
+                        UserId = h.UserId,
+                        Points = h.Points,
+                        Type = h.Type,
+                        Description = h.Description,
+                        OrderId = h.OrderId,
+                        CreatedAt = h.CreatedAt
+                    }).ToList()
+                };
+
+                var adminUserId = GetCurrentUserId();
+                _context.AuditLogs.Add(new AuditLog
+                {
+                    EntityType = BubbleResetSnapshotEntityType,
+                    EntityId = dto.UserId ?? 0,
+                    Action = "Create",
+                    NewValues = JsonSerializer.Serialize(snapshot),
+                    ChangedFields = JsonSerializer.Serialize(new[] { "BubblePointsResetSnapshot" }),
+                    UserId = adminUserId,
+                    IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    UserAgent = HttpContext.Request.Headers.UserAgent.ToString()
+                });
+
+                foreach (var user in usersToReset)
                     await ResetUserPoints(user);
-                }
-                else
-                {
-                    var users = await _context.Users.Where(u => !u.IsDeleted).ToListAsync();
-                    foreach (var user in users)
-                        await ResetUserPoints(user);
-                }
 
                 await _context.SaveChangesAsync();
                 return Ok(new { message = dto.UserId.HasValue ? "User bubble points cleared." : "All users' bubble points cleared." });
@@ -452,6 +501,158 @@ namespace DreamCleaningBackend.Controllers
             user.LastCompletedOrderDate = null;
             user.WelcomeBonusGranted = false;
             user.ReviewBonusGranted = false;
+        }
+
+        [HttpGet("reset/undo-status")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> GetUndoStatus()
+        {
+            var latestSnapshot = await GetLatestRestorableSnapshot();
+            if (latestSnapshot == null)
+            {
+                return Ok(new { available = false });
+            }
+
+            return Ok(new
+            {
+                available = true,
+                createdAt = latestSnapshot.CreatedAt,
+                scope = latestSnapshot.EntityId == 0 ? "all" : "specific"
+            });
+        }
+
+        [HttpPost("reset/undo")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> UndoLastReset()
+        {
+            try
+            {
+                var latestSnapshot = await GetLatestRestorableSnapshot();
+                if (latestSnapshot == null || string.IsNullOrWhiteSpace(latestSnapshot.NewValues))
+                {
+                    return BadRequest(new { message = "No reset snapshot is available to undo." });
+                }
+
+                var snapshot = JsonSerializer.Deserialize<ResetSnapshotPayload>(latestSnapshot.NewValues);
+                if (snapshot == null || snapshot.Users.Count == 0)
+                {
+                    return BadRequest(new { message = "Reset snapshot data is invalid." });
+                }
+
+                var userIds = snapshot.Users.Select(u => u.UserId).ToList();
+                var users = await _context.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id);
+
+                var existingHistories = await _context.BubblePointsHistories
+                    .Where(h => userIds.Contains(h.UserId))
+                    .ToListAsync();
+                _context.BubblePointsHistories.RemoveRange(existingHistories);
+
+                foreach (var userSnapshot in snapshot.Users)
+                {
+                    if (!users.TryGetValue(userSnapshot.UserId, out var user)) continue;
+                    user.BubblePoints = userSnapshot.BubblePoints;
+                    user.BubbleCredits = userSnapshot.BubbleCredits;
+                    user.TotalSpentAmount = userSnapshot.TotalSpentAmount;
+                    user.ConsecutiveOrderCount = userSnapshot.ConsecutiveOrderCount;
+                    user.LastCompletedOrderDate = userSnapshot.LastCompletedOrderDate;
+                    user.WelcomeBonusGranted = userSnapshot.WelcomeBonusGranted;
+                    user.ReviewBonusGranted = userSnapshot.ReviewBonusGranted;
+                }
+
+                var restoredHistories = snapshot.Histories
+                    .Where(h => users.ContainsKey(h.UserId))
+                    .Select(h => new BubblePointsHistory
+                    {
+                        UserId = h.UserId,
+                        Points = h.Points,
+                        Type = h.Type,
+                        Description = h.Description,
+                        OrderId = h.OrderId,
+                        CreatedAt = h.CreatedAt
+                    })
+                    .ToList();
+                _context.BubblePointsHistories.AddRange(restoredHistories);
+
+                _context.AuditLogs.Add(new AuditLog
+                {
+                    EntityType = BubbleResetSnapshotEntityType,
+                    EntityId = latestSnapshot.Id,
+                    Action = "Restore",
+                    NewValues = JsonSerializer.Serialize(new { message = "Undo reset executed." }),
+                    ChangedFields = JsonSerializer.Serialize(new[] { "ResetUndo" }),
+                    UserId = GetCurrentUserId(),
+                    IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    UserAgent = HttpContext.Request.Headers.UserAgent.ToString()
+                });
+
+                await _context.SaveChangesAsync();
+                return Ok(new { message = "Successfully restored bubble points from the last reset snapshot." });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error undoing bubble points reset");
+                return StatusCode(500, new { message = "Failed to undo the last reset." });
+            }
+        }
+
+        private async Task<AuditLog?> GetLatestRestorableSnapshot()
+        {
+            var cutoff = DateTime.UtcNow.Subtract(ResetUndoWindow);
+            var snapshots = await _context.AuditLogs
+                .Where(a =>
+                    a.EntityType == BubbleResetSnapshotEntityType &&
+                    a.Action == "Create" &&
+                    a.CreatedAt >= cutoff)
+                .OrderByDescending(a => a.CreatedAt)
+                .ToListAsync();
+
+            foreach (var snapshot in snapshots)
+            {
+                var alreadyRestored = await _context.AuditLogs.AnyAsync(a =>
+                    a.EntityType == BubbleResetSnapshotEntityType &&
+                    a.Action == "Restore" &&
+                    a.EntityId == snapshot.Id);
+                if (!alreadyRestored) return snapshot;
+            }
+
+            return null;
+        }
+
+        private int? GetCurrentUserId()
+        {
+            var adminIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            return int.TryParse(adminIdClaim, out var adminId) ? adminId : null;
+        }
+
+        private class ResetSnapshotPayload
+        {
+            public string Scope { get; set; } = string.Empty;
+            public int? TargetUserId { get; set; }
+            public DateTime CreatedAtUtc { get; set; }
+            public List<ResetSnapshotUserData> Users { get; set; } = new();
+            public List<ResetSnapshotHistoryData> Histories { get; set; } = new();
+        }
+
+        private class ResetSnapshotUserData
+        {
+            public int UserId { get; set; }
+            public int BubblePoints { get; set; }
+            public decimal BubbleCredits { get; set; }
+            public decimal TotalSpentAmount { get; set; }
+            public int ConsecutiveOrderCount { get; set; }
+            public DateTime? LastCompletedOrderDate { get; set; }
+            public bool WelcomeBonusGranted { get; set; }
+            public bool ReviewBonusGranted { get; set; }
+        }
+
+        private class ResetSnapshotHistoryData
+        {
+            public int UserId { get; set; }
+            public int Points { get; set; }
+            public string Type { get; set; } = string.Empty;
+            public string? Description { get; set; }
+            public int? OrderId { get; set; }
+            public DateTime CreatedAt { get; set; }
         }
 
         // ─── Stats ───────────────────────────────────────────────────────────────

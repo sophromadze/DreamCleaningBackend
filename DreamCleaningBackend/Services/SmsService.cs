@@ -128,6 +128,7 @@ namespace DreamCleaningBackend.Services
                 $"Hi {firstName}! Your Dream Cleaning appointment is confirmed for {serviceDate:MMM dd} at {serviceTime}." +
                 $"\nPlease provide the following items:" +
                 $"\n- {string.Join("\n- ", items)}" +
+                $"\nAll changes, requests, and concerns must go through Dream Cleaning. Do not make any arrangements directly with your cleaner." +
                 $"\nBy booking with us, you agree to our Privacy Policy: https://dreamcleaningnearme.com/privacy-policy. We're committed to keeping your information safe." +
                 $"\nReply STOP to opt-out.";
             await SendSmsAsync(phoneNumber, msg);
