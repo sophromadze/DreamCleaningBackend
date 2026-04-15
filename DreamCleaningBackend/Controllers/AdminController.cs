@@ -4089,6 +4089,20 @@ namespace DreamCleaningBackend.Controllers
             return Ok(result);
         }
 
+        [HttpPost("orders/{orderId}/cleaners/{cleanerId}/resend-assignment-mail")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<SendCleanerAssignmentMailsResultDto>> ResendCleanerAssignmentMail(int orderId, int cleanerId)
+        {
+            var result = await _cleanerService.ResendCleanerAssignmentMailAsync(orderId, cleanerId);
+            if (result == null)
+                return NotFound(new { message = "Order not found" });
+
+            if (result.EmailsSent <= 0)
+                return BadRequest(new { message = result.Message });
+
+            return Ok(result);
+        }
+
         [HttpGet("orders/{orderId}/assigned-cleaners")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<string>>> GetAssignedCleaners(int orderId)

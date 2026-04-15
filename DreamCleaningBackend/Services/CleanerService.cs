@@ -342,7 +342,7 @@ namespace DreamCleaningBackend.Services
                     assignment.Cleaner.Email,
                     assignment.Cleaner.FirstName,
                     orderId,
-                    sendCopyToAdmin: true);
+                    sendCopyToAdmin: false);
 
                 assignment.AssignmentNotificationSentAt = DateTime.UtcNow;
                 sent++;
@@ -363,6 +363,63 @@ namespace DreamCleaningBackend.Services
             {
                 EmailsSent = sent,
                 Message = $"Assignment email sent to {sent} cleaner(s)."
+            };
+        }
+
+        public async Task<SendCleanerAssignmentMailsResultDto?> ResendCleanerAssignmentMailAsync(int orderId, int cleanerId)
+        {
+            var assignment = await _context.OrderCleaners
+                .Include(oc => oc.Cleaner)
+                .FirstOrDefaultAsync(oc => oc.OrderId == orderId && oc.CleanerId == cleanerId);
+
+            if (assignment == null)
+            {
+                var orderExists = await _context.Orders.AnyAsync(o => o.Id == orderId);
+                if (!orderExists)
+                    return null;
+
+                return new SendCleanerAssignmentMailsResultDto
+                {
+                    EmailsSent = 0,
+                    Message = "Cleaner is not assigned to this order."
+                };
+            }
+
+            if (assignment.Cleaner == null || string.IsNullOrWhiteSpace(assignment.Cleaner.Email))
+            {
+                return new SendCleanerAssignmentMailsResultDto
+                {
+                    EmailsSent = 0,
+                    Message = "Cleaner does not have a valid email address."
+                };
+            }
+
+            // Restart reminder flow for this specific cleaner by removing previous reminder logs.
+            // After the assignment email is resent, reminder service will schedule exactly one fresh cycle.
+            var staleReminderLogs = await _context.NotificationLogs
+                .Where(nl => nl.OrderId == orderId
+                    && nl.CleanerId == cleanerId
+                    && (nl.NotificationType == "TwoDayReminder" || nl.NotificationType == "FourHourReminder"))
+                .ToListAsync();
+
+            if (staleReminderLogs.Any())
+            {
+                _context.NotificationLogs.RemoveRange(staleReminderLogs);
+            }
+
+            await _emailService.SendCleanerAssignmentNotificationAsync(
+                assignment.Cleaner.Email,
+                assignment.Cleaner.FirstName,
+                orderId,
+                sendCopyToAdmin: false);
+
+            assignment.AssignmentNotificationSentAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            return new SendCleanerAssignmentMailsResultDto
+            {
+                EmailsSent = 1,
+                Message = $"Assignment email re-sent to {assignment.Cleaner.FirstName}."
             };
         }
     }
