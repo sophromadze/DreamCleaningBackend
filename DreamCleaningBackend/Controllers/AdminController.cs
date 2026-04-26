@@ -2130,6 +2130,10 @@ namespace DreamCleaningBackend.Controllers
                 FirstTimeOrder = targetUser.FirstTimeOrder
             };
 
+            // Cleaner role is deprecated — cleaners are managed via the standalone Cleaners table/dashboard.
+            if (string.Equals(dto.Role, "Cleaner", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = "The Cleaner role is no longer assignable. Add cleaners via the Cleaner Dashboard instead." });
+
             if (!Enum.TryParse<UserRole>(dto.Role, out var newRole))
                 return BadRequest("Invalid role");
 

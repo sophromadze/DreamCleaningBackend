@@ -49,6 +49,10 @@ namespace DreamCleaningBackend.Data
         public DbSet<PersonalAdminTask> PersonalAdminTasks { get; set; }
         public DbSet<TaskActivityLog> TaskActivityLogs { get; set; }
 
+        // Cleaners (standalone entity, separate from Users)
+        public DbSet<Cleaner> Cleaners { get; set; }
+        public DbSet<CleanerNote> CleanerNotes { get; set; }
+
         // Scheduling
         public DbSet<BlockedTimeSlot> BlockedTimeSlots { get; set; }
 
@@ -120,6 +124,39 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(e => e.UserId)
                     .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<Cleaner>(entity =>
+            {
+                entity.HasIndex(e => e.IsActive).HasDatabaseName("IX_Cleaners_IsActive");
+                entity.HasIndex(e => e.Ranking).HasDatabaseName("IX_Cleaners_Ranking");
+                entity.HasIndex(e => e.MigratedFromUserId).HasDatabaseName("IX_Cleaners_MigratedFromUserId");
+
+                entity.HasOne(c => c.CreatedByAdmin)
+                    .WithMany()
+                    .HasForeignKey(c => c.CreatedByAdminId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<CleanerNote>(entity =>
+            {
+                entity.HasIndex(e => e.CleanerId).HasDatabaseName("IX_CleanerNotes_CleanerId");
+                entity.HasIndex(e => new { e.CleanerId, e.CreatedAt }).HasDatabaseName("IX_CleanerNotes_CleanerId_CreatedAt");
+
+                entity.HasOne(n => n.Cleaner)
+                    .WithMany(c => c.Notes)
+                    .HasForeignKey(n => n.CleanerId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(n => n.Admin)
+                    .WithMany()
+                    .HasForeignKey(n => n.AdminId)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(n => n.Order)
+                    .WithMany()
+                    .HasForeignKey(n => n.OrderId)
+                    .OnDelete(DeleteBehavior.SetNull);
             });
 
             // Apartment configuration

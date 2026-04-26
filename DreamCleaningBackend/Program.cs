@@ -170,6 +170,7 @@ builder.Services.AddScoped<IAuditService, AuditService>();
 // UnverifiedUserCleanupService removed — email verification now uses OTP, accounts are never auto-deleted
 builder.Services.AddScoped<ISpecialOfferService, SpecialOfferService>();
 builder.Services.AddScoped<ICleanerService, CleanerService>();
+builder.Services.AddScoped<ICleanerManagementService, CleanerManagementService>();
 builder.Services.AddHostedService<CleanerNotificationService>();
 builder.Services.AddHostedService<CustomerNotificationService>();
 builder.Services.AddSingleton<IBookingDataService, BookingDataService>();

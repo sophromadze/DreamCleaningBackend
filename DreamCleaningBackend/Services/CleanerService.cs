@@ -19,110 +19,10 @@ namespace DreamCleaningBackend.Services
             _auditService = auditService;
         }
 
-        public async Task<List<CleanerCalendarDto>> GetCleanerCalendarAsync(int userId, string userRole, DateTime startDate, DateTime endDate)
-        {
-            // Get ALL orders in the date range, including completed (Done) orders, but excluding cancelled
-            var allOrders = await _context.Orders
-                .Where(o => o.ServiceDate >= startDate && o.ServiceDate <= endDate)
-                .Where(o => o.Status != "Cancelled") // Only exclude cancelled orders, include Done orders
-                .Include(o => o.ServiceType)
-                .Include(o => o.OrderCleaners)
-                .ToListAsync(); // Execute query first
-
-            // Then map to DTOs in memory where we can use null propagating operators
-            var result = allOrders
-                .Select(o => new CleanerCalendarDto
-                {
-                    OrderId = o.Id,
-                    ClientName = $"{o.ContactFirstName} {o.ContactLastName}",
-                    ServiceDate = o.ServiceDate,
-                    ServiceTime = o.ServiceTime.ToString(),
-                    ServiceAddress = o.ServiceAddress ?? "Address not provided",
-                    ServiceTypeName = o.ServiceType.Name,
-                    TotalDuration = o.TotalDuration,
-                    TipsForCleaner = o.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == userId)?.TipsForCleaner,
-                    IsAssignedToCleaner = o.OrderCleaners.Any(oc => oc.CleanerId == userId),
-                    Status = o.Status // Include status to distinguish completed orders
-                })
-                .Where(dto => userRole != "Cleaner" || dto.IsAssignedToCleaner) // Cleaners see only orders they are assigned to
-                .OrderBy(o => o.ServiceDate)
-                .ThenBy(o => o.ServiceTime)
-                .ToList();
-
-            return result;
-        }
-
-        public async Task<CleanerOrderDetailDto> GetOrderDetailsForCleanerAsync(int orderId, int userId, string userRole)
-        {
-            var order = await _context.Orders
-                .Include(o => o.User)
-                .Include(o => o.ServiceType)
-                .Include(o => o.OrderServices)
-                    .ThenInclude(os => os.Service)
-                .Include(o => o.OrderExtraServices)
-                    .ThenInclude(oes => oes.ExtraService)
-                .Include(o => o.OrderCleaners)
-                    .ThenInclude(oc => oc.Cleaner)
-                .FirstOrDefaultAsync(o => o.Id == orderId);
-
-            if (order == null)
-                return null;
-
-            // For cleaner role, check if they are assigned to this order
-            if (userRole == "Cleaner")
-            {
-                var isAssigned = order.OrderCleaners.Any(oc => oc.CleanerId == userId);
-                if (!isAssigned)
-                    return null;
-            }
-
-            // Get additional tips from OrderCleaner if any
-            var cleanerAssignment = order.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == userId);
-
-            var assignedCleaners = order.OrderCleaners
-                .Select(oc => $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}")
-                .ToList();
-
-            return new CleanerOrderDetailDto
-            {
-                OrderId = order.Id,
-                ClientName = $"{order.ContactFirstName} {order.ContactLastName}",
-                ClientEmail = order.ContactEmail,
-                // Customer (order owner) phone only; hidden from cleaners. Use customer's profile phone, then order contact phone (never current user/admin).
-                ClientPhone = userRole == "Cleaner" ? "" : (!string.IsNullOrWhiteSpace(order.User?.Phone) ? order.User.Phone : (order.ContactPhone ?? "")),
-                ServiceDate = order.ServiceDate,
-                ServiceTime = order.ServiceTime.ToString(),
-                ServiceAddress = order.ServiceAddress,
-                AptSuite = order.AptSuite,
-                City = order.City,
-                State = order.State,
-                ZipCode = order.ZipCode,
-                ServiceTypeName = order.ServiceType.Name,
-                IsCustomServiceType = order.ServiceType?.IsCustom ?? false,
-                Services = order.OrderServices.Select(os => $"{os.Service.Name} (x{os.Quantity})").ToList(),
-                ExtraServices = order.OrderExtraServices.Select(oes =>
-                {
-                    if (oes.Hours > 0)
-                        return $"{oes.ExtraService.Name} (x{oes.Quantity}, {oes.Hours:0.#}h)";
-                    else
-                        return $"{oes.ExtraService.Name} (x{oes.Quantity})";
-                }).ToList(),
-                TotalDuration = order.TotalDuration,
-                MaidsCount = order.MaidsCount,
-                EntryMethod = order.EntryMethod,
-                SpecialInstructions = order.SpecialInstructions,
-                Status = order.Status,
-                // FIX: Use Order.Tips (the actual tips amount) and additional instructions
-                TipsAmount = order.Tips, // Add this field
-                TipsForCleaner = cleanerAssignment?.TipsForCleaner, // Additional instructions from admin
-                AssignedCleaners = assignedCleaners
-            };
-        }
-
         public async Task<List<AvailableCleanerDto>> GetAvailableCleanersAsync(DateTime serviceDate, string serviceTime)
         {
-            var cleaners = await _context.Users
-                .Where(u => u.Role == UserRole.Cleaner && u.IsActive)
+            var cleaners = await _context.Cleaners
+                .Where(c => c.IsActive)
                 .ToListAsync();
 
             var availableCleaners = new List<AvailableCleanerDto>();
@@ -137,14 +37,14 @@ namespace DreamCleaningBackend.Services
                     .AnyAsync(oc => oc.CleanerId == cleaner.Id &&
                                    oc.Order.ServiceDate.Date == serviceDate.Date &&
                                    oc.Order.ServiceTime == serviceTimeSpan &&
-                                   oc.Order.Status == "Active");  // Use string comparison
+                                   oc.Order.Status == "Active");
 
                 availableCleaners.Add(new AvailableCleanerDto
                 {
                     Id = cleaner.Id,
                     FirstName = cleaner.FirstName,
                     LastName = cleaner.LastName,
-                    Email = cleaner.Email,
+                    Email = cleaner.Email ?? string.Empty,
                     IsAvailable = isAvailable
                 });
             }
@@ -187,8 +87,8 @@ namespace DreamCleaningBackend.Services
                         .FirstOrDefaultAsync(oc => oc.OrderId == dto.OrderId && oc.CleanerId == cleanerId);
 
                     // Get cleaner details for audit logging
-                    var cleaner = await _context.Users
-                        .FirstOrDefaultAsync(u => u.Id == cleanerId);
+                    var cleaner = await _context.Cleaners
+                        .FirstOrDefaultAsync(c => c.Id == cleanerId);
 
                     if (existingAssignment == null)
                     {
@@ -210,7 +110,7 @@ namespace DreamCleaningBackend.Services
                             {
                                 await _auditService.LogCleanerAssignmentAsync(
                                     orderId: dto.OrderId,
-                                    cleanerEmail: cleaner.Email,
+                                    cleanerEmail: cleaner.Email ?? string.Empty,
                                     action: "Assigned",
                                     adminId: assignedBy
                                 );
@@ -266,7 +166,7 @@ namespace DreamCleaningBackend.Services
             {
                 await _auditService.LogCleanerAssignmentAsync(
                     orderId: orderId,
-                    cleanerEmail: assignment.Cleaner.Email,
+                    cleanerEmail: assignment.Cleaner.Email ?? string.Empty,
                     action: "Removed",
                     adminId: removedBy
                 );
@@ -291,23 +191,26 @@ namespace DreamCleaningBackend.Services
             await _context.SaveChangesAsync();
 
             // OPTIMIZED: Send removal notification in background (fire and forget)
-            _ = Task.Run(async () =>
+            if (!string.IsNullOrWhiteSpace(cleanerEmail))
             {
-                try
+                _ = Task.Run(async () =>
                 {
-                    await _emailService.SendCleanerRemovalNotificationAsync(
-                        cleanerEmail,
-                        cleanerFirstName,
-                        serviceDate,
-                        serviceTime,
-                        serviceTypeName
-                    );
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Background removal email sending failed: {ex.Message}");
-                }
-            });
+                    try
+                    {
+                        await _emailService.SendCleanerRemovalNotificationAsync(
+                            cleanerEmail,
+                            cleanerFirstName,
+                            serviceDate,
+                            serviceTime,
+                            serviceTypeName
+                        );
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Background removal email sending failed: {ex.Message}");
+                    }
+                });
+            }
 
             return true;
         }

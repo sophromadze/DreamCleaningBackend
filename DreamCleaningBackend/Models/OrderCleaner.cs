@@ -18,7 +18,7 @@ namespace DreamCleaningBackend.Models
         public int CleanerId { get; set; }
 
         [ForeignKey("CleanerId")]
-        public virtual User Cleaner { get; set; }
+        public virtual Cleaner Cleaner { get; set; }
 
         public DateTime AssignedAt { get; set; } = DateTime.UtcNow;
 

@@ -9,7 +9,7 @@
         public string NotificationType { get; set; } // "Assignment", "TwoDayReminder", "FourHourReminder"
         public DateTime SentAt { get; set; }
         public Order Order { get; set; } = null!;
-        public User? Cleaner { get; set; }
+        public Cleaner? Cleaner { get; set; }
         public User? Customer { get; set; }
     }
 }
