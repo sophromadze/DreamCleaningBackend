@@ -441,13 +441,18 @@ namespace DreamCleaningBackend.Controllers
                     Console.WriteLine($"Custom Cleaners: {dto.CustomCleaners}");
                     Console.WriteLine($"Custom Duration: {dto.CustomDuration}");
 
-                    // For custom pricing, use the custom values directly
+                    // For custom pricing, use the custom values directly.
+                    // CustomDuration is per-cleaner (admin enters "5h 30m per maid"); we store
+                    // TotalDuration as TOTAL cleaner-minutes = perCleaner × cleaners, matching
+                    // the convention used by non-custom orders. Display divides back by maids.
                     subTotal = dto.CustomAmount ?? serviceType.BasePrice;
-                    totalDuration = dto.CustomDuration ?? serviceType.TimeDuration;
+                    var perCleanerCustom = dto.CustomDuration ?? serviceType.TimeDuration;
                     order.MaidsCount = dto.CustomCleaners ?? 1;
-                    order.TotalDuration = dto.CustomDuration ?? 90;
+                    var totalCustomDuration = perCleanerCustom * order.MaidsCount;
+                    totalDuration = totalCustomDuration;
+                    order.TotalDuration = Math.Max(totalCustomDuration, 60);
 
-                    Console.WriteLine($"Custom pricing applied - SubTotal: {subTotal}, Duration: {totalDuration} minutes, Cleaners: {order.MaidsCount}");
+                    Console.WriteLine($"Custom pricing applied - SubTotal: {subTotal}, Per-cleaner: {perCleanerCustom} min, Total Duration: {order.TotalDuration} min, Cleaners: {order.MaidsCount}");
                 }
                 else
                 {
@@ -766,14 +771,10 @@ namespace DreamCleaningBackend.Controllers
                 order.Total = Math.Round((totalBeforeGiftCard - giftCardAmountUsed) * 100) / 100;
                 if (dto.IsCustomPricing)
                 {
-                    order.TotalDuration = dto.CustomDuration ?? totalDuration;
-                    Console.WriteLine($"Custom Pricing - Using CustomDuration: {order.TotalDuration}");
-
-                    if (order.TotalDuration < 60)
-                    {
-                        order.TotalDuration = 60;
-                        Console.WriteLine($"Custom Pricing - Enforced minimum 60 minutes");
-                    }
+                    // CustomDuration is per-cleaner; store as TOTAL = perCleaner × cleaners.
+                    var perCleanerCustom = dto.CustomDuration ?? totalDuration;
+                    order.TotalDuration = Math.Max(perCleanerCustom * order.MaidsCount, 60);
+                    Console.WriteLine($"Custom Pricing - Per-cleaner: {perCleanerCustom} min × {order.MaidsCount} cleaners = TotalDuration: {order.TotalDuration} min");
                 }
                 else
                 {
@@ -783,9 +784,9 @@ namespace DreamCleaningBackend.Controllers
                 // Calculate cleaner salary defaults (use per-cleaner rounded duration)
                 order.CleanerHourlyRate = deepCleaningFee > 0 ? 21m : 20m;
                 {
-                    // For cleaner-hours service type AND Custom Pricing mode, TotalDuration is per cleaner;
-                    // for regular, it's total across all maids and we divide.
-                    var perCleanerDuration = (hasCleanersService || dto.IsCustomPricing)
+                    // For cleaner-hours service type, TotalDuration is per cleaner; for everything else
+                    // (including Custom Pricing now) TotalDuration is total work across all maids and we divide.
+                    var perCleanerDuration = hasCleanersService
                         ? order.TotalDuration
                         : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
                     var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
@@ -1017,7 +1018,10 @@ namespace DreamCleaningBackend.Controllers
                 if (dto.BookingData.IsCustomPricing)
                 {
                     subTotal = dto.BookingData.CustomAmount ?? serviceType.BasePrice;
-                    totalDuration = dto.BookingData.CustomDuration ?? serviceType.TimeDuration;
+                    // CustomDuration is per-cleaner; convert to TOTAL = perCleaner × cleaners.
+                    var perCleanerCustom = dto.BookingData.CustomDuration ?? serviceType.TimeDuration;
+                    var customCleaners = dto.BookingData.CustomCleaners ?? dto.BookingData.MaidsCount;
+                    totalDuration = perCleanerCustom * customCleaners;
                 }
                 else
                 {
@@ -1220,7 +1224,8 @@ namespace DreamCleaningBackend.Controllers
                     DiscountAmount = dto.BookingData.DiscountAmount,
                     SubscriptionDiscountAmount = dto.BookingData.SubscriptionDiscountAmount,
                     IsPaid = false, // Mark as unpaid
-                    TotalDuration = dto.BookingData.IsCustomPricing ? (dto.BookingData.CustomDuration ?? totalDuration) : totalDuration,
+                    // For custom pricing, totalDuration was already computed as perCleaner × cleaners above.
+                    TotalDuration = totalDuration,
                     BedroomsQuantity = dto.BookingData.BedroomsQuantity,
                     BathroomsQuantity = dto.BookingData.BathroomsQuantity
                 };
@@ -1358,8 +1363,9 @@ namespace DreamCleaningBackend.Controllers
                 // Calculate cleaner salary defaults (use per-cleaner rounded duration)
                 order.CleanerHourlyRate = deepCleaningFee > 0 ? 21m : 20m;
                 {
-                    // Custom Pricing mode also stores TotalDuration as per cleaner.
-                    var perCleanerDuration = (hasCleanersService || dto.BookingData.IsCustomPricing)
+                    // For cleaner-hours service type, TotalDuration is per cleaner; for everything else
+                    // (including Custom Pricing now) TotalDuration is total work across all maids and we divide.
+                    var perCleanerDuration = hasCleanersService
                         ? order.TotalDuration
                         : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
                     var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
@@ -1622,7 +1628,10 @@ namespace DreamCleaningBackend.Controllers
                 if (dto.IsCustomPricing)
                 {
                     subTotal = dto.CustomAmount ?? serviceType.BasePrice;
-                    totalDuration = dto.CustomDuration ?? serviceType.TimeDuration;
+                    // CustomDuration is per-cleaner; totalDuration here is TOTAL = perCleaner × cleaners.
+                    var perCleanerCustom = dto.CustomDuration ?? serviceType.TimeDuration;
+                    var customCleaners = dto.CustomCleaners ?? dto.MaidsCount;
+                    totalDuration = perCleanerCustom * customCleaners;
                 }
                 else
                 {
@@ -2402,7 +2411,10 @@ namespace DreamCleaningBackend.Controllers
                 Total = dto.Total,
                 DiscountAmount = dto.DiscountAmount,
                 SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
-                TotalDuration = dto.IsCustomPricing ? (dto.CustomDuration ?? dto.TotalDuration) : dto.TotalDuration,
+                // For custom pricing, store TOTAL = perCleaner × cleaners (matches non-custom convention).
+                TotalDuration = dto.IsCustomPricing
+                    ? ((dto.CustomDuration ?? dto.TotalDuration) * (dto.CustomCleaners ?? dto.MaidsCount))
+                    : dto.TotalDuration,
                 BedroomsQuantity = dto.BedroomsQuantity,
                 BathroomsQuantity = dto.BathroomsQuantity
             };
@@ -2566,8 +2578,9 @@ namespace DreamCleaningBackend.Controllers
                     if (es != null && es.IsDeepCleaning) { hasDeepCleaning = true; break; }
                 }
                 order.CleanerHourlyRate = hasDeepCleaning ? 21m : 20m;
-                // Custom Pricing mode also stores TotalDuration as per cleaner.
-                var perCleanerDuration = (hasCleanersService || dto.IsCustomPricing)
+                // Only cleaner-hours service types store TotalDuration as per cleaner; everything else
+                // (including Custom Pricing now) stores TotalDuration as TOTAL across all maids.
+                var perCleanerDuration = hasCleanersService
                     ? order.TotalDuration
                     : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
                 var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);

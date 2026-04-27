@@ -592,9 +592,28 @@ namespace DreamCleaningBackend.Services
             order.MaidsCount = updateOrderDto.MaidsCount;
             order.TotalDuration = newTotalDuration; // Now this will always be at least 60 minutes
 
+            // Recompute cleaner total salary so it stays in sync with the new duration/maids.
+            // Same formula as booking creation and admin update: round per-cleaner duration to 15 min,
+            // then perCleaner / 60 * maids * hourlyRate. Only cleaner-hours service types store
+            // TotalDuration as per-cleaner; everything else (including Custom Pricing) stores it as
+            // TOTAL across all maids and we divide.
+            {
+                bool hasCleanersServiceUpdated = order.OrderServices.Any(os =>
+                {
+                    var svc = _context.Services.Find(os.ServiceId);
+                    return svc?.ServiceRelationType == "cleaner";
+                });
+                var perCleanerDuration = hasCleanersServiceUpdated
+                    ? order.TotalDuration
+                    : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
+                var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
+                order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
+            }
+
             Console.WriteLine($"\nSAVING TO DB:");
             Console.WriteLine($"  TotalDuration: {order.TotalDuration} minutes (backend calculation with 60 min minimum)");
             Console.WriteLine($"  MaidsCount: {order.MaidsCount}");
+            Console.WriteLine($"  CleanerTotalSalary: ${order.CleanerTotalSalary} (recomputed from new duration/maids)");
             Console.WriteLine("========================================\n");
 
             // Recalculate totals
@@ -1425,9 +1444,9 @@ namespace DreamCleaningBackend.Services
                 {
                     bool hasCleanersService = order.OrderServices.Any(os =>
                         os.Service?.ServiceRelationType == "cleaner");
-                    // Custom Pricing mode also stores TotalDuration as per cleaner (not total across maids).
-                    bool isCustomMode = order.ServiceType?.IsCustom == true;
-                    var perCleanerDuration = (hasCleanersService || isCustomMode)
+                    // Only cleaner-hours service types store TotalDuration as per-cleaner; everything
+                    // else (including Custom Pricing) stores TotalDuration as TOTAL across all maids.
+                    var perCleanerDuration = hasCleanersService
                         ? order.TotalDuration
                         : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
                     var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
