@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Models
 {
@@ -23,8 +24,13 @@ namespace DreamCleaningBackend.Models
 
         public bool IsExperienced { get; set; } = false;
 
+        private string? _phone;
         [StringLength(20)]
-        public string? Phone { get; set; }
+        public string? Phone
+        {
+            get => _phone;
+            set => _phone = PhoneHelper.NormalizeToDigits(value);
+        }
 
         [EmailAddress]
         [StringLength(100)]

@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Models
 {
@@ -31,8 +32,13 @@ namespace DreamCleaningBackend.Models
         [StringLength(255)]
         public string? ClientEmail { get; set; }
 
+        private string? _clientPhone;
         [StringLength(50)]
-        public string? ClientPhone { get; set; }
+        public string? ClientPhone
+        {
+            get => _clientPhone;
+            set => _clientPhone = PhoneHelper.NormalizeToDigits(value);
+        }
 
         public int? ClientId { get; set; }
 

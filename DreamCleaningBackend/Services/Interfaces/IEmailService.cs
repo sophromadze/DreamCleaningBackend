@@ -18,7 +18,8 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendAdminCleanerAssignmentNotificationAsync(string cleanerEmail, string cleanerName,
             DateTime serviceDate, string serviceTime, string formattedDuration, string fullAddress);
         Task SendCleanerReminderNotificationAsync(string email, string cleanerName,
-            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDayBefore);
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDayBefore,
+            string? cleanerNationality = null);
         Task SendCleanerRemovalNotificationAsync(string email, string cleanerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName);
         Task SendEmailChangeVerificationAsync(string newEmail, string firstName, string verificationLink, string currentEmail);

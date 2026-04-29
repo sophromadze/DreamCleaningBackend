@@ -822,7 +822,6 @@ namespace DreamCleaningBackend.Services
 
         public async Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName, int orderId, bool sendCopyToAdmin = false)
         {
-            // Find the order by ID to ensure we get the correct order
             var order = await _context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.OrderServices)
@@ -839,39 +838,24 @@ namespace DreamCleaningBackend.Services
                 return;
             }
 
-            // Get cleaner-specific additional instructions
-            var cleanerAdditionalInstructions = order.OrderCleaners
-                .FirstOrDefault(oc => oc.Cleaner.Email == email)?.TipsForCleaner;
+            var assignment = order.OrderCleaners
+                .FirstOrDefault(oc => oc.Cleaner != null && oc.Cleaner.Email == email);
+            var cleanerAdditionalInstructions = assignment?.TipsForCleaner;
+            var cleanerLanguage = ResolveCleanerLanguage(assignment?.Cleaner?.Nationality);
 
-            // Check if there's a cleaners service to determine if we should divide duration
             bool hasCleanersService = order.OrderServices.Any(os =>
                 os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
 
-            // Calculate duration per cleaner
-            decimal durationPerCleaner = 0;
-            string formattedDuration = "";
+            decimal durationPerCleaner = hasCleanersService
+                ? order.TotalDuration
+                : (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
 
-            if (hasCleanersService)
-            {
-                // If there's a cleaners service, show the total duration (it's already calculated correctly)
-                durationPerCleaner = order.TotalDuration;
-            }
-            else
-            {
-                // If no cleaners service, divide by number of maids
-                durationPerCleaner = (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
-            }
+            var formattedDuration = FormatDurationLocalized((int)durationPerCleaner, cleanerLanguage);
 
-            formattedDuration = FormatDurationRounded((int)durationPerCleaner);
+            var hasCleaningSupplies = order.OrderExtraServices
+                .Select(oes => oes.ExtraService?.Name ?? "")
+                .Any(n => n.ToLowerInvariant().Contains("cleaning supplies"));
 
-            // Calculate per-cleaner salary (total salary divided equally among all cleaners)
-            var perCleanerSalary = order.MaidsCount > 1
-                ? Math.Round(order.CleanerTotalSalary / order.MaidsCount, 2)
-                : order.CleanerTotalSalary;
-
-            var isCustomServiceType = order.ServiceType?.IsCustom ?? false;
-
-            // Build full address string
             var fullAddressParts = new List<string>();
             if (!string.IsNullOrEmpty(order.ServiceAddress))
                 fullAddressParts.Add(order.ServiceAddress);
@@ -884,109 +868,21 @@ namespace DreamCleaningBackend.Services
             if (!string.IsNullOrEmpty(order.ZipCode))
                 fullAddressParts.Add(order.ZipCode);
 
-            var fullAddress = fullAddressParts.Any() 
-                ? string.Join(", ", fullAddressParts) 
-                : (order.ApartmentName ?? "Address provided separately");
+            var fullAddress = fullAddressParts.Any()
+                ? string.Join(", ", fullAddressParts)
+                : (order.ApartmentName ?? "");
 
-            var subject = "New Cleaning Job Assignment - Dream Cleaning";
-            var body = $@"
-        <h2>Hi {cleanerName},</h2>
-        <p>You have been assigned to a new cleaning job with complete details below:</p>
-        
-        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
-            <h3>📋 Job Overview</h3>
-            <p><strong>Order Number:</strong> #{order.Id}</p>
-            <p><strong>Service Type:</strong> {order.ServiceType.Name}</p>
-            <p><strong>Date:</strong> {order.ServiceDate:dddd, MMMM dd, yyyy}</p>
-            <p><strong>Time:</strong> {FormatTimeForEmail(order.ServiceTime)}</p>
-            <p><strong>Duration:</strong> {formattedDuration}{(hasCleanersService ? "" : " per cleaner")}</p>
-            <p><strong>Team Size:</strong> {order.MaidsCount} cleaner(s)</p>
-            {(order.BedroomsQuantity.HasValue || order.BathroomsQuantity.HasValue
-                ? $"<p><strong>Bedrooms:</strong> {(order.BedroomsQuantity == 0 ? "Studio" : (order.BedroomsQuantity?.ToString() ?? "N/A"))} | <strong>Bathrooms:</strong> {(order.BathroomsQuantity?.ToString() ?? "N/A")}</p>"
-                : "")}
-        </div>
-
-        <div style='background: #d4edda; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
-            <h3>💵 Your Compensation</h3>
-            <p><strong>Hourly Rate:</strong> ${order.CleanerHourlyRate:F2}/hr</p>
-            <p><strong>Your Duration:</strong> {formattedDuration}</p>
-            <p style='margin: 0; font-size: 1.2em; font-weight: bold; color: #155724; text-align: center;'>Your Salary: ${perCleanerSalary:F2}</p>
-        </div>
-        
-        <div style='background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
-            <h3>👥 Client Information</h3>
-            <p><strong>Client Name:</strong> {order.ContactFirstName} {order.ContactLastName}</p>
-            <p><strong>Entry Method / How to get in:</strong> {(string.IsNullOrEmpty(order.EntryMethod) ? "To be confirmed" : order.EntryMethod)}</p>
-        </div>
-        
-        <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
-            <h3>📍 Complete Service Address</h3>
-            <p><strong>Address:</strong> {fullAddress}</p>
-            {(!string.IsNullOrEmpty(order.ApartmentName) ? $"<p><strong>Apartment Name:</strong> {order.ApartmentName}</p>" : "")}
-        </div>
-        
-        {(order.OrderServices.Any() ? $@"
-        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;'>
-            <h3>🧹 Services to Perform</h3>
-            <ul style='margin: 10px 0; padding-left: 20px;'>
-                {string.Join("", order.OrderServices.Select(os => $"<li style='margin: 5px 0;'>{FormatServiceForEmail(os, order.Id)}</li>"))}
-            </ul>
-        </div>" : "")}
-        
-        {(order.OrderExtraServices.Any() ? $@"
-        <div style='background: #f0f8ff; padding: 20px; border-radius: 8px; margin: 20px 0;'>
-            <h3>✨ Extra Services</h3>
-            <ul style='margin: 10px 0; padding-left: 20px;'>
-                {string.Join("", order.OrderExtraServices.Select(oes =>
-                            $"<li style='margin: 5px 0;'>{oes.ExtraService.Name} - Quantity: {oes.Quantity}" +
-                            (oes.Hours > 0 ? $", Hours: {oes.Hours:0.#}" : "") + "</li>"))}
-            </ul>
-        </div>" : "")}
-
-        {(order.Tips > 0 ? $@"
-        <div style='background: #d4edda; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
-            <h3>💰 Tips for Cleaning Team</h3>
-            <p style='margin: 0; font-size: 1.2em; font-weight: bold; color: #155724; text-align: center;'>${order.Tips:F2}</p>
-        </div>" : "")}
-        
-        {(!string.IsNullOrEmpty(order.FloorTypes) ? $@"
-        <div style='background: #f0f4ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1;'>
-            <h3>🏠 Floor Types</h3>
-            <p style='margin: 0; font-weight: 600;'>{FloorTypeHelper.FormatFloorTypes(order.FloorTypes, order.FloorTypeOther)}</p>
-        </div>" : "")}
-
-        {(!string.IsNullOrEmpty(order.SpecialInstructions) && !isCustomServiceType ? $@"
-        <div style='background: #ffe6e6; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc3545;'>
-            <h3>⚠️ Special Instructions from Client</h3>
-            <p style='margin: 0; font-style: italic; color: #721c24;'>{order.SpecialInstructions}</p>
-        </div>" : (!string.IsNullOrEmpty(order.SpecialInstructions) && isCustomServiceType ? $@"
-        <div style='background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
-            <h3>📝 Service Description (Custom)</h3>
-            <p style='margin: 0; font-style: italic; color: #155724;'>{order.SpecialInstructions}</p>
-        </div>" : ""))}
-
-        {(!string.IsNullOrEmpty(cleanerAdditionalInstructions) ? $@"
-        <div style='background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745;'>
-            <h3>💡 Additional Instructions for You</h3>
-            <p style='margin: 0; font-style: italic; color: #155724;'>{cleanerAdditionalInstructions}</p>
-        </div>" : "")}
-        
-        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;'>
-            <p><strong>📱 Next Steps:</strong></p>
-            <p>1. Log in to your cleaner dashboard for any updates</p>
-            <p>2. Arrive on time and prepared</p>
-            <p>3. Contact support if you have any questions</p>
-        </div>
-        
-        <p>If you have any questions or concerns about this assignment, please contact our support team immediately.</p>
-        
-        <br/>
-        <p>Best regards,<br/>Dream Cleaning Team</p>
-    ";
+            var (subject, body) = BuildCleanerAssignmentEmail(
+                cleanerLanguage,
+                cleanerName,
+                order,
+                formattedDuration,
+                fullAddress,
+                hasCleaningSupplies,
+                cleanerAdditionalInstructions);
 
             await SendEmailAsync(email, subject, body);
 
-            // Optionally send one copy of the same email to one admin address (so admin gets exactly what the cleaner got, no second/different email)
             if (sendCopyToAdmin)
             {
                 var adminCopyTo = "hello@dreamcleaningnearme.com";
@@ -999,6 +895,233 @@ namespace DreamCleaningBackend.Services
                     _logger.LogError(ex, $"Failed to send cleaner assignment copy to admin {adminCopyTo}");
                 }
             }
+        }
+
+        private static string ResolveCleanerLanguage(string? nationality)
+        {
+            var n = (nationality ?? string.Empty).Trim().ToLowerInvariant();
+            return n switch
+            {
+                "georgian" => "ka",
+                "russian" => "ru",
+                "spanish" => "es",
+                _ => "en"
+            };
+        }
+
+        private (string subject, string body) BuildCleanerAssignmentEmail(
+            string language,
+            string cleanerName,
+            Models.Order order,
+            string formattedDuration,
+            string fullAddress,
+            bool hasCleaningSupplies,
+            string? cleanerAdditionalInstructions)
+        {
+            var culture = language switch
+            {
+                "ka" => System.Globalization.CultureInfo.GetCultureInfo("ka-GE"),
+                "ru" => System.Globalization.CultureInfo.GetCultureInfo("ru-RU"),
+                "es" => System.Globalization.CultureInfo.GetCultureInfo("es-ES"),
+                _ => System.Globalization.CultureInfo.GetCultureInfo("en-US")
+            };
+
+            var dateText = order.ServiceDate.ToString("dddd, dd MMMM", culture);
+            var timeText = FormatTimeForEmail(order.ServiceTime);
+            var dateTimeText = $"{dateText} - {timeText}";
+
+            var labels = GetCleanerEmailLabels(language);
+
+            string suppliesValue = hasCleaningSupplies ? labels["suppliesNotRequired"] : labels["suppliesRequired"];
+            string firstName = order.ContactFirstName ?? string.Empty;
+            string addressValue = string.IsNullOrWhiteSpace(fullAddress) ? "—" : fullAddress;
+            string entryValue = string.IsNullOrWhiteSpace(order.EntryMethod) ? "—" : order.EntryMethod;
+            var maidsCount = order.MaidsCount > 0 ? order.MaidsCount : 1;
+            var perCleanerTips = Math.Round(order.Tips / maidsCount, 2);
+            string tipsValue = perCleanerTips > 0 ? $"${perCleanerTips:F2}" : "—";
+
+            var rows = new System.Text.StringBuilder();
+            rows.Append(BuildRow(labels["cleaningType"], order.ServiceType?.Name ?? "—"));
+            rows.Append(BuildRow(labels["serviceDuration"], formattedDuration));
+            rows.Append(BuildRow(labels["dateAndTime"], dateTimeText));
+            rows.Append(BuildRow(labels["supplies"], suppliesValue));
+            rows.Append(BuildRow(labels["tips"], tipsValue));
+            rows.Append("<p style='margin:18px 0 6px 0;'></p>");
+            rows.Append(BuildRow(labels["customerName"], firstName));
+            rows.Append(BuildRow(labels["address"], addressValue));
+            rows.Append("<p style='margin:18px 0 6px 0;'></p>");
+            rows.Append(BuildRow(labels["entryInstruction"], entryValue));
+            if (!string.IsNullOrWhiteSpace(order.SpecialInstructions))
+            {
+                rows.Append(BuildRow(labels["specialInstruction"], order.SpecialInstructions));
+            }
+            if (!string.IsNullOrWhiteSpace(cleanerAdditionalInstructions))
+            {
+                rows.Append(BuildRow(labels["specialInstructionForCleaner"], cleanerAdditionalInstructions));
+            }
+
+            var body = $@"
+        <div style='font-family: Arial, sans-serif; color: #1f2937; line-height: 1.6;'>
+            <h2 style='margin: 0 0 16px 0;'>{labels["greeting"]} {cleanerName},</h2>
+            <p style='margin: 0 0 16px 0;'>{labels["intro"]}</p>
+
+            <div style='background:#f8f9fa; padding:20px; border-radius:8px; margin:20px 0; border-left:4px solid #28a745;'>
+                {rows}
+            </div>
+
+            <p style='margin: 16px 0;'>{labels["photosNote"]}</p>
+
+            <p style='margin: 16px 0;'>{labels["thirtyMinNote"]}</p>
+
+            <p style='margin: 16px 0;'>{labels["helpNote"]}</p>
+
+            <p style='margin: 24px 0 4px 0;'>{labels["thanks"]}</p>
+            <p style='margin: 0;'>{labels["regards"]}</p>
+            <p style='margin: 0;'><strong>{labels["companyLine"]}</strong></p>
+        </div>";
+
+            return (labels["subject"], body);
+        }
+
+        private static string BuildRow(string label, string value)
+        {
+            return $"<p style='margin:6px 0;'><strong>{label}:</strong> {value}</p>";
+        }
+
+        private string FormatDurationLocalized(int minutes, string language)
+        {
+            var roundedMinutes = (int)Math.Round(minutes / 15.0) * 15;
+            var hours = roundedMinutes / 60;
+            var mins = roundedMinutes % 60;
+
+            string hourUnit, minuteUnit;
+            switch (language)
+            {
+                case "ka":
+                    hourUnit = "სთ";
+                    minuteUnit = "წთ";
+                    break;
+                case "ru":
+                    hourUnit = "ч";
+                    minuteUnit = "мин";
+                    break;
+                case "es":
+                    hourUnit = "h";
+                    minuteUnit = "min";
+                    break;
+                default:
+                    hourUnit = "h";
+                    minuteUnit = "min";
+                    break;
+            }
+
+            if (hours == 0 && mins == 0) return $"0 {minuteUnit}";
+            if (hours == 0) return $"{mins} {minuteUnit}";
+            if (mins == 0) return $"{hours} {hourUnit}";
+            return $"{hours} {hourUnit} {mins} {minuteUnit}";
+        }
+
+        private static Dictionary<string, string> GetCleanerEmailLabels(string language)
+        {
+            return language switch
+            {
+                "ka" => new Dictionary<string, string>
+                {
+                    ["subject"] = "ახალი დასუფთავების სამუშაო - Dream Cleaning",
+                    ["greeting"] = "გამარჯობა",
+                    ["intro"] = "თქვენ გაქვთ ახალი დასუფთავების სამუშაო. დეტალები მოცემულია ქვემოთ:",
+                    ["cleaningType"] = "დასუფთავების ტიპი",
+                    ["serviceDuration"] = "სერვისის დრო",
+                    ["dateAndTime"] = "თარიღი და დრო",
+                    ["supplies"] = "ხსნარები",
+                    ["suppliesRequired"] = "საჭიროა",
+                    ["suppliesNotRequired"] = "არ არის საჭირო",
+                    ["tips"] = "თიფსი",
+                    ["customerName"] = "მომხმარებლის სახელი",
+                    ["address"] = "მისამართი",
+                    ["entryInstruction"] = "შესვლის ინსტრუქცია",
+                    ["specialInstruction"] = "სპეციალური ინსტრუქცია",
+                    ["specialInstructionForCleaner"] = "სპეციალური ინსტრუქცია ქლინერებისთვის",
+                    ["photosNote"] = "გთხოვთ შეძლებისდაგვარად გადაიღეთ ფოტოები დასუფთავებამდე და დასუფთავების შემდეგ, ერთი და იგივე რაკურსით.",
+                    ["thirtyMinNote"] = "დასუფთავების დასრულებამდე 30 წუთით ადრე მომხმარებელს თხოვეთ შეაფასოს სიტუაცია რამის შეცვლა ხომ არ სურს. თუ ფიქრობთ რომ დროის დამატება დაგჭირდებათ, სასწრაფოდ შეგვატყობინეთ ჩვენ, დავუკავშირდებით მომხმარებელს და ავუხსნით სიტუაციას.",
+                    ["helpNote"] = "ნებისმიერი სახის დახმარება თუ დაგჭირდებათ შეგვატყობინეთ და დაგვიკავშირდით.",
+                    ["thanks"] = "მადლობა,",
+                    ["regards"] = "საუკეთესო სურვილებით კომპანია",
+                    ["companyLine"] = "Dream Cleaning"
+                },
+                "ru" => new Dictionary<string, string>
+                {
+                    ["subject"] = "Новый заказ - Dream Cleaning",
+                    ["greeting"] = "Здравствуйте",
+                    ["intro"] = "Вам назначен новый заказ на уборку. Подробности указаны ниже:",
+                    ["cleaningType"] = "Тип уборки",
+                    ["serviceDuration"] = "Длительность услуги",
+                    ["dateAndTime"] = "Дата и время",
+                    ["supplies"] = "Чистящие средства",
+                    ["suppliesRequired"] = "требуются",
+                    ["suppliesNotRequired"] = "не требуются",
+                    ["tips"] = "Чаевые",
+                    ["customerName"] = "Имя клиента",
+                    ["address"] = "Адрес",
+                    ["entryInstruction"] = "Инструкция по входу",
+                    ["specialInstruction"] = "Особые инструкции",
+                    ["specialInstructionForCleaner"] = "Особые инструкции для клинеров",
+                    ["photosNote"] = "Пожалуйста, по возможности сделайте фотографии до и после уборки с одного и того же ракурса.",
+                    ["thirtyMinNote"] = "За 30 минут до окончания уборки попросите клиента оценить ситуацию и уточните, не желает ли он что-либо изменить. Если вы считаете, что вам потребуется дополнительное время, незамедлительно сообщите нам — мы свяжемся с клиентом и объясним ситуацию.",
+                    ["helpNote"] = "Если вам потребуется любая помощь, пожалуйста, сообщите нам и свяжитесь с нами.",
+                    ["thanks"] = "Спасибо,",
+                    ["regards"] = "С наилучшими пожеланиями,",
+                    ["companyLine"] = "компания Dream Cleaning"
+                },
+                "es" => new Dictionary<string, string>
+                {
+                    ["subject"] = "Nuevo pedido - Dream Cleaning",
+                    ["greeting"] = "Hola",
+                    ["intro"] = "Se le ha asignado un nuevo trabajo de limpieza. Los detalles se indican a continuación:",
+                    ["cleaningType"] = "Tipo de limpieza",
+                    ["serviceDuration"] = "Duración del servicio",
+                    ["dateAndTime"] = "Fecha y hora",
+                    ["supplies"] = "Productos de limpieza",
+                    ["suppliesRequired"] = "se requieren",
+                    ["suppliesNotRequired"] = "no se requieren",
+                    ["tips"] = "Propina",
+                    ["customerName"] = "Nombre del cliente",
+                    ["address"] = "Dirección",
+                    ["entryInstruction"] = "Instrucciones de entrada",
+                    ["specialInstruction"] = "Instrucciones especiales",
+                    ["specialInstructionForCleaner"] = "Instrucciones especiales para los limpiadores",
+                    ["photosNote"] = "Por favor, si es posible, tome fotografías antes y después de la limpieza, desde el mismo ángulo.",
+                    ["thirtyMinNote"] = "30 minutos antes de finalizar la limpieza, pídale al cliente que evalúe la situación y confirme si desea cambiar algo. Si cree que necesitará tiempo adicional, infórmenos de inmediato; nos pondremos en contacto con el cliente y le explicaremos la situación.",
+                    ["helpNote"] = "Si necesita cualquier tipo de ayuda, por favor háganoslo saber y póngase en contacto con nosotros.",
+                    ["thanks"] = "Gracias,",
+                    ["regards"] = "Saludos cordiales,",
+                    ["companyLine"] = "Compañía Dream Cleaning"
+                },
+                _ => new Dictionary<string, string>
+                {
+                    ["subject"] = "New Cleaning Job Assignment - Dream Cleaning",
+                    ["greeting"] = "Hi",
+                    ["intro"] = "You have been assigned to a new cleaning job. The details are listed below:",
+                    ["cleaningType"] = "Cleaning type",
+                    ["serviceDuration"] = "Service duration",
+                    ["dateAndTime"] = "Date and time",
+                    ["supplies"] = "Supplies",
+                    ["suppliesRequired"] = "required",
+                    ["suppliesNotRequired"] = "not required",
+                    ["tips"] = "Tips",
+                    ["customerName"] = "Customer name",
+                    ["address"] = "Address",
+                    ["entryInstruction"] = "Entry instruction",
+                    ["specialInstruction"] = "Special instruction",
+                    ["specialInstructionForCleaner"] = "Special instruction for cleaners",
+                    ["photosNote"] = "Please, if possible, take photos before and after the cleaning from the same angle.",
+                    ["thirtyMinNote"] = "30 minutes before finishing the cleaning, please ask the customer to assess the situation and check whether they would like to change anything. If you think you will need additional time, notify us immediately — we will contact the customer and explain the situation.",
+                    ["helpNote"] = "If you need any kind of help, please let us know and contact us.",
+                    ["thanks"] = "Thank you,",
+                    ["regards"] = "Best regards,",
+                    ["companyLine"] = "Dream Cleaning Team"
+                }
+            };
         }
 
         public async Task SendAdminCleanerAssignmentNotificationAsync(string cleanerEmail, string cleanerName,
@@ -1118,30 +1241,120 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task SendCleanerReminderNotificationAsync(string email, string cleanerName,
-            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDayBefore)
+            DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDayBefore,
+            string? cleanerNationality = null)
         {
-            var timeFrame = isDayBefore ? "in 2 days" : "in 4 hours";
-            var subject = $"Cleaning Job Reminder - Service {timeFrame}";
+            var language = ResolveCleanerLanguage(cleanerNationality);
+            var culture = language switch
+            {
+                "ka" => System.Globalization.CultureInfo.GetCultureInfo("ka-GE"),
+                "ru" => System.Globalization.CultureInfo.GetCultureInfo("ru-RU"),
+                "es" => System.Globalization.CultureInfo.GetCultureInfo("es-ES"),
+                _ => System.Globalization.CultureInfo.GetCultureInfo("en-US")
+            };
+
+            var labels = GetCleanerReminderLabels(language);
+            var timeFrame = isDayBefore ? labels["timeFrameDays"] : labels["timeFrameHours"];
+
+            var formattedTime = TimeSpan.TryParse(serviceTime, out var parsedTime)
+                ? FormatTimeForEmail(parsedTime)
+                : serviceTime;
+            var formattedDate = serviceDate.ToString("dddd, dd MMMM", culture);
+
+            var subject = string.Format(labels["subject"], timeFrame);
+            var introText = string.Format(labels["intro"], $"<strong>{timeFrame}</strong>");
 
             var body = $@"
-        <h2>Hi {cleanerName},</h2>
-        <p>This is a reminder that you have a cleaning job scheduled for <strong>{timeFrame}</strong>:</p>
-        
-        <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
-            <h3>Job Details:</h3>
-            <p><strong>Service Type:</strong> {serviceTypeName}</p>
-            <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
-            <p><strong>Time:</strong> {serviceTime}</p>
-            <p><strong>Address:</strong> {address}</p>
-        </div>
-        
-        <p>Please make sure you're prepared and arrive on time. Check your cleaner dashboard for any special instructions.</p>
-        
-        <br/>
-        <p>Best regards,<br/>Dream Cleaning Team</p>
-    ";
+        <div style='font-family: Arial, sans-serif; color: #1f2937; line-height: 1.6;'>
+            <h2 style='margin: 0 0 16px 0;'>{labels["greeting"]} {cleanerName},</h2>
+            <p style='margin: 0 0 16px 0;'>{introText}</p>
+
+            <div style='background:#fff3cd; padding:20px; border-radius:8px; margin:20px 0; border-left:4px solid #ffc107;'>
+                <h3 style='margin: 0 0 10px 0;'>{labels["jobDetails"]}</h3>
+                <p style='margin:6px 0;'><strong>{labels["serviceType"]}:</strong> {serviceTypeName}</p>
+                <p style='margin:6px 0;'><strong>{labels["date"]}:</strong> {formattedDate}</p>
+                <p style='margin:6px 0;'><strong>{labels["time"]}:</strong> {formattedTime}</p>
+                <p style='margin:6px 0;'><strong>{labels["address"]}:</strong> {address}</p>
+            </div>
+
+            <p style='margin: 16px 0;'>{labels["closing"]}</p>
+
+            <p style='margin: 24px 0 4px 0;'>{labels["regards"]}</p>
+            <p style='margin: 0;'><strong>{labels["companyLine"]}</strong></p>
+        </div>";
 
             await SendEmailAsync(email, subject, body);
+        }
+
+        private static Dictionary<string, string> GetCleanerReminderLabels(string language)
+        {
+            return language switch
+            {
+                "ka" => new Dictionary<string, string>
+                {
+                    ["timeFrameDays"] = "2 დღეში",
+                    ["timeFrameHours"] = "4 საათში",
+                    ["subject"] = "შეხსენება დასუფთავების სამუშაოს შესახებ — სერვისი {0}",
+                    ["greeting"] = "გამარჯობა",
+                    ["intro"] = "ეს არის შეხსენება, რომ თქვენ გაქვთ დაგეგმილი დასუფთავების სამუშაო {0}:",
+                    ["jobDetails"] = "სამუშაოს დეტალები:",
+                    ["serviceType"] = "დასუფთავების ტიპი",
+                    ["date"] = "თარიღი",
+                    ["time"] = "დრო",
+                    ["address"] = "მისამართი",
+                    ["closing"] = "გთხოვთ წინასწარ მოემზადოთ და დროულად მიხვიდეთ.",
+                    ["regards"] = "საუკეთესო სურვილებით კომპანია",
+                    ["companyLine"] = "Dream Cleaning"
+                },
+                "ru" => new Dictionary<string, string>
+                {
+                    ["timeFrameDays"] = "через 2 дня",
+                    ["timeFrameHours"] = "через 4 часа",
+                    ["subject"] = "Напоминание об уборке — услуга {0}",
+                    ["greeting"] = "Здравствуйте",
+                    ["intro"] = "Напоминаем, что у вас запланирована уборка {0}:",
+                    ["jobDetails"] = "Детали заказа:",
+                    ["serviceType"] = "Тип уборки",
+                    ["date"] = "Дата",
+                    ["time"] = "Время",
+                    ["address"] = "Адрес",
+                    ["closing"] = "Пожалуйста, заранее подготовьтесь и прибудьте вовремя.",
+                    ["regards"] = "С наилучшими пожеланиями,",
+                    ["companyLine"] = "компания Dream Cleaning"
+                },
+                "es" => new Dictionary<string, string>
+                {
+                    ["timeFrameDays"] = "en 2 días",
+                    ["timeFrameHours"] = "en 4 horas",
+                    ["subject"] = "Recordatorio de limpieza — servicio {0}",
+                    ["greeting"] = "Hola",
+                    ["intro"] = "Le recordamos que tiene un trabajo de limpieza programado {0}:",
+                    ["jobDetails"] = "Detalles del trabajo:",
+                    ["serviceType"] = "Tipo de limpieza",
+                    ["date"] = "Fecha",
+                    ["time"] = "Hora",
+                    ["address"] = "Dirección",
+                    ["closing"] = "Por favor, prepárese con antelación y llegue a tiempo.",
+                    ["regards"] = "Saludos cordiales,",
+                    ["companyLine"] = "Compañía Dream Cleaning"
+                },
+                _ => new Dictionary<string, string>
+                {
+                    ["timeFrameDays"] = "in 2 days",
+                    ["timeFrameHours"] = "in 4 hours",
+                    ["subject"] = "Cleaning Job Reminder — Service {0}",
+                    ["greeting"] = "Hi",
+                    ["intro"] = "This is a reminder that you have a cleaning job scheduled {0}:",
+                    ["jobDetails"] = "Job Details:",
+                    ["serviceType"] = "Service Type",
+                    ["date"] = "Date",
+                    ["time"] = "Time",
+                    ["address"] = "Address",
+                    ["closing"] = "Please make sure you're prepared and arrive on time.",
+                    ["regards"] = "Best regards,",
+                    ["companyLine"] = "Dream Cleaning Team"
+                }
+            };
         }
 
         public async Task SendCleanerRemovalNotificationAsync(string email, string cleanerName,

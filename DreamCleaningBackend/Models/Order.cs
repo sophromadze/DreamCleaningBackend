@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Models
 {
@@ -129,9 +130,14 @@ namespace DreamCleaningBackend.Models
         [StringLength(100)]
         public string ContactEmail { get; set; }
 
+        private string _contactPhone = string.Empty;
         [Required]
         [StringLength(20)]
-        public string ContactPhone { get; set; }
+        public string ContactPhone
+        {
+            get => _contactPhone;
+            set => _contactPhone = PhoneHelper.NormalizeToDigitsOrEmpty(value);
+        }
 
         // Service address (stored separately in case different from apartment)
         [Required]

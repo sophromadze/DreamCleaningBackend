@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Models
 {
@@ -28,8 +29,13 @@ namespace DreamCleaningBackend.Models
         [StringLength(500)]
         public string? ProfilePictureUrl { get; set; }
 
+        private string? _phone;
         [StringLength(20)]
-        public string? Phone { get; set; }
+        public string? Phone
+        {
+            get => _phone;
+            set => _phone = PhoneHelper.NormalizeToDigits(value);
+        }
 
         // User role - defaults to Customer (0)
         public UserRole Role { get; set; } = UserRole.Customer;

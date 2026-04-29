@@ -114,7 +114,8 @@ namespace DreamCleaningBackend.Services
                             orderCleaner.Order.ServiceTime.ToString(),
                             orderCleaner.Order.ServiceType?.Name ?? "Cleaning Service",
                             orderCleaner.Order.ServiceAddress,
-                            true
+                            true,
+                            orderCleaner.Cleaner.Nationality
                         );
 
                         // Log the notification
@@ -154,7 +155,8 @@ namespace DreamCleaningBackend.Services
                                 orderCleaner.Order.ServiceTime.ToString(),
                                 orderCleaner.Order.ServiceType?.Name ?? "Cleaning Service",
                                 orderCleaner.Order.ServiceAddress,
-                                false
+                                false,
+                                orderCleaner.Cleaner.Nationality
                             );
 
                             // Log the notification
