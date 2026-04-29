@@ -88,6 +88,19 @@ namespace DreamCleaningBackend.Controllers
             return Ok(result);
         }
 
+        [HttpPut("notes/{noteId}")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<CleanerNoteDto>> UpdateNote(int noteId, [FromBody] UpdateCleanerNoteDto dto)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var result = await _service.UpdateNoteAsync(noteId, dto);
+            if (result == null)
+                return NotFound();
+            return Ok(result);
+        }
+
         [HttpDelete("notes/{noteId}")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult> DeleteNote(int noteId)

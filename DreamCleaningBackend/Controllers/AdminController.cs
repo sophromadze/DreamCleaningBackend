@@ -2024,6 +2024,69 @@ namespace DreamCleaningBackend.Controllers
             foreach (var u in users)
                 u.IsOnline = UserManagementHub.IsUserOnline(u.Id);
 
+            // ── Customer-care snapshot: last cleaning + total orders + last follow-up
+            // We fetch the last (most recent) non-cancelled order per user via a single query.
+            var lastOrders = await _context.Orders
+                .Where(o => userIds.Contains(o.UserId) && o.Status != "Cancelled")
+                .GroupBy(o => o.UserId)
+                .Select(g => g
+                    .OrderByDescending(o => o.ServiceDate)
+                    .Select(o => new
+                    {
+                        o.UserId,
+                        o.ServiceDate,
+                        ServiceTypeName = o.ServiceType.Name,
+                        o.BedroomsQuantity,
+                        o.BathroomsQuantity
+                    })
+                    .First())
+                .ToListAsync();
+
+            var lastOrderByUser = lastOrders.ToDictionary(o => o.UserId);
+
+            var orderCounts = await _context.Orders
+                .Where(o => userIds.Contains(o.UserId) && o.Status != "Cancelled")
+                .GroupBy(o => o.UserId)
+                .Select(g => new { UserId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(g => g.UserId, g => g.Count);
+
+            // Last follow-up note per user (most recent)
+            var followUps = new Dictionary<int, (string? Content, string? NextOffer)>();
+            try
+            {
+                var raw = await _context.UserNotes
+                    .Where(n => userIds.Contains(n.UserId) && n.Type == "FollowUp")
+                    .GroupBy(n => n.UserId)
+                    .Select(g => g
+                        .OrderByDescending(n => n.CreatedAt)
+                        .Select(n => new { n.UserId, n.Content, n.NextOffer })
+                        .First())
+                    .ToListAsync();
+                foreach (var r in raw)
+                    followUps[r.UserId] = (r.Content, r.NextOffer);
+            }
+            catch
+            {
+                // Table missing (migration not yet applied) — silently skip
+            }
+
+            foreach (var u in users)
+            {
+                if (lastOrderByUser.TryGetValue(u.Id, out var lo))
+                {
+                    u.LastCleaningDate = lo.ServiceDate;
+                    u.LastCleaningServiceType = lo.ServiceTypeName;
+                    u.LastBedrooms = lo.BedroomsQuantity;
+                    u.LastBathrooms = lo.BathroomsQuantity;
+                }
+                u.TotalOrdersCount = orderCounts.TryGetValue(u.Id, out var cnt) ? cnt : 0;
+                if (followUps.TryGetValue(u.Id, out var fu))
+                {
+                    u.LastFollowUpNote = fu.Content;
+                    u.NextOfferHint = fu.NextOffer;
+                }
+            }
+
             // Include current user role in response for frontend to use
             return Ok(new
             {

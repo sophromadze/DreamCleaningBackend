@@ -11,6 +11,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<bool> DeleteAsync(int id);
 
         Task<CleanerNoteDto> AddNoteAsync(int cleanerId, CreateCleanerNoteDto dto, int adminId, string adminDisplayName);
+        Task<CleanerNoteDto?> UpdateNoteAsync(int noteId, UpdateCleanerNoteDto dto);
         Task<bool> DeleteNoteAsync(int noteId);
         Task<CleanerNoteDto?> UpsertOrderPerformanceAsync(int cleanerId, UpsertOrderPerformanceDto dto, int adminId, string adminDisplayName);
 

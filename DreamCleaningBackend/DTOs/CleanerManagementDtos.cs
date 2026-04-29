@@ -119,6 +119,13 @@ namespace DreamCleaningBackend.DTOs
         public string? OrderPerformance { get; set; }
     }
 
+    public class UpdateCleanerNoteDto
+    {
+        [Required]
+        [StringLength(4000)]
+        public string Text { get; set; } = string.Empty;
+    }
+
     public class UpsertOrderPerformanceDto
     {
         [Required]

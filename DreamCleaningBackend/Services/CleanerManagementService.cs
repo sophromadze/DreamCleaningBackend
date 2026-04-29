@@ -214,6 +214,28 @@ namespace DreamCleaningBackend.Services
             };
         }
 
+        public async Task<CleanerNoteDto?> UpdateNoteAsync(int noteId, UpdateCleanerNoteDto dto)
+        {
+            var note = await _context.CleanerNotes.FirstOrDefaultAsync(n => n.Id == noteId);
+            if (note == null)
+                return null;
+
+            note.Text = dto.Text;
+            await _context.SaveChangesAsync();
+
+            return new CleanerNoteDto
+            {
+                Id = note.Id,
+                CleanerId = note.CleanerId,
+                AdminId = note.AdminId,
+                AdminDisplayName = note.AdminDisplayName,
+                Text = note.Text,
+                OrderId = note.OrderId,
+                OrderPerformance = note.OrderPerformance,
+                CreatedAt = note.CreatedAt
+            };
+        }
+
         public async Task<bool> DeleteNoteAsync(int noteId)
         {
             var note = await _context.CleanerNotes.FirstOrDefaultAsync(n => n.Id == noteId);

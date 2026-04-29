@@ -53,6 +53,10 @@ namespace DreamCleaningBackend.Data
         public DbSet<Cleaner> Cleaners { get; set; }
         public DbSet<CleanerNote> CleanerNotes { get; set; }
 
+        // User customer-care notes & cleaning photos (admin-only)
+        public DbSet<UserNote> UserNotes { get; set; }
+        public DbSet<UserCleaningPhoto> UserCleaningPhotos { get; set; }
+
         // Scheduling
         public DbSet<BlockedTimeSlot> BlockedTimeSlots { get; set; }
 
@@ -156,6 +160,43 @@ namespace DreamCleaningBackend.Data
                 entity.HasOne(n => n.Order)
                     .WithMany()
                     .HasForeignKey(n => n.OrderId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<UserNote>(entity =>
+            {
+                entity.HasIndex(e => e.UserId).HasDatabaseName("IX_UserNotes_UserId");
+                entity.HasIndex(e => new { e.UserId, e.Type, e.CreatedAt }).HasDatabaseName("IX_UserNotes_UserId_Type_CreatedAt");
+
+                entity.HasOne(n => n.User)
+                    .WithMany()
+                    .HasForeignKey(n => n.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(n => n.CreatedByAdmin)
+                    .WithMany()
+                    .HasForeignKey(n => n.CreatedByAdminId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<UserCleaningPhoto>(entity =>
+            {
+                entity.HasIndex(e => e.UserId).HasDatabaseName("IX_UserCleaningPhotos_UserId");
+                entity.HasIndex(e => new { e.UserId, e.OrderId }).HasDatabaseName("IX_UserCleaningPhotos_UserId_OrderId");
+
+                entity.HasOne(p => p.User)
+                    .WithMany()
+                    .HasForeignKey(p => p.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(p => p.Order)
+                    .WithMany()
+                    .HasForeignKey(p => p.OrderId)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(p => p.UploadedByAdmin)
+                    .WithMany()
+                    .HasForeignKey(p => p.UploadedByAdminId)
                     .OnDelete(DeleteBehavior.SetNull);
             });
 

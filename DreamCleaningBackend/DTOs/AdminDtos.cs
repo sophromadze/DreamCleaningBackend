@@ -350,6 +350,90 @@ namespace DreamCleaningBackend.DTOs
         public string? AdminNotes { get; set; }
         /// <summary>True if user has an active SignalR connection (on site).</summary>
         public bool IsOnline { get; set; }
+
+        // ── New customer-care snapshot fields ──
+        /// <summary>Date of the user's most recent non-cancelled order (service date).</summary>
+        public DateTime? LastCleaningDate { get; set; }
+        /// <summary>Service type name of the user's most recent non-cancelled order.</summary>
+        public string? LastCleaningServiceType { get; set; }
+        /// <summary>Bedrooms quantity from the user's most recent order, if recorded.</summary>
+        public int? LastBedrooms { get; set; }
+        /// <summary>Bathrooms quantity from the user's most recent order, if recorded.</summary>
+        public int? LastBathrooms { get; set; }
+        /// <summary>Most recent follow-up note content for quick scanning in the table.</summary>
+        public string? LastFollowUpNote { get; set; }
+        /// <summary>Most recent follow-up note's "next offer" suggestion for the table.</summary>
+        public string? NextOfferHint { get; set; }
+        /// <summary>Total number of non-cancelled orders this user has placed.</summary>
+        public int TotalOrdersCount { get; set; }
+    }
+
+    // ── Customer-care notes (multi-row) ──
+
+    public class UserNoteDto
+    {
+        public int Id { get; set; }
+        public int UserId { get; set; }
+        public string Type { get; set; } = "General";
+        public string Content { get; set; } = string.Empty;
+        public string? NextOffer { get; set; }
+        public int? CreatedByAdminId { get; set; }
+        public string? CreatedByAdminName { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+    }
+
+    public class CreateUserNoteDto
+    {
+        [Required]
+        [StringLength(20)]
+        public string Type { get; set; } = "General";
+
+        [Required]
+        [StringLength(4000)]
+        public string Content { get; set; } = string.Empty;
+
+        [StringLength(500)]
+        public string? NextOffer { get; set; }
+    }
+
+    public class UpdateUserNoteDto
+    {
+        [Required]
+        [StringLength(4000)]
+        public string Content { get; set; } = string.Empty;
+
+        [StringLength(500)]
+        public string? NextOffer { get; set; }
+    }
+
+    // ── Cleaning photos ──
+
+    public class UserCleaningPhotoDto
+    {
+        public int Id { get; set; }
+        public int UserId { get; set; }
+        public int? OrderId { get; set; }
+        public string PhotoUrl { get; set; } = string.Empty;
+        public long SizeBytes { get; set; }
+        public string? UploadedByAdminName { get; set; }
+        public string? Caption { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    public class UserCleaningPhotosByOrderDto
+    {
+        public int? OrderId { get; set; }
+        public DateTime? OrderServiceDate { get; set; }
+        public string? OrderServiceTypeName { get; set; }
+        public List<UserCleaningPhotoDto> Photos { get; set; } = new();
+    }
+
+    public class UserCleaningPhotoUploadResultDto
+    {
+        public UserCleaningPhotoDto Photo { get; set; } = new();
+        /// <summary>Photos that were pruned because they belonged to orders older than the most recent two.</summary>
+        public int PrunedCount { get; set; }
     }
 
     public class UpdateUserRoleDto
