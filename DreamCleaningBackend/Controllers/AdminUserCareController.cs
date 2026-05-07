@@ -240,6 +240,53 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = "Photo deleted" });
         }
 
+        /// <summary>
+        /// Streams the photo file by id. Anonymous so it can be used as an &lt;img src=&gt;
+        /// without complicated credential handling — the photo URLs are non-guessable
+        /// (random id) and gated behind the admin SPA. Goes through /api so it works
+        /// uniformly in dev (proxy) and prod (same origin) without server-side aliases.
+        /// </summary>
+        [HttpGet("cleaning-photos/{photoId}/raw")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetCleaningPhotoFile(int photoId)
+        {
+            var photo = await _context.UserCleaningPhotos
+                .Where(p => p.Id == photoId)
+                .Select(p => new { p.PhotoUrl })
+                .FirstOrDefaultAsync();
+
+            if (photo == null || string.IsNullOrWhiteSpace(photo.PhotoUrl))
+                return NotFound();
+
+            var basePath = _configuration["FileUpload:Path"];
+            if (string.IsNullOrWhiteSpace(basePath)) return NotFound();
+
+            var relative = photo.PhotoUrl.TrimStart('/');
+            var fullPath = Path.Combine(basePath, relative);
+
+            // Defense-in-depth: ensure the resolved path stays inside the upload root
+            var fullBase = Path.GetFullPath(basePath);
+            var resolved = Path.GetFullPath(fullPath);
+            if (!resolved.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase)) return Forbid();
+
+            if (!System.IO.File.Exists(resolved)) return NotFound();
+
+            var ext = Path.GetExtension(resolved).ToLowerInvariant();
+            var contentType = ext switch
+            {
+                ".webp" => "image/webp",
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".png" => "image/png",
+                ".gif" => "image/gif",
+                ".bmp" => "image/bmp",
+                _ => "application/octet-stream"
+            };
+
+            // Cache for an hour — files are immutable per id (uploads create new ids)
+            Response.Headers["Cache-Control"] = "private, max-age=3600";
+            return PhysicalFile(resolved, contentType);
+        }
+
         // ─────────────────────────────────────────────────────────
         //  COMMUNICATIONS — list & quick-create against ClientInteractions
         // ─────────────────────────────────────────────────────────
