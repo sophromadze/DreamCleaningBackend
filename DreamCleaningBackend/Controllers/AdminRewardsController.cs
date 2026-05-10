@@ -361,6 +361,114 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        /// <summary>Search users that can be set as the referrer of userId:
+        /// must exist, not be deleted, and not be the user themselves.
+        /// Excludes users that userId has already referred (would create a cycle).</summary>
+        [HttpGet("users/{userId}/eligible-referrers")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> SearchEligibleReferrers(int userId, [FromQuery] string query = "")
+        {
+            try
+            {
+                var alreadyReferredIds = await _context.Referrals
+                    .Where(r => r.ReferrerUserId == userId)
+                    .Select(r => r.ReferredUserId)
+                    .ToListAsync();
+
+                var q = _context.Users.Where(u =>
+                    !u.IsDeleted &&
+                    u.Id != userId &&
+                    !alreadyReferredIds.Contains(u.Id));
+
+                if (!string.IsNullOrWhiteSpace(query))
+                    q = q.Where(u => u.Email.Contains(query) || u.FirstName.Contains(query) || u.LastName.Contains(query));
+
+                var results = await q
+                    .OrderBy(u => u.Email)
+                    .Take(10)
+                    .Select(u => new { u.Id, u.Email, name = u.FirstName + " " + u.LastName })
+                    .ToListAsync();
+
+                return Ok(results);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error searching eligible referrers");
+                return StatusCode(500, new { message = "Failed to search users." });
+            }
+        }
+
+        /// <summary>Set/correct the "referred by" link for this user. Overwrites any existing referrer.
+        /// Target referrer must exist, must not be the user themselves, and must not be one of this user's referrals.</summary>
+        [HttpPost("users/{userId}/referred-by")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> SetReferredBy(int userId, [FromBody] AddReferralDto dto)
+        {
+            try
+            {
+                var user = await _context.Users.FindAsync(userId);
+                if (user == null) return NotFound(new { message = "User not found." });
+
+                if (string.IsNullOrWhiteSpace(dto.Email))
+                    return BadRequest(new { message = "Email is required." });
+
+                var newReferrer = await _context.Users
+                    .FirstOrDefaultAsync(u => u.Email == dto.Email && !u.IsDeleted);
+
+                if (newReferrer == null)
+                    return BadRequest(new { message = "No user found with that email." });
+
+                if (newReferrer.Id == userId)
+                    return BadRequest(new { message = "A user cannot be their own referrer." });
+
+                // Cycle guard: the new referrer must not be one of this user's referrals.
+                var wouldCycle = await _context.Referrals
+                    .AnyAsync(r => r.ReferrerUserId == userId && r.ReferredUserId == newReferrer.Id);
+                if (wouldCycle)
+                    return BadRequest(new { message = "Cannot set referrer to a user that this user has already referred." });
+
+                // If the new referrer is the same as the current one, no-op.
+                if (user.ReferredByUserId == newReferrer.Id)
+                    return Ok(new { message = "User is already referred by this person.", referredByName = newReferrer.Email });
+
+                // Remove the old Referral row, if any.
+                if (user.ReferredByUserId != null)
+                {
+                    var oldReferrerId = user.ReferredByUserId.Value;
+                    var oldReferral = await _context.Referrals
+                        .FirstOrDefaultAsync(r => r.ReferrerUserId == oldReferrerId && r.ReferredUserId == userId);
+                    if (oldReferral != null)
+                        _context.Referrals.Remove(oldReferral);
+                }
+
+                user.ReferredByUserId = newReferrer.Id;
+
+                // Avoid duplicate row in case one already exists (shouldn't, but be safe).
+                var existing = await _context.Referrals
+                    .AnyAsync(r => r.ReferrerUserId == newReferrer.Id && r.ReferredUserId == userId);
+                if (!existing)
+                {
+                    _context.Referrals.Add(new Referral
+                    {
+                        ReferrerUserId = newReferrer.Id,
+                        ReferredUserId = userId,
+                        Status = "Registered",
+                        RegistrationBonusGiven = false,
+                        OrderBonusGiven = false,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+
+                await _context.SaveChangesAsync();
+                return Ok(new { message = "Referrer set.", referredByName = newReferrer.Email });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error setting referred-by for user {UserId}", userId);
+                return StatusCode(500, new { message = "Failed to set referrer." });
+            }
+        }
+
         // ─── Referrals ───────────────────────────────────────────────────────────
 
         [HttpGet("referrals")]

@@ -2359,17 +2359,21 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = $"User {(dto.IsActive ? "activated" : "deactivated")} successfully" });
         }
 
-        /// <summary>SuperAdmin-only: edit any user field. All changes are audit-logged.</summary>
+        /// <summary>Admin/SuperAdmin: edit user fields. Admins cannot modify SuperAdmin users or assign the SuperAdmin role. All changes are audit-logged.</summary>
         [HttpPut("users/{id}/superadmin-full-update")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult> SuperAdminFullUpdateUser(int id, [FromBody] SuperAdminUpdateUserDto dto)
         {
-            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+            var currentUserRole = GetCurrentUserRole();
+            if (currentUserRole != UserRole.SuperAdmin && currentUserRole != UserRole.Admin)
                 return Forbid();
 
             var targetUser = await _context.Users.FindAsync(id);
             if (targetUser == null)
                 return NotFound();
+
+            if (currentUserRole == UserRole.Admin && targetUser.Role == UserRole.SuperAdmin)
+                return BadRequest(new { message = "Admins cannot modify SuperAdmin users" });
 
             var originalUser = new User
             {
@@ -2389,6 +2393,9 @@ namespace DreamCleaningBackend.Controllers
 
             if (!Enum.TryParse<UserRole>(dto.Role, out var newRole))
                 return BadRequest("Invalid role");
+
+            if (currentUserRole == UserRole.Admin && newRole == UserRole.SuperAdmin)
+                return BadRequest(new { message = "Admins cannot assign SuperAdmin role" });
 
             targetUser.FirstName = dto.FirstName;
             targetUser.LastName = dto.LastName;
@@ -3452,16 +3459,19 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        /// <summary>SuperAdmin-only: add an address (apartment) for another user.</summary>
+        /// <summary>Admin/SuperAdmin: add an address (apartment) for another user. Admins cannot modify SuperAdmin users.</summary>
         [HttpPost("users/{userId}/apartments")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult<ApartmentDto>> AddUserApartment(int userId, [FromBody] CreateApartmentDto dto)
         {
-            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+            var currentUserRole = GetCurrentUserRole();
+            if (currentUserRole != UserRole.SuperAdmin && currentUserRole != UserRole.Admin)
                 return Forbid();
-            var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
-            if (!userExists)
+            var targetUser = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+            if (targetUser == null)
                 return NotFound(new { message = "User not found" });
+            if (currentUserRole == UserRole.Admin && targetUser.Role == UserRole.SuperAdmin)
+                return BadRequest(new { message = "Admins cannot modify SuperAdmin users" });
             try
             {
                 var apartment = await _profileService.AddApartment(userId, dto);
@@ -3473,16 +3483,19 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        /// <summary>SuperAdmin-only: update an address (apartment) for another user.</summary>
+        /// <summary>Admin/SuperAdmin: update an address (apartment) for another user. Admins cannot modify SuperAdmin users.</summary>
         [HttpPut("users/{userId}/apartments/{apartmentId}")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult<ApartmentDto>> UpdateUserApartment(int userId, int apartmentId, [FromBody] ApartmentDto dto)
         {
-            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+            var currentUserRole = GetCurrentUserRole();
+            if (currentUserRole != UserRole.SuperAdmin && currentUserRole != UserRole.Admin)
                 return Forbid();
-            var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
-            if (!userExists)
+            var targetUser = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+            if (targetUser == null)
                 return NotFound(new { message = "User not found" });
+            if (currentUserRole == UserRole.Admin && targetUser.Role == UserRole.SuperAdmin)
+                return BadRequest(new { message = "Admins cannot modify SuperAdmin users" });
             if (dto.Id != 0 && dto.Id != apartmentId)
                 return BadRequest(new { message = "Apartment ID mismatch" });
             try
@@ -3496,16 +3509,19 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        /// <summary>SuperAdmin-only: delete an address (apartment) for another user.</summary>
+        /// <summary>Admin/SuperAdmin: delete an address (apartment) for another user. Admins cannot modify SuperAdmin users.</summary>
         [HttpDelete("users/{userId}/apartments/{apartmentId}")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult> DeleteUserApartment(int userId, int apartmentId)
         {
-            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+            var currentUserRole = GetCurrentUserRole();
+            if (currentUserRole != UserRole.SuperAdmin && currentUserRole != UserRole.Admin)
                 return Forbid();
-            var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
-            if (!userExists)
+            var targetUser = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+            if (targetUser == null)
                 return NotFound(new { message = "User not found" });
+            if (currentUserRole == UserRole.Admin && targetUser.Role == UserRole.SuperAdmin)
+                return BadRequest(new { message = "Admins cannot modify SuperAdmin users" });
             try
             {
                 await _profileService.DeleteApartment(userId, apartmentId);
