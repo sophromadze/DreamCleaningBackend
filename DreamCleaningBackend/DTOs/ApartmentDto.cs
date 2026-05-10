@@ -30,7 +30,7 @@ namespace DreamCleaningBackend.DTOs
         [RegularExpression(@"^\d{5}$", ErrorMessage = "Postal code must be exactly 5 digits")]
         public string PostalCode { get; set; }
 
-        [StringLength(500)]
+        [StringLength(2000)]
         public string? SpecialInstructions { get; set; }
     }
 }

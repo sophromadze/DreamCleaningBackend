@@ -106,7 +106,7 @@ namespace DreamCleaningBackend.Models
         public string? EntryMethod { get; set; }
 
         // Special instructions
-        [StringLength(500)]
+        [StringLength(2000)]
         public string? SpecialInstructions { get; set; }
 
         // Floor types (comma-separated, may include "other:custom text")

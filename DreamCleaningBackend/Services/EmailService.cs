@@ -932,7 +932,7 @@ namespace DreamCleaningBackend.Services
 
             var labels = GetCleanerEmailLabels(language);
 
-            string suppliesValue = hasCleaningSupplies ? labels["suppliesNotRequired"] : labels["suppliesRequired"];
+            string suppliesValue = hasCleaningSupplies ? labels["suppliesRequired"] : labels["suppliesNotRequired"];
             string firstName = order.ContactFirstName ?? string.Empty;
             string addressValue = string.IsNullOrWhiteSpace(fullAddress) ? "—" : fullAddress;
             string entryValue = string.IsNullOrWhiteSpace(order.EntryMethod) ? "—" : order.EntryMethod;

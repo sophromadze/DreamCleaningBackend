@@ -31,6 +31,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IHubContext<UserManagementHub> _hubContext;
         private readonly IAuthService _authService;
         private readonly IReferralService _referralService;
+        private readonly IUserCleaningPhotoService _userCleaningPhotoService;
 
         public BookingController(ApplicationDbContext context,
             IConfiguration configuration,
@@ -43,7 +44,8 @@ namespace DreamCleaningBackend.Controllers
             ILogger<BookingController> logger,
             IHubContext<UserManagementHub> hubContext,
             IAuthService authService,
-            IReferralService referralService)
+            IReferralService referralService,
+            IUserCleaningPhotoService userCleaningPhotoService)
         {
             _context = context;
             _configuration = configuration;
@@ -57,6 +59,7 @@ namespace DreamCleaningBackend.Controllers
             _hubContext = hubContext;
             _authService = authService;
             _referralService = referralService;
+            _userCleaningPhotoService = userCleaningPhotoService;
         }
 
         [HttpGet("service-types")]
@@ -2279,6 +2282,45 @@ namespace DreamCleaningBackend.Controllers
                         Console.WriteLine($"Failed to send company notification email: {ex.Message}");
                     }
                 });
+
+                // Persist booking-uploaded photos to the per-user cleaning photo library
+                // (same resize/webp pipeline as the admin upload), then prune so the user
+                // keeps only their two most recent cleanings on disk.
+                if (bookingDataDto?.UploadedPhotos != null && bookingDataDto.UploadedPhotos.Count > 0)
+                {
+                    var savedAny = false;
+                    foreach (var photo in bookingDataDto.UploadedPhotos)
+                    {
+                        if (string.IsNullOrWhiteSpace(photo?.Base64Data)) continue;
+                        try
+                        {
+                            var bytes = Convert.FromBase64String(photo.Base64Data);
+                            using var ms = new MemoryStream(bytes);
+                            await _userCleaningPhotoService.SavePhotoFromStreamAsync(
+                                userId,
+                                order.Id,
+                                ms,
+                                caption: null);
+                            savedAny = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Failed to persist booking photo for order {OrderId}", order.Id);
+                        }
+                    }
+
+                    if (savedAny)
+                    {
+                        try
+                        {
+                            await _userCleaningPhotoService.PruneOldPhotosAsync(userId);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Failed to prune old cleaning photos for user {UserId}", userId);
+                        }
+                    }
+                }
 
                 // Clean up booking data after successful payment
                 _bookingDataService.RemoveBookingData(sessionId);

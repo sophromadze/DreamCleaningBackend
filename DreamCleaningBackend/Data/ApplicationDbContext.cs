@@ -57,6 +57,9 @@ namespace DreamCleaningBackend.Data
         public DbSet<UserNote> UserNotes { get; set; }
         public DbSet<UserCleaningPhoto> UserCleaningPhotos { get; set; }
 
+        // Marketing — homepage before/after gallery
+        public DbSet<BeforeAfterPhoto> BeforeAfterPhotos { get; set; }
+
         // Scheduling
         public DbSet<BlockedTimeSlot> BlockedTimeSlots { get; set; }
 
@@ -193,6 +196,17 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(p => p.OrderId)
                     .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(p => p.UploadedByAdmin)
+                    .WithMany()
+                    .HasForeignKey(p => p.UploadedByAdminId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<BeforeAfterPhoto>(entity =>
+            {
+                entity.HasIndex(e => new { e.IsActive, e.DisplayOrder })
+                      .HasDatabaseName("IX_BeforeAfterPhotos_Active_Order");
 
                 entity.HasOne(p => p.UploadedByAdmin)
                     .WithMany()

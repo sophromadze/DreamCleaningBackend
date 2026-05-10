@@ -24,6 +24,7 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public string EntryMethod { get; set; }
 
+        [StringLength(2000)]
         public string? SpecialInstructions { get; set; }
 
         [Required]

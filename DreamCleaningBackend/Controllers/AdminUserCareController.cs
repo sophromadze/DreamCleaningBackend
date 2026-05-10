@@ -2,12 +2,10 @@ using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Webp;
-using SixLabors.ImageSharp.Processing;
 using System.Security.Claims;
 
 namespace DreamCleaningBackend.Controllers
@@ -24,15 +22,13 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
+        private readonly IUserCleaningPhotoService _photoService;
 
-        // Image upload constraints — match CleanerManagementService for consistency
-        private const long MaxUploadSizeBytes = 10 * 1024 * 1024;
-        private static readonly string[] AllowedImageExtensions = { ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp" };
-
-        public AdminUserCareController(ApplicationDbContext context, IConfiguration configuration)
+        public AdminUserCareController(ApplicationDbContext context, IConfiguration configuration, IUserCleaningPhotoService photoService)
         {
             _context = context;
             _configuration = configuration;
+            _photoService = photoService;
         }
 
         // ─────────────────────────────────────────────────────────
@@ -186,33 +182,16 @@ namespace DreamCleaningBackend.Controllers
                     if (!orderBelongs) return BadRequest(new { message = "Order does not belong to this user." });
                 }
 
-                var saved = await SaveWebpImageAsync(
+                var photo = await _photoService.SavePhotoFromFormFileAsync(
+                    userId,
+                    orderId,
                     file,
-                    "user-cleaning-photos",
-                    $"user-{userId}",
-                    maxWidth: 1600,
-                    maxHeight: 1600,
-                    quality: 80);
-
-                if (saved == null) return BadRequest(new { message = "Could not process image." });
-
-                var photo = new UserCleaningPhoto
-                {
-                    UserId = userId,
-                    OrderId = orderId,
-                    PhotoUrl = saved.Url,
-                    SizeBytes = saved.SizeBytes,
-                    UploadedByAdminId = GetUserId(),
-                    UploadedByAdminName = GetUserDisplayName(),
-                    Caption = string.IsNullOrWhiteSpace(caption) ? null : caption.Trim(),
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                _context.UserCleaningPhotos.Add(photo);
-                await _context.SaveChangesAsync();
+                    caption,
+                    GetUserId(),
+                    GetUserDisplayName());
 
                 // Prune photos for orders older than the user's two most recent distinct orders
-                var pruned = await PruneOldCleaningPhotosAsync(userId);
+                var pruned = await _photoService.PruneOldPhotosAsync(userId);
 
                 return Ok(new UserCleaningPhotoUploadResultDto
                 {
@@ -507,97 +486,6 @@ namespace DreamCleaningBackend.Controllers
             CreatedAt = p.CreatedAt
         };
 
-        /// <summary>
-        /// After a new photo is uploaded, prune photos belonging to orders older than the
-        /// user's two most recent (distinct) orders. Photos with no OrderId are kept.
-        /// Returns the number of pruned photos.
-        /// </summary>
-        private async Task<int> PruneOldCleaningPhotosAsync(int userId)
-        {
-            // Distinct order IDs that this user has photos for, ordered by most recent service date
-            var orderIdsWithPhotos = await _context.UserCleaningPhotos
-                .Where(p => p.UserId == userId && p.OrderId != null)
-                .Select(p => p.OrderId!.Value)
-                .Distinct()
-                .ToListAsync();
-
-            if (orderIdsWithPhotos.Count <= 2) return 0;
-
-            // Resolve each order's service date so we know which two are newest
-            var orderDates = await _context.Orders
-                .Where(o => orderIdsWithPhotos.Contains(o.Id))
-                .Select(o => new { o.Id, o.ServiceDate })
-                .ToListAsync();
-
-            var keepOrderIds = orderDates
-                .OrderByDescending(o => o.ServiceDate)
-                .Take(2)
-                .Select(o => o.Id)
-                .ToHashSet();
-
-            var toDelete = await _context.UserCleaningPhotos
-                .Where(p => p.UserId == userId
-                            && p.OrderId != null
-                            && !keepOrderIds.Contains(p.OrderId!.Value))
-                .ToListAsync();
-
-            foreach (var p in toDelete)
-                DeleteFileIfExists(p.PhotoUrl);
-
-            _context.UserCleaningPhotos.RemoveRange(toDelete);
-            await _context.SaveChangesAsync();
-            return toDelete.Count;
-        }
-
-        private async Task<UploadedImageInfo?> SaveWebpImageAsync(IFormFile file, string subfolder, string baseFileName, int maxWidth, int maxHeight, int quality)
-        {
-            if (file == null || file.Length == 0)
-                throw new InvalidOperationException("No file uploaded.");
-
-            if (file.Length > MaxUploadSizeBytes)
-                throw new InvalidOperationException("File size must be less than 10MB.");
-
-            var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
-            if (!AllowedImageExtensions.Contains(extension))
-                throw new InvalidOperationException("Invalid file type. Only image files are allowed.");
-
-            var basePath = _configuration["FileUpload:Path"];
-            if (string.IsNullOrWhiteSpace(basePath))
-                throw new InvalidOperationException("FileUpload:Path is not configured.");
-
-            var uploadDir = Path.Combine(basePath, subfolder);
-            Directory.CreateDirectory(uploadDir);
-
-            var fileName = $"{baseFileName}-{DateTime.UtcNow:yyyyMMddHHmmssfff}.webp";
-            var fullPath = Path.Combine(uploadDir, fileName);
-
-            using (var inputStream = file.OpenReadStream())
-            using (var image = await Image.LoadAsync(inputStream))
-            {
-                if (image.Width > maxWidth || image.Height > maxHeight)
-                {
-                    image.Mutate(x => x.Resize(new ResizeOptions
-                    {
-                        Size = new Size(maxWidth, maxHeight),
-                        Mode = ResizeMode.Max
-                    }));
-                }
-
-                var encoder = new WebpEncoder
-                {
-                    Quality = quality,
-                    Method = WebpEncodingMethod.BestQuality
-                };
-
-                await image.SaveAsync(fullPath, encoder);
-            }
-
-            var info = new FileInfo(fullPath);
-            var publicUrl = "/" + Path.Combine(subfolder, fileName).Replace("\\", "/");
-
-            return new UploadedImageInfo { Url = publicUrl, SizeBytes = info.Length };
-        }
-
         private void DeleteFileIfExists(string? publicUrl)
         {
             if (string.IsNullOrWhiteSpace(publicUrl)) return;
@@ -636,12 +524,6 @@ namespace DreamCleaningBackend.Controllers
             if (!string.IsNullOrWhiteSpace(name)) return name;
 
             return User.FindFirst(ClaimTypes.Email)?.Value ?? "Admin";
-        }
-
-        private sealed class UploadedImageInfo
-        {
-            public string Url { get; set; } = string.Empty;
-            public long SizeBytes { get; set; }
         }
     }
 }
