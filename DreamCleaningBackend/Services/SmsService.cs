@@ -79,6 +79,16 @@ namespace DreamCleaningBackend.Services
                 await rc.Restapi().Account().Extension().Sms().Post(parameters);
                 _logger.LogInformation("SMS sent successfully to {To}", normalized);
             }
+            catch (RestException rcEx) when (IsInvalidPhoneNumberError(rcEx))
+            {
+                // RingCentral rejected the destination number (CMN-414 / InvalidParameter on
+                // to.phoneNumber). This is a data problem on our side, not a transient failure
+                // and not worth alerting on — surface it as a typed exception so admin-triggered
+                // sends can show a clean "this number is invalid, no SMS sent" message instead
+                // of leaking the raw RingCentral payload to the user.
+                _logger.LogWarning(rcEx, "RingCentral rejected phone number {To} as invalid; SMS not sent", toNumber);
+                throw new InvalidPhoneNumberException(toNumber, "Phone number is invalid; no SMS was sent.", rcEx);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send SMS to {To}", toNumber);
@@ -91,6 +101,19 @@ namespace DreamCleaningBackend.Services
                     try { await rc.Revoke(); } catch (Exception ex) { _logger.LogDebug(ex, "Revoke after SMS"); }
                 }
             }
+        }
+
+        // Recognise the RingCentral "invalid destination phone number" response. Their error
+        // bodies aren't typed beyond the JSON, so we match the documented errorCode CMN-414 as
+        // well as the parameterName hint, against whichever piece of the exception carries the
+        // payload across SDK versions.
+        private static bool IsInvalidPhoneNumberError(RestException ex)
+        {
+            var payload = (ex.Message ?? string.Empty) + " " + (ex.InnerException?.Message ?? string.Empty);
+            if (payload.Contains("CMN-414", StringComparison.OrdinalIgnoreCase)) return true;
+            if (payload.Contains("to.phoneNumber", StringComparison.OrdinalIgnoreCase) &&
+                payload.Contains("InvalidParameter", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
 
         public async Task SendBookingConfirmationSmsAsync(string phoneNumber, string customerName, DateTime serviceDate, string serviceTime,
@@ -171,6 +194,28 @@ namespace DreamCleaningBackend.Services
             var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
             var msg = $"Hi {firstName}! Thank you so much for choosing Dream Cleaning — we hope your space feels fresh and spotless! ✨ If you're happy with the service, we'd truly appreciate a quick review. It only takes a moment and means the world to our small team!\n\nhttps://g.page/r/CSmN7-QdmiyoEAI/review\n\nThank you and have a wonderful day! 😊";
             await SendSmsAsync(phoneNumber, msg);
+        }
+
+        // Loyalty re-engagement SMS templates — copy is verbatim from spec section 6 so the
+        // gratitude framing isn't accidentally paraphrased. Single-segment-targeted lengths.
+        public async Task SendLoyaltyReminder30SmsAsync(string phone, string firstName)
+        {
+            var msg = $"Hi {firstName}! It's been a while since your last clean — your home deserves another sparkle. Book today: dreamcleaningnearme.com Reply STOP to opt out.";
+            await SendSmsAsync(phone, msg);
+        }
+
+        public async Task SendLoyaltyReminder60SmsAsync(string phone, string firstName, decimal percentage)
+        {
+            var pct = percentage.ToString("0.##");
+            var msg = $"Hi {firstName}! As a thank-you from Dream Cleaning, we've added {pct}% off to your account — applies automatically at checkout. dreamcleaningnearme.com STOP to opt out.";
+            await SendSmsAsync(phone, msg);
+        }
+
+        public async Task SendLoyaltyReminder90SmsAsync(string phone, string firstName, decimal percentage)
+        {
+            var pct = percentage.ToString("0.##");
+            var msg = $"Hi {firstName}! Your account discount has been bumped up to {pct}% as our way of saying thanks. Book anytime: dreamcleaningnearme.com STOP to opt out.";
+            await SendSmsAsync(phone, msg);
         }
 
         /// <summary>

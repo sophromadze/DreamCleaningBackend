@@ -73,6 +73,16 @@ namespace DreamCleaningBackend.Models
         public decimal DiscountAmount { get; set; }
         public decimal SubscriptionDiscountAmount { get; set; } = 0;
 
+        // Loyalty Discount snapshot — value applied to this specific order. Stored as both
+        // amount and percentage so the historical record survives even if the user's current
+        // LoyaltyDiscountPercentage changes after the order. Used on cancellation to restore
+        // the percentage back to the user account.
+        [Column(TypeName = "decimal(10,2)")]
+        public decimal LoyaltyDiscountAmount { get; set; } = 0;
+
+        [Column(TypeName = "decimal(5,2)")]
+        public decimal LoyaltyDiscountPercentage { get; set; } = 0;
+
         [StringLength(50)]
         public string? PromoCode { get; set; }
 

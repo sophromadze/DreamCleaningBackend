@@ -37,6 +37,8 @@ namespace DreamCleaningBackend.Controllers
         private readonly IAuthService _authService;
         private readonly IHubContext<UserManagementHub> _hubContext;
         private readonly IBubblePointsService _bubblePointsService;
+        private readonly ILoyaltyDiscountService _loyaltyDiscountService;
+        private readonly IBubbleRewardsSettingsService _bubbleRewardsSettingsService;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
@@ -51,7 +53,9 @@ namespace DreamCleaningBackend.Controllers
             ISmsService smsService,
             IAuthService authService,
             IHubContext<UserManagementHub> hubContext,
-            IBubblePointsService bubblePointsService)
+            IBubblePointsService bubblePointsService,
+            ILoyaltyDiscountService loyaltyDiscountService,
+            IBubbleRewardsSettingsService bubbleRewardsSettingsService)
         {
             _context = context;
             _permissionService = permissionService;
@@ -67,6 +71,8 @@ namespace DreamCleaningBackend.Controllers
             _authService = authService;
             _hubContext = hubContext;
             _bubblePointsService = bubblePointsService;
+            _loyaltyDiscountService = loyaltyDiscountService;
+            _bubbleRewardsSettingsService = bubbleRewardsSettingsService;
         }
 
         // Service Types Management
@@ -2654,6 +2660,8 @@ namespace DreamCleaningBackend.Controllers
                     InitialTotal = order.InitialTotal,
                     DiscountAmount = order.DiscountAmount,
                     SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
+                    LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
+                    LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
                     PromoCode = order.PromoCode,
                     GiftCardCode = order.GiftCardCode,
                     GiftCardAmountUsed = order.GiftCardAmountUsed,
@@ -2813,6 +2821,27 @@ namespace DreamCleaningBackend.Controllers
                 // Handle special offer re-marking when reactivating from cancelled status
                 if (previousStatus == "Cancelled" && dto.Status == "Active")
                 {
+                    // Loyalty Discount: symmetric to the reverse-on-cancel hook in this same
+                    // controller's CancelOrder. Re-consume the order's loyalty snapshot via
+                    // ApplyToOrderAsync, which zeros the user's current % and stamps LastUsedAt.
+                    //
+                    // Trade-off (flagged for review): if the user's loyalty journey advanced
+                    // after the cancellation (e.g. cron upgraded them to 15% during the gap),
+                    // reactivation consumes that current % too. Spec section 2.7 only covers
+                    // the cancellation direction explicitly; reactivation is rare and admin-
+                    // driven, and the audit log makes the consumption traceable.
+                    if (order.LoyaltyDiscountAmount > 0m && order.LoyaltyDiscountPercentage > 0m)
+                    {
+                        try
+                        {
+                            await _loyaltyDiscountService.ApplyToOrderAsync(orderId);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Loyalty discount re-apply failed for order {orderId} on admin reactivation — order is Active but user state may be stale: {ex.Message}");
+                        }
+                    }
+
                     // Check if order had a discount amount (indicating a special offer was used)
                     if (order.DiscountAmount > 0)
                     {
@@ -2979,6 +3008,20 @@ namespace DreamCleaningBackend.Controllers
                     await _context.SaveChangesAsync();
 
                     Console.WriteLine($"Restored special offer {userSpecialOffer.SpecialOfferId} for user {userSpecialOffer.UserId} after admin cancelled order {orderId}");
+                }
+
+                // Restore loyalty discount snapshot to the user's account if this order had one.
+                // Same pattern as the special-offer reset above. Failures don't unwind the cancel.
+                if (order.LoyaltyDiscountAmount > 0m && order.LoyaltyDiscountPercentage > 0m)
+                {
+                    try
+                    {
+                        await _loyaltyDiscountService.ReverseFromOrderAsync(orderId);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Loyalty discount reverse failed for order {orderId} on admin cancel — order is cancelled but user state may be stale: {ex.Message}");
+                    }
                 }
 
                 // Create updated copy for auditing
@@ -3212,6 +3255,8 @@ namespace DreamCleaningBackend.Controllers
                 InitialTotal = order.InitialTotal,
                 DiscountAmount = order.DiscountAmount,
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
+                LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
+                LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
                 PromoCode = order.PromoCode,
                 GiftCardCode = order.GiftCardCode,
                 GiftCardAmountUsed = order.GiftCardAmountUsed,
@@ -3413,7 +3458,9 @@ namespace DreamCleaningBackend.Controllers
                         RewardBalanceUsed = o.RewardBalanceUsed,
                         PointsEarned = _context.BubblePointsHistories
                             .Where(h => h.OrderId == o.Id && h.UserId == userId && h.Points > 0)
-                            .Sum(h => (int?)h.Points) ?? 0
+                            .Sum(h => (int?)h.Points) ?? 0,
+                        LoyaltyDiscountAmount = o.LoyaltyDiscountAmount,
+                        LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage
                     })
                     .ToListAsync();
 
@@ -3845,7 +3892,8 @@ namespace DreamCleaningBackend.Controllers
                 ChangedByEmail = log.User?.Email,
                 OldValues = string.IsNullOrEmpty(log.OldValues) ? null : JsonConvert.DeserializeObject(log.OldValues),
                 NewValues = string.IsNullOrEmpty(log.NewValues) ? null : JsonConvert.DeserializeObject(log.NewValues),
-                ChangedFields = string.IsNullOrEmpty(log.ChangedFields) ? null : JsonConvert.DeserializeObject<List<string>>(log.ChangedFields)
+                ChangedFields = string.IsNullOrEmpty(log.ChangedFields) ? null : JsonConvert.DeserializeObject<List<string>>(log.ChangedFields),
+                UndoneAt = log.UndoneAt
             });
 
             return Ok(result);
@@ -3874,10 +3922,52 @@ namespace DreamCleaningBackend.Controllers
                 changedByEmail = log.User?.Email,
                 oldValues = log.OldValues,      // lowercase
                 newValues = log.NewValues,      // lowercase
-                changedFields = log.ChangedFields  // lowercase
+                changedFields = log.ChangedFields,  // lowercase
+                undoneAt = log.UndoneAt
             }).ToList();
 
             return Ok(result);
+        }
+
+        /// <summary>SuperAdmin-only: revert the change recorded by an audit row. Database-only —
+        /// will not refund payments, recall sent emails, etc. See AuditService for the block list.</summary>
+        [HttpPost("audit-logs/{id}/undo")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<IActionResult> UndoAuditLog(long id)
+        {
+            try
+            {
+                await _auditService.UndoAsync(id);
+                return Ok(new { message = "Change undone." });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = "Failed to undo change: " + ex.Message });
+            }
+        }
+
+        /// <summary>SuperAdmin-only: re-apply a change that was previously undone.</summary>
+        [HttpPost("audit-logs/{id}/redo")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<IActionResult> RedoAuditLog(long id)
+        {
+            try
+            {
+                await _auditService.RedoAsync(id);
+                return Ok(new { message = "Change redone." });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = "Failed to redo change: " + ex.Message });
+            }
         }
 
         [HttpGet("users/{userId}/history")]
@@ -4441,7 +4531,8 @@ namespace DreamCleaningBackend.Controllers
                     h.PaymentIntentId,
                     h.IsPaid,
                     h.PaidAt,
-                    h.UpdateNotes
+                    h.UpdateNotes,
+                    h.UpdatedPaymentNotificationSentAt
                 })
                 .ToListAsync();
 
@@ -4491,11 +4582,16 @@ namespace DreamCleaningBackend.Controllers
             var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
             var paymentLink = $"{frontendUrl.TrimEnd('/')}/order/{orderId}/pay";
 
+            // Track per-channel outcome so the admin sees a clear "email sent, SMS skipped" hint
+            // when RingCentral rejects the phone number, rather than a hard 400.
+            bool emailSent = false, smsSent = false, smsInvalid = false;
+
             if (!string.IsNullOrWhiteSpace(customerEmail))
             {
                 try
                 {
                     await _emailService.SendAdditionalPaymentReminderEmailAsync(customerEmail, customerName, amountToSend, orderId, paymentLink);
+                    emailSent = true;
                 }
                 catch (Exception ex)
                 {
@@ -4508,7 +4604,14 @@ namespace DreamCleaningBackend.Controllers
                 {
                     var e164 = SmsService.NormalizePhoneToE164(customerPhone);
                     if (!string.IsNullOrEmpty(e164))
+                    {
                         await _smsService.SendAdditionalPaymentReminderSmsAsync(e164, customerName, amountToSend, orderId, paymentLink);
+                        smsSent = true;
+                    }
+                }
+                catch (InvalidPhoneNumberException)
+                {
+                    smsInvalid = true;
                 }
                 catch (Exception ex)
                 {
@@ -4518,7 +4621,122 @@ namespace DreamCleaningBackend.Controllers
             if (string.IsNullOrWhiteSpace(customerEmail) && (string.IsNullOrWhiteSpace(customerPhone) || !_smsService.IsSmsEnabled()))
                 return BadRequest(new { message = "No email or phone available to send the reminder." });
 
-            return Ok(new { message = "Payment reminder sent successfully." });
+            return Ok(new { message = BuildSendResultMessage("Payment reminder", emailSent, smsSent, smsInvalid) });
+        }
+
+        /// <summary>Send the first "your order was updated, please pay the additional amount" email + SMS
+        /// to the customer for a manual back-office order edit. Replaces the auto-send that used to fire
+        /// inside SuperAdminFullUpdateOrder. After this fires, the admin UI flips to the regular
+        /// "Send Payment Reminder" button for follow-ups.</summary>
+        [HttpPost("orders/{orderId}/send-updated-payment")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> SendUpdatedPaymentNotification(int orderId)
+        {
+            var order = await _context.Orders
+                .Include(o => o.User)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            // Compute outstanding amount the same way SendPaymentReminder does — unpaid delta
+            // since the original booking, less anything already paid via prior update rows.
+            var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
+            decimal originalWithoutTips;
+            if (order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m)
+                originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
+            else
+            {
+                var firstHist = await _context.OrderUpdateHistories
+                    .Where(h => h.OrderId == orderId)
+                    .OrderBy(h => h.UpdatedAt)
+                    .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
+                    .FirstOrDefaultAsync();
+                originalWithoutTips = firstHist ?? 0m;
+            }
+            var totalDelta = Math.Max(0m, currentWithoutTips - originalWithoutTips);
+            var alreadyPaid = await _context.OrderUpdateHistories
+                .Where(h => h.OrderId == orderId && h.IsPaid)
+                .SumAsync(h => h.AdditionalAmount);
+            var amountToSend = Math.Round(Math.Max(0m, totalDelta - alreadyPaid), 2);
+            if (amountToSend < 0.01m)
+                return BadRequest(new { message = "No unpaid additional payment for this order." });
+
+            var customerName = !string.IsNullOrWhiteSpace(order.ContactFirstName) || !string.IsNullOrWhiteSpace(order.ContactLastName)
+                ? $"{order.ContactFirstName?.Trim()} {order.ContactLastName?.Trim()}".Trim()
+                : (order.User != null ? $"{order.User.FirstName?.Trim()} {order.User.LastName?.Trim()}".Trim() : "Valued Customer");
+            if (string.IsNullOrWhiteSpace(customerName))
+                customerName = order.User?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
+            var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : order.User?.Email;
+            var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
+
+            var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+            var paymentLink = $"{frontendUrl.TrimEnd('/')}/order/{orderId}/pay";
+
+            bool emailSent = false, smsSent = false, smsInvalid = false;
+
+            if (!string.IsNullOrWhiteSpace(customerEmail))
+            {
+                try
+                {
+                    await _emailService.SendAdditionalPaymentRequiredEmailAsync(customerEmail, customerName, amountToSend, orderId, paymentLink);
+                    emailSent = true;
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(new { message = "Updated-payment email could not be sent: " + ex.Message });
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(customerPhone) && _smsService.IsSmsEnabled())
+            {
+                try
+                {
+                    var e164 = SmsService.NormalizePhoneToE164(customerPhone);
+                    if (!string.IsNullOrEmpty(e164))
+                    {
+                        await _smsService.SendAdditionalPaymentRequiredSmsAsync(e164, customerName, amountToSend, orderId, paymentLink);
+                        smsSent = true;
+                    }
+                }
+                catch (InvalidPhoneNumberException)
+                {
+                    smsInvalid = true;
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(new { message = "Updated-payment SMS could not be sent: " + ex.Message });
+                }
+            }
+            if (string.IsNullOrWhiteSpace(customerEmail) && (string.IsNullOrWhiteSpace(customerPhone) || !_smsService.IsSmsEnabled()))
+                return BadRequest(new { message = "No email or phone available to send the updated-payment notification." });
+
+            // Stamp every unpaid, not-yet-notified history row for this order. We mark them all
+            // (rather than only the latest) because the notification covers the full outstanding
+            // balance — once it's sent, none of those rows should show "first send" any longer.
+            // Stamp even when only the email went through — the customer has been informed; the
+            // bad-phone-number issue is on the admin to fix, not a reason to re-show "Send updated
+            // payment" indefinitely.
+            var rowsToStamp = await _context.OrderUpdateHistories
+                .Where(h => h.OrderId == orderId && !h.IsPaid && h.UpdatedPaymentNotificationSentAt == null)
+                .ToListAsync();
+            var stampedAt = DateTime.UtcNow;
+            foreach (var row in rowsToStamp)
+                row.UpdatedPaymentNotificationSentAt = stampedAt;
+            if (rowsToStamp.Count > 0)
+                await _context.SaveChangesAsync();
+
+            return Ok(new { message = BuildSendResultMessage("Updated-payment notification", emailSent, smsSent, smsInvalid) });
+        }
+
+        // Compose an admin-friendly summary across the two channels so callers can show one
+        // toast instead of guessing at partial-success state. Used by both reminder flavors.
+        private static string BuildSendResultMessage(string label, bool emailSent, bool smsSent, bool smsInvalid)
+        {
+            if (emailSent && smsSent) return $"{label} sent (email + SMS).";
+            if (emailSent && smsInvalid) return $"{label}: email sent. SMS was not sent because the phone number on file is invalid.";
+            if (emailSent) return $"{label}: email sent.";
+            if (smsSent) return $"{label}: SMS sent.";
+            if (smsInvalid) return $"{label}: not sent — the phone number on file is invalid and there is no email.";
+            return $"{label} sent.";
         }
 
         // ───── Statistics (SuperAdmin only) ─────
@@ -4926,6 +5144,127 @@ namespace DreamCleaningBackend.Controllers
             _context.BlockedTimeSlots.Remove(blocked);
             await _context.SaveChangesAsync();
             return Ok(new { message = "Blocked time slot deleted successfully." });
+        }
+
+        // ───── Loyalty Discount (re-engagement system) ─────
+        //
+        // User-scoped endpoints sit under /admin/users/{userId}/loyalty-discount and require
+        // Permission.View for read, Permission.Update for write. The Moderator role has only
+        // View by default, which matches the spec (read-only). Settings endpoints sit under
+        // /admin/loyalty-discount-settings and are hidden from Moderator (Update-only writes,
+        // View-gated reads).
+
+        [HttpGet("users/{userId}/loyalty-discount")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<LoyaltyDiscountDto>> GetUserLoyaltyDiscount(int userId)
+        {
+            try
+            {
+                var dto = await _loyaltyDiscountService.GetForUserAsync(userId);
+                return Ok(dto);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return NotFound(new { message = ex.Message });
+            }
+        }
+
+        [HttpPut("users/{userId}/loyalty-discount")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<LoyaltyDiscountDto>> SetUserLoyaltyDiscount(int userId, [FromBody] SetLoyaltyDiscountDto body)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            if (adminUserId == 0) return Unauthorized();
+
+            try
+            {
+                var dto = await _loyaltyDiscountService.SetManualAsync(userId, body.Percentage, adminUserId);
+                return Ok(dto);
+            }
+            catch (ArgumentOutOfRangeException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return NotFound(new { message = ex.Message });
+            }
+        }
+
+        [HttpDelete("users/{userId}/loyalty-discount")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<LoyaltyDiscountDto>> ClearUserLoyaltyDiscount(int userId)
+        {
+            var adminUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            if (adminUserId == 0) return Unauthorized();
+
+            try
+            {
+                var dto = await _loyaltyDiscountService.ClearAsync(userId, adminUserId);
+                return Ok(dto);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return NotFound(new { message = ex.Message });
+            }
+        }
+
+        [HttpGet("loyalty-discount-settings")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<LoyaltyDiscountSettingsDto>> GetLoyaltyDiscountSettings()
+        {
+            // BubbleRewardsSettingsService is a generic key/value store. The 7 loyalty keys all
+            // live under category "LoyaltyDiscount" — seeded in ApplicationDbContext. We project
+            // them into a typed DTO for the admin UI rather than returning the raw rows.
+            var dto = new LoyaltyDiscountSettingsDto
+            {
+                LoyaltyDiscountEnabled = await _bubbleRewardsSettingsService.GetSetting<bool>("LoyaltyDiscountEnabled", true),
+                LoyaltyDay60Percentage = await _bubbleRewardsSettingsService.GetSetting<decimal>("LoyaltyDay60Percentage", 10m),
+                LoyaltyDay90Percentage = await _bubbleRewardsSettingsService.GetSetting<decimal>("LoyaltyDay90Percentage", 15m),
+                DaysUntilFirstReminder = await _bubbleRewardsSettingsService.GetSetting<int>("DaysUntilFirstReminder", 30),
+                DaysUntilDiscountActivation = await _bubbleRewardsSettingsService.GetSetting<int>("DaysUntilDiscountActivation", 60),
+                DaysUntilDiscountUpgrade = await _bubbleRewardsSettingsService.GetSetting<int>("DaysUntilDiscountUpgrade", 90),
+                MinDaysFromLastUseBeforeReActivation = await _bubbleRewardsSettingsService.GetSetting<int>("MinDaysFromLastUseBeforeReActivation", 30),
+            };
+            return Ok(dto);
+        }
+
+        [HttpPut("loyalty-discount-settings")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<LoyaltyDiscountSettingsDto>> UpdateLoyaltyDiscountSettings([FromBody] LoyaltyDiscountSettingsDto body)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            // Cross-field invariants. The 90-day percentage must not be below the 60-day one,
+            // otherwise the "upgrade" path becomes a downgrade. The day thresholds must be
+            // strictly increasing for the same reason.
+            if (body.LoyaltyDay90Percentage < body.LoyaltyDay60Percentage)
+                return BadRequest(new { message = "Day-90 percentage must be >= Day-60 percentage" });
+            if (body.DaysUntilDiscountActivation <= body.DaysUntilFirstReminder)
+                return BadRequest(new { message = "DaysUntilDiscountActivation must be > DaysUntilFirstReminder" });
+            if (body.DaysUntilDiscountUpgrade <= body.DaysUntilDiscountActivation)
+                return BadRequest(new { message = "DaysUntilDiscountUpgrade must be > DaysUntilDiscountActivation" });
+
+            var updates = new List<BulkUpdateSettingDto>
+            {
+                new() { Key = "LoyaltyDiscountEnabled", Value = body.LoyaltyDiscountEnabled ? "true" : "false" },
+                new() { Key = "LoyaltyDay60Percentage", Value = body.LoyaltyDay60Percentage.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                new() { Key = "LoyaltyDay90Percentage", Value = body.LoyaltyDay90Percentage.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                new() { Key = "DaysUntilFirstReminder", Value = body.DaysUntilFirstReminder.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                new() { Key = "DaysUntilDiscountActivation", Value = body.DaysUntilDiscountActivation.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                new() { Key = "DaysUntilDiscountUpgrade", Value = body.DaysUntilDiscountUpgrade.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                new() { Key = "MinDaysFromLastUseBeforeReActivation", Value = body.MinDaysFromLastUseBeforeReActivation.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            };
+
+            await _bubbleRewardsSettingsService.BulkUpdateSettings(updates);
+
+            // Re-read so the response reflects the persisted values (including any normalisation
+            // BulkUpdateSettings might do).
+            return await GetLoyaltyDiscountSettings();
         }
     }
 }

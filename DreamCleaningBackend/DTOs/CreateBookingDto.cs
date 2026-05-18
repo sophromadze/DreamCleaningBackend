@@ -75,6 +75,11 @@ namespace DreamCleaningBackend.DTOs
         public decimal TotalDuration { get; set; }
         public decimal DiscountAmount { get; set; }
         public decimal SubscriptionDiscountAmount { get; set; } = 0;
+        // Loyalty Discount amount the client computed for the breakdown preview. The backend
+        // re-evaluates this from the user's actual LoyaltyDiscountPercentage and applies the
+        // stacking rules itself — the client value is read for UX correlation but never trusted
+        // for the persisted snapshot on the order.
+        public decimal LoyaltyDiscountAmount { get; set; } = 0;
         public decimal SubTotal { get; set; }
         public bool IsCustomPricing { get; set; } = false;
         public decimal? CustomAmount { get; set; }

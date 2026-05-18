@@ -203,7 +203,8 @@ namespace DreamCleaningBackend.Services
                 CanReceiveCommunications = user.CanReceiveCommunications,
                 CanReceiveEmails = user.CanReceiveEmails,
                 CanReceiveMessages = user.CanReceiveMessages,
-                HasPassword = user.PasswordHash != null
+                HasPassword = user.PasswordHash != null,
+                LoyaltyDiscountPercentage = user.LoyaltyDiscountPercentage,
             };
         }
 

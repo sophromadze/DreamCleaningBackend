@@ -20,8 +20,9 @@ namespace DreamCleaningBackend.Services
         private readonly ISmsService _smsService;
         private readonly IConfiguration _configuration;
         private readonly ILogger<OrderService> _logger;
+        private readonly ILoyaltyDiscountService _loyaltyDiscountService;
 
-        public OrderService(IOrderRepository orderRepository, ApplicationDbContext context, IStripeService stripeService, IEmailService emailService, ISmsService smsService, IConfiguration configuration, ILogger<OrderService> logger)
+        public OrderService(IOrderRepository orderRepository, ApplicationDbContext context, IStripeService stripeService, IEmailService emailService, ISmsService smsService, IConfiguration configuration, ILogger<OrderService> logger, ILoyaltyDiscountService loyaltyDiscountService)
         {
             _orderRepository = orderRepository;
             _context = context;
@@ -30,6 +31,7 @@ namespace DreamCleaningBackend.Services
             _smsService = smsService;
             _configuration = configuration;
             _logger = logger;
+            _loyaltyDiscountService = loyaltyDiscountService;
         }
 
         public async Task<List<OrderListDto>> GetAllOrdersForAdmin()
@@ -64,7 +66,9 @@ namespace DreamCleaningBackend.Services
                 IsPaid = o.IsPaid,
                 PaidAt = o.PaidAt,
                 CancellationReason = o.CancellationReason,
-                IsLateCancellation = o.IsLateCancellation
+                IsLateCancellation = o.IsLateCancellation,
+                LoyaltyDiscountAmount = o.LoyaltyDiscountAmount,
+                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage
             }).ToList();
         }
 
@@ -148,7 +152,9 @@ namespace DreamCleaningBackend.Services
                 PendingUpdateHistoryId = latestHistoryByOrderId.TryGetValue(o.Id, out var lid) ? lid : null,
                 CancellationReason = o.CancellationReason,
                 IsLateCancellation = o.IsLateCancellation,
-                PointsEarned = pointsEarnedMap.TryGetValue(o.Id, out var pe) ? pe : 0
+                PointsEarned = pointsEarnedMap.TryGetValue(o.Id, out var pe) ? pe : 0,
+                LoyaltyDiscountAmount = o.LoyaltyDiscountAmount,
+                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage
             }).ToList();
         }
 
@@ -624,8 +630,13 @@ namespace DreamCleaningBackend.Services
                 order.DiscountAmount = updateOrderDto.DiscountAmount.Value;
             if (updateOrderDto.SubscriptionDiscountAmount.HasValue)
                 order.SubscriptionDiscountAmount = updateOrderDto.SubscriptionDiscountAmount.Value;
+            // Loyalty Discount amount: scaled proportionally by the frontend; we persist the
+            // recalculated amount but never touch order.LoyaltyDiscountPercentage — that
+            // snapshot is the user's percentage at the time of booking and stays fixed.
+            if (updateOrderDto.LoyaltyDiscountAmount.HasValue)
+                order.LoyaltyDiscountAmount = updateOrderDto.LoyaltyDiscountAmount.Value;
 
-            var totalDiscounts = order.DiscountAmount + (order.SubscriptionDiscountAmount == 0 ? 0 : order.SubscriptionDiscountAmount);
+            var totalDiscounts = order.DiscountAmount + order.SubscriptionDiscountAmount + order.LoyaltyDiscountAmount;
             var discountedSubTotal = newSubTotal - totalDiscounts;
             order.Tax = discountedSubTotal * 0.08875m; // 8.875% tax
 
@@ -833,6 +844,21 @@ namespace DreamCleaningBackend.Services
                 userSpecialOffer.UsedAt = null;
                 userSpecialOffer.UsedOnOrderId = null;
                 await _context.SaveChangesAsync();
+            }
+
+            // Restore loyalty discount snapshot to the user's account if this order had one.
+            // No-ops when the order didn't consume loyalty. Mirrors the UserSpecialOffer reset
+            // pattern above.
+            if (order.LoyaltyDiscountAmount > 0m && order.LoyaltyDiscountPercentage > 0m)
+            {
+                try
+                {
+                    await _loyaltyDiscountService.ReverseFromOrderAsync(orderId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Loyalty discount reverse failed for order {OrderId} on user cancel — order is cancelled but user state may be stale", orderId);
+                }
             }
 
             return true;
@@ -1179,7 +1205,9 @@ namespace DreamCleaningBackend.Services
                 IsPaid = o.IsPaid,
                 PaidAt = o.PaidAt,
                 CancellationReason = o.CancellationReason,
-                IsLateCancellation = o.IsLateCancellation
+                IsLateCancellation = o.IsLateCancellation,
+                LoyaltyDiscountAmount = o.LoyaltyDiscountAmount,
+                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage
             }).ToList();
         }
 
@@ -1227,6 +1255,8 @@ namespace DreamCleaningBackend.Services
                 Tax = order.Tax,
                 DiscountAmount = order.DiscountAmount,
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
+                LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
+                LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
                 Tips = order.Tips,
                 CompanyDevelopmentTips = order.CompanyDevelopmentTips,
                 Total = order.Total,
@@ -1323,6 +1353,8 @@ namespace DreamCleaningBackend.Services
                 Total = order.Total,
                 DiscountAmount = order.DiscountAmount,
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
+                LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
+                LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
                 PromoCode = order.PromoCode,
                 SpecialOfferName = GetSpecialOfferName(order.PromoCode),
                 PromoCodeDetails = GetPromoCodeDetails(order.PromoCode),
@@ -1433,6 +1465,10 @@ namespace DreamCleaningBackend.Services
             if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
             if (dto.DiscountAmount.HasValue) order.DiscountAmount = dto.DiscountAmount.Value;
             if (dto.SubscriptionDiscountAmount.HasValue) order.SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount.Value;
+            // Loyalty discount amount may shift with subtotal edits; the percentage snapshot
+            // is invariant (see Order.LoyaltyDiscountPercentage comment) so we never change it
+            // through this endpoint — only the recalculated $ amount.
+            if (dto.LoyaltyDiscountAmount.HasValue) order.LoyaltyDiscountAmount = dto.LoyaltyDiscountAmount.Value;
             if (dto.CleanerHourlyRate.HasValue) order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
             if (dto.CleanerTotalSalary.HasValue) order.CleanerTotalSalary = dto.CleanerTotalSalary.Value;
 
@@ -1460,7 +1496,11 @@ namespace DreamCleaningBackend.Services
             // totalBeforeGiftCard = discountedSubTotal + tax + tips + companyTips
             // total = max(0, totalBeforeGiftCard - giftCardAmountUsed)
             const decimal salesTaxRate = 0.08875m;
-            var totalDiscountAmount = order.DiscountAmount + order.SubscriptionDiscountAmount;
+            // Include loyalty discount alongside subscription + promo so tax recompute matches
+            // the booking-flow stacking semantics. After Phase 6's stacking gate, at most two of
+            // these three slots are non-zero on any given order — but summing all three is
+            // correct regardless.
+            var totalDiscountAmount = order.DiscountAmount + order.SubscriptionDiscountAmount + order.LoyaltyDiscountAmount;
             var discountedSubTotal = order.SubTotal - totalDiscountAmount;
             if (discountedSubTotal < 0) discountedSubTotal = 0;
             order.Tax = Math.Round(discountedSubTotal * salesTaxRate, 2);
@@ -1561,75 +1601,11 @@ namespace DreamCleaningBackend.Services
 
             _context.OrderUpdateHistories.Add(updateHistory);
 
-            // When this update requires additional payment, notify the customer by email and SMS with payment link.
-            if (additionalAmount > 0.01m)
-            {
-                // Notify with UNPAID amount only: (total delta) - (amount customer already paid).
-                // So if user already paid $31.99 and this update adds $60, we send "pay $60" not "pay $91.99".
-                var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
-                decimal originalWithoutTips;
-                if (order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m)
-                {
-                    originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
-                }
-                else
-                {
-                    var firstOrig = await _context.OrderUpdateHistories
-                        .Where(h => h.OrderId == order.Id)
-                        .OrderBy(h => h.UpdatedAt)
-                        .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
-                        .FirstOrDefaultAsync();
-                    originalWithoutTips = firstOrig ?? (originalTotal - originalTips - originalCompanyDevelopmentTips);
-                }
-                var totalDelta = currentWithoutTips - originalWithoutTips;
-                if (totalDelta < 0m) totalDelta = 0m;
-                // Already paid = sum of update-history rows already marked paid (excludes the row we just added, not yet saved)
-                var alreadyPaid = await _context.OrderUpdateHistories
-                    .Where(h => h.OrderId == order.Id && h.IsPaid)
-                    .SumAsync(h => h.AdditionalAmount);
-                var amountToRequest = totalDelta - alreadyPaid;
-                if (amountToRequest < 0m) amountToRequest = 0m;
-                amountToRequest = Math.Round(amountToRequest, 2);
-
-                var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
-                var paymentLink = $"{frontendUrl}/order/{order.Id}/pay";
-
-                var user = await _context.Users.FindAsync(order.UserId);
-                var customerName = !string.IsNullOrWhiteSpace(order.ContactFirstName) || !string.IsNullOrWhiteSpace(order.ContactLastName)
-                    ? $"{order.ContactFirstName?.Trim()} {order.ContactLastName?.Trim()}".Trim()
-                    : (user != null ? $"{user.FirstName?.Trim()} {user.LastName?.Trim()}".Trim() : null);
-                if (string.IsNullOrWhiteSpace(customerName))
-                    customerName = user?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
-
-                var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : user?.Email;
-                var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : user?.Phone;
-
-                if (!string.IsNullOrWhiteSpace(customerEmail))
-                {
-                    try
-                    {
-                        await _emailService.SendAdditionalPaymentRequiredEmailAsync(customerEmail, customerName, amountToRequest, order.Id, paymentLink);
-                        _logger.LogInformation("Additional payment required email sent to {Email} for Order #{OrderId}", customerEmail, order.Id);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to send additional payment required email to {Email} for Order #{OrderId}", customerEmail, order.Id);
-                    }
-                }
-
-                if (!string.IsNullOrWhiteSpace(customerPhone))
-                {
-                    try
-                    {
-                        await _smsService.SendAdditionalPaymentRequiredSmsAsync(customerPhone, customerName, amountToRequest, order.Id, paymentLink);
-                        _logger.LogInformation("Additional payment required SMS sent to customer for Order #{OrderId}", order.Id);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to send additional payment required SMS for Order #{OrderId}", order.Id);
-                    }
-                }
-            }
+            // NOTE: The "additional payment required" email + SMS used to fire here automatically.
+            // That is now admin-triggered via POST /api/admin/orders/{orderId}/send-updated-payment
+            // so a back-office edit doesn't immediately blast the customer. The new endpoint stamps
+            // OrderUpdateHistory.UpdatedPaymentNotificationSentAt, which the admin UI uses to flip
+            // between "Send Updated Payment" (first send) and "Send Payment Reminder" (follow-ups).
 
             await _context.SaveChangesAsync();
         }

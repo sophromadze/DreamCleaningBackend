@@ -942,6 +942,13 @@ namespace DreamCleaningBackend.Services
 
             var rows = new System.Text.StringBuilder();
             rows.Append(BuildRow(labels["cleaningType"], order.ServiceType?.Name ?? "—"));
+            // Bedrooms / bathrooms are stored on the order as nullable ints when the customer
+            // picked them at booking time. Only emit a row when set (0 is still meaningful — a
+            // studio shows "0 bedrooms" — so we check HasValue, not the count).
+            if (order.BedroomsQuantity.HasValue)
+                rows.Append(BuildRow(labels["bedrooms"], order.BedroomsQuantity.Value.ToString()));
+            if (order.BathroomsQuantity.HasValue)
+                rows.Append(BuildRow(labels["bathrooms"], order.BathroomsQuantity.Value.ToString()));
             rows.Append(BuildRow(labels["serviceDuration"], formattedDuration));
             rows.Append(BuildRow(labels["dateAndTime"], dateTimeText));
             rows.Append(BuildRow(labels["supplies"], suppliesValue));
@@ -988,6 +995,95 @@ namespace DreamCleaningBackend.Services
             return $"<p style='margin:6px 0;'><strong>{label}:</strong> {value}</p>";
         }
 
+        // Compact assignment SMS body for cleaners who have a phone number but no email on file.
+        // The contents must mirror the email's data (type, beds/baths, duration, date+time,
+        // customer, address, entry, supplies, tips, special and cleaner-specific instructions)
+        // but stripped of greetings, closings, and decorative copy — RingCentral charges per SMS
+        // segment so every byte counts. Lines are localised using the same nationality-to-language
+        // mapping the email uses, so a Georgian cleaner gets Georgian labels.
+        public async Task<string?> BuildCleanerAssignmentSmsBodyAsync(Models.Cleaner cleaner, int orderId)
+        {
+            var order = await _context.Orders
+                .Include(o => o.ServiceType)
+                .Include(o => o.OrderServices)
+                    .ThenInclude(os => os.Service)
+                .Include(o => o.OrderExtraServices)
+                    .ThenInclude(oes => oes.ExtraService)
+                .Include(o => o.OrderCleaners)
+                    .ThenInclude(oc => oc.Cleaner)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null)
+            {
+                _logger.LogError("Order {OrderId} not found when building cleaner assignment SMS for cleaner {CleanerId}", orderId, cleaner.Id);
+                return null;
+            }
+
+            var language = ResolveCleanerLanguage(cleaner.Nationality);
+            var labels = GetCleanerEmailLabels(language);
+            var culture = language switch
+            {
+                "ka" => System.Globalization.CultureInfo.GetCultureInfo("ka-GE"),
+                "ru" => System.Globalization.CultureInfo.GetCultureInfo("ru-RU"),
+                "es" => System.Globalization.CultureInfo.GetCultureInfo("es-ES"),
+                _ => System.Globalization.CultureInfo.GetCultureInfo("en-US")
+            };
+
+            var assignment = order.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == cleaner.Id);
+            var cleanerAdditionalInstructions = assignment?.TipsForCleaner;
+
+            bool hasCleanersService = order.OrderServices.Any(os =>
+                os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
+            decimal durationPerCleaner = hasCleanersService
+                ? order.TotalDuration
+                : (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
+            var formattedDuration = FormatDurationLocalized((int)durationPerCleaner, language);
+
+            var hasCleaningSupplies = order.OrderExtraServices
+                .Select(oes => oes.ExtraService?.Name ?? "")
+                .Any(n => n.ToLowerInvariant().Contains("cleaning supplies"));
+            var suppliesValue = hasCleaningSupplies ? labels["suppliesRequired"] : labels["suppliesNotRequired"];
+
+            var addressParts = new List<string>();
+            if (!string.IsNullOrEmpty(order.ServiceAddress)) addressParts.Add(order.ServiceAddress);
+            if (!string.IsNullOrEmpty(order.AptSuite)) addressParts.Add(order.AptSuite);
+            if (!string.IsNullOrEmpty(order.City)) addressParts.Add(order.City);
+            if (!string.IsNullOrEmpty(order.State)) addressParts.Add(order.State);
+            if (!string.IsNullOrEmpty(order.ZipCode)) addressParts.Add(order.ZipCode);
+            var fullAddress = addressParts.Any() ? string.Join(", ", addressParts) : (order.ApartmentName ?? "");
+
+            var maidsCount = order.MaidsCount > 0 ? order.MaidsCount : 1;
+            var perCleanerTips = Math.Round(order.Tips / maidsCount, 2);
+
+            var lines = new List<string>();
+            lines.Add($"#{order.Id} {order.ServiceType?.Name ?? "—"}");
+
+            // Compact bed/bath line — fits both in one row when set, e.g. "2 bd / 1 ba".
+            var bb = new List<string>();
+            if (order.BedroomsQuantity.HasValue) bb.Add($"{order.BedroomsQuantity.Value} {labels["bedrooms"].ToLower()}");
+            if (order.BathroomsQuantity.HasValue) bb.Add($"{order.BathroomsQuantity.Value} {labels["bathrooms"].ToLower()}");
+            if (bb.Count > 0) lines.Add(string.Join(" / ", bb));
+
+            lines.Add($"{labels["serviceDuration"]}: {formattedDuration}");
+            lines.Add($"{order.ServiceDate.ToString("ddd dd MMM", culture)} {FormatTimeForEmail(order.ServiceTime)}");
+
+            if (!string.IsNullOrWhiteSpace(order.ContactFirstName))
+                lines.Add($"{labels["customerName"]}: {order.ContactFirstName.Trim()}");
+            if (!string.IsNullOrWhiteSpace(fullAddress))
+                lines.Add($"{labels["address"]}: {fullAddress}");
+            if (!string.IsNullOrWhiteSpace(order.EntryMethod))
+                lines.Add($"{labels["entryInstruction"]}: {order.EntryMethod}");
+            lines.Add($"{labels["supplies"]}: {suppliesValue}");
+            if (perCleanerTips > 0)
+                lines.Add($"{labels["tips"]}: ${perCleanerTips:F2}");
+            if (!string.IsNullOrWhiteSpace(order.SpecialInstructions))
+                lines.Add($"{labels["specialInstruction"]}: {order.SpecialInstructions.Trim()}");
+            if (!string.IsNullOrWhiteSpace(cleanerAdditionalInstructions))
+                lines.Add($"{labels["specialInstructionForCleaner"]}: {cleanerAdditionalInstructions.Trim()}");
+
+            return string.Join("\n", lines);
+        }
+
         private string FormatDurationLocalized(int minutes, string language)
         {
             var roundedMinutes = (int)Math.Round(minutes / 15.0) * 15;
@@ -1031,6 +1127,8 @@ namespace DreamCleaningBackend.Services
                     ["greeting"] = "გამარჯობა",
                     ["intro"] = "თქვენ გაქვთ ახალი დასუფთავების სამუშაო. დეტალები მოცემულია ქვემოთ:",
                     ["cleaningType"] = "დასუფთავების ტიპი",
+                    ["bedrooms"] = "საძინებლები",
+                    ["bathrooms"] = "სველი წერტილები",
                     ["serviceDuration"] = "სერვისის დრო",
                     ["dateAndTime"] = "თარიღი და დრო",
                     ["supplies"] = "ხსნარები",
@@ -1055,6 +1153,8 @@ namespace DreamCleaningBackend.Services
                     ["greeting"] = "Здравствуйте",
                     ["intro"] = "Вам назначен новый заказ на уборку. Подробности указаны ниже:",
                     ["cleaningType"] = "Тип уборки",
+                    ["bedrooms"] = "Спальни",
+                    ["bathrooms"] = "Ванные",
                     ["serviceDuration"] = "Длительность услуги",
                     ["dateAndTime"] = "Дата и время",
                     ["supplies"] = "Чистящие средства",
@@ -1079,6 +1179,8 @@ namespace DreamCleaningBackend.Services
                     ["greeting"] = "Hola",
                     ["intro"] = "Se le ha asignado un nuevo trabajo de limpieza. Los detalles se indican a continuación:",
                     ["cleaningType"] = "Tipo de limpieza",
+                    ["bedrooms"] = "Dormitorios",
+                    ["bathrooms"] = "Baños",
                     ["serviceDuration"] = "Duración del servicio",
                     ["dateAndTime"] = "Fecha y hora",
                     ["supplies"] = "Productos de limpieza",
@@ -1103,6 +1205,8 @@ namespace DreamCleaningBackend.Services
                     ["greeting"] = "Hi",
                     ["intro"] = "You have been assigned to a new cleaning job. The details are listed below:",
                     ["cleaningType"] = "Cleaning type",
+                    ["bedrooms"] = "Bedrooms",
+                    ["bathrooms"] = "Bathrooms",
                     ["serviceDuration"] = "Service duration",
                     ["dateAndTime"] = "Date and time",
                     ["supplies"] = "Supplies",
@@ -2137,6 +2241,123 @@ namespace DreamCleaningBackend.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Failed to send review request email to {email}");
+            }
+        }
+
+        // ───── Loyalty re-engagement email templates (Phase 4/5) ─────
+        //
+        // Body copy is verbatim from spec section 6. Framing rules: never mention inactivity,
+        // "we miss you" reasoning, or the trigger mechanism. Footer says "Manage email
+        // preferences in your profile" — the existing CanReceiveEmails toggle satisfies opt-out.
+
+        private const string LoyaltyEmailStyle = @"
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background: #f4f6f8; }
+            .container { max-width: 600px; margin: 0 auto; padding: 24px; background: #ffffff; }
+            .header { padding: 8px 0 20px 0; border-bottom: 2px solid #2563eb; margin-bottom: 24px; }
+            .header h1 { margin: 0; color: #1d4ed8; font-size: 22px; }
+            .button { display: inline-block; background: #2563eb; color: #ffffff !important; text-decoration: none; padding: 12px 28px; border-radius: 6px; font-weight: 600; margin: 16px 0; }
+            .footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; }
+        ";
+
+        private const string LoyaltyBookingUrl = "https://dreamcleaningnearme.com/booking";
+
+        public async Task SendLoyaltyReminder30Async(string toEmail, string firstName)
+        {
+            try
+            {
+                var subject = $"It's been a while, {firstName} 💙";
+                var body = $@"
+                <html>
+                <head><style>{LoyaltyEmailStyle}</style></head>
+                <body>
+                    <div class='container'>
+                        <div class='header'><h1>Hi {firstName},</h1></div>
+                        <p>We hope you and your home are doing well. It's been a few weeks since we last cleaned for you, and we wanted to check in.</p>
+                        <p>Whenever you're ready for another sparkle, we'll be here.</p>
+                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Next Cleaning →</a></p>
+                        <p>Warmly,<br/>The Dream Cleaning Team</p>
+                        <div class='footer'>
+                            You're receiving this because you're a Dream Cleaning customer.<br/>
+                            Manage email preferences in your profile.
+                        </div>
+                    </div>
+                </body>
+                </html>";
+
+                await SendEmailAsync(toEmail, subject, body);
+                _logger.LogInformation("Loyalty 30-day reminder email sent to {Email}", toEmail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send loyalty 30-day reminder email to {Email}", toEmail);
+            }
+        }
+
+        public async Task SendLoyaltyReminder60Async(string toEmail, string firstName, decimal percentage)
+        {
+            try
+            {
+                var pct = percentage.ToString("0.##");
+                var subject = $"A little thank-you from Dream Cleaning, {firstName} ✨";
+                var body = $@"
+                <html>
+                <head><style>{LoyaltyEmailStyle}</style></head>
+                <body>
+                    <div class='container'>
+                        <div class='header'><h1>Hi {firstName},</h1></div>
+                        <p>We just wanted to say thank you for being part of the Dream Cleaning family.</p>
+                        <p>As a small gesture of appreciation, we've added a <strong>{pct}% discount</strong> to your account. No code needed — it'll apply automatically the next time you book.</p>
+                        <p>Whenever your home is ready for us, we're ready for you.</p>
+                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Cleaning →</a></p>
+                        <p>With gratitude,<br/>The Dream Cleaning Team</p>
+                        <div class='footer'>
+                            You're receiving this because you're a Dream Cleaning customer.<br/>
+                            Manage email preferences in your profile.
+                        </div>
+                    </div>
+                </body>
+                </html>";
+
+                await SendEmailAsync(toEmail, subject, body);
+                _logger.LogInformation("Loyalty 60-day reminder email sent to {Email} ({Pct}%)", toEmail, pct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send loyalty 60-day reminder email to {Email}", toEmail);
+            }
+        }
+
+        public async Task SendLoyaltyReminder90Async(string toEmail, string firstName, decimal percentage)
+        {
+            try
+            {
+                var pct = percentage.ToString("0.##");
+                var subject = $"We made your discount a little bigger, {firstName} ✨";
+                var body = $@"
+                <html>
+                <head><style>{LoyaltyEmailStyle}</style></head>
+                <body>
+                    <div class='container'>
+                        <div class='header'><h1>Hi {firstName},</h1></div>
+                        <p>We've just bumped the discount on your account up to <strong>{pct}%</strong> — a small gesture from all of us at Dream Cleaning.</p>
+                        <p>It's already applied to your account and will show up automatically the next time you book. No code needed.</p>
+                        <p>Whenever your home is ready, we'll be there.</p>
+                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Cleaning →</a></p>
+                        <p>With appreciation,<br/>The Dream Cleaning Team</p>
+                        <div class='footer'>
+                            You're receiving this because you're a Dream Cleaning customer.<br/>
+                            Manage email preferences in your profile.
+                        </div>
+                    </div>
+                </body>
+                </html>";
+
+                await SendEmailAsync(toEmail, subject, body);
+                _logger.LogInformation("Loyalty 90-day reminder email sent to {Email} ({Pct}%)", toEmail, pct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send loyalty 90-day reminder email to {Email}", toEmail);
             }
         }
     }

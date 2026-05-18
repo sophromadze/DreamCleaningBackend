@@ -39,5 +39,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendAdditionalPaymentReminderSmsAsync(string phoneNumber, string customerName, decimal additionalAmount, int orderId, string paymentLink);
         /// <summary>Send a review request SMS to the customer after order completion.</summary>
         Task SendReviewRequestSmsAsync(string phoneNumber, string customerName);
+
+        // Loyalty re-engagement (Phase 4/5). Single-segment-targeted copy from spec section 6.
+        Task SendLoyaltyReminder30SmsAsync(string phone, string firstName);
+        Task SendLoyaltyReminder60SmsAsync(string phone, string firstName, decimal percentage);
+        Task SendLoyaltyReminder90SmsAsync(string phone, string firstName, decimal percentage);
     }
 }

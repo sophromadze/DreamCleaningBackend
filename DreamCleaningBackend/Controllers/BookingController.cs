@@ -32,6 +32,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IAuthService _authService;
         private readonly IReferralService _referralService;
         private readonly IUserCleaningPhotoService _userCleaningPhotoService;
+        private readonly ILoyaltyDiscountService _loyaltyDiscountService;
 
         public BookingController(ApplicationDbContext context,
             IConfiguration configuration,
@@ -45,7 +46,8 @@ namespace DreamCleaningBackend.Controllers
             IHubContext<UserManagementHub> hubContext,
             IAuthService authService,
             IReferralService referralService,
-            IUserCleaningPhotoService userCleaningPhotoService)
+            IUserCleaningPhotoService userCleaningPhotoService,
+            ILoyaltyDiscountService loyaltyDiscountService)
         {
             _context = context;
             _configuration = configuration;
@@ -60,6 +62,34 @@ namespace DreamCleaningBackend.Controllers
             _authService = authService;
             _referralService = referralService;
             _userCleaningPhotoService = userCleaningPhotoService;
+            _loyaltyDiscountService = loyaltyDiscountService;
+        }
+
+        // Resolves the loyalty discount + stacking for the given target user, then mutates the
+        // order's three discount slots (LoyaltyDiscount*, SubscriptionDiscountAmount, DiscountAmount)
+        // to the post-stacking values. Called after order.SubTotal is finalised but BEFORE the
+        // discounted-subtotal / tax / total math runs. The user lookup uses the TARGET user id —
+        // for admin-on-behalf bookings the admin's own discount is irrelevant.
+        //
+        // The backend is authoritative on what loyalty applies: we look up the target user's
+        // current percentage, compute the candidate against the server-side subTotal, and gate
+        // it via LoyaltyDiscountService.ResolveStacking against the client's subscription/promo
+        // amounts. Any client-supplied LoyaltyDiscountAmount on the request is ignored — the
+        // client only ever computes it for the preview breakdown.
+        private async Task ApplyLoyaltyDiscountAndStackingAsync(Order order, int targetUserId)
+        {
+            var (loyaltyCandidate, loyaltyPct) =
+                await _loyaltyDiscountService.CalculateForOrderAsync(targetUserId, order.SubTotal);
+
+            var (loyaltyAmount, finalLoyaltyPct, subscriptionAmount, promoAmount) =
+                _loyaltyDiscountService.ResolveStacking(
+                    loyaltyCandidate, loyaltyPct,
+                    order.SubscriptionDiscountAmount, order.DiscountAmount);
+
+            order.LoyaltyDiscountAmount = loyaltyAmount;
+            order.LoyaltyDiscountPercentage = finalLoyaltyPct;
+            order.SubscriptionDiscountAmount = subscriptionAmount;
+            order.DiscountAmount = promoAmount;
         }
 
         [HttpGet("service-types")]
@@ -309,6 +339,19 @@ namespace DreamCleaningBackend.Controllers
                         });
                     }
 
+                    // Minimum order amount check. Only enforced when the caller passed a SubTotal
+                    // (booking flow). Gift-card balance lookups from order-edit pass no SubTotal
+                    // and must not be blocked by this check.
+                    if (promoCode.MinimumOrderAmount.HasValue && dto.SubTotal.HasValue &&
+                        dto.SubTotal.Value < promoCode.MinimumOrderAmount.Value)
+                    {
+                        return Ok(new PromoCodeValidationDto
+                        {
+                            IsValid = false,
+                            Message = $"Minimum order amount of ${promoCode.MinimumOrderAmount.Value:0.##} required to use this promo code"
+                        });
+                    }
+
                     return Ok(new PromoCodeValidationDto
                     {
                         IsValid = true,
@@ -385,6 +428,10 @@ namespace DreamCleaningBackend.Controllers
                     giftCardCode = dto.PromoCode;
                     promoCode = null;
                 }
+
+                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, dto.SubTotal);
+                if (promoMinError != null)
+                    return BadRequest(new { message = promoMinError });
 
                 // Create order
                 var order = new Order
@@ -763,8 +810,14 @@ namespace DreamCleaningBackend.Controllers
                 // Complete order calculations
                 order.SubTotal = Math.Round(subTotal * 100) / 100;
 
-                // Calculate discounted subtotal FIRST
-                var discountedSubTotal = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount;
+                // Loyalty Discount + stacking — must run before the discounted-subtotal math so
+                // tax sees the post-stacking discount slate. Uses the booking user's loyalty %
+                // (this is the self-booking path; admin-on-behalf goes through CreateBookingForUser
+                // and resolves against the TARGET user id there).
+                await ApplyLoyaltyDiscountAndStackingAsync(order, userId);
+
+                // Calculate discounted subtotal FIRST (now includes loyalty alongside subscription + promo)
+                var discountedSubTotal = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount - order.LoyaltyDiscountAmount;
 
                 // Calculate tax on the DISCOUNTED amount (this is the fix)
                 order.Tax = Math.Round(discountedSubTotal * 0.08875m * 100) / 100;
@@ -1010,6 +1063,10 @@ namespace DreamCleaningBackend.Controllers
                     giftCardCode = dto.BookingData.PromoCode;
                     promoCode = null;
                 }
+
+                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, dto.BookingData.SubTotal);
+                if (promoMinError != null)
+                    return BadRequest(new { message = promoMinError });
 
                 // Calculate subtotal and other values (reuse logic from CreateBooking)
                 decimal subTotal = 0;
@@ -1378,6 +1435,22 @@ namespace DreamCleaningBackend.Controllers
                 // Apply subscription discount
                 var subscription = await _context.Subscriptions.FindAsync(dto.BookingData.SubscriptionId);
 
+                // Loyalty Discount + stacking for the TARGET customer (NOT the logged-in admin).
+                // Critical: dto.TargetUserId is the customer the order is for; the admin's own
+                // loyalty discount must never leak onto a customer order. Spec section 4.5 step 7.
+                //
+                // Unlike CreateBooking, this flow trusts the client's submitted SubTotal/Tax/Total,
+                // so after mutating the discount slate we recompute Tax + Total ourselves to keep
+                // the persisted values internally consistent.
+                await ApplyLoyaltyDiscountAndStackingAsync(order, dto.TargetUserId);
+                {
+                    var stackedDiscountedSubTotal = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount - order.LoyaltyDiscountAmount;
+                    if (stackedDiscountedSubTotal < 0m) stackedDiscountedSubTotal = 0m;
+                    order.Tax = Math.Round(stackedDiscountedSubTotal * 0.08875m * 100) / 100;
+                    var stackedTotalBeforeGiftCard = stackedDiscountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
+                    order.Total = Math.Round((stackedTotalBeforeGiftCard - giftCardAmountUsed) * 100) / 100;
+                }
+
                 // Use transaction for order creation
                 using (var transaction = await _context.Database.BeginTransactionAsync())
                 {
@@ -1464,6 +1537,31 @@ namespace DreamCleaningBackend.Controllers
                     targetUser = await _context.Users.FindAsync(dto.TargetUserId);
                     if (targetUser != null)
                     {
+                        // Backfill missing profile info (Phone/FirstName/LastName) from the booking
+                        // contact fields before notifying. Apple/Google sign-ins land with these
+                        // empty, so without this the SMS check below skips and the user gets nothing.
+                        var userInfoUpdated = false;
+                        if (string.IsNullOrWhiteSpace(targetUser.Phone) && !string.IsNullOrWhiteSpace(dto.BookingData.ContactPhone))
+                        {
+                            targetUser.Phone = dto.BookingData.ContactPhone;
+                            userInfoUpdated = true;
+                        }
+                        if (string.IsNullOrWhiteSpace(targetUser.FirstName) && !string.IsNullOrWhiteSpace(dto.BookingData.ContactFirstName))
+                        {
+                            targetUser.FirstName = dto.BookingData.ContactFirstName;
+                            userInfoUpdated = true;
+                        }
+                        if (string.IsNullOrWhiteSpace(targetUser.LastName) && !string.IsNullOrWhiteSpace(dto.BookingData.ContactLastName))
+                        {
+                            targetUser.LastName = dto.BookingData.ContactLastName;
+                            userInfoUpdated = true;
+                        }
+                        if (userInfoUpdated)
+                        {
+                            targetUser.UpdatedAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync();
+                        }
+
                         var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
                         var orderLink = $"{frontendUrl}/order/{order.Id}/pay";
                         
@@ -1620,6 +1718,10 @@ namespace DreamCleaningBackend.Controllers
                     giftCardCode = dto.PromoCode;
                     promoCode = null;
                 }
+
+                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, dto.SubTotal);
+                if (promoMinError != null)
+                    return BadRequest(new { message = promoMinError });
 
                 // Calculate totals (reuse logic from CreateBooking but don't create order)
                 decimal subTotal = 0;
@@ -1797,11 +1899,27 @@ namespace DreamCleaningBackend.Controllers
                     totalDuration = 60;
                 }
 
-                // Calculate final totals
+                // Calculate final totals — including loyalty + stacking. This endpoint produces
+                // the payment-intent preview, so the numbers must match what CreateBooking will
+                // persist downstream. Guests (userId==0) just got auto-created above, so their
+                // loyalty lookup returns (0,0) and stacking is a no-op for them. We pass the
+                // current/effective userId either way.
+                decimal calculatedSubTotal = Math.Round(subTotal * 100) / 100;
+                decimal loyaltyAmount = 0m;
+                decimal loyaltyPct = 0m;
+                if (userId > 0)
+                {
+                    var (candidateAmount, candidatePct) =
+                        await _loyaltyDiscountService.CalculateForOrderAsync(userId, calculatedSubTotal);
+                    (loyaltyAmount, loyaltyPct, dto.SubscriptionDiscountAmount, dto.DiscountAmount) =
+                        _loyaltyDiscountService.ResolveStacking(
+                            candidateAmount, candidatePct,
+                            dto.SubscriptionDiscountAmount, dto.DiscountAmount);
+                }
                 decimal discountAmount = dto.DiscountAmount;
                 decimal subscriptionDiscountAmount = dto.SubscriptionDiscountAmount;
-                decimal calculatedSubTotal = Math.Round(subTotal * 100) / 100;
-                var discountedSubTotal = calculatedSubTotal - discountAmount - subscriptionDiscountAmount;
+                var discountedSubTotal = calculatedSubTotal - discountAmount - subscriptionDiscountAmount - loyaltyAmount;
+                if (discountedSubTotal < 0m) discountedSubTotal = 0m;
                 decimal tax = Math.Round(discountedSubTotal * 0.08875m * 100) / 100;
                 var totalBeforeGiftCard = discountedSubTotal + tax + dto.Tips + dto.CompanyDevelopmentTips;
                 decimal pointsCredit = 0;
@@ -2040,10 +2158,28 @@ namespace DreamCleaningBackend.Controllers
 
                 if (user != null)
                 {
-                    // Update phone number if needed
-                    if (string.IsNullOrEmpty(user.Phone) && !string.IsNullOrEmpty(order.ContactPhone))
+                    // Backfill missing profile info from the booking contact fields. Apple/Google
+                    // sign-ins can leave Phone/FirstName/LastName empty; without this, downstream
+                    // notifications that read from user.Phone (cleaner reminders, payment reminders,
+                    // etc.) silently skip the SMS.
+                    var userInfoUpdated = false;
+                    if (string.IsNullOrWhiteSpace(user.Phone) && !string.IsNullOrWhiteSpace(order.ContactPhone))
                     {
                         user.Phone = order.ContactPhone;
+                        userInfoUpdated = true;
+                    }
+                    if (string.IsNullOrWhiteSpace(user.FirstName) && !string.IsNullOrWhiteSpace(order.ContactFirstName))
+                    {
+                        user.FirstName = order.ContactFirstName;
+                        userInfoUpdated = true;
+                    }
+                    if (string.IsNullOrWhiteSpace(user.LastName) && !string.IsNullOrWhiteSpace(order.ContactLastName))
+                    {
+                        user.LastName = order.ContactLastName;
+                        userInfoUpdated = true;
+                    }
+                    if (userInfoUpdated)
+                    {
                         user.UpdatedAt = DateTime.UtcNow;
                     }
 
@@ -2136,6 +2272,23 @@ namespace DreamCleaningBackend.Controllers
                 order.PaidAt = DateTime.UtcNow;
                 order.Status = "Active";
                 order.PaymentIntentId = effectivePaymentIntentId;
+
+                // Loyalty Discount consumption — if this order actually consumed a loyalty
+                // discount (snapshot persisted on the order at booking time), let the service
+                // zero the user's percentage, stamp LastUsedAt, and clear the reminder logs so
+                // the next cycle can re-evaluate from scratch. Failures are logged but don't
+                // break payment confirmation (paid is paid; we can reconcile state separately).
+                if (order.LoyaltyDiscountAmount > 0m && order.LoyaltyDiscountPercentage > 0m)
+                {
+                    try
+                    {
+                        await _loyaltyDiscountService.ApplyToOrderAsync(order.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Loyalty discount apply failed for order {OrderId} — order is paid but user state may be stale", order.Id);
+                    }
+                }
 
                 // Deduct bubble points if used in booking (inline, same DbContext, before SaveChanges below)
                 if (bookingDataDto != null && bookingDataDto.PointsToRedeem > 0 && userId > 0)
@@ -2629,6 +2782,19 @@ namespace DreamCleaningBackend.Controllers
                 order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
             }
 
+            // Loyalty Discount + stacking — third write path, called by ConfirmPayment's guest
+            // flow. The order's SubTotal/Tax/Total/discount fields came in straight from the DTO,
+            // so after mutating the discount slate we recompute Tax + Total ourselves to keep
+            // persisted values internally consistent (same pattern as CreateBookingForUser).
+            await ApplyLoyaltyDiscountAndStackingAsync(order, userId);
+            {
+                var stackedDiscountedSubTotal = order.SubTotal - order.DiscountAmount - order.SubscriptionDiscountAmount - order.LoyaltyDiscountAmount;
+                if (stackedDiscountedSubTotal < 0m) stackedDiscountedSubTotal = 0m;
+                order.Tax = Math.Round(stackedDiscountedSubTotal * 0.08875m * 100) / 100;
+                var stackedTotalBeforeGiftCard = stackedDiscountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
+                order.Total = Math.Round((stackedTotalBeforeGiftCard - giftCardAmountUsed) * 100) / 100;
+            }
+
             // Use transaction for order creation
             using (var transaction = await _context.Database.BeginTransactionAsync())
             {
@@ -2714,6 +2880,29 @@ namespace DreamCleaningBackend.Controllers
             // Some parts of the codebase use custom "UserId" claim; fall back to NameIdentifier.
             var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             return int.TryParse(userIdClaim, out var userId) ? userId : 0;
+        }
+
+        // Returns an error message if the promo code's MinimumOrderAmount isn't met by subTotal,
+        // or null on success / nothing-to-check. Frontend can be bypassed by an API caller, so the
+        // booking-creation flows must enforce this server-side too.
+        private async Task<string?> ValidatePromoMinimumOrderAmountAsync(string? promoCode, decimal subTotal)
+        {
+            if (string.IsNullOrWhiteSpace(promoCode))
+                return null;
+
+            // Skip SPECIAL_OFFER-prefixed codes used internally to attribute special offers to orders.
+            if (promoCode.StartsWith("SPECIAL_OFFER:", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var pc = await _context.PromoCodes
+                .FirstOrDefaultAsync(p => p.Code.ToLower() == promoCode.ToLower() && p.IsActive);
+            if (pc == null)
+                return null;
+
+            if (pc.MinimumOrderAmount.HasValue && subTotal < pc.MinimumOrderAmount.Value)
+                return $"Minimum order amount of ${pc.MinimumOrderAmount.Value:0.##} required to use promo code '{pc.Code}'";
+
+            return null;
         }
 
         private string CapitalizeName(string? name)

@@ -25,6 +25,15 @@ namespace DreamCleaningBackend.DTOs
         public bool CanReceiveMessages { get; set; }
         /// <summary>When true, user has a password set (Local or set via reset). When false, show "Set password" instead of "Change password".</summary>
         public bool HasPassword { get; set; }
+
+        /// <summary>Current Loyalty Discount percentage on the account (0 if none). Frontend uses
+        /// this to (a) auto-apply at checkout and (b) show a generic "you have a special discount"
+        /// badge on the profile page. Never tell the user WHY they have it — see spec section 2.6.</summary>
+        public decimal LoyaltyDiscountPercentage { get; set; }
+
+        /// <summary>Computed convenience for the badge — true iff LoyaltyDiscountPercentage > 0.</summary>
+        public bool HasLoyaltyDiscount => LoyaltyDiscountPercentage > 0;
+
         // Placeholder for future orders
         // public List<OrderDto> Orders { get; set; } = new List<OrderDto>();
     }

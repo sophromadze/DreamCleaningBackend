@@ -11,12 +11,60 @@ namespace DreamCleaningBackend.Services
         private readonly ApplicationDbContext _context;
         private readonly IEmailService _emailService;
         private readonly IAuditService _auditService;
+        private readonly ISmsService _smsService;
+        private readonly ILogger<CleanerService> _logger;
 
-        public CleanerService(ApplicationDbContext context, IEmailService emailService, IAuditService auditService)
+        public CleanerService(
+            ApplicationDbContext context,
+            IEmailService emailService,
+            IAuditService auditService,
+            ISmsService smsService,
+            ILogger<CleanerService> logger)
         {
             _context = context;
             _emailService = emailService;
             _auditService = auditService;
+            _smsService = smsService;
+            _logger = logger;
+        }
+
+        // Dispatch a cleaner assignment notification. Cleaners with an email get the full HTML
+        // email (preferred — richer formatting, no segmentation cost). Cleaners with only a phone
+        // get the same data as a compact SMS body. Returns true if anything was sent.
+        private async Task<bool> NotifyCleanerOfAssignmentAsync(Cleaner cleaner, int orderId)
+        {
+            if (!string.IsNullOrWhiteSpace(cleaner.Email))
+            {
+                await _emailService.SendCleanerAssignmentNotificationAsync(
+                    cleaner.Email,
+                    cleaner.FirstName,
+                    orderId,
+                    sendCopyToAdmin: false);
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(cleaner.Phone) && _smsService.IsSmsEnabled())
+            {
+                try
+                {
+                    var smsBody = await _emailService.BuildCleanerAssignmentSmsBodyAsync(cleaner, orderId);
+                    if (!string.IsNullOrEmpty(smsBody))
+                    {
+                        await _smsService.SendSmsAsync(cleaner.Phone, smsBody);
+                        return true;
+                    }
+                }
+                catch (InvalidPhoneNumberException)
+                {
+                    _logger.LogWarning("Cleaner {CleanerId} has no email and an invalid phone — assignment notification not delivered", cleaner.Id);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send cleaner assignment SMS to cleaner {CleanerId} for order {OrderId}", cleaner.Id, orderId);
+                }
+            }
+
+            return false;
         }
 
         public async Task<List<AvailableCleanerDto>> GetAvailableCleanersAsync(DateTime serviceDate, string serviceTime)
@@ -238,14 +286,13 @@ namespace DreamCleaningBackend.Services
             var sent = 0;
             foreach (var assignment in pendingAssignments)
             {
-                if (assignment.Cleaner == null || string.IsNullOrWhiteSpace(assignment.Cleaner.Email))
+                if (assignment.Cleaner == null) continue;
+                if (string.IsNullOrWhiteSpace(assignment.Cleaner.Email) &&
+                    string.IsNullOrWhiteSpace(assignment.Cleaner.Phone))
                     continue;
 
-                await _emailService.SendCleanerAssignmentNotificationAsync(
-                    assignment.Cleaner.Email,
-                    assignment.Cleaner.FirstName,
-                    orderId,
-                    sendCopyToAdmin: false);
+                var delivered = await NotifyCleanerOfAssignmentAsync(assignment.Cleaner, orderId);
+                if (!delivered) continue;
 
                 assignment.AssignmentNotificationSentAt = DateTime.UtcNow;
                 sent++;
@@ -258,14 +305,14 @@ namespace DreamCleaningBackend.Services
                 return new SendCleanerAssignmentMailsResultDto
                 {
                     EmailsSent = 0,
-                    Message = "No cleaners with a valid email address needed an assignment email."
+                    Message = "No cleaners with a valid email or phone number needed an assignment notification."
                 };
             }
 
             return new SendCleanerAssignmentMailsResultDto
             {
                 EmailsSent = sent,
-                Message = $"Assignment email sent to {sent} cleaner(s)."
+                Message = $"Assignment notification sent to {sent} cleaner(s)."
             };
         }
 
@@ -288,17 +335,19 @@ namespace DreamCleaningBackend.Services
                 };
             }
 
-            if (assignment.Cleaner == null || string.IsNullOrWhiteSpace(assignment.Cleaner.Email))
+            if (assignment.Cleaner == null ||
+                (string.IsNullOrWhiteSpace(assignment.Cleaner.Email) &&
+                 string.IsNullOrWhiteSpace(assignment.Cleaner.Phone)))
             {
                 return new SendCleanerAssignmentMailsResultDto
                 {
                     EmailsSent = 0,
-                    Message = "Cleaner does not have a valid email address."
+                    Message = "Cleaner has no email or phone number on file."
                 };
             }
 
             // Restart reminder flow for this specific cleaner by removing previous reminder logs.
-            // After the assignment email is resent, reminder service will schedule exactly one fresh cycle.
+            // After the assignment notification is resent, reminder service will schedule exactly one fresh cycle.
             var staleReminderLogs = await _context.NotificationLogs
                 .Where(nl => nl.OrderId == orderId
                     && nl.CleanerId == cleanerId
@@ -310,19 +359,24 @@ namespace DreamCleaningBackend.Services
                 _context.NotificationLogs.RemoveRange(staleReminderLogs);
             }
 
-            await _emailService.SendCleanerAssignmentNotificationAsync(
-                assignment.Cleaner.Email,
-                assignment.Cleaner.FirstName,
-                orderId,
-                sendCopyToAdmin: false);
+            var delivered = await NotifyCleanerOfAssignmentAsync(assignment.Cleaner, orderId);
+            if (!delivered)
+            {
+                return new SendCleanerAssignmentMailsResultDto
+                {
+                    EmailsSent = 0,
+                    Message = "Assignment notification could not be delivered (invalid phone or SMS disabled)."
+                };
+            }
 
             assignment.AssignmentNotificationSentAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
+            var channel = !string.IsNullOrWhiteSpace(assignment.Cleaner.Email) ? "Email" : "SMS";
             return new SendCleanerAssignmentMailsResultDto
             {
                 EmailsSent = 1,
-                Message = $"Assignment email re-sent to {assignment.Cleaner.FirstName}."
+                Message = $"{channel} assignment notification re-sent to {assignment.Cleaner.FirstName}."
             };
         }
     }

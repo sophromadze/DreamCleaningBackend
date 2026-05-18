@@ -65,5 +65,11 @@ namespace DreamCleaningBackend.Models
         // Track if this update was paid
         public bool IsPaid { get; set; } = false;
         public DateTime? PaidAt { get; set; }
+
+        // When the admin manually triggered the "updated payment" notification (email + SMS) for
+        // this update row. Null = customer has not yet been told about this update's additional
+        // amount. The admin panel uses this to flip between "Send Updated Payment" (first send)
+        // and "Send Payment Reminder" (follow-ups).
+        public DateTime? UpdatedPaymentNotificationSentAt { get; set; }
     }
 }

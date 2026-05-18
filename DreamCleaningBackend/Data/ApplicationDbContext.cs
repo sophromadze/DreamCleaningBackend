@@ -988,7 +988,16 @@ namespace DreamCleaningBackend.Data
                 new BubbleRewardsSetting { Id = 32, SettingKey = "ReferralOrderCompletedCreditAmount", SettingValue = "10", Description = "Dollar credit for referrer when referred user completes first order", Category = "Referral", UpdatedAt = seedDate },
                 new BubbleRewardsSetting { Id = 33, SettingKey = "ReferralOrderCompletedBonusEnabled", SettingValue = "true", Description = "Enable/disable order completion bonus", Category = "Referral", UpdatedAt = seedDate },
                 new BubbleRewardsSetting { Id = 34, SettingKey = "ReferralNewUserBonusPoints", SettingValue = "50", Description = "Extra bonus points for new user who used a referral link (in addition to welcome bonus)", Category = "Referral", UpdatedAt = seedDate },
-                new BubbleRewardsSetting { Id = 35, SettingKey = "ReferralNewUserBonusEnabled", SettingValue = "true", Description = "Enable/disable extra bonus for referred new user", Category = "Referral", UpdatedAt = seedDate }
+                new BubbleRewardsSetting { Id = 35, SettingKey = "ReferralNewUserBonusEnabled", SettingValue = "true", Description = "Enable/disable extra bonus for referred new user", Category = "Referral", UpdatedAt = seedDate },
+                // Loyalty Discount (re-engagement system). Read by LoyaltyReengagementService once
+                // per cron cycle, so admin changes here take effect within ~1 hour without redeploy.
+                new BubbleRewardsSetting { Id = 39, SettingKey = "LoyaltyDiscountEnabled", SettingValue = "true", Description = "Master switch for the loyalty re-engagement system", Category = "LoyaltyDiscount", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 40, SettingKey = "LoyaltyDay60Percentage", SettingValue = "10", Description = "Discount % auto-activated on the 60-day reminder", Category = "LoyaltyDiscount", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 41, SettingKey = "LoyaltyDay90Percentage", SettingValue = "15", Description = "Discount % upgraded to on the 90-day reminder", Category = "LoyaltyDiscount", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 42, SettingKey = "DaysUntilFirstReminder", SettingValue = "30", Description = "Days of inactivity before the first re-engagement reminder", Category = "LoyaltyDiscount", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 43, SettingKey = "DaysUntilDiscountActivation", SettingValue = "60", Description = "Days of inactivity before the loyalty discount is auto-activated", Category = "LoyaltyDiscount", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 44, SettingKey = "DaysUntilDiscountUpgrade", SettingValue = "90", Description = "Days of inactivity before the loyalty discount is upgraded", Category = "LoyaltyDiscount", UpdatedAt = seedDate },
+                new BubbleRewardsSetting { Id = 45, SettingKey = "MinDaysFromLastUseBeforeReActivation", SettingValue = "30", Description = "Cooldown after using a loyalty discount before a new cycle can start", Category = "LoyaltyDiscount", UpdatedAt = seedDate }
             );
 
             // BubblePointsHistory configuration

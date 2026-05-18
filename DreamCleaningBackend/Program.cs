@@ -186,6 +186,12 @@ builder.Services.AddScoped<IBubbleRewardsSettingsService, BubbleRewardsSettingsS
 builder.Services.AddScoped<IReferralService, ReferralService>();
 builder.Services.AddScoped<IBubblePointsService, BubblePointsService>();
 
+// Loyalty Discount (re-engagement). Scoped service handles the per-user state machine;
+// the background worker fires hourly and only dispatches inside the 11:00 America/New_York
+// hour. Settings are read fresh per cycle (cached 5 min inside BubbleRewardsSettingsService).
+builder.Services.AddScoped<ILoyaltyDiscountService, LoyaltyDiscountService>();
+builder.Services.AddHostedService<LoyaltyReengagementService>();
+
 // LiveChat services
 builder.Services.AddSingleton<LiveChatSessionManager>();
 builder.Services.AddSingleton<TelegramBotService>();

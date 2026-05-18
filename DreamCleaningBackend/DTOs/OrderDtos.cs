@@ -20,6 +20,10 @@ namespace DreamCleaningBackend.DTOs
         public decimal Total { get; set; }
         public decimal DiscountAmount { get; set; }
         public decimal SubscriptionDiscountAmount { get; set; }
+        // Loyalty Discount snapshot — what was actually applied on this order at booking time.
+        // Stored so the breakdown survives changes to the user's current loyalty percentage.
+        public decimal LoyaltyDiscountAmount { get; set; }
+        public decimal LoyaltyDiscountPercentage { get; set; }
         public string? PromoCode { get; set; }
         public string? SpecialOfferName { get; set; }
         public int? UserSpecialOfferId { get; set; }
@@ -121,6 +125,10 @@ namespace DreamCleaningBackend.DTOs
         public decimal? DiscountAmount { get; set; }
         /// <summary>Recalculated subscription discount when subtotal changes. If provided, used instead of existing.</summary>
         public decimal? SubscriptionDiscountAmount { get; set; }
+        /// <summary>Recalculated loyalty discount when subtotal changes (scaled proportionally on edit).
+        /// If provided, used instead of existing. Frontend computes via ratio of new vs old subTotal so
+        /// the historical percentage snapshot still reads true after the edit.</summary>
+        public decimal? LoyaltyDiscountAmount { get; set; }
     }
 
     public class OrderUpdatePaymentDto
@@ -180,6 +188,10 @@ namespace DreamCleaningBackend.DTOs
         public decimal PointsRedeemedDiscount { get; set; }
         public decimal RewardBalanceUsed { get; set; }
         public int PointsEarned { get; set; }
+        // Loyalty Discount snapshot — exposed on the list DTO so admin order tables can show
+        // whether a given order consumed a loyalty discount without needing the full OrderDto.
+        public decimal LoyaltyDiscountAmount { get; set; }
+        public decimal LoyaltyDiscountPercentage { get; set; }
     }
 
     public class CancelOrderDto

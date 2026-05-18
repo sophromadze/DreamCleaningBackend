@@ -38,5 +38,10 @@ namespace DreamCleaningBackend.Models
         public string? UserAgent { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        // Undo/redo state. UndoneAt is set when an admin reverts this change; null = the change
+        // is currently applied. Redo simply re-applies the change and clears UndoneAt. Stored as
+        // a single nullable timestamp rather than a state enum because it doubles as "when".
+        public DateTime? UndoneAt { get; set; }
     }
 }

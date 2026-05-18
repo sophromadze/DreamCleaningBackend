@@ -128,5 +128,16 @@ namespace DreamCleaningBackend.Models
         public DateTime? LastCompletedOrderDate { get; set; }
         public bool ReviewBonusGranted { get; set; } = false;
         public bool WelcomeBonusGranted { get; set; } = false;
+
+        // Loyalty Discount (re-engagement system). The percentage sits dormant on the account
+        // until applied to an order; when consumed it resets to 0 and IsManualOverride flips
+        // back to false. ManualOverride freezes the value against background-service changes
+        // (auto activation / auto upgrade) but does not block reminder sends.
+        [Column(TypeName = "decimal(5,2)")]
+        public decimal LoyaltyDiscountPercentage { get; set; } = 0;
+
+        public DateTime? LoyaltyDiscountActivatedAt { get; set; }
+        public DateTime? LoyaltyDiscountLastUsedAt { get; set; }
+        public bool LoyaltyDiscountIsManualOverride { get; set; } = false;
     }
 }

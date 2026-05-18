@@ -549,6 +549,11 @@ namespace DreamCleaningBackend.DTOs
         public decimal? Total { get; set; }
         public decimal? DiscountAmount { get; set; }
         public decimal? SubscriptionDiscountAmount { get; set; }
+        /// <summary>Recalculated loyalty discount on subtotal change (scaled proportionally on
+        /// edit). Frontend computes via ratio of new vs old subTotal so the historical
+        /// LoyaltyDiscountPercentage snapshot still reads true after the edit. When omitted,
+        /// the existing order.LoyaltyDiscountAmount is preserved.</summary>
+        public decimal? LoyaltyDiscountAmount { get; set; }
         public decimal? CleanerHourlyRate { get; set; }
         public decimal? CleanerTotalSalary { get; set; }
         public List<SuperAdminOrderServiceUpdateDto>? Services { get; set; }

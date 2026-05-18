@@ -1,4 +1,5 @@
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Services.Interfaces
 {
@@ -15,6 +16,11 @@ namespace DreamCleaningBackend.Services.Interfaces
             decimal amount, string message);
         Task SendContactFormEmailAsync(string to, string subject, string html);
         Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName, int orderId, bool sendCopyToAdmin = false);
+        /// <summary>Build a compact SMS body containing the same assignment details as the email
+        /// (type, beds/baths, duration, date+time, customer, address, entry, supplies, tips, special
+        /// instructions). Used when a cleaner has no email on file — callers send the returned text
+        /// via ISmsService.</summary>
+        Task<string?> BuildCleanerAssignmentSmsBodyAsync(Cleaner cleaner, int orderId);
         Task SendAdminCleanerAssignmentNotificationAsync(string cleanerEmail, string cleanerName,
             DateTime serviceDate, string serviceTime, string formattedDuration, string fullAddress);
         Task SendCleanerReminderNotificationAsync(string email, string cleanerName,
@@ -52,5 +58,11 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendReviewRequestEmailAsync(string email, string customerName);
         /// <summary>Send a 6-digit login OTP to a user who has no password set.</summary>
         Task SendLoginOtpAsync(string email, string firstName, string code);
+
+        // Loyalty re-engagement (Phase 4/5). Wording is gratitude-framed — never reveals the
+        // inactivity trigger to the customer (spec section 6 framing rules).
+        Task SendLoyaltyReminder30Async(string toEmail, string firstName);
+        Task SendLoyaltyReminder60Async(string toEmail, string firstName, decimal percentage);
+        Task SendLoyaltyReminder90Async(string toEmail, string firstName, decimal percentage);
     }
 }
