@@ -2102,6 +2102,245 @@ namespace DreamCleaningBackend.Controllers
 
         }
 
+        /// <summary>SuperAdmin-only: export the users list to an .xlsx file. The body's Columns list
+        /// controls which columns are written; an empty/missing list exports all columns.</summary>
+        [HttpPost("users/export")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<IActionResult> ExportUsers([FromBody] UsersExportRequestDto? dto)
+        {
+            var requested = dto?.Columns?
+                .Where(c => !string.IsNullOrWhiteSpace(c))
+                .Select(c => c.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // All available columns, in the order they should appear in the spreadsheet.
+            var allColumns = new List<(string Key, string Header)>
+            {
+                ("userId",         "ID"),
+                ("fullName",       "Full Name"),
+                ("phone",          "Phone"),
+                ("email",          "Email"),
+                ("lastServiceType","Service Type"),
+                ("lastServiceAt",  "Date & Time"),
+                ("lastAddress",    "Address"),
+                ("lastBorough",    "Borough"),
+                ("lastZip",        "Zip"),
+                ("lastBedsBaths",  "Rooms"),
+                ("lastSquareFeet", "Sq.Ft"),
+                ("totalSpent",     "Total Spent")
+            };
+
+            // If caller didn't list any columns, default to all (matches the UI's "all checked" default).
+            var includeAll = requested.Count == 0;
+            var columns = allColumns.Where(c => includeAll || requested.Contains(c.Key)).ToList();
+            if (columns.Count == 0)
+                return BadRequest(new { message = "No columns selected for export." });
+
+            // Customers only — staff roles (Admin/SuperAdmin/Moderator) are excluded from the export.
+            var users = await _context.Users
+                .Where(u => u.Role == UserRole.Customer)
+                .OrderBy(u => u.Id)
+                .Select(u => new
+                {
+                    u.Id,
+                    u.FirstName,
+                    u.LastName,
+                    u.Email,
+                    u.Phone
+                })
+                .ToListAsync();
+
+            // Last non-cancelled order per user, with the bits we need for service-type detection,
+            // address, borough (City), zip, bedrooms/bathrooms.
+            var lastOrders = await _context.Orders
+                .Where(o => o.Status != "Cancelled")
+                .GroupBy(o => o.UserId)
+                .Select(g => g
+                    .OrderByDescending(o => o.ServiceDate)
+                    .ThenByDescending(o => o.Id)
+                    .Select(o => new
+                    {
+                        o.Id,
+                        o.UserId,
+                        o.ServiceDate,
+                        o.ServiceTime,
+                        ServiceTypeName = o.ServiceType.Name,
+                        o.ServiceAddress,
+                        o.AptSuite,
+                        o.City,
+                        o.ZipCode,
+                        o.BedroomsQuantity,
+                        o.BathroomsQuantity
+                    })
+                    .First())
+                .ToDictionaryAsync(o => o.UserId);
+
+            // Deep-cleaning detection: any extra service on the last order whose ExtraService.IsDeepCleaning == true
+            // (and not IsSuperDeepCleaning — keeps "Deep" distinct from "Super Deep" if that ever ships).
+            var lastOrderIds = lastOrders.Values.Select(o => o.Id).ToList();
+            var deepOrderIds = await _context.OrderExtraServices
+                .Where(oes => lastOrderIds.Contains(oes.OrderId)
+                              && oes.ExtraService.IsDeepCleaning
+                              && !oes.ExtraService.IsSuperDeepCleaning)
+                .Select(oes => oes.OrderId)
+                .Distinct()
+                .ToListAsync();
+            var deepOrderIdSet = new HashSet<int>(deepOrderIds);
+
+            // Square feet: stored as a quantity on the OrderServices row whose Service.ServiceKey == "sqft".
+            var sqftByOrder = await _context.OrderServices
+                .Where(os => lastOrderIds.Contains(os.OrderId) && os.Service.ServiceKey == "sqft")
+                .Select(os => new { os.OrderId, os.Quantity })
+                .ToDictionaryAsync(x => x.OrderId, x => x.Quantity);
+
+            // Total $ spent per user, across all non-cancelled orders.
+            var totalSpentByUser = await _context.Orders
+                .Where(o => o.Status != "Cancelled")
+                .GroupBy(o => o.UserId)
+                .Select(g => new { UserId = g.Key, Total = g.Sum(o => o.Total) })
+                .ToDictionaryAsync(g => g.UserId, g => g.Total);
+
+            using var workbook = new ClosedXML.Excel.XLWorkbook();
+            var ws = workbook.Worksheets.Add("Users");
+
+            // Header row
+            for (int i = 0; i < columns.Count; i++)
+            {
+                var cell = ws.Cell(1, i + 1);
+                cell.Value = columns[i].Header;
+                cell.Style.Font.Bold = true;
+                cell.Style.Fill.BackgroundColor = ClosedXML.Excel.XLColor.FromHtml("#F1F5F9");
+                cell.Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+            }
+
+            int row = 2;
+            foreach (var u in users)
+            {
+                lastOrders.TryGetValue(u.Id, out var lo);
+
+                string serviceTypeLabel = "";
+                if (lo != null)
+                {
+                    var st = (lo.ServiceTypeName ?? "").Trim();
+                    var stLower = st.ToLowerInvariant();
+                    if (stLower.Contains("residential"))
+                    {
+                        serviceTypeLabel = deepOrderIdSet.Contains(lo.Id) ? "Deep" : "Regular";
+                    }
+                    else
+                    {
+                        // Strip "Cleaning" (case-insensitive) from non-residential service-type names.
+                        // E.g. "Move In/Out Cleaning" → "Move In/Out", "Office Cleaning" → "Office".
+                        serviceTypeLabel = System.Text.RegularExpressions.Regex
+                            .Replace(st, @"\s*\bcleaning\b\s*", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                            .Trim();
+                    }
+                }
+
+                string serviceAt = "";
+                if (lo != null)
+                {
+                    var combined = lo.ServiceDate.Date + lo.ServiceTime;
+                    serviceAt = combined.ToString("yyyy-MM-dd HH:mm");
+                }
+
+                string address = "";
+                if (lo != null)
+                {
+                    // Trim the autocomplete tail ("Brooklyn, NY 11201, USA") off the stored street
+                    // address — borough and zip already live in their own columns. The street portion
+                    // is the substring before the first comma.
+                    var rawStreet = (lo.ServiceAddress ?? "").Trim();
+                    var commaIdx = rawStreet.IndexOf(',');
+                    var street = commaIdx >= 0 ? rawStreet.Substring(0, commaIdx).Trim() : rawStreet;
+                    address = string.IsNullOrWhiteSpace(lo.AptSuite)
+                        ? street
+                        : $"{street}, {lo.AptSuite}";
+                }
+
+                string bedsBaths = "";
+                if (lo != null && (lo.BedroomsQuantity.HasValue || lo.BathroomsQuantity.HasValue))
+                {
+                    // Bedrooms = 0 means a studio (no separate bedroom), so render "Studio" instead of "0 bd".
+                    var bd = lo.BedroomsQuantity.HasValue
+                        ? (lo.BedroomsQuantity.Value == 0 ? "Studio" : $"{lo.BedroomsQuantity.Value} bd")
+                        : "—";
+                    var bt = lo.BathroomsQuantity.HasValue ? $"{lo.BathroomsQuantity.Value} ba" : "—";
+                    bedsBaths = $"{bd} / {bt}";
+                }
+
+                int? sqft = lo != null && sqftByOrder.TryGetValue(lo.Id, out var sf) ? sf : (int?)null;
+                decimal totalSpent = totalSpentByUser.TryGetValue(u.Id, out var ts) ? ts : 0m;
+
+                for (int i = 0; i < columns.Count; i++)
+                {
+                    var col = i + 1;
+                    var key = columns[i].Key;
+                    switch (key)
+                    {
+                        case "userId":
+                            ws.Cell(row, col).Value = u.Id;
+                            break;
+                        case "fullName":
+                            ws.Cell(row, col).Value = ($"{u.FirstName} {u.LastName}").Trim();
+                            break;
+                        case "phone":
+                            ws.Cell(row, col).Value = u.Phone ?? "";
+                            break;
+                        case "email":
+                            ws.Cell(row, col).Value = u.Email ?? "";
+                            break;
+                        case "lastServiceType":
+                            ws.Cell(row, col).Value = serviceTypeLabel;
+                            break;
+                        case "lastServiceAt":
+                            ws.Cell(row, col).Value = serviceAt;
+                            break;
+                        case "lastAddress":
+                            ws.Cell(row, col).Value = address;
+                            break;
+                        case "lastBorough":
+                            ws.Cell(row, col).Value = lo?.City ?? "";
+                            break;
+                        case "lastZip":
+                            ws.Cell(row, col).Value = lo?.ZipCode ?? "";
+                            break;
+                        case "lastBedsBaths":
+                            ws.Cell(row, col).Value = bedsBaths;
+                            break;
+                        case "lastSquareFeet":
+                            if (sqft.HasValue) ws.Cell(row, col).Value = sqft.Value;
+                            else ws.Cell(row, col).Value = "";
+                            break;
+                        case "totalSpent":
+                            ws.Cell(row, col).Value = totalSpent;
+                            ws.Cell(row, col).Style.NumberFormat.Format = "$#,##0.00";
+                            break;
+                    }
+                }
+                row++;
+            }
+
+            ws.Columns().AdjustToContents();
+            // AdjustToContents can produce extremely wide columns (long addresses); clamp the upper bound.
+            foreach (var c in ws.ColumnsUsed())
+            {
+                if (c.Width > 50) c.Width = 50;
+            }
+            ws.SheetView.FreezeRows(1);
+
+            using var ms = new MemoryStream();
+            workbook.SaveAs(ms);
+            var bytes = ms.ToArray();
+
+            var fileName = $"users-export-{DateTime.UtcNow:yyyyMMdd-HHmm}.xlsx";
+            return File(
+                bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fileName);
+        }
+
         [HttpPost("users/register")]
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<object>> RegisterUser([FromBody] AdminRegisterUserDto dto)
@@ -2662,6 +2901,9 @@ namespace DreamCleaningBackend.Controllers
                     SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                     LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
                     LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
+                    PaymentMethod = order.PaymentMethod.ToString(),
+                    PaymentReference = order.PaymentReference,
+                    PaymentNotes = order.PaymentNotes,
                     PromoCode = order.PromoCode,
                     GiftCardCode = order.GiftCardCode,
                     GiftCardAmountUsed = order.GiftCardAmountUsed,
@@ -2799,6 +3041,29 @@ namespace DreamCleaningBackend.Controllers
                     !string.Equals(dto.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
                 {
                     order.IsAutoCancelExempt = true;
+                }
+
+                // Payment method recording on Done transition (Phase 1). The Done modal sends
+                // the selected payment method; if the admin changed it (e.g. order was created
+                // expecting Stripe but customer paid Zelle), we persist the correction here.
+                // ManualPaymentRecordedAt / RecordedBy are only stamped when the method is NOT
+                // Normal — those fields are reserved for genuine manual-payment audit trails.
+                // When dto.PaymentMethod is omitted, existing values on the order are preserved
+                // (no clobber to null).
+                if (string.Equals(dto.Status, "Done", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrWhiteSpace(dto.PaymentMethod))
+                {
+                    if (Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm))
+                    {
+                        order.PaymentMethod = pm;
+                        order.PaymentReference = pm != PaymentMethod.Normal ? dto.PaymentReference : null;
+                        order.PaymentNotes = pm != PaymentMethod.Normal ? dto.PaymentNotes : null;
+                        if (pm != PaymentMethod.Normal)
+                        {
+                            order.ManualPaymentRecordedAt = DateTime.UtcNow;
+                            order.ManualPaymentRecordedByUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                        }
+                    }
                 }
 
                 // Save changes FIRST
@@ -3257,6 +3522,9 @@ namespace DreamCleaningBackend.Controllers
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
                 LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
+                PaymentMethod = order.PaymentMethod.ToString(),
+                PaymentReference = order.PaymentReference,
+                PaymentNotes = order.PaymentNotes,
                 PromoCode = order.PromoCode,
                 GiftCardCode = order.GiftCardCode,
                 GiftCardAmountUsed = order.GiftCardAmountUsed,
@@ -3460,7 +3728,10 @@ namespace DreamCleaningBackend.Controllers
                             .Where(h => h.OrderId == o.Id && h.UserId == userId && h.Points > 0)
                             .Sum(h => (int?)h.Points) ?? 0,
                         LoyaltyDiscountAmount = o.LoyaltyDiscountAmount,
-                        LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage
+                        LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage,
+                        PaymentMethod = o.PaymentMethod.ToString(),
+                        PaymentReference = o.PaymentReference,
+                        PaymentNotes = o.PaymentNotes
                     })
                     .ToListAsync();
 
@@ -4747,8 +5018,10 @@ namespace DreamCleaningBackend.Controllers
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)
         {
+            // Counts both Stripe-paid orders (IsPaid=true, PaymentMethod=Normal) and manual-paid
+            // orders (PaymentMethod != Normal, IsPaid=false) — see Order.PaymentMethod docs.
             var query = _context.Orders
-                .Where(o => o.IsPaid && o.Status == "Done");
+                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal) && o.Status == "Done");
 
             if (from.HasValue)
                 query = query.Where(o => o.ServiceDate >= from.Value.Date);
@@ -4775,8 +5048,9 @@ namespace DreamCleaningBackend.Controllers
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)
         {
+            // Same filter as /statistics — include manual-paid orders alongside Stripe-paid.
             var query = _context.Orders
-                .Where(o => o.IsPaid && o.Status == "Done");
+                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal) && o.Status == "Done");
 
             if (from.HasValue)
                 query = query.Where(o => o.ServiceDate >= from.Value.Date);

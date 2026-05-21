@@ -106,5 +106,12 @@ namespace DreamCleaningBackend.DTOs
 
         [Required]
         public CreateBookingDto BookingData { get; set; }
+
+        // Manual payment tracking (Phase 1). All optional — default Normal preserves the
+        // existing Stripe-only behavior. Parsed case-insensitively in the controller; anything
+        // unrecognised falls back to Normal. Reference/Notes are ignored when method=Normal.
+        public string? PaymentMethod { get; set; }
+        public string? PaymentReference { get; set; }
+        public string? PaymentNotes { get; set; }
     }
 }

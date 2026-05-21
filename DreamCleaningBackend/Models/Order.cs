@@ -180,6 +180,22 @@ namespace DreamCleaningBackend.Models
         public bool IsPaid { get; set; } = false;
         public DateTime? PaidAt { get; set; }
 
+        // Manual payment tracking. Default Normal (=0) preserves the pre-existing Stripe/IsPaid
+        // flow exactly — no behavioral change for existing rows after migration. When set to
+        // anything else the order was paid outside Stripe and IsPaid stays false; statistics
+        // queries must OR these two conditions to count manual-paid orders.
+        public PaymentMethod PaymentMethod { get; set; } = PaymentMethod.Normal;
+
+        [StringLength(255)]
+        public string? PaymentReference { get; set; }  // Zelle confirmation #, check #, receipt #
+
+        [StringLength(1000)]
+        public string? PaymentNotes { get; set; }
+
+        public DateTime? ManualPaymentRecordedAt { get; set; }
+
+        public int? ManualPaymentRecordedByUserId { get; set; }
+
         // Navigation properties
         public virtual ICollection<OrderService> OrderServices { get; set; } = new List<OrderService>();
         public virtual ICollection<OrderExtraService> OrderExtraServices { get; set; } = new List<OrderExtraService>();

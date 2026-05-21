@@ -193,9 +193,12 @@ builder.Services.AddScoped<ILoyaltyDiscountService, LoyaltyDiscountService>();
 builder.Services.AddHostedService<LoyaltyReengagementService>();
 
 // LiveChat services
+// TEMPORARILY DISABLED — Telegram bot integration is off. The Singleton registrations
+// stay so DI doesn't break for any controllers still constructed (LiveChatAdminController,
+// TelegramWebhookController), but the cleanup HostedService is unnecessary while disabled.
 builder.Services.AddSingleton<LiveChatSessionManager>();
 builder.Services.AddSingleton<TelegramBotService>();
-builder.Services.AddHostedService<LiveChatCleanupService>();
+// builder.Services.AddHostedService<LiveChatCleanupService>();
 
 builder.Services.AddHttpClient();
 
@@ -352,11 +355,12 @@ app.MapControllers();
 app.MapHub<UserManagementHub>("/userManagementHub");
 
 // Map LiveChat SignalR Hub (anonymous access — no auth required)
-app.MapHub<LiveChatHub>("/liveChatHub");
+// TEMPORARILY DISABLED — Telegram bot integration is off. Hub un-mapped so visitors can't connect.
+// app.MapHub<LiveChatHub>("/liveChatHub");
 
 // Add logging to see if hub is registered
 Console.WriteLine("SignalR Hub mapped to: /userManagementHub");
-Console.WriteLine("SignalR Hub mapped to: /liveChatHub");
+// Console.WriteLine("SignalR Hub mapped to: /liveChatHub"); // disabled with hub mapping above
 
 // REMOVE THIS ENTIRE SECTION - Not needed since Nginx handles HTTPS
 /*
@@ -388,16 +392,17 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// Register Telegram webhook on startup (production only — bot token is only in appsettings.Production.json)
-if (!app.Environment.IsDevelopment())
-{
-    using var scope = app.Services.CreateScope();
-    var telegramBot = scope.ServiceProvider.GetRequiredService<TelegramBotService>();
-    if (telegramBot.IsConfigured)
-    {
-        var webhookBase = builder.Configuration["TelegramBot:WebhookBaseUrl"] ?? "https://dreamcleaningnearme.com";
-        await telegramBot.SetWebhook($"{webhookBase}/api/telegram/webhook");
-    }
-}
+// Register Telegram webhook on startup — TEMPORARILY DISABLED.
+// Telegram bot integration is off entirely; do not call SetWebhook.
+// if (!app.Environment.IsDevelopment())
+// {
+//     using var scope = app.Services.CreateScope();
+//     var telegramBot = scope.ServiceProvider.GetRequiredService<TelegramBotService>();
+//     if (telegramBot.IsConfigured)
+//     {
+//         var webhookBase = builder.Configuration["TelegramBot:WebhookBaseUrl"] ?? "https://dreamcleaningnearme.com";
+//         await telegramBot.SetWebhook($"{webhookBase}/api/telegram/webhook");
+//     }
+// }
 
 app.Run();

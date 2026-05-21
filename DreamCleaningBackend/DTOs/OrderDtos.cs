@@ -56,6 +56,11 @@ namespace DreamCleaningBackend.DTOs
         public int? BathroomsQuantity { get; set; }
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
+        // Phase 1 manual payment tracking — string form of the enum so frontends don't have
+        // to know the numeric values. Reference / Notes are admin-visible audit fields.
+        public string PaymentMethod { get; set; } = "Normal";
+        public string? PaymentReference { get; set; }
+        public string? PaymentNotes { get; set; }
         /// <summary>Sum of unpaid additional payments created by order updates.</summary>
         public decimal PendingUpdateAmount { get; set; }
         /// <summary>Latest unpaid update-history id (if any).</summary>
@@ -192,6 +197,12 @@ namespace DreamCleaningBackend.DTOs
         // whether a given order consumed a loyalty discount without needing the full OrderDto.
         public decimal LoyaltyDiscountAmount { get; set; }
         public decimal LoyaltyDiscountPercentage { get; set; }
+
+        // Phase 1 manual payment tracking — surfaced on the list DTO so the admin orders table
+        // can show the "DoneM" badge + payment-method filter without fetching full details.
+        public string PaymentMethod { get; set; } = "Normal";
+        public string? PaymentReference { get; set; }
+        public string? PaymentNotes { get; set; }
     }
 
     public class CancelOrderDto

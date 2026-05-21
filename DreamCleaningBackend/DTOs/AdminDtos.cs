@@ -328,6 +328,15 @@ namespace DreamCleaningBackend.DTOs
         public string? Phone { get; set; }
     }
 
+    /// <summary>SuperAdmin users-list export request. Columns is the set of column keys to include;
+    /// an empty/missing list exports all columns. Recognized keys: userId, fullName, phone, email,
+    /// lastServiceType, lastServiceAt, lastAddress, lastBorough, lastZip, lastBedsBaths,
+    /// lastSquareFeet, totalSpent.</summary>
+    public class UsersExportRequestDto
+    {
+        public List<string>? Columns { get; set; }
+    }
+
     // User Management DTOs
     public class UserAdminDto
     {
@@ -469,6 +478,13 @@ namespace DreamCleaningBackend.DTOs
     {
         [Required]
         public string Status { get; set; }
+
+        // Manual payment tracking (Phase 1). Optional — when Status == "Done" and these are
+        // provided, the order's PaymentMethod / Reference / Notes are updated. When omitted
+        // the existing values on the order are preserved (no clobber). Parsed case-insensitively.
+        public string? PaymentMethod { get; set; }
+        public string? PaymentReference { get; set; }
+        public string? PaymentNotes { get; set; }
     }
 
     // SuperAdmin-only: full user edit (all changes are audit-logged)

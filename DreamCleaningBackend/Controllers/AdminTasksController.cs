@@ -236,7 +236,12 @@ namespace DreamCleaningBackend.Controllers
             if (dto.Description != null) oldValues["Description"] = (task.Description, dto.Description);
             if (dto.Priority != null) oldValues["Priority"] = (task.Priority, dto.Priority);
             if (dto.Status != null) oldValues["Status"] = (task.Status, dto.Status);
-            if (dto.DueDate.HasValue) oldValues["DueDate"] = (task.DueDate?.ToString("yyyy-MM-dd"), dto.DueDate?.ToString("yyyy-MM-dd"));
+            // ClearDueDate takes precedence over DueDate when both are set — the user
+            // explicitly asked to clear, so log "old date → none" in the audit trail.
+            if (dto.ClearDueDate)
+                oldValues["DueDate"] = (task.DueDate?.ToString("yyyy-MM-dd"), (object?)null);
+            else if (dto.DueDate.HasValue)
+                oldValues["DueDate"] = (task.DueDate?.ToString("yyyy-MM-dd"), dto.DueDate?.ToString("yyyy-MM-dd"));
             if (dto.ClientName != null) oldValues["ClientName"] = (task.ClientName, dto.ClientName);
             if (dto.ClientEmail != null) oldValues["ClientEmail"] = (task.ClientEmail, dto.ClientEmail);
             if (dto.ClientPhone != null) oldValues["ClientPhone"] = (task.ClientPhone, dto.ClientPhone);
@@ -252,7 +257,10 @@ namespace DreamCleaningBackend.Controllers
                 task.Status = dto.Status;
                 task.CompletedAt = dto.Status == "Done" ? DateTime.UtcNow : null;
             }
-            if (dto.DueDate.HasValue) task.DueDate = dto.DueDate;
+            // Two-step decision so "clear" is unambiguous: ClearDueDate=true wins outright,
+            // otherwise the existing HasValue gate preserves untouched dates as before.
+            if (dto.ClearDueDate) task.DueDate = null;
+            else if (dto.DueDate.HasValue) task.DueDate = dto.DueDate;
             if (dto.ClientName != null) task.ClientName = dto.ClientName;
             if (dto.ClientEmail != null) task.ClientEmail = dto.ClientEmail;
             if (dto.ClientPhone != null) task.ClientPhone = dto.ClientPhone;
@@ -496,7 +504,18 @@ namespace DreamCleaningBackend.Controllers
                     task.Status = dto.Status;
                     task.CompletedAt = dto.Status == "Done" ? DateTime.UtcNow : null;
                 }
-                if (dto.DueDate.HasValue) { oldValues["DueDate"] = (task.DueDate?.ToString("yyyy-MM-dd"), dto.DueDate?.ToString("yyyy-MM-dd")); task.DueDate = dto.DueDate; }
+                // ClearDueDate takes precedence over HasValue so the user's explicit
+                // "remove this date" survives the wire round-trip (see ClearDueDate doc).
+                if (dto.ClearDueDate)
+                {
+                    oldValues["DueDate"] = (task.DueDate?.ToString("yyyy-MM-dd"), (object?)null);
+                    task.DueDate = null;
+                }
+                else if (dto.DueDate.HasValue)
+                {
+                    oldValues["DueDate"] = (task.DueDate?.ToString("yyyy-MM-dd"), dto.DueDate?.ToString("yyyy-MM-dd"));
+                    task.DueDate = dto.DueDate;
+                }
                 if (dto.AssignedToAdminId.HasValue) { oldValues["AssignedToAdminId"] = (task.AssignedToAdminId, dto.AssignedToAdminId); task.AssignedToAdminId = dto.AssignedToAdminId.Value; }
             }
 

@@ -70,6 +70,12 @@ namespace DreamCleaningBackend.DTOs
 
         public DateTime? DueDate { get; set; }
 
+        /// <summary>When true, null out the existing DueDate column. Needed because the DTO
+        /// cannot distinguish "field omitted from request" from "field set to null on the
+        /// wire" — the existing DueDate.HasValue gate preserves the old value in both cases.
+        /// Frontend sets this when the user clears a previously-set due date.</summary>
+        public bool ClearDueDate { get; set; } = false;
+
         [StringLength(200)]
         public string? ClientName { get; set; }
 
@@ -250,6 +256,11 @@ namespace DreamCleaningBackend.DTOs
         public string? Status { get; set; }
 
         public DateTime? DueDate { get; set; }
+
+        /// <summary>Mirror of UpdateAdminTaskDto.ClearDueDate — set true to null an existing due
+        /// date. The HasValue gate alone can't represent a clear request because "field omitted"
+        /// and "field set to null" arrive identically on the wire.</summary>
+        public bool ClearDueDate { get; set; } = false;
 
         public int? AssignedToAdminId { get; set; }
 

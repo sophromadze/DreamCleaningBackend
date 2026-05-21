@@ -12,6 +12,10 @@ using DreamCleaningBackend.Hubs;
 using Microsoft.AspNetCore.SignalR;
 using System.Linq;
 using Stripe;
+// Stripe also defines a PaymentMethod type. Alias to our domain enum so unqualified
+// PaymentMethod references in this file (Phase 1 manual payment tracking) resolve
+// unambiguously — Stripe.PaymentMethod isn't referenced directly here anyway.
+using PaymentMethod = DreamCleaningBackend.Models.PaymentMethod;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -1043,6 +1047,17 @@ namespace DreamCleaningBackend.Controllers
                 Console.WriteLine($"Target User ID: {dto.TargetUserId}");
                 Console.WriteLine($"TotalDuration from Frontend: {dto.BookingData.TotalDuration}");
 
+                // Parse manual payment method up front so order construction can choose the
+                // initial Status (Pending for Stripe / Normal, Active for manual). Anything
+                // unrecognised falls back to Normal — defensive default keeps the original flow.
+                var paymentMethod = PaymentMethod.Normal;
+                if (!string.IsNullOrWhiteSpace(dto.PaymentMethod) &&
+                    !Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out paymentMethod))
+                {
+                    paymentMethod = PaymentMethod.Normal;
+                }
+                var initialStatus = paymentMethod == PaymentMethod.Normal ? "Pending" : "Active";
+
                 // Get service type
                 var serviceType = await _context.ServiceTypes
                     .Include(st => st.Services)
@@ -1271,7 +1286,7 @@ namespace DreamCleaningBackend.Controllers
                     GiftCardAmountUsed = 0,
                     Tips = dto.BookingData.Tips,
                     CompanyDevelopmentTips = dto.BookingData.CompanyDevelopmentTips,
-                    Status = "Pending",
+                    Status = initialStatus,   // "Pending" for Normal/Stripe; "Active" for manual payment methods
                     OrderDate = DateTime.UtcNow,
                     SubscriptionId = dto.BookingData.SubscriptionId == 0 ? null : (int?)dto.BookingData.SubscriptionId,
                     OrderServices = new List<Models.OrderService>(),
@@ -1283,7 +1298,14 @@ namespace DreamCleaningBackend.Controllers
                     Total = dto.BookingData.Total,
                     DiscountAmount = dto.BookingData.DiscountAmount,
                     SubscriptionDiscountAmount = dto.BookingData.SubscriptionDiscountAmount,
-                    IsPaid = false, // Mark as unpaid
+                    IsPaid = false, // Mark as unpaid — IsPaid is Stripe-only; manual payments leave it false too
+                    // Manual payment tracking (Phase 1). Only stamped when paymentMethod != Normal,
+                    // otherwise these stay at their defaults and the order behaves as before.
+                    PaymentMethod = paymentMethod,
+                    PaymentReference = paymentMethod != PaymentMethod.Normal ? dto.PaymentReference : null,
+                    PaymentNotes = paymentMethod != PaymentMethod.Normal ? dto.PaymentNotes : null,
+                    ManualPaymentRecordedAt = paymentMethod != PaymentMethod.Normal ? DateTime.UtcNow : (DateTime?)null,
+                    ManualPaymentRecordedByUserId = paymentMethod != PaymentMethod.Normal ? adminUserId : (int?)null,
                     // For custom pricing, totalDuration was already computed as perCleaner × cleaners above.
                     TotalDuration = totalDuration,
                     BedroomsQuantity = dto.BookingData.BedroomsQuantity,
@@ -1529,6 +1551,93 @@ namespace DreamCleaningBackend.Controllers
                 // Store booking data including photos for later use when payment is confirmed
                 var sessionId = $"booking_{order.Id}_{dto.TargetUserId}";
                 _bookingDataService.StoreBookingData(sessionId, dto.BookingData);
+
+                // Manual payment path: skip the Pay Now reminder entirely and send a real
+                // booking confirmation (no payment link). Reuses the existing customer template
+                // — same shape as a successful Stripe payment confirmation, just without the
+                // "you need to pay" framing. The Stripe / Normal path below is unchanged.
+                if (paymentMethod != PaymentMethod.Normal)
+                {
+                    // Load extras for the supply checklist that the confirmation email/SMS use.
+                    await _context.Entry(order).Collection(o => o.OrderExtraServices).Query().Include(oes => oes.ExtraService).LoadAsync();
+
+                    var manualContactEmail = order.ContactEmail;
+                    var manualContactPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : targetUser?.Phone;
+                    var manualCustomerName = CapitalizeName(order.ContactFirstName);
+                    var manualAddressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
+                    var manualServiceTimeStr = order.ServiceTime.ToString();
+
+                    var manualExtraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
+                        .Select(x => x.ExtraService?.Name ?? "")
+                        .Where(n => !string.IsNullOrWhiteSpace(n))
+                        .Select(n => n.ToLowerInvariant())
+                        .ToList();
+                    var manualHasCleaningSupplies = manualExtraNames.Any(n => n.Contains("cleaning supplies"));
+                    var manualIsDeepCleaning = manualExtraNames.Any(n => n.Contains("super deep cleaning")) ||
+                                               manualExtraNames.Any(n => n.Contains("deep cleaning") && !n.Contains("super"));
+                    var manualIsCustomServiceType = order.ServiceType?.IsCustom ?? false;
+
+                    // Fire-and-forget email (skip Apple hidden mail). Same isAppleHiddenMail
+                    // check the Stripe path uses below — keep behavior aligned.
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var isAppleHiddenMail = !string.IsNullOrEmpty(manualContactEmail) &&
+                                manualContactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+                            if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(manualContactEmail))
+                            {
+                                await _emailService.SendCustomerBookingConfirmationAsync(
+                                    manualContactEmail, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
+                                    order.ServiceType.Name, manualAddressDisplay, order.Id,
+                                    manualHasCleaningSupplies, manualIsDeepCleaning, manualIsCustomServiceType,
+                                    order.FloorTypes, order.FloorTypeOther,
+                                    // Manual payment path: customer pays cleaners on arrival, so drop
+                                    // the "payment processed successfully" phrasing from the greeting.
+                                    paymentAlreadyProcessed: false);
+                                _logger.LogInformation($"Manual-payment booking confirmation email sent to {manualContactEmail} for order {order.Id}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"Failed to send manual-payment booking confirmation email for order {order.Id}");
+                        }
+                    });
+
+                    if (!string.IsNullOrWhiteSpace(manualContactPhone))
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await _smsService.SendBookingConfirmationSmsAsync(
+                                    manualContactPhone, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
+                                    manualHasCleaningSupplies, manualIsDeepCleaning, manualIsCustomServiceType);
+                                _logger.LogInformation($"Manual-payment booking confirmation SMS sent to {manualContactPhone} for order {order.Id}");
+                            }
+                            catch (InvalidPhoneNumberException)
+                            {
+                                _logger.LogWarning($"Manual-payment SMS skipped for order {order.Id}: invalid phone");
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, $"Failed to send manual-payment booking confirmation SMS for order {order.Id}");
+                            }
+                        });
+                    }
+
+                    Console.WriteLine($"=== ADMIN BOOKING CREATION END (manual payment: {paymentMethod}) ===");
+                    Console.WriteLine($"Order ID: {order.Id}, Status: {order.Status}, IsPaid: {order.IsPaid}");
+
+                    return Ok(new BookingResponseDto
+                    {
+                        OrderId = order.Id,
+                        Status = order.Status,
+                        Total = order.Total,
+                        PaymentIntentId = null,
+                        PaymentClientSecret = null
+                    });
+                }
 
                 // Send payment reminder notifications (SMS and Email)
                 try

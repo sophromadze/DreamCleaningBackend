@@ -31,6 +31,13 @@ public class TelegramWebhookController : ControllerBase
     [HttpPost("webhook")]
     public async Task<IActionResult> HandleWebhook()
     {
+        // TEMPORARILY DISABLED — Telegram integration is off site-wide.
+        // Always respond 410 Gone so Telegram backs off / disables push retries.
+        _logger.LogInformation("Telegram webhook hit while integration is disabled — returning 410 Gone.");
+        await Task.CompletedTask;
+        return StatusCode(StatusCodes.Status410Gone, new { message = "Telegram integration is temporarily disabled." });
+
+        #pragma warning disable CS0162 // Unreachable code — preserved so re-enabling is a one-line revert.
         // Telegram.Bot v22 uses System.Text.Json with custom converters (snake_case,
         // Unix timestamps, ChatId, etc.) exposed via JsonBotAPI.Options.
         // We deserialize manually so ASP.NET Core's default STJ settings don't interfere.
@@ -129,5 +136,6 @@ public class TelegramWebhookController : ControllerBase
         }
 
         return Ok();
+        #pragma warning restore CS0162
     }
 }

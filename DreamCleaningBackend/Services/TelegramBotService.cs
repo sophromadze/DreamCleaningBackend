@@ -16,6 +16,14 @@ public class TelegramBotService
     {
         _logger = logger;
 
+        // TEMPORARILY DISABLED — Telegram bot integration is off site-wide.
+        // Force the unconfigured branch so all bot methods become no-ops and no outbound
+        // HTTP/SetWebhook calls fire. Re-enable by removing this early return.
+        _logger.LogWarning("TelegramBotService: Telegram integration is TEMPORARILY DISABLED in code.");
+        _isConfigured = false;
+        return;
+
+        #pragma warning disable CS0162 // Unreachable code — preserved so re-enabling is a one-line revert.
         var token = config["TelegramBot:Token"];
         var chatId = config["TelegramBot:GroupChatId"];
 
@@ -41,6 +49,7 @@ public class TelegramBotService
 _bot = new TelegramBotClient(token, httpClient);
         _groupChatId = long.Parse(chatId);
         _isConfigured = true;
+        #pragma warning restore CS0162
     }
 
     public bool IsConfigured => _isConfigured;

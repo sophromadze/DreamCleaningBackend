@@ -35,7 +35,8 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
             bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType,
-            string? floorTypes = null, string? floorTypeOther = null);
+            string? floorTypes = null, string? floorTypeOther = null,
+            bool paymentAlreadyProcessed = true);
         Task SendRealEmailVerificationCodeAsync(string email, string firstName, string code);
         Task SendAccountMergeConfirmationAsync(string email, string firstName, string code);
         Task SendEmailAsync(string to, string subject, string html);

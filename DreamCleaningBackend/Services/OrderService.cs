@@ -68,7 +68,10 @@ namespace DreamCleaningBackend.Services
                 CancellationReason = o.CancellationReason,
                 IsLateCancellation = o.IsLateCancellation,
                 LoyaltyDiscountAmount = o.LoyaltyDiscountAmount,
-                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage
+                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage,
+                PaymentMethod = o.PaymentMethod.ToString(),
+                PaymentReference = o.PaymentReference,
+                PaymentNotes = o.PaymentNotes
             }).ToList();
         }
 
@@ -154,7 +157,10 @@ namespace DreamCleaningBackend.Services
                 IsLateCancellation = o.IsLateCancellation,
                 PointsEarned = pointsEarnedMap.TryGetValue(o.Id, out var pe) ? pe : 0,
                 LoyaltyDiscountAmount = o.LoyaltyDiscountAmount,
-                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage
+                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage,
+                PaymentMethod = o.PaymentMethod.ToString(),
+                PaymentReference = o.PaymentReference,
+                PaymentNotes = o.PaymentNotes
             }).ToList();
         }
 
@@ -235,7 +241,11 @@ namespace DreamCleaningBackend.Services
             foreach (var order in orders)
             {
                 if (order == null) continue;
-                if (order.IsPaid) continue;
+                // Phase 1: manual-paid orders (PaymentMethod != Normal) have IsPaid=false by
+                // design — IsPaid is Stripe-only — so treating them as "unpaid" here would
+                // auto-cancel them once their service date passes. Treat both Stripe-paid
+                // and manual-paid orders as "paid" for the purposes of auto-cancel.
+                if (order.IsPaid || order.PaymentMethod != PaymentMethod.Normal) continue;
                 if (order.IsAutoCancelExempt) continue;
                 if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase)) continue;
@@ -259,7 +269,9 @@ namespace DreamCleaningBackend.Services
         private async Task AutoCancelExpiredUnpaidOrderIfNeeded(Order order)
         {
             if (order == null) return;
-            if (order.IsPaid) return;
+            // Phase 1: manual-paid orders have IsPaid=false by design. Treat them as "paid"
+            // here so they don't get auto-cancelled when their service date passes.
+            if (order.IsPaid || order.PaymentMethod != PaymentMethod.Normal) return;
             if (order.IsAutoCancelExempt) return;
             if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase)) return;
             if (string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase)) return;
@@ -1207,7 +1219,10 @@ namespace DreamCleaningBackend.Services
                 CancellationReason = o.CancellationReason,
                 IsLateCancellation = o.IsLateCancellation,
                 LoyaltyDiscountAmount = o.LoyaltyDiscountAmount,
-                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage
+                LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage,
+                PaymentMethod = o.PaymentMethod.ToString(),
+                PaymentReference = o.PaymentReference,
+                PaymentNotes = o.PaymentNotes
             }).ToList();
         }
 
@@ -1257,6 +1272,9 @@ namespace DreamCleaningBackend.Services
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
                 LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
+                PaymentMethod = order.PaymentMethod.ToString(),
+                PaymentReference = order.PaymentReference,
+                PaymentNotes = order.PaymentNotes,
                 Tips = order.Tips,
                 CompanyDevelopmentTips = order.CompanyDevelopmentTips,
                 Total = order.Total,
@@ -1355,6 +1373,9 @@ namespace DreamCleaningBackend.Services
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
                 LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
+                PaymentMethod = order.PaymentMethod.ToString(),
+                PaymentReference = order.PaymentReference,
+                PaymentNotes = order.PaymentNotes,
                 PromoCode = order.PromoCode,
                 SpecialOfferName = GetSpecialOfferName(order.PromoCode),
                 PromoCodeDetails = GetPromoCodeDetails(order.PromoCode),
