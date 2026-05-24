@@ -5,6 +5,7 @@ namespace DreamCleaningBackend.Models
         Top = 0,
         Standard = 1,
         Beginner = 2,
-        Restricted = 3
+        Restricted = 3,
+        NoExp = 4
     }
 }
