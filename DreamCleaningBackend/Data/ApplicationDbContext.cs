@@ -46,6 +46,9 @@ namespace DreamCleaningBackend.Data
         public DbSet<ClientInteraction> ClientInteractions { get; set; }
         public DbSet<HandoverNote> HandoverNotes { get; set; }
         public DbSet<AdminShift> AdminShifts { get; set; }
+        public DbSet<OrderAdminAssignmentHistory> OrderAdminAssignmentHistories { get; set; }
+        public DbSet<AdminBonusSetting> AdminBonusSettings { get; set; }
+        public DbSet<Expense> Expenses { get; set; }
         public DbSet<PersonalAdminTask> PersonalAdminTasks { get; set; }
         public DbSet<TaskActivityLog> TaskActivityLogs { get; set; }
 
@@ -263,6 +266,19 @@ namespace DreamCleaningBackend.Data
                 .WithMany(st => st.Orders)
                 .HasForeignKey(o => o.ServiceTypeId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            // Order ↔ AssignedAdmin (Admin/SuperAdmin user responsible for the order).
+            // Restrict on delete so removing a User who has assigned orders is blocked —
+            // those orders must be reassigned first, otherwise bonus history would orphan.
+            modelBuilder.Entity<Order>()
+                .HasOne(o => o.AssignedAdmin)
+                .WithMany()
+                .HasForeignKey(o => o.AssignedAdminId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<Order>()
+                .HasIndex(o => o.AssignedAdminId)
+                .HasDatabaseName("IX_Orders_AssignedAdminId");
 
             // OrderCleaner configuration
             modelBuilder.Entity<OrderCleaner>(entity =>
@@ -927,6 +943,69 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(e => e.AdminId)
                     .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.CreatedByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.CreatedByUserId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // OrderAdminAssignmentHistory configuration — audit trail for Order.AssignedAdminId
+            modelBuilder.Entity<OrderAdminAssignmentHistory>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.OrderId).HasDatabaseName("IX_OrderAdminAssignmentHistory_OrderId");
+                entity.HasIndex(e => e.NewAdminId).HasDatabaseName("IX_OrderAdminAssignmentHistory_NewAdminId");
+                entity.HasIndex(e => e.ChangedAt).HasDatabaseName("IX_OrderAdminAssignmentHistory_ChangedAt");
+
+                entity.HasOne(e => e.Order)
+                    .WithMany(o => o.AdminAssignmentHistory)
+                    .HasForeignKey(e => e.OrderId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(e => e.PreviousAdmin)
+                    .WithMany()
+                    .HasForeignKey(e => e.PreviousAdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.NewAdmin)
+                    .WithMany()
+                    .HasForeignKey(e => e.NewAdminId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.ChangedByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.ChangedByUserId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // AdminBonusSetting configuration — single-row config table seeded with id=1
+            modelBuilder.Entity<AdminBonusSetting>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasOne(e => e.UpdatedByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.UpdatedByUserId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<AdminBonusSetting>().HasData(
+                new AdminBonusSetting
+                {
+                    Id = 1,
+                    RatePerOrder = 10m,
+                    Currency = "GEL",
+                    UpdatedByUserId = null,
+                    UpdatedAt = new DateTime(2026, 5, 24, 0, 0, 0, DateTimeKind.Utc)
+                }
+            );
+
+            // Expense configuration — company expenses subtracted from net company revenue.
+            modelBuilder.Entity<Expense>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.StartDate).HasDatabaseName("IX_Expenses_StartDate");
+                entity.HasIndex(e => e.Category).HasDatabaseName("IX_Expenses_Category");
+                entity.HasIndex(e => e.IsRecurring).HasDatabaseName("IX_Expenses_IsRecurring");
                 entity.HasOne(e => e.CreatedByUser)
                     .WithMany()
                     .HasForeignKey(e => e.CreatedByUserId)

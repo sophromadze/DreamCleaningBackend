@@ -626,6 +626,12 @@ namespace DreamCleaningBackend.DTOs
     }
 
     /// <summary>Response DTO for order statistics (SuperAdmin only).</summary>
+    /// <remarks>
+    /// TotalCompanyRevenue is NET — it already subtracts TotalExpenses. The frontend's
+    /// breakdown panel rebuilds the formula from these labelled components:
+    ///   Subtotal − Taxes − Cleaner Salaries − Expenses = Company Revenue (net)
+    /// TotalCompanyRevenueGross is the pre-expense figure for reference.
+    /// </remarks>
     public class OrderStatisticsDto
     {
         public int TotalOrders { get; set; }
@@ -633,10 +639,13 @@ namespace DreamCleaningBackend.DTOs
         public decimal TotalTaxes { get; set; }
         public decimal TotalTips { get; set; }
         public decimal TotalCleanersSalary { get; set; }
+        public decimal TotalExpenses { get; set; }
+        public decimal TotalCompanyRevenueGross { get; set; }
         public decimal TotalCompanyRevenue { get; set; }
+        public ExpenseBreakdownDto? ExpensesBreakdown { get; set; }
     }
 
-    /// <summary>Daily data point for statistics chart.</summary>
+    /// <summary>Daily data point for statistics chart. CompanyRevenue is NET.</summary>
     public class DailyStatisticsDto
     {
         public string Date { get; set; } = "";
@@ -645,6 +654,7 @@ namespace DreamCleaningBackend.DTOs
         public decimal Taxes { get; set; }
         public decimal Tips { get; set; }
         public decimal CleanersSalary { get; set; }
+        public decimal Expenses { get; set; }
         public decimal CompanyRevenue { get; set; }
     }
 }

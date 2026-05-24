@@ -21,14 +21,35 @@ namespace DreamCleaningBackend.Controllers
         private readonly IAuditService _auditService;
         private readonly IStripeService _stripeService;
         private readonly IEmailService _emailService;
+        private readonly IAdminBonusService _adminBonusService;
 
-        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService)
+        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService, IAdminBonusService adminBonusService)
         {
             _orderService = orderService;
             _context = context;
             _auditService = auditService;
             _stripeService = stripeService;
             _emailService = emailService;
+            _adminBonusService = adminBonusService;
+        }
+
+        // PATCH /api/order/{id}/assigned-admin — set, change, or clear the admin assigned
+        // to an order. Admin/SuperAdmin only. Writes the change to OrderAdminAssignmentHistory
+        // so reassignments stay auditable; bonus credit is computed from the current value.
+        [HttpPatch("{orderId}/assigned-admin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        public async Task<ActionResult<OrderAssignedAdminDto>> SetAssignedAdmin(int orderId, [FromBody] AssignAdminDto dto)
+        {
+            try
+            {
+                var byUserId = GetUserId();
+                var result = await _adminBonusService.AssignAdminAsync(orderId, dto.AdminId, byUserId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
         }
 
         [HttpGet]

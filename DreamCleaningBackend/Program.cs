@@ -186,6 +186,12 @@ builder.Services.AddScoped<IBubbleRewardsSettingsService, BubbleRewardsSettingsS
 builder.Services.AddScoped<IReferralService, ReferralService>();
 builder.Services.AddScoped<IBubblePointsService, BubblePointsService>();
 
+// Admin per-order bonus (configurable rate × eligible orders assigned to the admin).
+builder.Services.AddScoped<IAdminBonusService, AdminBonusService>();
+
+// Company expenses — flat + recurring entries that subtract from net company revenue.
+builder.Services.AddScoped<IExpenseService, ExpenseService>();
+
 // Loyalty Discount (re-engagement). Scoped service handles the per-user state machine;
 // the background worker fires hourly and only dispatches inside the 11:00 America/New_York
 // hour. Settings are read fresh per cycle (cached 5 min inside BubbleRewardsSettingsService).

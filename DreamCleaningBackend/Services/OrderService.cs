@@ -40,6 +40,7 @@ namespace DreamCleaningBackend.Services
             var orders = await _context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
+                .Include(o => o.AssignedAdmin)
                 .OrderByDescending(o => o.OrderDate)
                 .ToListAsync();
 
@@ -71,7 +72,13 @@ namespace DreamCleaningBackend.Services
                 LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage,
                 PaymentMethod = o.PaymentMethod.ToString(),
                 PaymentReference = o.PaymentReference,
-                PaymentNotes = o.PaymentNotes
+                PaymentNotes = o.PaymentNotes,
+                AssignedAdminId = o.AssignedAdminId,
+                AssignedAdminFirstName = o.AssignedAdmin != null ? o.AssignedAdmin.FirstName : null,
+                AssignedAdminLastName = o.AssignedAdmin != null ? o.AssignedAdmin.LastName : null,
+                AssignedAdminDisplayName = o.AssignedAdmin != null
+                    ? AdminBonusService.FormatDisplayName(o.AssignedAdmin.FirstName, o.AssignedAdmin.LastName)
+                    : null
             }).ToList();
         }
 
@@ -160,7 +167,13 @@ namespace DreamCleaningBackend.Services
                 LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage,
                 PaymentMethod = o.PaymentMethod.ToString(),
                 PaymentReference = o.PaymentReference,
-                PaymentNotes = o.PaymentNotes
+                PaymentNotes = o.PaymentNotes,
+                AssignedAdminId = o.AssignedAdminId,
+                AssignedAdminFirstName = o.AssignedAdmin != null ? o.AssignedAdmin.FirstName : null,
+                AssignedAdminLastName = o.AssignedAdmin != null ? o.AssignedAdmin.LastName : null,
+                AssignedAdminDisplayName = o.AssignedAdmin != null
+                    ? AdminBonusService.FormatDisplayName(o.AssignedAdmin.FirstName, o.AssignedAdmin.LastName)
+                    : null
             }).ToList();
         }
 
@@ -1192,6 +1205,7 @@ namespace DreamCleaningBackend.Services
             var orders = await _context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
+                .Include(o => o.AssignedAdmin)
                 .Where(o => o.UserId == userId)
                 .OrderByDescending(o => o.OrderDate)
                 .ToListAsync();
@@ -1222,7 +1236,13 @@ namespace DreamCleaningBackend.Services
                 LoyaltyDiscountPercentage = o.LoyaltyDiscountPercentage,
                 PaymentMethod = o.PaymentMethod.ToString(),
                 PaymentReference = o.PaymentReference,
-                PaymentNotes = o.PaymentNotes
+                PaymentNotes = o.PaymentNotes,
+                AssignedAdminId = o.AssignedAdminId,
+                AssignedAdminFirstName = o.AssignedAdmin != null ? o.AssignedAdmin.FirstName : null,
+                AssignedAdminLastName = o.AssignedAdmin != null ? o.AssignedAdmin.LastName : null,
+                AssignedAdminDisplayName = o.AssignedAdmin != null
+                    ? AdminBonusService.FormatDisplayName(o.AssignedAdmin.FirstName, o.AssignedAdmin.LastName)
+                    : null
             }).ToList();
         }
 
@@ -1236,6 +1256,7 @@ namespace DreamCleaningBackend.Services
                 .Include(o => o.OrderExtraServices)
                     .ThenInclude(oes => oes.ExtraService)
                 .Include(o => o.User)
+                .Include(o => o.AssignedAdmin)
                 .FirstOrDefaultAsync(o => o.Id == orderId);
 
             if (order == null)
@@ -1306,7 +1327,13 @@ namespace DreamCleaningBackend.Services
                     Hours = oes.Hours,
                     Cost = oes.Cost,
                     Duration = oes.Duration
-                }).ToList() ?? new List<OrderExtraServiceDto>()
+                }).ToList() ?? new List<OrderExtraServiceDto>(),
+                AssignedAdminId = order.AssignedAdminId,
+                AssignedAdminFirstName = order.AssignedAdmin?.FirstName,
+                AssignedAdminLastName = order.AssignedAdmin?.LastName,
+                AssignedAdminDisplayName = order.AssignedAdmin != null
+                    ? AdminBonusService.FormatDisplayName(order.AssignedAdmin.FirstName, order.AssignedAdmin.LastName)
+                    : null
             };
         }
 
@@ -1433,7 +1460,13 @@ namespace DreamCleaningBackend.Services
                     Hours = oes.Hours,
                     Cost = oes.Cost,
                     Duration = oes.Duration
-                }).ToList() ?? new List<OrderExtraServiceDto>()
+                }).ToList() ?? new List<OrderExtraServiceDto>(),
+                AssignedAdminId = order.AssignedAdminId,
+                AssignedAdminFirstName = order.AssignedAdmin?.FirstName,
+                AssignedAdminLastName = order.AssignedAdmin?.LastName,
+                AssignedAdminDisplayName = order.AssignedAdmin != null
+                    ? AdminBonusService.FormatDisplayName(order.AssignedAdmin.FirstName, order.AssignedAdmin.LastName)
+                    : null
             };
         }
 

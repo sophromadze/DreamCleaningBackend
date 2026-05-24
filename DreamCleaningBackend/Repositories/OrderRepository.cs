@@ -31,6 +31,7 @@ namespace DreamCleaningBackend.Repositories
                     .ThenInclude(os => os.Service)
                 .Include(o => o.OrderExtraServices)
                     .ThenInclude(oes => oes.ExtraService)
+                .Include(o => o.AssignedAdmin)
                 .FirstOrDefaultAsync(o => o.Id == id);
         }
 
@@ -38,6 +39,7 @@ namespace DreamCleaningBackend.Repositories
         {
             return await _context.Orders
                 .Include(o => o.ServiceType)
+                .Include(o => o.AssignedAdmin)
                 .Where(o => o.UserId == userId)
                 .OrderByDescending(o => o.OrderDate)
                 .ToListAsync();

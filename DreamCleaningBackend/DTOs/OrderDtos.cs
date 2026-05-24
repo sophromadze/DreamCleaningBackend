@@ -77,6 +77,14 @@ namespace DreamCleaningBackend.DTOs
         public bool IsLateCancellation { get; set; }
         public List<OrderServiceDto> Services { get; set; } = new List<OrderServiceDto>();
         public List<OrderExtraServiceDto> ExtraServices { get; set; } = new List<OrderExtraServiceDto>();
+
+        // Admin currently assigned to this order (for the "By: F. LastName" pill).
+        // Null when no admin has been set. AssignedAdminDisplayName is the pre-formatted
+        // pill label ("F. LastName") so the frontend doesn't have to replicate the rule.
+        public int? AssignedAdminId { get; set; }
+        public string? AssignedAdminFirstName { get; set; }
+        public string? AssignedAdminLastName { get; set; }
+        public string? AssignedAdminDisplayName { get; set; }
     }
 
     public class OrderServiceDto
@@ -203,6 +211,12 @@ namespace DreamCleaningBackend.DTOs
         public string PaymentMethod { get; set; } = "Normal";
         public string? PaymentReference { get; set; }
         public string? PaymentNotes { get; set; }
+
+        // Assigned admin (drives the order-details pill and admin-bonus counts).
+        public int? AssignedAdminId { get; set; }
+        public string? AssignedAdminFirstName { get; set; }
+        public string? AssignedAdminLastName { get; set; }
+        public string? AssignedAdminDisplayName { get; set; }
     }
 
     public class CancelOrderDto

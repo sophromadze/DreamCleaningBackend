@@ -231,5 +231,16 @@ namespace DreamCleaningBackend.Models
 
         // Navigation property for update history
         public virtual ICollection<OrderUpdateHistory> UpdateHistory { get; set; } = new List<OrderUpdateHistory>();
+
+        // The admin (User with Admin or SuperAdmin role) currently responsible for this
+        // order. Determines bonus credit. History of changes lives in
+        // OrderAdminAssignmentHistories so reassignments stay auditable.
+        public int? AssignedAdminId { get; set; }
+
+        [ForeignKey("AssignedAdminId")]
+        public virtual User? AssignedAdmin { get; set; }
+
+        public virtual ICollection<OrderAdminAssignmentHistory> AdminAssignmentHistory { get; set; }
+            = new List<OrderAdminAssignmentHistory>();
     }
 }

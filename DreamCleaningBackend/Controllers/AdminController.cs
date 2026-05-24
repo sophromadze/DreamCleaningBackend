@@ -39,6 +39,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IBubblePointsService _bubblePointsService;
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
         private readonly IBubbleRewardsSettingsService _bubbleRewardsSettingsService;
+        private readonly IExpenseService _expenseService;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
@@ -55,7 +56,8 @@ namespace DreamCleaningBackend.Controllers
             IHubContext<UserManagementHub> hubContext,
             IBubblePointsService bubblePointsService,
             ILoyaltyDiscountService loyaltyDiscountService,
-            IBubbleRewardsSettingsService bubbleRewardsSettingsService)
+            IBubbleRewardsSettingsService bubbleRewardsSettingsService,
+            IExpenseService expenseService)
         {
             _context = context;
             _permissionService = permissionService;
@@ -73,6 +75,7 @@ namespace DreamCleaningBackend.Controllers
             _bubblePointsService = bubblePointsService;
             _loyaltyDiscountService = loyaltyDiscountService;
             _bubbleRewardsSettingsService = bubbleRewardsSettingsService;
+            _expenseService = expenseService;
         }
 
         // Service Types Management
@@ -2872,6 +2875,7 @@ namespace DreamCleaningBackend.Controllers
                         .ThenInclude(os => os.Service)
                     .Include(o => o.OrderExtraServices)
                         .ThenInclude(oes => oes.ExtraService)
+                    .Include(o => o.AssignedAdmin)
                     .FirstOrDefaultAsync(o => o.Id == orderId);
 
                 if (order == null)
@@ -2956,7 +2960,13 @@ namespace DreamCleaningBackend.Controllers
                         Hours = oes.Hours,
                         Cost = oes.Cost,
                         Duration = oes.Duration
-                    }).ToList() ?? new List<OrderExtraServiceDto>()
+                    }).ToList() ?? new List<OrderExtraServiceDto>(),
+                    AssignedAdminId = order.AssignedAdminId,
+                    AssignedAdminFirstName = order.AssignedAdmin?.FirstName,
+                    AssignedAdminLastName = order.AssignedAdmin?.LastName,
+                    AssignedAdminDisplayName = order.AssignedAdmin != null
+                        ? AdminBonusService.FormatDisplayName(order.AssignedAdmin.FirstName, order.AssignedAdmin.LastName)
+                        : null
                 };
             }
             catch (Exception ex)
@@ -5036,10 +5046,19 @@ namespace DreamCleaningBackend.Controllers
                 TotalTaxes = g.Sum(o => o.Tax),
                 TotalTips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
                 TotalCleanersSalary = g.Sum(o => o.CleanerTotalSalary),
-                TotalCompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary)
-            }).FirstOrDefaultAsync();
+                TotalCompanyRevenueGross = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary)
+            }).FirstOrDefaultAsync() ?? new OrderStatisticsDto();
 
-            return Ok(stats ?? new OrderStatisticsDto());
+            // Expenses use the same window. Match the inclusive `to` convention used above.
+            var expenseFrom = from?.Date ?? DateTime.MinValue;
+            var expenseTo = (to?.Date ?? DateTime.UtcNow.Date).AddDays(1);
+            var breakdown = await _expenseService.GetBreakdownAsync(expenseFrom, expenseTo);
+
+            stats.TotalExpenses = breakdown.Total;
+            stats.TotalCompanyRevenue = stats.TotalCompanyRevenueGross - breakdown.Total;
+            stats.ExpensesBreakdown = breakdown;
+
+            return Ok(stats);
         }
 
         [HttpGet("statistics/daily")]
@@ -5070,9 +5089,18 @@ namespace DreamCleaningBackend.Controllers
                 })
                 .ToListAsync();
 
-            var daily = orders
+            // Per-day expense attribution: each projected occurrence is added to its own day,
+            // so the chart shows the actual bill date (e.g. RingCentral hits on the 1st of the month).
+            var expenseFrom = from?.Date ?? DateTime.MinValue;
+            var expenseTo = (to?.Date ?? DateTime.UtcNow.Date).AddDays(1);
+            var occurrences = await _expenseService.GetOccurrencesInRangeAsync(expenseFrom, expenseTo);
+            var expensesByDay = occurrences
+                .GroupBy(o => o.Date.Date)
+                .ToDictionary(g => g.Key, g => g.Sum(x => x.Amount));
+
+            var dailyMap = orders
                 .GroupBy(o => o.ServiceDate.Date)
-                .Select(g => new DailyStatisticsDto
+                .ToDictionary(g => g.Key, g => new DailyStatisticsDto
                 {
                     Date = g.Key.ToString("yyyy-MM-dd"),
                     Orders = g.Count(),
@@ -5080,10 +5108,27 @@ namespace DreamCleaningBackend.Controllers
                     Taxes = g.Sum(o => o.Tax),
                     Tips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
                     CleanersSalary = g.Sum(o => o.CleanerTotalSalary),
+                    Expenses = 0m,
                     CompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary)
-                })
-                .OrderBy(d => d.Date)
-                .ToList();
+                });
+
+            // Fold in expense days that have no orders so the chart still reflects them.
+            foreach (var kv in expensesByDay)
+            {
+                if (!dailyMap.TryGetValue(kv.Key, out var row))
+                {
+                    row = new DailyStatisticsDto
+                    {
+                        Date = kv.Key.ToString("yyyy-MM-dd"),
+                        Orders = 0
+                    };
+                    dailyMap[kv.Key] = row;
+                }
+                row.Expenses = kv.Value;
+                row.CompanyRevenue -= kv.Value;
+            }
+
+            var daily = dailyMap.Values.OrderBy(d => d.Date).ToList();
 
             return Ok(daily);
         }
