@@ -1,4 +1,4 @@
-using DreamCleaningBackend.Data;
+﻿using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Services.Interfaces;
@@ -153,7 +153,7 @@ namespace DreamCleaningBackend.Services
 
         public async Task SendAccountMergeConfirmationAsync(string email, string firstName, string code)
         {
-            var subject = "Confirm Account Merge â€” Dream Cleaning";
+            var subject = "Confirm Account Merge — Dream Cleaning";
             var body = $@"
                 <h2>Hi {firstName},</h2>
                 <p>Someone is trying to merge an Apple Sign In account with your Dream Cleaning account ({email}).</p>
@@ -162,7 +162,7 @@ namespace DreamCleaningBackend.Services
                 <p>This code expires in 10 minutes.</p>
                 <p>If you did not request this, please ignore this email. Your account will not be changed.</p>
                 <br/>
-                <p>â€” Dream Cleaning Team</p>
+                <p>— Dream Cleaning Team</p>
             ";
             await SendEmailAsync(email, subject, body);
         }
@@ -528,7 +528,7 @@ namespace DreamCleaningBackend.Services
 <body>
     <div class='container'>
         <div class='header'>
-            <h1>ðŸŽ You've Received a Gift Card!</h1>
+            <h1>🎁 You've Received a Gift Card!</h1>
             <p>From {senderName}</p>
         </div>
         
@@ -558,10 +558,10 @@ namespace DreamCleaningBackend.Services
         
         <div class='footer'>
             <p><strong>Gift Card Terms:</strong></p>
-            <p>â€¢ Gift card never expires</p>
-            <p>â€¢ Can be used for any Dream Cleaning services</p>
-            <p>â€¢ Remaining balance can be used for future bookings</p>
-            <p>â€¢ Non-refundable and non-exchangeable for cash</p>
+            <p>• Gift card never expires</p>
+            <p>• Can be used for any Dream Cleaning services</p>
+            <p>• Remaining balance can be used for future bookings</p>
+            <p>• Non-refundable and non-exchangeable for cash</p>
             <br/>
             <p>Need help? Contact us at {_configuration["Email:FromAddress"]} or call (929) 930-1525</p>
             <p>&copy; {DateTime.UtcNow.Year} Dream Cleaning. All rights reserved.</p>
@@ -934,17 +934,17 @@ namespace DreamCleaningBackend.Services
 
             string suppliesValue = hasCleaningSupplies ? labels["suppliesRequired"] : labels["suppliesNotRequired"];
             string firstName = order.ContactFirstName ?? string.Empty;
-            string addressValue = string.IsNullOrWhiteSpace(fullAddress) ? "â€”" : fullAddress;
-            string entryValue = string.IsNullOrWhiteSpace(order.EntryMethod) ? "â€”" : order.EntryMethod;
+            string addressValue = string.IsNullOrWhiteSpace(fullAddress) ? "—" : fullAddress;
+            string entryValue = string.IsNullOrWhiteSpace(order.EntryMethod) ? "—" : order.EntryMethod;
             var maidsCount = order.MaidsCount > 0 ? order.MaidsCount : 1;
             var perCleanerTips = Math.Round(order.Tips / maidsCount, 2);
-            string tipsValue = perCleanerTips > 0 ? $"${perCleanerTips:F2}" : "â€”";
+            string tipsValue = perCleanerTips > 0 ? $"${perCleanerTips:F2}" : "—";
 
             var rows = new System.Text.StringBuilder();
-            rows.Append(BuildRow(labels["cleaningType"], order.ServiceType?.Name ?? "â€”"));
+            rows.Append(BuildRow(labels["cleaningType"], order.ServiceType?.Name ?? "—"));
             // Bedrooms / bathrooms are stored on the order as nullable ints when the customer
-            // picked them at booking time. Only emit a row when set (0 is still meaningful â€” a
-            // studio shows "0 bedrooms" â€” so we check HasValue, not the count).
+            // picked them at booking time. Only emit a row when set (0 is still meaningful — a
+            // studio shows "0 bedrooms" — so we check HasValue, not the count).
             if (order.BedroomsQuantity.HasValue)
                 rows.Append(BuildRow(labels["bedrooms"], order.BedroomsQuantity.Value.ToString()));
             if (order.BathroomsQuantity.HasValue)
@@ -998,7 +998,7 @@ namespace DreamCleaningBackend.Services
         // Compact assignment SMS body for cleaners who have a phone number but no email on file.
         // The contents must mirror the email's data (type, beds/baths, duration, date+time,
         // customer, address, entry, supplies, tips, special and cleaner-specific instructions)
-        // but stripped of greetings, closings, and decorative copy â€” RingCentral charges per SMS
+        // but stripped of greetings, closings, and decorative copy — RingCentral charges per SMS
         // segment so every byte counts. Lines are localised using the same nationality-to-language
         // mapping the email uses, so a Georgian cleaner gets Georgian labels.
         public async Task<string?> BuildCleanerAssignmentSmsBodyAsync(Models.Cleaner cleaner, int orderId)
@@ -1056,9 +1056,9 @@ namespace DreamCleaningBackend.Services
             var perCleanerTips = Math.Round(order.Tips / maidsCount, 2);
 
             var lines = new List<string>();
-            lines.Add($"#{order.Id} {order.ServiceType?.Name ?? "â€”"}");
+            lines.Add($"#{order.Id} {order.ServiceType?.Name ?? "—"}");
 
-            // Compact bed/bath line â€” fits both in one row when set, e.g. "2 bd / 1 ba".
+            // Compact bed/bath line — fits both in one row when set, e.g. "2 bd / 1 ba".
             var bb = new List<string>();
             if (order.BedroomsQuantity.HasValue) bb.Add($"{order.BedroomsQuantity.Value} {labels["bedrooms"].ToLower()}");
             if (order.BathroomsQuantity.HasValue) bb.Add($"{order.BathroomsQuantity.Value} {labels["bathrooms"].ToLower()}");
@@ -1094,12 +1094,12 @@ namespace DreamCleaningBackend.Services
             switch (language)
             {
                 case "ka":
-                    hourUnit = "áƒ¡áƒ—";
-                    minuteUnit = "áƒ¬áƒ—";
+                    hourUnit = "სთ";
+                    minuteUnit = "წთ";
                     break;
                 case "ru":
-                    hourUnit = "Ñ‡";
-                    minuteUnit = "Ð¼Ð¸Ð½";
+                    hourUnit = "ч";
+                    minuteUnit = "мин";
                     break;
                 case "es":
                     hourUnit = "h";
@@ -1123,81 +1123,81 @@ namespace DreamCleaningBackend.Services
             {
                 "ka" => new Dictionary<string, string>
                 {
-                    ["subject"] = "áƒáƒ®áƒáƒšáƒ˜ áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒ˜áƒ¡ áƒ¡áƒáƒ›áƒ£áƒ¨áƒáƒ - Dream Cleaning",
-                    ["greeting"] = "áƒ’áƒáƒ›áƒáƒ áƒ¯áƒáƒ‘áƒ",
-                    ["intro"] = "áƒ—áƒ¥áƒ•áƒ”áƒœ áƒ’áƒáƒ¥áƒ•áƒ— áƒáƒ®áƒáƒšáƒ˜ áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒ˜áƒ¡ áƒ¡áƒáƒ›áƒ£áƒ¨áƒáƒ. áƒ“áƒ”áƒ¢áƒáƒšáƒ”áƒ‘áƒ˜ áƒ›áƒáƒªáƒ”áƒ›áƒ£áƒšáƒ˜áƒ áƒ¥áƒ•áƒ”áƒ›áƒáƒ—:",
-                    ["cleaningType"] = "áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒ˜áƒ¡ áƒ¢áƒ˜áƒžáƒ˜",
-                    ["bedrooms"] = "áƒ¡áƒáƒ«áƒ˜áƒœáƒ”áƒ‘áƒšáƒ”áƒ‘áƒ˜",
-                    ["bathrooms"] = "áƒ¡áƒ•áƒ”áƒšáƒ˜ áƒ¬áƒ”áƒ áƒ¢áƒ˜áƒšáƒ”áƒ‘áƒ˜",
-                    ["serviceDuration"] = "áƒ¡áƒ”áƒ áƒ•áƒ˜áƒ¡áƒ˜áƒ¡ áƒ“áƒ áƒ",
-                    ["dateAndTime"] = "áƒ—áƒáƒ áƒ˜áƒ¦áƒ˜ áƒ“áƒ áƒ“áƒ áƒ",
-                    ["supplies"] = "áƒ®áƒ¡áƒœáƒáƒ áƒ”áƒ‘áƒ˜",
-                    ["suppliesRequired"] = "áƒ¡áƒáƒ­áƒ˜áƒ áƒáƒ",
-                    ["suppliesNotRequired"] = "áƒáƒ  áƒáƒ áƒ˜áƒ¡ áƒ¡áƒáƒ­áƒ˜áƒ áƒ",
-                    ["tips"] = "áƒ—áƒ˜áƒ¤áƒ¡áƒ˜",
-                    ["customerName"] = "áƒ›áƒáƒ›áƒ®áƒ›áƒáƒ áƒ”áƒ‘áƒšáƒ˜áƒ¡ áƒ¡áƒáƒ®áƒ”áƒšáƒ˜",
-                    ["address"] = "áƒ›áƒ˜áƒ¡áƒáƒ›áƒáƒ áƒ—áƒ˜",
-                    ["entryInstruction"] = "áƒ¨áƒ”áƒ¡áƒ•áƒšáƒ˜áƒ¡ áƒ˜áƒœáƒ¡áƒ¢áƒ áƒ£áƒ¥áƒªáƒ˜áƒ",
-                    ["specialInstruction"] = "áƒ¡áƒžáƒ”áƒªáƒ˜áƒáƒšáƒ£áƒ áƒ˜ áƒ˜áƒœáƒ¡áƒ¢áƒ áƒ£áƒ¥áƒªáƒ˜áƒ",
-                    ["specialInstructionForCleaner"] = "áƒ¡áƒžáƒ”áƒªáƒ˜áƒáƒšáƒ£áƒ áƒ˜ áƒ˜áƒœáƒ¡áƒ¢áƒ áƒ£áƒ¥áƒªáƒ˜áƒ áƒ¥áƒšáƒ˜áƒœáƒ”áƒ áƒ”áƒ‘áƒ˜áƒ¡áƒ—áƒ•áƒ˜áƒ¡",
-                    ["photosNote"] = "áƒ’áƒ—áƒ®áƒáƒ•áƒ— áƒ¨áƒ”áƒ«áƒšáƒ”áƒ‘áƒ˜áƒ¡áƒ“áƒáƒ’áƒ•áƒáƒ áƒáƒ“ áƒ’áƒáƒ“áƒáƒ˜áƒ¦áƒ”áƒ— áƒ¤áƒáƒ¢áƒáƒ”áƒ‘áƒ˜ áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒáƒ›áƒ“áƒ” áƒ“áƒ áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒ˜áƒ¡ áƒ¨áƒ”áƒ›áƒ“áƒ”áƒ’, áƒ”áƒ áƒ—áƒ˜ áƒ“áƒ áƒ˜áƒ’áƒ˜áƒ•áƒ” áƒ áƒáƒ™áƒ£áƒ áƒ¡áƒ˜áƒ—.",
-                    ["thirtyMinNote"] = "áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒ˜áƒ¡ áƒ“áƒáƒ¡áƒ áƒ£áƒšáƒ”áƒ‘áƒáƒ›áƒ“áƒ” 30 áƒ¬áƒ£áƒ—áƒ˜áƒ— áƒáƒ“áƒ áƒ” áƒ›áƒáƒ›áƒ®áƒ›áƒáƒ áƒ”áƒ‘áƒ”áƒšáƒ¡ áƒ—áƒ®áƒáƒ•áƒ”áƒ— áƒ¨áƒ”áƒáƒ¤áƒáƒ¡áƒáƒ¡ áƒ¡áƒ˜áƒ¢áƒ£áƒáƒªáƒ˜áƒ áƒ áƒáƒ›áƒ˜áƒ¡ áƒ¨áƒ”áƒªáƒ•áƒšáƒ áƒ®áƒáƒ› áƒáƒ  áƒ¡áƒ£áƒ áƒ¡. áƒ—áƒ£ áƒ¤áƒ˜áƒ¥áƒ áƒáƒ‘áƒ— áƒ áƒáƒ› áƒ“áƒ áƒáƒ˜áƒ¡ áƒ“áƒáƒ›áƒáƒ¢áƒ”áƒ‘áƒ áƒ“áƒáƒ’áƒ­áƒ˜áƒ áƒ“áƒ”áƒ‘áƒáƒ—, áƒ¡áƒáƒ¡áƒ¬áƒ áƒáƒ¤áƒáƒ“ áƒ¨áƒ”áƒ’áƒ•áƒáƒ¢áƒ§áƒáƒ‘áƒ˜áƒœáƒ”áƒ— áƒ©áƒ•áƒ”áƒœ, áƒ“áƒáƒ•áƒ£áƒ™áƒáƒ•áƒ¨áƒ˜áƒ áƒ“áƒ”áƒ‘áƒ˜áƒ— áƒ›áƒáƒ›áƒ®áƒ›áƒáƒ áƒ”áƒ‘áƒ”áƒšáƒ¡ áƒ“áƒ áƒáƒ•áƒ£áƒ®áƒ¡áƒœáƒ˜áƒ— áƒ¡áƒ˜áƒ¢áƒ£áƒáƒªáƒ˜áƒáƒ¡.",
-                    ["helpNote"] = "áƒœáƒ”áƒ‘áƒ˜áƒ¡áƒ›áƒ˜áƒ”áƒ áƒ˜ áƒ¡áƒáƒ®áƒ˜áƒ¡ áƒ“áƒáƒ®áƒ›áƒáƒ áƒ”áƒ‘áƒ áƒ—áƒ£ áƒ“áƒáƒ’áƒ­áƒ˜áƒ áƒ“áƒ”áƒ‘áƒáƒ— áƒ¨áƒ”áƒ’áƒ•áƒáƒ¢áƒ§áƒáƒ‘áƒ˜áƒœáƒ”áƒ— áƒ“áƒ áƒ“áƒáƒ’áƒ•áƒ˜áƒ™áƒáƒ•áƒ¨áƒ˜áƒ áƒ“áƒ˜áƒ—.",
-                    ["thanks"] = "áƒ›áƒáƒ“áƒšáƒáƒ‘áƒ,",
-                    ["regards"] = "áƒ¡áƒáƒ£áƒ™áƒ”áƒ—áƒ”áƒ¡áƒ áƒ¡áƒ£áƒ áƒ•áƒ˜áƒšáƒ”áƒ‘áƒ˜áƒ— áƒ™áƒáƒ›áƒžáƒáƒœáƒ˜áƒ",
+                    ["subject"] = "ახალი დასუფთავების სამუშაო - Dream Cleaning",
+                    ["greeting"] = "გამარჯობა",
+                    ["intro"] = "თქვენ გაქვთ ახალი დასუფთავების სამუშაო. დეტალები მოცემულია ქვემოთ:",
+                    ["cleaningType"] = "დასუფთავების ტიპი",
+                    ["bedrooms"] = "საძინებლები",
+                    ["bathrooms"] = "სველი წერტილები",
+                    ["serviceDuration"] = "სერვისის დრო",
+                    ["dateAndTime"] = "თარიღი და დრო",
+                    ["supplies"] = "ხსნარები",
+                    ["suppliesRequired"] = "საჭიროა",
+                    ["suppliesNotRequired"] = "არ არის საჭირო",
+                    ["tips"] = "თიფსი",
+                    ["customerName"] = "მომხმარებლის სახელი",
+                    ["address"] = "მისამართი",
+                    ["entryInstruction"] = "შესვლის ინსტრუქცია",
+                    ["specialInstruction"] = "სპეციალური ინსტრუქცია",
+                    ["specialInstructionForCleaner"] = "სპეციალური ინსტრუქცია ქლინერებისთვის",
+                    ["photosNote"] = "გთხოვთ შეძლებისდაგვარად გადაიღეთ ფოტოები დასუფთავებამდე და დასუფთავების შემდეგ, ერთი და იგივე რაკურსით.",
+                    ["thirtyMinNote"] = "დასუფთავების დასრულებამდე 30 წუთით ადრე მომხმარებელს თხოვეთ შეაფასოს სიტუაცია რამის შეცვლა ხომ არ სურს. თუ ფიქრობთ რომ დროის დამატება დაგჭირდებათ, სასწრაფოდ შეგვატყობინეთ ჩვენ, დავუკავშირდებით მომხმარებელს და ავუხსნით სიტუაციას.",
+                    ["helpNote"] = "ნებისმიერი სახის დახმარება თუ დაგჭირდებათ შეგვატყობინეთ და დაგვიკავშირდით.",
+                    ["thanks"] = "მადლობა,",
+                    ["regards"] = "საუკეთესო სურვილებით კომპანია",
                     ["companyLine"] = "Dream Cleaning"
                 },
                 "ru" => new Dictionary<string, string>
                 {
-                    ["subject"] = "ÐÐ¾Ð²Ñ‹Ð¹ Ð·Ð°ÐºÐ°Ð· - Dream Cleaning",
-                    ["greeting"] = "Ð—Ð´Ñ€Ð°Ð²ÑÑ‚Ð²ÑƒÐ¹Ñ‚Ðµ",
-                    ["intro"] = "Ð’Ð°Ð¼ Ð½Ð°Ð·Ð½Ð°Ñ‡ÐµÐ½ Ð½Ð¾Ð²Ñ‹Ð¹ Ð·Ð°ÐºÐ°Ð· Ð½Ð° ÑƒÐ±Ð¾Ñ€ÐºÑƒ. ÐŸÐ¾Ð´Ñ€Ð¾Ð±Ð½Ð¾ÑÑ‚Ð¸ ÑƒÐºÐ°Ð·Ð°Ð½Ñ‹ Ð½Ð¸Ð¶Ðµ:",
-                    ["cleaningType"] = "Ð¢Ð¸Ð¿ ÑƒÐ±Ð¾Ñ€ÐºÐ¸",
-                    ["bedrooms"] = "Ð¡Ð¿Ð°Ð»ÑŒÐ½Ð¸",
-                    ["bathrooms"] = "Ð’Ð°Ð½Ð½Ñ‹Ðµ",
-                    ["serviceDuration"] = "Ð”Ð»Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ð¾ÑÑ‚ÑŒ ÑƒÑÐ»ÑƒÐ³Ð¸",
-                    ["dateAndTime"] = "Ð”Ð°Ñ‚Ð° Ð¸ Ð²Ñ€ÐµÐ¼Ñ",
-                    ["supplies"] = "Ð§Ð¸ÑÑ‚ÑÑ‰Ð¸Ðµ ÑÑ€ÐµÐ´ÑÑ‚Ð²Ð°",
-                    ["suppliesRequired"] = "Ñ‚Ñ€ÐµÐ±ÑƒÑŽÑ‚ÑÑ",
-                    ["suppliesNotRequired"] = "Ð½Ðµ Ñ‚Ñ€ÐµÐ±ÑƒÑŽÑ‚ÑÑ",
-                    ["tips"] = "Ð§Ð°ÐµÐ²Ñ‹Ðµ",
-                    ["customerName"] = "Ð˜Ð¼Ñ ÐºÐ»Ð¸ÐµÐ½Ñ‚Ð°",
-                    ["address"] = "ÐÐ´Ñ€ÐµÑ",
-                    ["entryInstruction"] = "Ð˜Ð½ÑÑ‚Ñ€ÑƒÐºÑ†Ð¸Ñ Ð¿Ð¾ Ð²Ñ…Ð¾Ð´Ñƒ",
-                    ["specialInstruction"] = "ÐžÑÐ¾Ð±Ñ‹Ðµ Ð¸Ð½ÑÑ‚Ñ€ÑƒÐºÑ†Ð¸Ð¸",
-                    ["specialInstructionForCleaner"] = "ÐžÑÐ¾Ð±Ñ‹Ðµ Ð¸Ð½ÑÑ‚Ñ€ÑƒÐºÑ†Ð¸Ð¸ Ð´Ð»Ñ ÐºÐ»Ð¸Ð½ÐµÑ€Ð¾Ð²",
-                    ["photosNote"] = "ÐŸÐ¾Ð¶Ð°Ð»ÑƒÐ¹ÑÑ‚Ð°, Ð¿Ð¾ Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ÑÑ‚Ð¸ ÑÐ´ÐµÐ»Ð°Ð¹Ñ‚Ðµ Ñ„Ð¾Ñ‚Ð¾Ð³Ñ€Ð°Ñ„Ð¸Ð¸ Ð´Ð¾ Ð¸ Ð¿Ð¾ÑÐ»Ðµ ÑƒÐ±Ð¾Ñ€ÐºÐ¸ Ñ Ð¾Ð´Ð½Ð¾Ð³Ð¾ Ð¸ Ñ‚Ð¾Ð³Ð¾ Ð¶Ðµ Ñ€Ð°ÐºÑƒÑ€ÑÐ°.",
-                    ["thirtyMinNote"] = "Ð—Ð° 30 Ð¼Ð¸Ð½ÑƒÑ‚ Ð´Ð¾ Ð¾ÐºÐ¾Ð½Ñ‡Ð°Ð½Ð¸Ñ ÑƒÐ±Ð¾Ñ€ÐºÐ¸ Ð¿Ð¾Ð¿Ñ€Ð¾ÑÐ¸Ñ‚Ðµ ÐºÐ»Ð¸ÐµÐ½Ñ‚Ð° Ð¾Ñ†ÐµÐ½Ð¸Ñ‚ÑŒ ÑÐ¸Ñ‚ÑƒÐ°Ñ†Ð¸ÑŽ Ð¸ ÑƒÑ‚Ð¾Ñ‡Ð½Ð¸Ñ‚Ðµ, Ð½Ðµ Ð¶ÐµÐ»Ð°ÐµÑ‚ Ð»Ð¸ Ð¾Ð½ Ñ‡Ñ‚Ð¾-Ð»Ð¸Ð±Ð¾ Ð¸Ð·Ð¼ÐµÐ½Ð¸Ñ‚ÑŒ. Ð•ÑÐ»Ð¸ Ð²Ñ‹ ÑÑ‡Ð¸Ñ‚Ð°ÐµÑ‚Ðµ, Ñ‡Ñ‚Ð¾ Ð²Ð°Ð¼ Ð¿Ð¾Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚ÑÑ Ð´Ð¾Ð¿Ð¾Ð»Ð½Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ð¾Ðµ Ð²Ñ€ÐµÐ¼Ñ, Ð½ÐµÐ·Ð°Ð¼ÐµÐ´Ð»Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ð¾ ÑÐ¾Ð¾Ð±Ñ‰Ð¸Ñ‚Ðµ Ð½Ð°Ð¼ â€” Ð¼Ñ‹ ÑÐ²ÑÐ¶ÐµÐ¼ÑÑ Ñ ÐºÐ»Ð¸ÐµÐ½Ñ‚Ð¾Ð¼ Ð¸ Ð¾Ð±ÑŠÑÑÐ½Ð¸Ð¼ ÑÐ¸Ñ‚ÑƒÐ°Ñ†Ð¸ÑŽ.",
-                    ["helpNote"] = "Ð•ÑÐ»Ð¸ Ð²Ð°Ð¼ Ð¿Ð¾Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚ÑÑ Ð»ÑŽÐ±Ð°Ñ Ð¿Ð¾Ð¼Ð¾Ñ‰ÑŒ, Ð¿Ð¾Ð¶Ð°Ð»ÑƒÐ¹ÑÑ‚Ð°, ÑÐ¾Ð¾Ð±Ñ‰Ð¸Ñ‚Ðµ Ð½Ð°Ð¼ Ð¸ ÑÐ²ÑÐ¶Ð¸Ñ‚ÐµÑÑŒ Ñ Ð½Ð°Ð¼Ð¸.",
-                    ["thanks"] = "Ð¡Ð¿Ð°ÑÐ¸Ð±Ð¾,",
-                    ["regards"] = "Ð¡ Ð½Ð°Ð¸Ð»ÑƒÑ‡ÑˆÐ¸Ð¼Ð¸ Ð¿Ð¾Ð¶ÐµÐ»Ð°Ð½Ð¸ÑÐ¼Ð¸,",
-                    ["companyLine"] = "ÐºÐ¾Ð¼Ð¿Ð°Ð½Ð¸Ñ Dream Cleaning"
+                    ["subject"] = "Новый заказ - Dream Cleaning",
+                    ["greeting"] = "Здравствуйте",
+                    ["intro"] = "Вам назначен новый заказ на уборку. Подробности указаны ниже:",
+                    ["cleaningType"] = "Тип уборки",
+                    ["bedrooms"] = "Спальни",
+                    ["bathrooms"] = "Ванные",
+                    ["serviceDuration"] = "Длительность услуги",
+                    ["dateAndTime"] = "Дата и время",
+                    ["supplies"] = "Чистящие средства",
+                    ["suppliesRequired"] = "требуются",
+                    ["suppliesNotRequired"] = "не требуются",
+                    ["tips"] = "Чаевые",
+                    ["customerName"] = "Имя клиента",
+                    ["address"] = "Адрес",
+                    ["entryInstruction"] = "Инструкция по входу",
+                    ["specialInstruction"] = "Особые инструкции",
+                    ["specialInstructionForCleaner"] = "Особые инструкции для клинеров",
+                    ["photosNote"] = "Пожалуйста, по возможности сделайте фотографии до и после уборки с одного и того же ракурса.",
+                    ["thirtyMinNote"] = "За 30 минут до окончания уборки попросите клиента оценить ситуацию и уточните, не желает ли он что-либо изменить. Если вы считаете, что вам потребуется дополнительное время, незамедлительно сообщите нам — мы свяжемся с клиентом и объясним ситуацию.",
+                    ["helpNote"] = "Если вам потребуется любая помощь, пожалуйста, сообщите нам и свяжитесь с нами.",
+                    ["thanks"] = "Спасибо,",
+                    ["regards"] = "С наилучшими пожеланиями,",
+                    ["companyLine"] = "компания Dream Cleaning"
                 },
                 "es" => new Dictionary<string, string>
                 {
                     ["subject"] = "Nuevo pedido - Dream Cleaning",
                     ["greeting"] = "Hola",
-                    ["intro"] = "Se le ha asignado un nuevo trabajo de limpieza. Los detalles se indican a continuaciÃ³n:",
+                    ["intro"] = "Se le ha asignado un nuevo trabajo de limpieza. Los detalles se indican a continuación:",
                     ["cleaningType"] = "Tipo de limpieza",
                     ["bedrooms"] = "Dormitorios",
-                    ["bathrooms"] = "BaÃ±os",
-                    ["serviceDuration"] = "DuraciÃ³n del servicio",
+                    ["bathrooms"] = "Baños",
+                    ["serviceDuration"] = "Duración del servicio",
                     ["dateAndTime"] = "Fecha y hora",
                     ["supplies"] = "Productos de limpieza",
                     ["suppliesRequired"] = "se requieren",
                     ["suppliesNotRequired"] = "no se requieren",
                     ["tips"] = "Propina",
                     ["customerName"] = "Nombre del cliente",
-                    ["address"] = "DirecciÃ³n",
+                    ["address"] = "Dirección",
                     ["entryInstruction"] = "Instrucciones de entrada",
                     ["specialInstruction"] = "Instrucciones especiales",
                     ["specialInstructionForCleaner"] = "Instrucciones especiales para los limpiadores",
-                    ["photosNote"] = "Por favor, si es posible, tome fotografÃ­as antes y despuÃ©s de la limpieza, desde el mismo Ã¡ngulo.",
-                    ["thirtyMinNote"] = "30 minutos antes de finalizar la limpieza, pÃ­dale al cliente que evalÃºe la situaciÃ³n y confirme si desea cambiar algo. Si cree que necesitarÃ¡ tiempo adicional, infÃ³rmenos de inmediato; nos pondremos en contacto con el cliente y le explicaremos la situaciÃ³n.",
-                    ["helpNote"] = "Si necesita cualquier tipo de ayuda, por favor hÃ¡ganoslo saber y pÃ³ngase en contacto con nosotros.",
+                    ["photosNote"] = "Por favor, si es posible, tome fotografías antes y después de la limpieza, desde el mismo ángulo.",
+                    ["thirtyMinNote"] = "30 minutos antes de finalizar la limpieza, pídale al cliente que evalúe la situación y confirme si desea cambiar algo. Si cree que necesitará tiempo adicional, infórmenos de inmediato; nos pondremos en contacto con el cliente y le explicaremos la situación.",
+                    ["helpNote"] = "Si necesita cualquier tipo de ayuda, por favor háganoslo saber y póngase en contacto con nosotros.",
                     ["thanks"] = "Gracias,",
                     ["regards"] = "Saludos cordiales,",
-                    ["companyLine"] = "CompaÃ±Ã­a Dream Cleaning"
+                    ["companyLine"] = "Compañía Dream Cleaning"
                 },
                 _ => new Dictionary<string, string>
                 {
@@ -1219,7 +1219,7 @@ namespace DreamCleaningBackend.Services
                     ["specialInstruction"] = "Special instruction",
                     ["specialInstructionForCleaner"] = "Special instruction for cleaners",
                     ["photosNote"] = "Please, if possible, take photos before and after the cleaning from the same angle.",
-                    ["thirtyMinNote"] = "30 minutes before finishing the cleaning, please ask the customer to assess the situation and check whether they would like to change anything. If you think you will need additional time, notify us immediately â€” we will contact the customer and explain the situation.",
+                    ["thirtyMinNote"] = "30 minutes before finishing the cleaning, please ask the customer to assess the situation and check whether they would like to change anything. If you think you will need additional time, notify us immediately — we will contact the customer and explain the situation.",
                     ["helpNote"] = "If you need any kind of help, please let us know and contact us.",
                     ["thanks"] = "Thank you,",
                     ["regards"] = "Best regards,",
@@ -1239,20 +1239,20 @@ namespace DreamCleaningBackend.Services
         <p>A cleaner has been assigned to a cleaning job. Below are the details that were sent to the cleaner:</p>
         
         <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
-            <h3>ðŸ‘¤ Cleaner Information</h3>
+            <h3>👤 Cleaner Information</h3>
             <p><strong>Cleaner Name:</strong> {cleanerName}</p>
             <p><strong>Cleaner Email:</strong> {cleanerEmail}</p>
         </div>
         
         <div style='background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff;'>
-            <h3>ðŸ“… Scheduled Cleaning Details</h3>
+            <h3>📅 Scheduled Cleaning Details</h3>
             <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
             <p><strong>Time:</strong> {formattedTime}</p>
             <p><strong>Duration (Hours sent to cleaner):</strong> {formattedDuration}</p>
         </div>
         
         <div style='background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;'>
-            <h3>ðŸ“ Service Address</h3>
+            <h3>📍 Service Address</h3>
             <p><strong>Address:</strong> {fullAddress}</p>
         </div>
         
@@ -1396,57 +1396,57 @@ namespace DreamCleaningBackend.Services
             {
                 "ka" => new Dictionary<string, string>
                 {
-                    ["timeFrameDays"] = "2 áƒ“áƒ¦áƒ”áƒ¨áƒ˜",
-                    ["timeFrameHours"] = "4 áƒ¡áƒáƒáƒ—áƒ¨áƒ˜",
-                    ["subject"] = "áƒ¨áƒ”áƒ®áƒ¡áƒ”áƒœáƒ”áƒ‘áƒ áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒ˜áƒ¡ áƒ¡áƒáƒ›áƒ£áƒ¨áƒáƒáƒ¡ áƒ¨áƒ”áƒ¡áƒáƒ®áƒ”áƒ‘ â€” áƒ¡áƒ”áƒ áƒ•áƒ˜áƒ¡áƒ˜ {0}",
-                    ["greeting"] = "áƒ’áƒáƒ›áƒáƒ áƒ¯áƒáƒ‘áƒ",
-                    ["intro"] = "áƒ”áƒ¡ áƒáƒ áƒ˜áƒ¡ áƒ¨áƒ”áƒ®áƒ¡áƒ”áƒœáƒ”áƒ‘áƒ, áƒ áƒáƒ› áƒ—áƒ¥áƒ•áƒ”áƒœ áƒ’áƒáƒ¥áƒ•áƒ— áƒ“áƒáƒ’áƒ”áƒ’áƒ›áƒ˜áƒšáƒ˜ áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒ˜áƒ¡ áƒ¡áƒáƒ›áƒ£áƒ¨áƒáƒ {0}:",
-                    ["jobDetails"] = "áƒ¡áƒáƒ›áƒ£áƒ¨áƒáƒáƒ¡ áƒ“áƒ”áƒ¢áƒáƒšáƒ”áƒ‘áƒ˜:",
-                    ["serviceType"] = "áƒ“áƒáƒ¡áƒ£áƒ¤áƒ—áƒáƒ•áƒ”áƒ‘áƒ˜áƒ¡ áƒ¢áƒ˜áƒžáƒ˜",
-                    ["date"] = "áƒ—áƒáƒ áƒ˜áƒ¦áƒ˜",
-                    ["time"] = "áƒ“áƒ áƒ",
-                    ["address"] = "áƒ›áƒ˜áƒ¡áƒáƒ›áƒáƒ áƒ—áƒ˜",
-                    ["closing"] = "áƒ’áƒ—áƒ®áƒáƒ•áƒ— áƒ¬áƒ˜áƒœáƒáƒ¡áƒ¬áƒáƒ  áƒ›áƒáƒ”áƒ›áƒ–áƒáƒ“áƒáƒ— áƒ“áƒ áƒ“áƒ áƒáƒ£áƒšáƒáƒ“ áƒ›áƒ˜áƒ®áƒ•áƒ˜áƒ“áƒ”áƒ—.",
-                    ["regards"] = "áƒ¡áƒáƒ£áƒ™áƒ”áƒ—áƒ”áƒ¡áƒ áƒ¡áƒ£áƒ áƒ•áƒ˜áƒšáƒ”áƒ‘áƒ˜áƒ— áƒ™áƒáƒ›áƒžáƒáƒœáƒ˜áƒ",
+                    ["timeFrameDays"] = "2 დღეში",
+                    ["timeFrameHours"] = "4 საათში",
+                    ["subject"] = "შეხსენება დასუფთავების სამუშაოს შესახებ — სერვისი {0}",
+                    ["greeting"] = "გამარჯობა",
+                    ["intro"] = "ეს არის შეხსენება, რომ თქვენ გაქვთ დაგეგმილი დასუფთავების სამუშაო {0}:",
+                    ["jobDetails"] = "სამუშაოს დეტალები:",
+                    ["serviceType"] = "დასუფთავების ტიპი",
+                    ["date"] = "თარიღი",
+                    ["time"] = "დრო",
+                    ["address"] = "მისამართი",
+                    ["closing"] = "გთხოვთ წინასწარ მოემზადოთ და დროულად მიხვიდეთ.",
+                    ["regards"] = "საუკეთესო სურვილებით კომპანია",
                     ["companyLine"] = "Dream Cleaning"
                 },
                 "ru" => new Dictionary<string, string>
                 {
-                    ["timeFrameDays"] = "Ñ‡ÐµÑ€ÐµÐ· 2 Ð´Ð½Ñ",
-                    ["timeFrameHours"] = "Ñ‡ÐµÑ€ÐµÐ· 4 Ñ‡Ð°ÑÐ°",
-                    ["subject"] = "ÐÐ°Ð¿Ð¾Ð¼Ð¸Ð½Ð°Ð½Ð¸Ðµ Ð¾Ð± ÑƒÐ±Ð¾Ñ€ÐºÐµ â€” ÑƒÑÐ»ÑƒÐ³Ð° {0}",
-                    ["greeting"] = "Ð—Ð´Ñ€Ð°Ð²ÑÑ‚Ð²ÑƒÐ¹Ñ‚Ðµ",
-                    ["intro"] = "ÐÐ°Ð¿Ð¾Ð¼Ð¸Ð½Ð°ÐµÐ¼, Ñ‡Ñ‚Ð¾ Ñƒ Ð²Ð°Ñ Ð·Ð°Ð¿Ð»Ð°Ð½Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð° ÑƒÐ±Ð¾Ñ€ÐºÐ° {0}:",
-                    ["jobDetails"] = "Ð”ÐµÑ‚Ð°Ð»Ð¸ Ð·Ð°ÐºÐ°Ð·Ð°:",
-                    ["serviceType"] = "Ð¢Ð¸Ð¿ ÑƒÐ±Ð¾Ñ€ÐºÐ¸",
-                    ["date"] = "Ð”Ð°Ñ‚Ð°",
-                    ["time"] = "Ð’Ñ€ÐµÐ¼Ñ",
-                    ["address"] = "ÐÐ´Ñ€ÐµÑ",
-                    ["closing"] = "ÐŸÐ¾Ð¶Ð°Ð»ÑƒÐ¹ÑÑ‚Ð°, Ð·Ð°Ñ€Ð°Ð½ÐµÐµ Ð¿Ð¾Ð´Ð³Ð¾Ñ‚Ð¾Ð²ÑŒÑ‚ÐµÑÑŒ Ð¸ Ð¿Ñ€Ð¸Ð±ÑƒÐ´ÑŒÑ‚Ðµ Ð²Ð¾Ð²Ñ€ÐµÐ¼Ñ.",
-                    ["regards"] = "Ð¡ Ð½Ð°Ð¸Ð»ÑƒÑ‡ÑˆÐ¸Ð¼Ð¸ Ð¿Ð¾Ð¶ÐµÐ»Ð°Ð½Ð¸ÑÐ¼Ð¸,",
-                    ["companyLine"] = "ÐºÐ¾Ð¼Ð¿Ð°Ð½Ð¸Ñ Dream Cleaning"
+                    ["timeFrameDays"] = "через 2 дня",
+                    ["timeFrameHours"] = "через 4 часа",
+                    ["subject"] = "Напоминание об уборке — услуга {0}",
+                    ["greeting"] = "Здравствуйте",
+                    ["intro"] = "Напоминаем, что у вас запланирована уборка {0}:",
+                    ["jobDetails"] = "Детали заказа:",
+                    ["serviceType"] = "Тип уборки",
+                    ["date"] = "Дата",
+                    ["time"] = "Время",
+                    ["address"] = "Адрес",
+                    ["closing"] = "Пожалуйста, заранее подготовьтесь и прибудьте вовремя.",
+                    ["regards"] = "С наилучшими пожеланиями,",
+                    ["companyLine"] = "компания Dream Cleaning"
                 },
                 "es" => new Dictionary<string, string>
                 {
-                    ["timeFrameDays"] = "en 2 dÃ­as",
+                    ["timeFrameDays"] = "en 2 días",
                     ["timeFrameHours"] = "en 4 horas",
-                    ["subject"] = "Recordatorio de limpieza â€” servicio {0}",
+                    ["subject"] = "Recordatorio de limpieza — servicio {0}",
                     ["greeting"] = "Hola",
                     ["intro"] = "Le recordamos que tiene un trabajo de limpieza programado {0}:",
                     ["jobDetails"] = "Detalles del trabajo:",
                     ["serviceType"] = "Tipo de limpieza",
                     ["date"] = "Fecha",
                     ["time"] = "Hora",
-                    ["address"] = "DirecciÃ³n",
-                    ["closing"] = "Por favor, prepÃ¡rese con antelaciÃ³n y llegue a tiempo.",
+                    ["address"] = "Dirección",
+                    ["closing"] = "Por favor, prepárese con antelación y llegue a tiempo.",
                     ["regards"] = "Saludos cordiales,",
-                    ["companyLine"] = "CompaÃ±Ã­a Dream Cleaning"
+                    ["companyLine"] = "Compañía Dream Cleaning"
                 },
                 _ => new Dictionary<string, string>
                 {
                     ["timeFrameDays"] = "in 2 days",
                     ["timeFrameHours"] = "in 4 hours",
-                    ["subject"] = "Cleaning Job Reminder â€” Service {0}",
+                    ["subject"] = "Cleaning Job Reminder — Service {0}",
                     ["greeting"] = "Hi",
                     ["intro"] = "This is a reminder that you have a cleaning job scheduled {0}:",
                     ["jobDetails"] = "Job Details:",
@@ -1609,7 +1609,7 @@ namespace DreamCleaningBackend.Services
             </p>
         </div>";
 
-            // Open the email with one of two phrasings â€” see paymentAlreadyProcessed comment
+            // Open the email with one of two phrasings — see paymentAlreadyProcessed comment
             // on the method signature. Only this single line differs between the two paths;
             // everything below (supply checklist, policy block, etc.) is identical.
             var greetingLine = paymentAlreadyProcessed
@@ -1744,7 +1744,7 @@ namespace DreamCleaningBackend.Services
             {
                 photoInfo = $@"
                 <div style='background: #e8f5e9; padding: 15px; border-radius: 8px; margin: 20px 0;'>
-                    <p><strong>ðŸ“· Customer Photos:</strong></p>
+                    <p><strong>📷 Customer Photos:</strong></p>
                     <p>The customer has uploaded {uploadedPhotos.Count} photo(s) showing their cleaning needs. See attached files.</p>
                 </div>";
             }
@@ -1959,7 +1959,7 @@ namespace DreamCleaningBackend.Services
             <body>
                 <div class='container'>
                     <div class='header'>
-                        <h1 style='margin: 0;'>âœ¨ Payment Confirmation Needed</h1>
+                        <h1 style='margin: 0;'>✨ Payment Confirmation Needed</h1>
                     </div>
                     <div class='content'>
                         <h2>Hi {customerName}!</h2>
@@ -2029,7 +2029,7 @@ namespace DreamCleaningBackend.Services
             <body>
                 <div class='container'>
                     <div class='header'>
-                        <h1 style='margin: 0;'>Order Updated â€“ Additional Payment Due</h1>
+                        <h1 style='margin: 0;'>Order Updated – Additional Payment Due</h1>
                     </div>
                     <div class='content'>
                         <h2>Hi {customerName}!</h2>
@@ -2077,7 +2077,7 @@ namespace DreamCleaningBackend.Services
         {
             try
             {
-                var subject = $"Friendly Reminder â€“ Unpaid Amount for Order #{orderId}";
+                var subject = $"Friendly Reminder – Unpaid Amount for Order #{orderId}";
                 var amountFormatted = additionalAmount.ToString("C");
 
                 var body = $@"
@@ -2097,7 +2097,7 @@ namespace DreamCleaningBackend.Services
             <body>
                 <div class='container'>
                     <div class='header'>
-                        <h1 style='margin: 0;'>Friendly Reminder â€“ Unpaid Amount</h1>
+                        <h1 style='margin: 0;'>Friendly Reminder – Unpaid Amount</h1>
                     </div>
                     <div class='content'>
                         <h2>Hi {customerName}!</h2>
@@ -2230,7 +2230,7 @@ namespace DreamCleaningBackend.Services
 
                 var body = $@"
                     <h2>Hi {firstName}!</h2>
-                    <p>Thank you so much for choosing Dream Cleaning â€” we hope your space feels fresh and spotless! âœ¨</p>
+                    <p>Thank you so much for choosing Dream Cleaning — we hope your space feels fresh and spotless! ✨</p>
 
                     <p>If you're happy with the service, we'd truly appreciate a quick review. It only takes a moment and means the world to our small team!</p>
 
@@ -2241,7 +2241,7 @@ namespace DreamCleaningBackend.Services
                         </a>
                     </div>
 
-                    <p>Thank you and have a wonderful day! ðŸ˜Š</p>
+                    <p>Thank you and have a wonderful day! 😊</p>
 
                     <br/>
                     <p>Best regards,<br/>Dream Cleaning Team</p>
@@ -2256,11 +2256,11 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        // â”€â”€â”€â”€â”€ Loyalty re-engagement email templates (Phase 4/5) â”€â”€â”€â”€â”€
+        // ───── Loyalty re-engagement email templates (Phase 4/5) ─────
         //
         // Body copy is verbatim from spec section 6. Framing rules: never mention inactivity,
         // "we miss you" reasoning, or the trigger mechanism. Footer says "Manage email
-        // preferences in your profile" â€” the existing CanReceiveEmails toggle satisfies opt-out.
+        // preferences in your profile" — the existing CanReceiveEmails toggle satisfies opt-out.
 
         private const string LoyaltyEmailStyle = @"
             body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background: #f4f6f8; }
@@ -2277,7 +2277,7 @@ namespace DreamCleaningBackend.Services
         {
             try
             {
-                var subject = $"It's been a while, {firstName} ðŸ’™";
+                var subject = $"It's been a while, {firstName} 💙";
                 var body = $@"
                 <html>
                 <head><style>{LoyaltyEmailStyle}</style></head>
@@ -2286,7 +2286,7 @@ namespace DreamCleaningBackend.Services
                         <div class='header'><h1>Hi {firstName},</h1></div>
                         <p>We hope you and your home are doing well. It's been a few weeks since we last cleaned for you, and we wanted to check in.</p>
                         <p>Whenever you're ready for another sparkle, we'll be here.</p>
-                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Next Cleaning â†’</a></p>
+                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Next Cleaning →</a></p>
                         <p>Warmly,<br/>The Dream Cleaning Team</p>
                         <div class='footer'>
                             You're receiving this because you're a Dream Cleaning customer.<br/>
@@ -2310,7 +2310,7 @@ namespace DreamCleaningBackend.Services
             try
             {
                 var pct = percentage.ToString("0.##");
-                var subject = $"A little thank-you from Dream Cleaning, {firstName} âœ¨";
+                var subject = $"A little thank-you from Dream Cleaning, {firstName} ✨";
                 var body = $@"
                 <html>
                 <head><style>{LoyaltyEmailStyle}</style></head>
@@ -2318,9 +2318,9 @@ namespace DreamCleaningBackend.Services
                     <div class='container'>
                         <div class='header'><h1>Hi {firstName},</h1></div>
                         <p>We just wanted to say thank you for being part of the Dream Cleaning family.</p>
-                        <p>As a small gesture of appreciation, we've added a <strong>{pct}% discount</strong> to your account. No code needed â€” it'll apply automatically the next time you book.</p>
+                        <p>As a small gesture of appreciation, we've added a <strong>{pct}% discount</strong> to your account. No code needed — it'll apply automatically the next time you book.</p>
                         <p>Whenever your home is ready for us, we're ready for you.</p>
-                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Cleaning â†’</a></p>
+                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Cleaning →</a></p>
                         <p>With gratitude,<br/>The Dream Cleaning Team</p>
                         <div class='footer'>
                             You're receiving this because you're a Dream Cleaning customer.<br/>
@@ -2344,17 +2344,17 @@ namespace DreamCleaningBackend.Services
             try
             {
                 var pct = percentage.ToString("0.##");
-                var subject = $"We made your discount a little bigger, {firstName} âœ¨";
+                var subject = $"We made your discount a little bigger, {firstName} ✨";
                 var body = $@"
                 <html>
                 <head><style>{LoyaltyEmailStyle}</style></head>
                 <body>
                     <div class='container'>
                         <div class='header'><h1>Hi {firstName},</h1></div>
-                        <p>We've just bumped the discount on your account up to <strong>{pct}%</strong> â€” a small gesture from all of us at Dream Cleaning.</p>
+                        <p>We've just bumped the discount on your account up to <strong>{pct}%</strong> — a small gesture from all of us at Dream Cleaning.</p>
                         <p>It's already applied to your account and will show up automatically the next time you book. No code needed.</p>
                         <p>Whenever your home is ready, we'll be there.</p>
-                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Cleaning â†’</a></p>
+                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your Cleaning →</a></p>
                         <p>With appreciation,<br/>The Dream Cleaning Team</p>
                         <div class='footer'>
                             You're receiving this because you're a Dream Cleaning customer.<br/>
