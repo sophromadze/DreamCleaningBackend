@@ -665,6 +665,12 @@ namespace DreamCleaningBackend.Services
             var discountedSubTotal = newSubTotal - totalDiscounts;
             order.Tax = discountedSubTotal * 0.08875m; // 8.875% tax
 
+            // Bubble points + reward balance credits applied at booking time. They must be
+            // subtracted from every Total branch below (like gift cards), otherwise editing an
+            // order silently inflates the total by these amounts. See the canonical formula in
+            // RecalculateOrderTotals (subtracts GiftCard + PointsRedeemedDiscount + RewardBalanceUsed).
+            var pointsAndRewardCredits = order.PointsRedeemedDiscount + order.RewardBalanceUsed;
+
             // Calculate total BEFORE gift card
             var totalBeforeGiftCard = discountedSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips;
 
@@ -701,7 +707,7 @@ namespace DreamCleaningBackend.Services
 
                         // Update order
                         order.GiftCardAmountUsed = newGiftCardAmountToUse;
-                        order.Total = totalBeforeGiftCard - newGiftCardAmountToUse;
+                        order.Total = totalBeforeGiftCard - newGiftCardAmountToUse - pointsAndRewardCredits;
 
                         // Find and update the existing gift card usage record
                         var existingUsage = await _context.GiftCardUsages
@@ -734,7 +740,7 @@ namespace DreamCleaningBackend.Services
                     else
                     {
                         Console.WriteLine($"No significant gift card change, keeping original amount");
-                        order.Total = totalBeforeGiftCard - originalGiftCardAmountUsed;
+                        order.Total = totalBeforeGiftCard - originalGiftCardAmountUsed - pointsAndRewardCredits;
                     }
                 }
                 else
@@ -748,7 +754,7 @@ namespace DreamCleaningBackend.Services
             else
             {
                 // No gift card applied
-                order.Total = totalBeforeGiftCard;
+                order.Total = totalBeforeGiftCard - pointsAndRewardCredits;
             }
 
             // Final check to ensure the new total is not less than the original

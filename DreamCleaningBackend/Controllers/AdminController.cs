@@ -40,6 +40,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
         private readonly IBubbleRewardsSettingsService _bubbleRewardsSettingsService;
         private readonly IExpenseService _expenseService;
+        private readonly IFinancialRateService _financialRateService;
 
         public AdminController(ApplicationDbContext context,
             IPermissionService permissionService,
@@ -57,7 +58,8 @@ namespace DreamCleaningBackend.Controllers
             IBubblePointsService bubblePointsService,
             ILoyaltyDiscountService loyaltyDiscountService,
             IBubbleRewardsSettingsService bubbleRewardsSettingsService,
-            IExpenseService expenseService)
+            IExpenseService expenseService,
+            IFinancialRateService financialRateService)
         {
             _context = context;
             _permissionService = permissionService;
@@ -76,7 +78,14 @@ namespace DreamCleaningBackend.Controllers
             _loyaltyDiscountService = loyaltyDiscountService;
             _bubbleRewardsSettingsService = bubbleRewardsSettingsService;
             _expenseService = expenseService;
+            _financialRateService = financialRateService;
         }
+
+        // Stripe US standard processing fee: 2.9% of the charged amount + $0.30 per transaction.
+        // Overridable via config without code changes. Used for statistics only — never alters
+        // the amounts customers/admins see on an order.
+        private decimal StripeFeePercent => _configuration.GetValue<decimal>("Stripe:FeePercent", 0.029m);
+        private decimal StripeFixedFee => _configuration.GetValue<decimal>("Stripe:FixedFeePerOrder", 0.30m);
 
         // Service Types Management
         [HttpGet("service-types")]
@@ -2033,7 +2042,7 @@ namespace DreamCleaningBackend.Controllers
             foreach (var u in users)
                 u.IsOnline = UserManagementHub.IsUserOnline(u.Id);
 
-            // ── Customer-care snapshot: last cleaning + total orders + last follow-up
+            // â”€â”€ Customer-care snapshot: last cleaning + total orders + last follow-up
             // We fetch the last (most recent) non-cancelled order per user via a single query.
             var lastOrders = await _context.Orders
                 .Where(o => userIds.Contains(o.UserId) && o.Status != "Cancelled")
@@ -2076,7 +2085,7 @@ namespace DreamCleaningBackend.Controllers
             }
             catch
             {
-                // Table missing (migration not yet applied) — silently skip
+                // Table missing (migration not yet applied) â€” silently skip
             }
 
             foreach (var u in users)
@@ -2140,7 +2149,7 @@ namespace DreamCleaningBackend.Controllers
             if (columns.Count == 0)
                 return BadRequest(new { message = "No columns selected for export." });
 
-            // Customers only — staff roles (Admin/SuperAdmin/Moderator) are excluded from the export.
+            // Customers only â€” staff roles (Admin/SuperAdmin/Moderator) are excluded from the export.
             var users = await _context.Users
                 .Where(u => u.Role == UserRole.Customer)
                 .OrderBy(u => u.Id)
@@ -2180,7 +2189,7 @@ namespace DreamCleaningBackend.Controllers
                 .ToDictionaryAsync(o => o.UserId);
 
             // Deep-cleaning detection: any extra service on the last order whose ExtraService.IsDeepCleaning == true
-            // (and not IsSuperDeepCleaning — keeps "Deep" distinct from "Super Deep" if that ever ships).
+            // (and not IsSuperDeepCleaning â€” keeps "Deep" distinct from "Super Deep" if that ever ships).
             var lastOrderIds = lastOrders.Values.Select(o => o.Id).ToList();
             var deepOrderIds = await _context.OrderExtraServices
                 .Where(oes => lastOrderIds.Contains(oes.OrderId)
@@ -2234,7 +2243,7 @@ namespace DreamCleaningBackend.Controllers
                     else
                     {
                         // Strip "Cleaning" (case-insensitive) from non-residential service-type names.
-                        // E.g. "Move In/Out Cleaning" → "Move In/Out", "Office Cleaning" → "Office".
+                        // E.g. "Move In/Out Cleaning" â†’ "Move In/Out", "Office Cleaning" â†’ "Office".
                         serviceTypeLabel = System.Text.RegularExpressions.Regex
                             .Replace(st, @"\s*\bcleaning\b\s*", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
                             .Trim();
@@ -2252,7 +2261,7 @@ namespace DreamCleaningBackend.Controllers
                 if (lo != null)
                 {
                     // Trim the autocomplete tail ("Brooklyn, NY 11201, USA") off the stored street
-                    // address — borough and zip already live in their own columns. The street portion
+                    // address â€” borough and zip already live in their own columns. The street portion
                     // is the substring before the first comma.
                     var rawStreet = (lo.ServiceAddress ?? "").Trim();
                     var commaIdx = rawStreet.IndexOf(',');
@@ -2268,8 +2277,8 @@ namespace DreamCleaningBackend.Controllers
                     // Bedrooms = 0 means a studio (no separate bedroom), so render "Studio" instead of "0 bd".
                     var bd = lo.BedroomsQuantity.HasValue
                         ? (lo.BedroomsQuantity.Value == 0 ? "Studio" : $"{lo.BedroomsQuantity.Value} bd")
-                        : "—";
-                    var bt = lo.BathroomsQuantity.HasValue ? $"{lo.BathroomsQuantity.Value} ba" : "—";
+                        : "â€”";
+                    var bt = lo.BathroomsQuantity.HasValue ? $"{lo.BathroomsQuantity.Value} ba" : "â€”";
                     bedsBaths = $"{bd} / {bt}";
                 }
 
@@ -2385,7 +2394,7 @@ namespace DreamCleaningBackend.Controllers
 
             try
             {
-                var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+                var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
                 var loginUrl = $"{frontendUrl}/login";
                 await _emailService.SendAdminWelcomeEmailAsync(user.Email, user.FirstName, loginUrl);
             }
@@ -2441,7 +2450,7 @@ namespace DreamCleaningBackend.Controllers
                 FirstTimeOrder = targetUser.FirstTimeOrder
             };
 
-            // Cleaner role is deprecated — cleaners are managed via the standalone Cleaners table/dashboard.
+            // Cleaner role is deprecated â€” cleaners are managed via the standalone Cleaners table/dashboard.
             if (string.Equals(dto.Role, "Cleaner", StringComparison.OrdinalIgnoreCase))
                 return BadRequest(new { message = "The Cleaner role is no longer assignable. Add cleaners via the Cleaner Dashboard instead." });
 
@@ -3057,7 +3066,7 @@ namespace DreamCleaningBackend.Controllers
                 // the selected payment method; if the admin changed it (e.g. order was created
                 // expecting Stripe but customer paid Zelle), we persist the correction here.
                 // ManualPaymentRecordedAt / RecordedBy are only stamped when the method is NOT
-                // Normal — those fields are reserved for genuine manual-payment audit trails.
+                // Normal â€” those fields are reserved for genuine manual-payment audit trails.
                 // When dto.PaymentMethod is omitted, existing values on the order are preserved
                 // (no clobber to null).
                 if (string.Equals(dto.Status, "Done", StringComparison.OrdinalIgnoreCase) &&
@@ -3113,7 +3122,7 @@ namespace DreamCleaningBackend.Controllers
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"Loyalty discount re-apply failed for order {orderId} on admin reactivation — order is Active but user state may be stale: {ex.Message}");
+                            Console.WriteLine($"Loyalty discount re-apply failed for order {orderId} on admin reactivation â€” order is Active but user state may be stale: {ex.Message}");
                         }
                     }
 
@@ -3295,7 +3304,7 @@ namespace DreamCleaningBackend.Controllers
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Loyalty discount reverse failed for order {orderId} on admin cancel — order is cancelled but user state may be stale: {ex.Message}");
+                        Console.WriteLine($"Loyalty discount reverse failed for order {orderId} on admin cancel â€” order is cancelled but user state may be stale: {ex.Message}");
                     }
                 }
 
@@ -4210,7 +4219,7 @@ namespace DreamCleaningBackend.Controllers
             return Ok(result);
         }
 
-        /// <summary>SuperAdmin-only: revert the change recorded by an audit row. Database-only —
+        /// <summary>SuperAdmin-only: revert the change recorded by an audit row. Database-only â€”
         /// will not refund payments, recall sent emails, etc. See AuditService for the block list.</summary>
         [HttpPost("audit-logs/{id}/undo")]
         [Authorize(Roles = "SuperAdmin")]
@@ -4527,7 +4536,7 @@ namespace DreamCleaningBackend.Controllers
             var success = await _cleanerService.AssignCleanersToOrderAsync(dto, assignedBy);
 
             if (success)
-                return Ok(new { message = "Cleaners assigned successfully. Use “Send assignment email” when you are ready to notify cleaners." });
+                return Ok(new { message = "Cleaners assigned successfully. Use â€œSend assignment emailâ€ when you are ready to notify cleaners." });
 
             return BadRequest(new { message = "Failed to assign cleaners" });
         }
@@ -4860,7 +4869,7 @@ namespace DreamCleaningBackend.Controllers
             var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : order.User?.Email;
             var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
 
-            var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+            var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
             var paymentLink = $"{frontendUrl.TrimEnd('/')}/order/{orderId}/pay";
 
             // Track per-channel outcome so the admin sees a clear "email sent, SMS skipped" hint
@@ -4919,7 +4928,7 @@ namespace DreamCleaningBackend.Controllers
             if (order == null)
                 return NotFound(new { message = "Order not found" });
 
-            // Compute outstanding amount the same way SendPaymentReminder does — unpaid delta
+            // Compute outstanding amount the same way SendPaymentReminder does â€” unpaid delta
             // since the original booking, less anything already paid via prior update rows.
             var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
             decimal originalWithoutTips;
@@ -4950,7 +4959,7 @@ namespace DreamCleaningBackend.Controllers
             var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : order.User?.Email;
             var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
 
-            var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+            var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
             var paymentLink = $"{frontendUrl.TrimEnd('/')}/order/{orderId}/pay";
 
             bool emailSent = false, smsSent = false, smsInvalid = false;
@@ -4992,8 +5001,8 @@ namespace DreamCleaningBackend.Controllers
 
             // Stamp every unpaid, not-yet-notified history row for this order. We mark them all
             // (rather than only the latest) because the notification covers the full outstanding
-            // balance — once it's sent, none of those rows should show "first send" any longer.
-            // Stamp even when only the email went through — the customer has been informed; the
+            // balance â€” once it's sent, none of those rows should show "first send" any longer.
+            // Stamp even when only the email went through â€” the customer has been informed; the
             // bad-phone-number issue is on the admin to fix, not a reason to re-show "Send updated
             // payment" indefinitely.
             var rowsToStamp = await _context.OrderUpdateHistories
@@ -5016,11 +5025,11 @@ namespace DreamCleaningBackend.Controllers
             if (emailSent && smsInvalid) return $"{label}: email sent. SMS was not sent because the phone number on file is invalid.";
             if (emailSent) return $"{label}: email sent.";
             if (smsSent) return $"{label}: SMS sent.";
-            if (smsInvalid) return $"{label}: not sent — the phone number on file is invalid and there is no email.";
+            if (smsInvalid) return $"{label}: not sent â€” the phone number on file is invalid and there is no email.";
             return $"{label} sent.";
         }
 
-        // ───── Statistics (SuperAdmin only) ─────
+        // â”€â”€â”€â”€â”€ Statistics (SuperAdmin only) â”€â”€â”€â”€â”€
 
         [HttpGet("statistics")]
         [Authorize(Roles = "SuperAdmin")]
@@ -5029,7 +5038,7 @@ namespace DreamCleaningBackend.Controllers
             [FromQuery] DateTime? to)
         {
             // Counts both Stripe-paid orders (IsPaid=true, PaymentMethod=Normal) and manual-paid
-            // orders (PaymentMethod != Normal, IsPaid=false) — see Order.PaymentMethod docs.
+            // orders (PaymentMethod != Normal, IsPaid=false) â€” see Order.PaymentMethod docs.
             var query = _context.Orders
                 .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal) && o.Status == "Done");
 
@@ -5054,8 +5063,47 @@ namespace DreamCleaningBackend.Controllers
             var expenseTo = (to?.Date ?? DateTime.UtcNow.Date).AddDays(1);
             var breakdown = await _expenseService.GetBreakdownAsync(expenseFrom, expenseTo);
 
-            stats.TotalExpenses = breakdown.Total;
-            stats.TotalCompanyRevenue = stats.TotalCompanyRevenueGross - breakdown.Total;
+            // Re-apply the same date window conditionally (never push DateTime.MinValue into SQL —
+            // it's out of MariaDB's DATETIME range; the main query above bounds the same way).
+            IQueryable<Order> windowed = _context.Orders.Where(o => o.Status == "Done");
+            if (from.HasValue)
+                windowed = windowed.Where(o => o.ServiceDate >= from.Value.Date);
+            if (to.HasValue)
+                windowed = windowed.Where(o => o.ServiceDate < to.Value.Date.AddDays(1));
+
+            // Stripe processing fees — statistics-only. Only real card charges qualify
+            // (IsPaid && PaymentMethod==Normal); manual/cash orders are never charged by Stripe.
+            var stripeAgg = await windowed
+                .Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal)
+                .GroupBy(_ => 1)
+                .Select(g => new { Count = g.Count(), Total = g.Sum(o => o.Total) })
+                .FirstOrDefaultAsync();
+            stats.StripeFees = stripeAgg == null ? 0m
+                : decimal.Round(stripeAgg.Total * StripeFeePercent + stripeAgg.Count * StripeFixedFee, 2);
+
+            // Admin bonuses (GEL), converted to USD per-month at each month's locked FX rate.
+            // Eligible = assigned + Done + (paid or manual), matching AdminBonusService.
+            var bonusByMonth = await windowed
+                .Where(o => o.AssignedAdminId != null && (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal))
+                .GroupBy(o => new { o.ServiceDate.Year, o.ServiceDate.Month })
+                .Select(g => new { g.Key.Year, g.Key.Month, Count = g.Count() })
+                .ToListAsync();
+
+            decimal adminBonusGel = 0m, adminBonusUsd = 0m;
+            foreach (var b in bonusByMonth)
+            {
+                var snap = await _financialRateService.GetOrCreateAsync(b.Year, b.Month);
+                var gel = b.Count * snap.AdminBonusRatePerOrderGel;
+                adminBonusGel += gel;
+                adminBonusUsd += decimal.Round(gel * snap.UsdPerGel, 2);
+            }
+            stats.AdminBonusesGel = adminBonusGel;
+            stats.AdminBonusesUsd = adminBonusUsd;
+
+            // Grand total expenses = table expenses + Stripe fees + admin bonuses (USD).
+            var totalExpenses = breakdown.Total + stats.StripeFees + stats.AdminBonusesUsd;
+            stats.TotalExpenses = totalExpenses;
+            stats.TotalCompanyRevenue = stats.TotalCompanyRevenueGross - totalExpenses;
             stats.ExpensesBreakdown = breakdown;
 
             return Ok(stats);
@@ -5067,7 +5115,7 @@ namespace DreamCleaningBackend.Controllers
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)
         {
-            // Same filter as /statistics — include manual-paid orders alongside Stripe-paid.
+            // Same filter as /statistics â€” include manual-paid orders alongside Stripe-paid.
             var query = _context.Orders
                 .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal) && o.Status == "Done");
 
@@ -5085,9 +5133,30 @@ namespace DreamCleaningBackend.Controllers
                     o.Tax,
                     o.Tips,
                     o.CompanyDevelopmentTips,
-                    o.CleanerTotalSalary
+                    o.CleanerTotalSalary,
+                    o.Total,
+                    o.IsPaid,
+                    o.PaymentMethod,
+                    o.AssignedAdminId
                 })
                 .ToListAsync();
+
+            // Preload the locked month snapshots for every month present in the data (not the raw
+            // window — an open-ended "all time" range must not iterate from year 1).
+            var snaps = new Dictionary<int, MonthlyFinancialSnapshot>();
+            foreach (var m in orders.Select(o => new { o.ServiceDate.Year, o.ServiceDate.Month }).Distinct())
+            {
+                snaps[m.Year * 100 + m.Month] = await _financialRateService.GetOrCreateAsync(m.Year, m.Month);
+            }
+
+            var feePercent = StripeFeePercent;
+            var fixedFee = StripeFixedFee;
+
+            decimal StripeFeeFor(decimal total) => decimal.Round(total * feePercent + fixedFee, 2);
+            decimal BonusUsdFor(int year, int month) =>
+                snaps.TryGetValue(year * 100 + month, out var s)
+                    ? decimal.Round(s.AdminBonusRatePerOrderGel * s.UsdPerGel, 2)
+                    : 0m;
 
             // Per-day expense attribution: each projected occurrence is added to its own day,
             // so the chart shows the actual bill date (e.g. RingCentral hits on the 1st of the month).
@@ -5100,16 +5169,27 @@ namespace DreamCleaningBackend.Controllers
 
             var dailyMap = orders
                 .GroupBy(o => o.ServiceDate.Date)
-                .ToDictionary(g => g.Key, g => new DailyStatisticsDto
+                .ToDictionary(g => g.Key, g =>
                 {
-                    Date = g.Key.ToString("yyyy-MM-dd"),
-                    Orders = g.Count(),
-                    Amount = g.Sum(o => o.SubTotal),
-                    Taxes = g.Sum(o => o.Tax),
-                    Tips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
-                    CleanersSalary = g.Sum(o => o.CleanerTotalSalary),
-                    Expenses = 0m,
-                    CompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary)
+                    var stripeFees = g.Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal)
+                                      .Sum(o => StripeFeeFor(o.Total));
+                    var adminBonuses = g.Where(o => o.AssignedAdminId != null)
+                                        .Sum(o => BonusUsdFor(o.ServiceDate.Year, o.ServiceDate.Month));
+                    var computed = stripeFees + adminBonuses;
+                    return new DailyStatisticsDto
+                    {
+                        Date = g.Key.ToString("yyyy-MM-dd"),
+                        Orders = g.Count(),
+                        Amount = g.Sum(o => o.SubTotal),
+                        Taxes = g.Sum(o => o.Tax),
+                        Tips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
+                        CleanersSalary = g.Sum(o => o.CleanerTotalSalary),
+                        StripeFees = stripeFees,
+                        AdminBonuses = adminBonuses,
+                        // Expenses starts with the computed fees/bonuses; table expenses are folded in below.
+                        Expenses = computed,
+                        CompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary) - computed
+                    };
                 });
 
             // Fold in expense days that have no orders so the chart still reflects them.
@@ -5124,7 +5204,8 @@ namespace DreamCleaningBackend.Controllers
                     };
                     dailyMap[kv.Key] = row;
                 }
-                row.Expenses = kv.Value;
+                // Add table expenses on top of any Stripe-fee / admin-bonus amounts already on this day.
+                row.Expenses += kv.Value;
                 row.CompanyRevenue -= kv.Value;
             }
 
@@ -5133,7 +5214,60 @@ namespace DreamCleaningBackend.Controllers
             return Ok(daily);
         }
 
-        // ── Order Reminder Acknowledgments ────────────────────
+        // ── Monthly FX / bonus-rate snapshots (SuperAdmin) ─────────────────────────────
+        // Lets SuperAdmin see and override the GEL→USD rate used to convert admin bonuses on
+        // the statistics page. Each month is locked once set; overriding one month never touches
+        // another.
+
+        [HttpGet("statistics/financial-rates")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<List<MonthlyFinancialRateDto>>> GetFinancialRates(
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to)
+        {
+            // Default to the trailing 12 months when unbounded, so we never enumerate from year 1.
+            var toDate = (to?.Date ?? DateTime.UtcNow.Date).AddDays(1);
+            var fromDate = from?.Date ?? new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1).AddMonths(-11);
+
+            var rows = await _financialRateService.ListAsync(fromDate, toDate);
+            return Ok(rows);
+        }
+
+        [HttpPut("statistics/financial-rates/{year:int}/{month:int}")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<MonthlyFinancialRateDto>> SetFinancialRate(
+            int year, int month, [FromBody] SetFxRateDto dto)
+        {
+            if (month < 1 || month > 12)
+                return BadRequest(new { message = "Month must be between 1 and 12." });
+            if (dto.UsdPerGel <= 0)
+                return BadRequest(new { message = "Exchange rate (USD per GEL) must be greater than zero." });
+
+            var userId = int.Parse(User.FindFirst("UserId")?.Value ?? "0");
+            try
+            {
+                var result = await _financialRateService.SetManualFxAsync(year, month, dto.UsdPerGel, userId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("statistics/financial-rates/{year:int}/{month:int}/refetch")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<MonthlyFinancialRateDto>> RefetchFinancialRate(int year, int month)
+        {
+            if (month < 1 || month > 12)
+                return BadRequest(new { message = "Month must be between 1 and 12." });
+
+            var userId = int.Parse(User.FindFirst("UserId")?.Value ?? "0");
+            var result = await _financialRateService.RefetchAsync(year, month, userId);
+            return Ok(result);
+        }
+
+        // â”€â”€ Order Reminder Acknowledgments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         /// <summary>
         /// Get all currently active (unacknowledged) order reminders.
@@ -5361,7 +5495,7 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        // ── Blocked Time Slots (Scheduling) ─────────────────────────────
+        // â”€â”€ Blocked Time Slots (Scheduling) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         [HttpGet("blocked-time-slots")]
         public async Task<ActionResult> GetBlockedTimeSlots([FromQuery] string? from, [FromQuery] string? to)
@@ -5465,7 +5599,7 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = "Blocked time slot deleted successfully." });
         }
 
-        // ───── Loyalty Discount (re-engagement system) ─────
+        // â”€â”€â”€â”€â”€ Loyalty Discount (re-engagement system) â”€â”€â”€â”€â”€
         //
         // User-scoped endpoints sit under /admin/users/{userId}/loyalty-discount and require
         // Permission.View for read, Permission.Update for write. The Moderator role has only
@@ -5536,7 +5670,7 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<LoyaltyDiscountSettingsDto>> GetLoyaltyDiscountSettings()
         {
             // BubbleRewardsSettingsService is a generic key/value store. The 7 loyalty keys all
-            // live under category "LoyaltyDiscount" — seeded in ApplicationDbContext. We project
+            // live under category "LoyaltyDiscount" â€” seeded in ApplicationDbContext. We project
             // them into a typed DTO for the admin UI rather than returning the raw rows.
             var dto = new LoyaltyDiscountSettingsDto
             {

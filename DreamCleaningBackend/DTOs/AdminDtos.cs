@@ -639,10 +639,20 @@ namespace DreamCleaningBackend.DTOs
         public decimal TotalTaxes { get; set; }
         public decimal TotalTips { get; set; }
         public decimal TotalCleanersSalary { get; set; }
+        // TotalExpenses is the GRAND total: table expenses + Stripe fees + admin bonuses (USD).
         public decimal TotalExpenses { get; set; }
         public decimal TotalCompanyRevenueGross { get; set; }
         public decimal TotalCompanyRevenue { get; set; }
         public ExpenseBreakdownDto? ExpensesBreakdown { get; set; }
+
+        // ── Computed expense lines (not stored in the Expenses table) ──────────────────
+        // Stripe processing fees (2.9% + $0.30 per real Stripe-charged order). Statistics-only;
+        // order amounts shown to users/admins are never altered.
+        public decimal StripeFees { get; set; }
+        // Admin bonuses for the window, converted GEL→USD per-month at each month's locked rate.
+        public decimal AdminBonusesUsd { get; set; }
+        // The same bonuses in raw GEL, for reference in the breakdown panel.
+        public decimal AdminBonusesGel { get; set; }
     }
 
     /// <summary>Daily data point for statistics chart. CompanyRevenue is NET.</summary>
@@ -654,7 +664,12 @@ namespace DreamCleaningBackend.DTOs
         public decimal Taxes { get; set; }
         public decimal Tips { get; set; }
         public decimal CleanersSalary { get; set; }
+        // Expenses here is the GRAND total for the day (table + Stripe fees + admin bonuses),
+        // so summing across days reconciles with the headline TotalExpenses.
         public decimal Expenses { get; set; }
         public decimal CompanyRevenue { get; set; }
+        // Itemised computed expenses for the day (already included in Expenses above).
+        public decimal StripeFees { get; set; }
+        public decimal AdminBonuses { get; set; }
     }
 }

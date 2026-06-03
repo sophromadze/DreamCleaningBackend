@@ -139,5 +139,19 @@ namespace DreamCleaningBackend.Models
         public DateTime? LoyaltyDiscountActivatedAt { get; set; }
         public DateTime? LoyaltyDiscountLastUsedAt { get; set; }
         public bool LoyaltyDiscountIsManualOverride { get; set; } = false;
+
+        // ─── Two-factor authentication (staff only — Admin / SuperAdmin / Moderator) ───
+        // Stored as "base64(salt)$base64(hash)". HMAC-SHA512 uses a 128-byte default key
+        // and produces a 64-byte digest → ~261 chars base64-encoded with the separator,
+        // so we sized this at 500 to leave headroom. Length 4–12 digits PIN (user-chosen).
+        // Customers ignore these fields entirely.
+        [StringLength(500)]
+        public string? TwoFactorPinHash { get; set; }
+        public DateTime? TwoFactorPinSetAt { get; set; }
+
+        // Rate-limit state: after too many wrong PIN attempts we lock the PIN flow for a
+        // cooldown window (caller falls back to email-code-only or just waits it out).
+        public int TwoFactorPinFailedAttempts { get; set; } = 0;
+        public DateTime? TwoFactorPinLockedUntil { get; set; }
     }
 }

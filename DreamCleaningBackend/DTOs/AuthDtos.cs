@@ -14,6 +14,18 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>True when user has no password set (admin-created) and must set one before using the platform.</summary>
         public bool RequiresPasswordSetup { get; set; }
         public string Message { get; set; }
+
+        /// <summary>When set, the client must clear a 2FA challenge before a final JWT is issued.
+        /// Token/RefreshToken/User are null in this case. Frontend routes to the 2FA screen.</summary>
+        public TwoFactorRequiredDto? TwoFactor { get; set; }
+
+        /// <summary>Raw trusted-device token to store client-side in localStorage as `tf_device_token`.
+        /// Only set when a 2FA challenge was cleared AND the user opted to remember the device.</summary>
+        public string? DeviceToken { get; set; }
+
+        /// <summary>True when the authenticated user is staff (Admin/SuperAdmin/Moderator) and
+        /// has never set up a 2FA PIN. Frontend guard routes them to the PIN setup screen.</summary>
+        public bool RequiresPinSetup { get; set; }
     }
 
     public class CheckEmailStatusDto

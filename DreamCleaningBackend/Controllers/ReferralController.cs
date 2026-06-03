@@ -55,7 +55,7 @@ namespace DreamCleaningBackend.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+                var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
                 return Ok(new
                 {
                     code = user.ReferralCode,

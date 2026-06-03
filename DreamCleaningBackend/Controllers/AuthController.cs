@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
@@ -25,14 +26,94 @@ namespace DreamCleaningBackend.Controllers
         private readonly IConfiguration _configuration;
         private readonly bool _useCookieAuth;
         private readonly IMemoryCache _cache;
+        private readonly ITwoFactorService _twoFactorService;
+        private readonly ApplicationDbContext _dbContext;
 
-        public AuthController(IAuthService authService, IAccountMergeService accountMergeService, IConfiguration configuration, IMemoryCache cache)
+        public AuthController(
+            IAuthService authService,
+            IAccountMergeService accountMergeService,
+            IConfiguration configuration,
+            IMemoryCache cache,
+            ITwoFactorService twoFactorService,
+            ApplicationDbContext dbContext)
         {
             _authService = authService;
             _accountMergeService = accountMergeService;
             _configuration = configuration;
             _useCookieAuth = configuration.GetValue<bool>("Authentication:UseCookieAuth", false);
             _cache = cache;
+            _twoFactorService = twoFactorService;
+            _dbContext = dbContext;
+        }
+
+        // Header name where the frontend sends the trusted-device token (when present).
+        private const string DeviceTokenHeader = "X-Device-Token";
+
+        // Pulls request metadata used by the 2FA service (UA + IP).
+        private (string UserAgent, string IpAddress) GetClientContext()
+        {
+            var ua = Request.Headers.UserAgent.ToString();
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
+            return (ua, ip);
+        }
+
+        private string? GetDeviceTokenFromRequest() =>
+            Request.Headers.TryGetValue(DeviceTokenHeader, out var v) ? v.ToString() : null;
+
+        // Wraps a normal AuthResponseDto with the 2FA gate. Three branches:
+        //   1. Not staff, or trusted device → unchanged (JWT issued normally).
+        //   2. Staff with NO PIN yet → unchanged (JWT issued). Frontend's pinSetupGuard
+        //      will catch them and force PIN setup; /2fa/set-pin auto-trusts the device
+        //      on completion. This avoids a chicken-and-egg "challenge a PIN that doesn't exist".
+        //   3. Staff with PIN + untrusted device → hide JWT, return TwoFactor envelope.
+        //      The client must clear /2fa/verify-email then /2fa/verify-pin to get tokens.
+        private async Task<AuthResponseDto> ApplyTwoFactorGateAsync(AuthResponseDto response)
+        {
+            if (response.User == null || response.TwoFactor != null || response.RequiresEmailVerification)
+                return response;
+
+            var user = await _dbContext.Users.FirstOrDefaultAsync(u => u.Id == response.User.Id);
+            if (user == null || !_twoFactorService.RequiresTwoFactor(user))
+                return response;
+
+            var deviceToken = GetDeviceTokenFromRequest();
+            if (await _twoFactorService.IsDeviceTrustedAsync(user.Id, deviceToken))
+                return response;
+
+            // No PIN yet → let them in with the JWT; the frontend guard forces setup next.
+            if (string.IsNullOrEmpty(user.TwoFactorPinHash))
+            {
+                response.RequiresPinSetup = true;
+                return response;
+            }
+
+            var ctx = GetClientContext();
+            var challengeId = await _twoFactorService.CreateChallengeAsync(user.Id, ctx.UserAgent, ctx.IpAddress);
+
+            return new AuthResponseDto
+            {
+                User = null,
+                Token = null,
+                RefreshToken = null,
+                TwoFactor = new TwoFactorRequiredDto
+                {
+                    RequiresTwoFactor = true,
+                    ChallengeId = challengeId,
+                    HasPin = true,
+                    MaskedEmail = MaskEmail(user.Email)
+                }
+            };
+        }
+
+        private static string MaskEmail(string email)
+        {
+            if (string.IsNullOrEmpty(email)) return "";
+            var at = email.IndexOf('@');
+            if (at <= 1) return email;
+            var name = email[..at];
+            var domain = email[at..];
+            var visible = name.Length <= 2 ? name[..1] : name[..2];
+            return $"{visible}{new string('•', Math.Max(2, name.Length - visible.Length))}{domain}";
         }
 
         [HttpPost("register")]
@@ -42,13 +123,18 @@ namespace DreamCleaningBackend.Controllers
             {
                 var response = await _authService.Register(registerDto);
                 
-                if (_useCookieAuth && response.Token != null && !response.RequiresEmailVerification)
+                if (_useCookieAuth && response.Token != null)
                 {
+                    // Auto-login the new account via cookies even when email verification is
+                    // still pending. The verify-email-notice page needs an authenticated session
+                    // (the pendingVerificationGuard requires a current user) so the user can enter
+                    // their 6-digit code. Previously we only set cookies when verification was NOT
+                    // required, which left cookie-auth (production) signups with no session and
+                    // bounced them straight to /login. Don't leak tokens in the body for cookie auth.
                     SetAuthCookies(response.Token, response.RefreshToken);
-                    // Don't send tokens in response for cookie auth
-                    return Ok(new { user = response.User, requiresEmailVerification = false });
+                    return Ok(new { user = response.User, requiresEmailVerification = response.RequiresEmailVerification });
                 }
-                
+
                 return Ok(response);
             }
             catch (Exception ex)
@@ -63,14 +149,19 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var response = await _authService.Login(loginDto);
-                
+                response = await ApplyTwoFactorGateAsync(response);
+
+                // 2FA gate caught it — return the challenge envelope; no cookies set yet.
+                if (response.TwoFactor != null)
+                    return Ok(response);
+
                 if (_useCookieAuth)
                 {
                     SetAuthCookies(response.Token, response.RefreshToken);
                     // Don't send tokens in response for cookie auth
                     return Ok(new { user = response.User });
                 }
-                
+
                 return Ok(response);
             }
             catch (Exception ex)
@@ -79,20 +170,171 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        //  Two-factor authentication (staff: Admin / SuperAdmin / Moderator)
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // Step 1 of the challenge — verify the 6-digit code sent by email.
+        [HttpPost("2fa/verify-email")]
+        public async Task<ActionResult> VerifyTwoFactorEmail([FromBody] VerifyTwoFactorEmailDto dto)
+        {
+            try
+            {
+                await _twoFactorService.VerifyEmailCodeAsync(dto.ChallengeId, dto.Code);
+                return Ok(new { verified = true });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // Step 2 — verify PIN. On success returns the final auth tokens. When
+        // rememberDevice = true the response also carries `deviceToken` for the client
+        // to store as `tf_device_token` for future X-Device-Token headers.
+        [HttpPost("2fa/verify-pin")]
+        public async Task<ActionResult<AuthResponseDto>> VerifyTwoFactorPin([FromBody] VerifyTwoFactorPinDto dto)
+        {
+            try
+            {
+                var ctx = GetClientContext();
+                var result = await _twoFactorService.VerifyPinAsync(
+                    dto.ChallengeId, dto.Pin, dto.RememberDevice, ctx.UserAgent, ctx.IpAddress);
+
+                var auth = await _authService.RefreshUserToken(result.UserId);
+                auth.DeviceToken = result.DeviceToken;
+
+                if (_useCookieAuth)
+                {
+                    SetAuthCookies(auth.Token, auth.RefreshToken);
+                    return Ok(new { user = auth.User, deviceToken = auth.DeviceToken });
+                }
+                return Ok(auth);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // Forced first-time PIN setup. Caller must already be authenticated with a normal
+        // password JWT (so we know who they are) and must be a staff user. After successful
+        // setup the device is trusted automatically (it's the device they just set up on).
+        [HttpPost("2fa/set-pin")]
+        [Authorize]
+        public async Task<ActionResult<AuthResponseDto>> SetTwoFactorPin([FromBody] SetTwoFactorPinDto dto)
+        {
+            try
+            {
+                var userId = int.Parse(User.FindFirst("UserId")?.Value
+                    ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                if (userId == 0) return Unauthorized();
+
+                if (dto.Pin != dto.ConfirmPin)
+                    return BadRequest(new { message = "PINs don't match." });
+
+                var ctx = GetClientContext();
+                var result = await _twoFactorService.SetPinAsync(userId, dto.Pin, true, ctx.UserAgent, ctx.IpAddress);
+                return Ok(new
+                {
+                    success = true,
+                    deviceToken = result?.DeviceToken
+                });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("2fa/resend-email")]
+        public async Task<ActionResult> ResendTwoFactorEmail([FromBody] ResendTwoFactorCodeDto dto)
+        {
+            try
+            {
+                await _twoFactorService.ResendEmailCodeAsync(dto.ChallengeId);
+                return Ok(new { resent = true });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // List & revoke trusted devices for the current user (self-service).
+        [HttpGet("2fa/trusted-devices")]
+        [Authorize]
+        public async Task<ActionResult<List<TrustedDeviceDto>>> ListTrustedDevices()
+        {
+            var userId = int.Parse(User.FindFirst("UserId")?.Value
+                ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            if (userId == 0) return Unauthorized();
+
+            var devices = await _twoFactorService.ListTrustedDevicesAsync(userId);
+
+            // Mark the device making this request, so the UI can warn before revoking it.
+            var currentTokenHash = HashCurrentDeviceToken();
+            if (!string.IsNullOrEmpty(currentTokenHash))
+            {
+                foreach (var d in devices)
+                {
+                    // We can't expose the hash here, so we rely on a join-by-id approach:
+                    // re-query the row's hash via a lightweight lookup.
+                }
+                var match = await _dbContext.TrustedDevices
+                    .Where(d => d.UserId == userId && d.TokenHash == currentTokenHash && d.RevokedAt == null)
+                    .Select(d => d.Id)
+                    .FirstOrDefaultAsync();
+                if (match != 0)
+                {
+                    var dev = devices.FirstOrDefault(d => d.Id == match);
+                    if (dev != null) dev.IsCurrentDevice = true;
+                }
+            }
+            return Ok(devices);
+        }
+
+        [HttpDelete("2fa/trusted-devices/{id}")]
+        [Authorize]
+        public async Task<ActionResult> RevokeTrustedDevice(int id)
+        {
+            var userId = int.Parse(User.FindFirst("UserId")?.Value
+                ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            if (userId == 0) return Unauthorized();
+
+            await _twoFactorService.RevokeTrustedDeviceAsync(userId, id);
+            return NoContent();
+        }
+
+        private string? HashCurrentDeviceToken()
+        {
+            var raw = GetDeviceTokenFromRequest();
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(raw));
+            var sb = new System.Text.StringBuilder(bytes.Length * 2);
+            foreach (var b in bytes) sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+
         [HttpPost("google-login")]
         public async Task<ActionResult<AuthResponseDto>> GoogleLogin(GoogleLoginDto googleLoginDto)
         {
             try
             {
                 var response = await _authService.GoogleLogin(googleLoginDto);
-                
+                response = await ApplyTwoFactorGateAsync(response);
+
+                if (response.TwoFactor != null)
+                    return Ok(response);
+
                 if (_useCookieAuth)
                 {
                     SetAuthCookies(response.Token, response.RefreshToken);
                     // Don't send tokens in response for cookie auth
                     return Ok(new { user = response.User });
                 }
-                
+
                 return Ok(response);
             }
             catch (Exception ex)
@@ -182,13 +424,17 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 var response = await _authService.AppleLogin(appleLoginDto);
-                
+                response = await ApplyTwoFactorGateAsync(response);
+
+                if (response.TwoFactor != null)
+                    return Ok(response);
+
                 if (_useCookieAuth)
                 {
                     SetAuthCookies(response.Token, response.RefreshToken);
                     return Ok(new { user = response.User, requiresRealEmail = response.RequiresRealEmail });
                 }
-                
+
                 return Ok(response);
             }
             catch (Exception ex)
@@ -289,6 +535,11 @@ namespace DreamCleaningBackend.Controllers
                     return Unauthorized(new { message = "User not found" });
 
                 await _authService.ChangePassword(userId, changePasswordDto);
+
+                // Security: a password change invalidates every trusted device for the user.
+                // Forces re-authentication with 2FA on every device they were signed in on.
+                await _twoFactorService.RevokeAllTrustedDevicesAsync(userId);
+
                 return Ok(new { message = "Password changed successfully" });
             }
             catch (Exception ex)
@@ -467,7 +718,19 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
+                // Look up the user from the reset token *before* the reset clears it,
+                // so we can revoke their trusted devices after the password change.
+                var userId = await _dbContext.Users
+                    .Where(u => u.PasswordResetToken == resetDto.Token
+                                && u.PasswordResetTokenExpiry > DateTime.UtcNow)
+                    .Select(u => u.Id)
+                    .FirstOrDefaultAsync();
+
                 await _authService.ResetPassword(resetDto);
+
+                if (userId != 0)
+                    await _twoFactorService.RevokeAllTrustedDevicesAsync(userId);
+
                 return Ok(new { message = "Password reset successfully" });
             }
             catch (Exception ex)

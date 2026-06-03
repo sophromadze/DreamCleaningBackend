@@ -14,7 +14,7 @@ using System.Linq;
 using Stripe;
 // Stripe also defines a PaymentMethod type. Alias to our domain enum so unqualified
 // PaymentMethod references in this file (Phase 1 manual payment tracking) resolve
-// unambiguously — Stripe.PaymentMethod isn't referenced directly here anyway.
+// unambiguously â€” Stripe.PaymentMethod isn't referenced directly here anyway.
 using PaymentMethod = DreamCleaningBackend.Models.PaymentMethod;
 
 namespace DreamCleaningBackend.Controllers
@@ -69,16 +69,35 @@ namespace DreamCleaningBackend.Controllers
             _loyaltyDiscountService = loyaltyDiscountService;
         }
 
+        // Mirrors AuthController.SetAuthCookies — used by the guest auto-registration path in
+        // cookie-auth mode so a freshly created guest gets the same httpOnly session cookies a
+        // normal login would. Kept in sync with AuthController (HttpOnly, Secure off only when
+        // Development:UseHttp, SameSite=Strict, 7-day expiry to match the refresh token).
+        private void SetGuestAuthCookies(string token, string refreshToken)
+        {
+            var secure = !_configuration.GetValue<bool>("Development:UseHttp", false);
+            var cookieOptions = new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = secure,
+                SameSite = SameSiteMode.Strict,
+                Expires = DateTime.UtcNow.AddDays(7)
+            };
+
+            Response.Cookies.Append("access_token", token, cookieOptions);
+            Response.Cookies.Append("refresh_token", refreshToken, cookieOptions);
+        }
+
         // Resolves the loyalty discount + stacking for the given target user, then mutates the
         // order's three discount slots (LoyaltyDiscount*, SubscriptionDiscountAmount, DiscountAmount)
         // to the post-stacking values. Called after order.SubTotal is finalised but BEFORE the
-        // discounted-subtotal / tax / total math runs. The user lookup uses the TARGET user id —
+        // discounted-subtotal / tax / total math runs. The user lookup uses the TARGET user id â€”
         // for admin-on-behalf bookings the admin's own discount is irrelevant.
         //
         // The backend is authoritative on what loyalty applies: we look up the target user's
         // current percentage, compute the candidate against the server-side subTotal, and gate
         // it via LoyaltyDiscountService.ResolveStacking against the client's subscription/promo
-        // amounts. Any client-supplied LoyaltyDiscountAmount on the request is ignored — the
+        // amounts. Any client-supplied LoyaltyDiscountAmount on the request is ignored â€” the
         // client only ever computes it for the preview breakdown.
         private async Task ApplyLoyaltyDiscountAndStackingAsync(Order order, int targetUserId)
         {
@@ -497,7 +516,7 @@ namespace DreamCleaningBackend.Controllers
 
                     // For custom pricing, use the custom values directly.
                     // CustomDuration is per-cleaner (admin enters "5h 30m per maid"); we store
-                    // TotalDuration as TOTAL cleaner-minutes = perCleaner × cleaners, matching
+                    // TotalDuration as TOTAL cleaner-minutes = perCleaner Ã— cleaners, matching
                     // the convention used by non-custom orders. Display divides back by maids.
                     subTotal = dto.CustomAmount ?? serviceType.BasePrice;
                     var perCleanerCustom = dto.CustomDuration ?? serviceType.TimeDuration;
@@ -814,7 +833,7 @@ namespace DreamCleaningBackend.Controllers
                 // Complete order calculations
                 order.SubTotal = Math.Round(subTotal * 100) / 100;
 
-                // Loyalty Discount + stacking — must run before the discounted-subtotal math so
+                // Loyalty Discount + stacking â€” must run before the discounted-subtotal math so
                 // tax sees the post-stacking discount slate. Uses the booking user's loyalty %
                 // (this is the self-booking path; admin-on-behalf goes through CreateBookingForUser
                 // and resolves against the TARGET user id there).
@@ -831,10 +850,10 @@ namespace DreamCleaningBackend.Controllers
                 order.Total = Math.Round((totalBeforeGiftCard - giftCardAmountUsed) * 100) / 100;
                 if (dto.IsCustomPricing)
                 {
-                    // CustomDuration is per-cleaner; store as TOTAL = perCleaner × cleaners.
+                    // CustomDuration is per-cleaner; store as TOTAL = perCleaner Ã— cleaners.
                     var perCleanerCustom = dto.CustomDuration ?? totalDuration;
                     order.TotalDuration = Math.Max(perCleanerCustom * order.MaidsCount, 60);
-                    Console.WriteLine($"Custom Pricing - Per-cleaner: {perCleanerCustom} min × {order.MaidsCount} cleaners = TotalDuration: {order.TotalDuration} min");
+                    Console.WriteLine($"Custom Pricing - Per-cleaner: {perCleanerCustom} min Ã— {order.MaidsCount} cleaners = TotalDuration: {order.TotalDuration} min");
                 }
                 else
                 {
@@ -1049,7 +1068,7 @@ namespace DreamCleaningBackend.Controllers
 
                 // Parse manual payment method up front so order construction can choose the
                 // initial Status (Pending for Stripe / Normal, Active for manual). Anything
-                // unrecognised falls back to Normal — defensive default keeps the original flow.
+                // unrecognised falls back to Normal â€” defensive default keeps the original flow.
                 var paymentMethod = PaymentMethod.Normal;
                 if (!string.IsNullOrWhiteSpace(dto.PaymentMethod) &&
                     !Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out paymentMethod))
@@ -1093,7 +1112,7 @@ namespace DreamCleaningBackend.Controllers
                 if (dto.BookingData.IsCustomPricing)
                 {
                     subTotal = dto.BookingData.CustomAmount ?? serviceType.BasePrice;
-                    // CustomDuration is per-cleaner; convert to TOTAL = perCleaner × cleaners.
+                    // CustomDuration is per-cleaner; convert to TOTAL = perCleaner Ã— cleaners.
                     var perCleanerCustom = dto.BookingData.CustomDuration ?? serviceType.TimeDuration;
                     var customCleaners = dto.BookingData.CustomCleaners ?? dto.BookingData.MaidsCount;
                     totalDuration = perCleanerCustom * customCleaners;
@@ -1298,7 +1317,7 @@ namespace DreamCleaningBackend.Controllers
                     Total = dto.BookingData.Total,
                     DiscountAmount = dto.BookingData.DiscountAmount,
                     SubscriptionDiscountAmount = dto.BookingData.SubscriptionDiscountAmount,
-                    IsPaid = false, // Mark as unpaid — IsPaid is Stripe-only; manual payments leave it false too
+                    IsPaid = false, // Mark as unpaid â€” IsPaid is Stripe-only; manual payments leave it false too
                     // Manual payment tracking (Phase 1). Only stamped when paymentMethod != Normal,
                     // otherwise these stay at their defaults and the order behaves as before.
                     PaymentMethod = paymentMethod,
@@ -1306,7 +1325,7 @@ namespace DreamCleaningBackend.Controllers
                     PaymentNotes = paymentMethod != PaymentMethod.Normal ? dto.PaymentNotes : null,
                     ManualPaymentRecordedAt = paymentMethod != PaymentMethod.Normal ? DateTime.UtcNow : (DateTime?)null,
                     ManualPaymentRecordedByUserId = paymentMethod != PaymentMethod.Normal ? adminUserId : (int?)null,
-                    // For custom pricing, totalDuration was already computed as perCleaner × cleaners above.
+                    // For custom pricing, totalDuration was already computed as perCleaner Ã— cleaners above.
                     TotalDuration = totalDuration,
                     BedroomsQuantity = dto.BookingData.BedroomsQuantity,
                     BathroomsQuantity = dto.BookingData.BathroomsQuantity
@@ -1554,7 +1573,7 @@ namespace DreamCleaningBackend.Controllers
 
                 // Manual payment path: skip the Pay Now reminder entirely and send a real
                 // booking confirmation (no payment link). Reuses the existing customer template
-                // — same shape as a successful Stripe payment confirmation, just without the
+                // â€” same shape as a successful Stripe payment confirmation, just without the
                 // "you need to pay" framing. The Stripe / Normal path below is unchanged.
                 if (paymentMethod != PaymentMethod.Normal)
                 {
@@ -1578,7 +1597,7 @@ namespace DreamCleaningBackend.Controllers
                     var manualIsCustomServiceType = order.ServiceType?.IsCustom ?? false;
 
                     // Fire-and-forget email (skip Apple hidden mail). Same isAppleHiddenMail
-                    // check the Stripe path uses below — keep behavior aligned.
+                    // check the Stripe path uses below â€” keep behavior aligned.
                     _ = Task.Run(async () =>
                     {
                         try
@@ -1671,7 +1690,7 @@ namespace DreamCleaningBackend.Controllers
                             await _context.SaveChangesAsync();
                         }
 
-                        var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnearme.com";
+                        var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
                         var orderLink = $"{frontendUrl}/order/{order.Id}/pay";
                         
                         // Capitalize first letter of names
@@ -1788,7 +1807,7 @@ namespace DreamCleaningBackend.Controllers
                     userId = guestAuth.User.Id;
                 }
 
-                // For logged-in users: process referral (idempotent — skips if already referred)
+                // For logged-in users: process referral (idempotent â€” skips if already referred)
                 if (guestAuth == null && !string.IsNullOrWhiteSpace(dto.ReferralCode))
                 {
                     try
@@ -1842,7 +1861,7 @@ namespace DreamCleaningBackend.Controllers
                 if (dto.IsCustomPricing)
                 {
                     subTotal = dto.CustomAmount ?? serviceType.BasePrice;
-                    // CustomDuration is per-cleaner; totalDuration here is TOTAL = perCleaner × cleaners.
+                    // CustomDuration is per-cleaner; totalDuration here is TOTAL = perCleaner Ã— cleaners.
                     var perCleanerCustom = dto.CustomDuration ?? serviceType.TimeDuration;
                     var customCleaners = dto.CustomCleaners ?? dto.MaidsCount;
                     totalDuration = perCleanerCustom * customCleaners;
@@ -2008,7 +2027,7 @@ namespace DreamCleaningBackend.Controllers
                     totalDuration = 60;
                 }
 
-                // Calculate final totals — including loyalty + stacking. This endpoint produces
+                // Calculate final totals â€” including loyalty + stacking. This endpoint produces
                 // the payment-intent preview, so the numbers must match what CreateBooking will
                 // persist downstream. Guests (userId==0) just got auto-created above, so their
                 // loyalty lookup returns (0,0) and stacking is a no-op for them. We pass the
@@ -2072,6 +2091,17 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 var paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata);
+
+                // Guest auto-registration: in cookie-auth mode (production) the frontend
+                // interceptor authenticates via cookies and ignores any body token, so the
+                // GuestToken alone wouldn't authenticate the guest after booking. Set the
+                // session cookies here so the freshly created guest stays logged in (their
+                // order history, profile, etc. work without re-login). In token mode the
+                // frontend uses GuestToken from the body via applyGuestAuth(), unchanged.
+                if (guestAuth != null && _configuration.GetValue<bool>("Authentication:UseCookieAuth", false))
+                {
+                    SetGuestAuthCookies(guestAuth.Token, guestAuth.RefreshToken);
+                }
 
                 return Ok(new BookingResponseDto
                 {
@@ -2382,7 +2412,7 @@ namespace DreamCleaningBackend.Controllers
                 order.Status = "Active";
                 order.PaymentIntentId = effectivePaymentIntentId;
 
-                // Loyalty Discount consumption — if this order actually consumed a loyalty
+                // Loyalty Discount consumption â€” if this order actually consumed a loyalty
                 // discount (snapshot persisted on the order at booking time), let the service
                 // zero the user's percentage, stamp LastUsedAt, and clear the reminder logs so
                 // the next cycle can re-evaluate from scratch. Failures are logged but don't
@@ -2395,7 +2425,7 @@ namespace DreamCleaningBackend.Controllers
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Loyalty discount apply failed for order {OrderId} — order is paid but user state may be stale", order.Id);
+                        _logger.LogError(ex, "Loyalty discount apply failed for order {OrderId} â€” order is paid but user state may be stale", order.Id);
                     }
                 }
 
@@ -2425,6 +2455,25 @@ namespace DreamCleaningBackend.Controllers
                         }
                     }
                     catch (Exception ex) { Console.WriteLine($"[BubbleCredits] Deduct failed: {ex.Message}"); }
+                }
+
+                // Re-derive the persisted Total from its canonical components now that bubble
+                // points and reward balance have been applied. Those credits are set AFTER the
+                // order's Total was first computed (in CreateOrderFromBookingData / CreateBooking),
+                // and that earlier computation omitted them — so without this the stored Total was
+                // too high by (PointsRedeemedDiscount + RewardBalanceUsed). That inflated Total also
+                // inflated bubble points earned on completion (earned = Total − Tax − Tips). This
+                // recompute is authoritative and idempotent: orders without points/credit are
+                // unchanged. NOTE: the customer was already charged the correct amount at
+                // prepare-payment; this only fixes what we persist/display.
+                {
+                    var taxableSubTotal = order.SubTotal - order.DiscountAmount
+                                          - order.SubscriptionDiscountAmount - order.LoyaltyDiscountAmount;
+                    if (taxableSubTotal < 0m) taxableSubTotal = 0m;
+                    var recomputedTotal = taxableSubTotal + order.Tax + order.Tips + order.CompanyDevelopmentTips
+                                          - order.GiftCardAmountUsed - order.PointsRedeemedDiscount - order.RewardBalanceUsed;
+                    order.Total = Math.Max(0m, Math.Round(recomputedTotal * 100) / 100);
+                    await _context.SaveChangesAsync();
                 }
 
                 // Ensure extra services are loaded for email/SMS templates (new-booking flow may not include navigation properties).
@@ -2620,7 +2669,7 @@ namespace DreamCleaningBackend.Controllers
 
                 await _context.SaveChangesAsync();
 
-                // Bubble Rewards: safety net — welcome bonus is granted at registration; this covers legacy accounts created before that
+                // Bubble Rewards: safety net â€” welcome bonus is granted at registration; this covers legacy accounts created before that
                 if (wasFirstTimeOrder && userId > 0)
                 {
                     _ = Task.Run(async () =>
@@ -2715,7 +2764,7 @@ namespace DreamCleaningBackend.Controllers
                 Total = dto.Total,
                 DiscountAmount = dto.DiscountAmount,
                 SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
-                // For custom pricing, store TOTAL = perCleaner × cleaners (matches non-custom convention).
+                // For custom pricing, store TOTAL = perCleaner Ã— cleaners (matches non-custom convention).
                 TotalDuration = dto.IsCustomPricing
                     ? ((dto.CustomDuration ?? dto.TotalDuration) * (dto.CustomCleaners ?? dto.MaidsCount))
                     : dto.TotalDuration,
@@ -2891,7 +2940,7 @@ namespace DreamCleaningBackend.Controllers
                 order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
             }
 
-            // Loyalty Discount + stacking — third write path, called by ConfirmPayment's guest
+            // Loyalty Discount + stacking â€” third write path, called by ConfirmPayment's guest
             // flow. The order's SubTotal/Tax/Total/discount fields came in straight from the DTO,
             // so after mutating the discount slate we recompute Tax + Total ourselves to keep
             // persisted values internally consistent (same pattern as CreateBookingForUser).

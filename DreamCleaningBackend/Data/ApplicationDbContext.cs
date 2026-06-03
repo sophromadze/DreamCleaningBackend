@@ -49,6 +49,9 @@ namespace DreamCleaningBackend.Data
         public DbSet<OrderAdminAssignmentHistory> OrderAdminAssignmentHistories { get; set; }
         public DbSet<AdminBonusSetting> AdminBonusSettings { get; set; }
         public DbSet<Expense> Expenses { get; set; }
+        public DbSet<MonthlyFinancialSnapshot> MonthlyFinancialSnapshots { get; set; }
+        public DbSet<TrustedDevice> TrustedDevices { get; set; }
+        public DbSet<TwoFactorSession> TwoFactorSessions { get; set; }
         public DbSet<PersonalAdminTask> PersonalAdminTasks { get; set; }
         public DbSet<TaskActivityLog> TaskActivityLogs { get; set; }
 
@@ -1010,6 +1013,30 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(e => e.CreatedByUserId)
                     .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // TrustedDevice configuration — remembered post-2FA devices for staff users.
+            modelBuilder.Entity<TrustedDevice>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.TokenHash).IsUnique().HasDatabaseName("IX_TrustedDevices_TokenHash");
+                entity.HasIndex(e => e.UserId).HasDatabaseName("IX_TrustedDevices_UserId");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // TwoFactorSession configuration — short-lived 2FA challenges in progress.
+            modelBuilder.Entity<TwoFactorSession>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.UserId).HasDatabaseName("IX_TwoFactorSessions_UserId");
+                entity.HasIndex(e => e.ExpiresAt).HasDatabaseName("IX_TwoFactorSessions_ExpiresAt");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
 
             // BubbleRewardsSetting configuration

@@ -1,6 +1,6 @@
 -- Run this ONCE on your PRODUCTION database (host) if you see:
 --   Unknown column 'u.LastEmailVerificationTokenHash' in 'field list'
--- (e.g. after deploying to dreamcleaningnearme.com)
+-- (e.g. after deploying to dreamcleaningnyc.com)
 
 -- 1. Add the column
 ALTER TABLE `Users` ADD COLUMN `LastEmailVerificationTokenHash` longtext CHARACTER SET utf8mb4 NULL;

@@ -167,7 +167,7 @@ builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<IGiftCardService, GiftCardService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuditService, AuditService>();
-// UnverifiedUserCleanupService removed — email verification now uses OTP, accounts are never auto-deleted
+// UnverifiedUserCleanupService removed â€” email verification now uses OTP, accounts are never auto-deleted
 builder.Services.AddScoped<ISpecialOfferService, SpecialOfferService>();
 builder.Services.AddScoped<ICleanerService, CleanerService>();
 builder.Services.AddScoped<ICleanerManagementService, CleanerManagementService>();
@@ -186,11 +186,17 @@ builder.Services.AddScoped<IBubbleRewardsSettingsService, BubbleRewardsSettingsS
 builder.Services.AddScoped<IReferralService, ReferralService>();
 builder.Services.AddScoped<IBubblePointsService, BubblePointsService>();
 
-// Admin per-order bonus (configurable rate × eligible orders assigned to the admin).
+// Admin per-order bonus (configurable rate Ã— eligible orders assigned to the admin).
 builder.Services.AddScoped<IAdminBonusService, AdminBonusService>();
 
-// Company expenses — flat + recurring entries that subtract from net company revenue.
+// Company expenses â€” flat + recurring entries that subtract from net company revenue.
 builder.Services.AddScoped<IExpenseService, ExpenseService>();
+
+// Per-month locked FX (GEL→USD) + bonus-rate snapshots for the statistics page.
+builder.Services.AddScoped<IFinancialRateService, FinancialRateService>();
+
+// Two-factor authentication for staff (Admin / SuperAdmin / Moderator).
+builder.Services.AddScoped<ITwoFactorService, TwoFactorService>();
 
 // Loyalty Discount (re-engagement). Scoped service handles the per-user state machine;
 // the background worker fires hourly and only dispatches inside the 11:00 America/New_York
@@ -199,7 +205,7 @@ builder.Services.AddScoped<ILoyaltyDiscountService, LoyaltyDiscountService>();
 builder.Services.AddHostedService<LoyaltyReengagementService>();
 
 // LiveChat services
-// TEMPORARILY DISABLED — Telegram bot integration is off. The Singleton registrations
+// TEMPORARILY DISABLED â€” Telegram bot integration is off. The Singleton registrations
 // stay so DI doesn't break for any controllers still constructed (LiveChatAdminController,
 // TelegramWebhookController), but the cleanup HostedService is unnecessary while disabled.
 builder.Services.AddSingleton<LiveChatSessionManager>();
@@ -226,10 +232,10 @@ builder.Services.AddCors(options =>
         {
             policy.WithOrigins(
                     builder.Configuration["Frontend:Url"],
-                    "https://dreamcleaningnearme.com",
-                    "http://dreamcleaningnearme.com",
-                    "https://www.dreamcleaningnearme.com",
-                    "http://www.dreamcleaningnearme.com"
+                    "https://dreamcleaningnyc.com",
+                    "http://dreamcleaningnyc.com",
+                    "https://www.dreamcleaningnyc.com",
+                    "http://www.dreamcleaningnyc.com"
                 )
                 .AllowAnyHeader()
                 .AllowAnyMethod()
@@ -360,8 +366,8 @@ app.MapControllers();
 // Map SignalR Hub
 app.MapHub<UserManagementHub>("/userManagementHub");
 
-// Map LiveChat SignalR Hub (anonymous access — no auth required)
-// TEMPORARILY DISABLED — Telegram bot integration is off. Hub un-mapped so visitors can't connect.
+// Map LiveChat SignalR Hub (anonymous access â€” no auth required)
+// TEMPORARILY DISABLED â€” Telegram bot integration is off. Hub un-mapped so visitors can't connect.
 // app.MapHub<LiveChatHub>("/liveChatHub");
 
 // Add logging to see if hub is registered
@@ -398,7 +404,7 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// Register Telegram webhook on startup — TEMPORARILY DISABLED.
+// Register Telegram webhook on startup â€” TEMPORARILY DISABLED.
 // Telegram bot integration is off entirely; do not call SetWebhook.
 // if (!app.Environment.IsDevelopment())
 // {
@@ -406,7 +412,7 @@ app.Use(async (context, next) =>
 //     var telegramBot = scope.ServiceProvider.GetRequiredService<TelegramBotService>();
 //     if (telegramBot.IsConfigured)
 //     {
-//         var webhookBase = builder.Configuration["TelegramBot:WebhookBaseUrl"] ?? "https://dreamcleaningnearme.com";
+//         var webhookBase = builder.Configuration["TelegramBot:WebhookBaseUrl"] ?? "https://dreamcleaningnyc.com";
 //         await telegramBot.SetWebhook($"{webhookBase}/api/telegram/webhook");
 //     }
 // }
