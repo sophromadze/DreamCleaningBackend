@@ -50,9 +50,9 @@ namespace DreamCleaningBackend.Services
 
         private static string TierEmoji(string tier) => tier switch
         {
-            "UltraBubble" => "ðŸ«§ðŸ«§ðŸ«§",
-            "SuperBubble" => "ðŸ«§ðŸ«§",
-            _ => "ðŸ«§"
+            "UltraBubble" => "🫧🫧🫧",
+            "SuperBubble" => "🫧🫧",
+            _ => "🫧"
         };
 
         public async Task AddPoints(int userId, int points, string type, string description, int? orderId = null)
@@ -120,7 +120,7 @@ namespace DreamCleaningBackend.Services
             // Recurring customer bonus.
             // Only awarded if the user had at least one PREVIOUSLY completed (Done) order on a
             // recurring plan (SubscriptionDays > 0) before this one. This ensures a user picking
-            // a recurring plan for the first time does NOT get the bonus on that first order â€”
+            // a recurring plan for the first time does NOT get the bonus on that first order —
             // the bonus only kicks in on subsequent recurring completions.
             var recurringEnabled = await _settings.GetSetting<bool>("RecurringBonusEnabled", true);
             if (recurringEnabled && order.Subscription != null && order.Subscription.SubscriptionDays > 0)
@@ -158,7 +158,7 @@ namespace DreamCleaningBackend.Services
             }
 
             // Add main points
-            var desc = $"Order #{orderId} â€“ {tier} tier ({multiplier}x)";
+            var desc = $"Order #{orderId} – {tier} tier ({multiplier}x)";
             if (bonusDescriptions.Any())
                 desc += " | " + string.Join(", ", bonusDescriptions);
 
@@ -222,7 +222,7 @@ namespace DreamCleaningBackend.Services
 
             var totalToReverse = entries.Sum(e => e.Points);
 
-            // Delete the history entries â€” this restores visible history and TotalEarned,
+            // Delete the history entries — this restores visible history and TotalEarned,
             // and allows ProcessOrderCompletion to re-run if order is marked Done again
             _context.BubblePointsHistories.RemoveRange(entries);
 

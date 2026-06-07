@@ -167,7 +167,7 @@ builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<IGiftCardService, GiftCardService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuditService, AuditService>();
-// UnverifiedUserCleanupService removed â€” email verification now uses OTP, accounts are never auto-deleted
+// UnverifiedUserCleanupService removed — email verification now uses OTP, accounts are never auto-deleted
 builder.Services.AddScoped<ISpecialOfferService, SpecialOfferService>();
 builder.Services.AddScoped<ICleanerService, CleanerService>();
 builder.Services.AddScoped<ICleanerManagementService, CleanerManagementService>();
@@ -186,10 +186,10 @@ builder.Services.AddScoped<IBubbleRewardsSettingsService, BubbleRewardsSettingsS
 builder.Services.AddScoped<IReferralService, ReferralService>();
 builder.Services.AddScoped<IBubblePointsService, BubblePointsService>();
 
-// Admin per-order bonus (configurable rate Ã— eligible orders assigned to the admin).
+// Admin per-order bonus (configurable rate × eligible orders assigned to the admin).
 builder.Services.AddScoped<IAdminBonusService, AdminBonusService>();
 
-// Company expenses â€” flat + recurring entries that subtract from net company revenue.
+// Company expenses — flat + recurring entries that subtract from net company revenue.
 builder.Services.AddScoped<IExpenseService, ExpenseService>();
 
 // Per-month locked FX (GEL→USD) + bonus-rate snapshots for the statistics page.
@@ -205,7 +205,7 @@ builder.Services.AddScoped<ILoyaltyDiscountService, LoyaltyDiscountService>();
 builder.Services.AddHostedService<LoyaltyReengagementService>();
 
 // LiveChat services
-// TEMPORARILY DISABLED â€” Telegram bot integration is off. The Singleton registrations
+// TEMPORARILY DISABLED — Telegram bot integration is off. The Singleton registrations
 // stay so DI doesn't break for any controllers still constructed (LiveChatAdminController,
 // TelegramWebhookController), but the cleanup HostedService is unnecessary while disabled.
 builder.Services.AddSingleton<LiveChatSessionManager>();
@@ -366,8 +366,8 @@ app.MapControllers();
 // Map SignalR Hub
 app.MapHub<UserManagementHub>("/userManagementHub");
 
-// Map LiveChat SignalR Hub (anonymous access â€” no auth required)
-// TEMPORARILY DISABLED â€” Telegram bot integration is off. Hub un-mapped so visitors can't connect.
+// Map LiveChat SignalR Hub (anonymous access — no auth required)
+// TEMPORARILY DISABLED — Telegram bot integration is off. Hub un-mapped so visitors can't connect.
 // app.MapHub<LiveChatHub>("/liveChatHub");
 
 // Add logging to see if hub is registered
@@ -404,7 +404,7 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// Register Telegram webhook on startup â€” TEMPORARILY DISABLED.
+// Register Telegram webhook on startup — TEMPORARILY DISABLED.
 // Telegram bot integration is off entirely; do not call SetWebhook.
 // if (!app.Environment.IsDevelopment())
 // {

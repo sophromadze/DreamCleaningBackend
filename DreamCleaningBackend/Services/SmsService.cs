@@ -83,7 +83,7 @@ namespace DreamCleaningBackend.Services
             {
                 // RingCentral rejected the destination number (CMN-414 / InvalidParameter on
                 // to.phoneNumber). This is a data problem on our side, not a transient failure
-                // and not worth alerting on â€” surface it as a typed exception so admin-triggered
+                // and not worth alerting on — surface it as a typed exception so admin-triggered
                 // sends can show a clean "this number is invalid, no SMS sent" message instead
                 // of leaking the raw RingCentral payload to the user.
                 _logger.LogWarning(rcEx, "RingCentral rejected phone number {To} as invalid; SMS not sent", toNumber);
@@ -193,22 +193,22 @@ namespace DreamCleaningBackend.Services
         public async Task SendReviewRequestSmsAsync(string phoneNumber, string customerName)
         {
             var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
-            var msg = $"Hi {firstName}! Thank you so much for choosing Dream Cleaning â€” we hope your space feels fresh and spotless! âœ¨ If you're happy with the service, we'd truly appreciate a quick review. It only takes a moment and means the world to our small team!\n\nhttps://g.page/r/CSmN7-QdmiyoEAI/review\n\nThank you and have a wonderful day! ðŸ˜Š";
+            var msg = $"Hi {firstName}! Thank you so much for choosing Dream Cleaning — we hope your space feels fresh and spotless! ✨ If you're happy with the service, we'd truly appreciate a quick review. It only takes a moment and means the world to our small team!\n\nhttps://g.page/r/CSmN7-QdmiyoEAI/review\n\nThank you and have a wonderful day! 😊";
             await SendSmsAsync(phoneNumber, msg);
         }
 
-        // Loyalty re-engagement SMS templates â€” copy is verbatim from spec section 6 so the
+        // Loyalty re-engagement SMS templates — copy is verbatim from spec section 6 so the
         // gratitude framing isn't accidentally paraphrased. Single-segment-targeted lengths.
         public async Task SendLoyaltyReminder30SmsAsync(string phone, string firstName)
         {
-            var msg = $"Hi {firstName}! It's been a while since your last clean â€” your home deserves another sparkle. Book today: dreamcleaningnyc.com Reply STOP to opt out.";
+            var msg = $"Hi {firstName}! It's been a while since your last clean — your home deserves another sparkle. Book today: dreamcleaningnyc.com Reply STOP to opt out.";
             await SendSmsAsync(phone, msg);
         }
 
         public async Task SendLoyaltyReminder60SmsAsync(string phone, string firstName, decimal percentage)
         {
             var pct = percentage.ToString("0.##");
-            var msg = $"Hi {firstName}! As a thank-you from Dream Cleaning, we've added {pct}% off to your account â€” applies automatically at checkout. dreamcleaningnyc.com STOP to opt out.";
+            var msg = $"Hi {firstName}! As a thank-you from Dream Cleaning, we've added {pct}% off to your account — applies automatically at checkout. dreamcleaningnyc.com STOP to opt out.";
             await SendSmsAsync(phone, msg);
         }
 
