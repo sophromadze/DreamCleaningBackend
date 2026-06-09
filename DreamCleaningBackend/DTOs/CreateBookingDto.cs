@@ -21,7 +21,11 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public string ServiceTime { get; set; }
 
+        // Length-capped to match the Order.EntryMethod column (500). [ApiController] auto-validates
+        // ModelState, so an over-long "Other" entry method is rejected with a 400 by prepare-payment
+        // BEFORE any Stripe charge — preventing the "charged but order failed" double-charge.
         [Required]
+        [StringLength(500)]
         public string EntryMethod { get; set; }
 
         [StringLength(2000)]

@@ -126,6 +126,10 @@ namespace DreamCleaningBackend.Controllers
                     TotalEarned = summary.TotalEarned,
                     TotalRedeemed = summary.TotalRedeemed,
                     PointsSystemEnabled = summary.PointsSystemEnabled,
+                    // Pass through the rewards guide (PointsPerDollar, multipliers, etc.) so the
+                    // admin "book for user" flow can show the estimated points-earn preview.
+                    // Without this the inherited Guide stays all-zeros and the preview is hidden.
+                    Guide = summary.Guide,
                     PointsHistory = history.Items,
                     Referrals = referrals,
                     ReferredByName = user.ReferredBy != null

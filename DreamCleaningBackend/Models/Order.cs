@@ -111,8 +111,10 @@ namespace DreamCleaningBackend.Models
         public int? SubscriptionId { get; set; }
         public virtual Subscription? Subscription { get; set; }
 
-        // Entry method
-        [StringLength(100)]
+        // Entry method. Expanded from 100 to 500 so longer "Other" instructions fit — a value
+        // exceeding the column previously failed the INSERT in confirm-payment AFTER the card was
+        // charged, leaving customers charged with no order (and double-charged on retry).
+        [StringLength(500)]
         public string? EntryMethod { get; set; }
 
         // Special instructions

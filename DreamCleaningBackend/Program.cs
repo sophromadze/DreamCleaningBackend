@@ -181,6 +181,23 @@ builder.Services.AddHostedService<AuditLogCleanupService>();
 builder.Services.AddHostedService<ScheduledMailService>();
 builder.Services.AddHostedService<ScheduledSmsService>();
 
+// Google Business Profile reviews — outbound HTTP must force IPv4 (VPS has IPv6 disabled; see CLAUDE.md).
+builder.Services.AddHttpClient(GoogleBusinessProfileService.HttpClientName)
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        ConnectCallback = async (context, cancellationToken) =>
+        {
+            var socket = new System.Net.Sockets.Socket(
+                System.Net.Sockets.AddressFamily.InterNetwork, // Force IPv4
+                System.Net.Sockets.SocketType.Stream,
+                System.Net.Sockets.ProtocolType.Tcp);
+            await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+            return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+        }
+    });
+builder.Services.AddScoped<IGoogleBusinessProfileService, GoogleBusinessProfileService>();
+builder.Services.AddHostedService<GoogleReviewSyncService>();
+
 // Bubble Rewards Services
 builder.Services.AddScoped<IBubbleRewardsSettingsService, BubbleRewardsSettingsService>();
 builder.Services.AddScoped<IReferralService, ReferralService>();

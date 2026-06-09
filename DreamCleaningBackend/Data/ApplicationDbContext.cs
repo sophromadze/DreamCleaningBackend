@@ -34,6 +34,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<OrderUpdateHistory> OrderUpdateHistories { get; set; }
         public DbSet<MaintenanceMode> MaintenanceModes { get; set; }
         public DbSet<WebhookEvent> WebhookEvents { get; set; }
+        public DbSet<GoogleReview> GoogleReviews { get; set; }
         public DbSet<ScheduledMail> ScheduledMails { get; set; }
         public DbSet<SentMailLog> SentMailLogs { get; set; }
         public DbSet<ScheduledSms> ScheduledSms { get; set; }

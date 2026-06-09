@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace DreamCleaningBackend.DTOs
 {
@@ -117,6 +118,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal TotalDuration { get; set; }
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
+        // Capped to match the Order.EntryMethod column (500) so an edit can't fail the UPDATE.
+        [StringLength(500)]
         public string EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
         public string? FloorTypes { get; set; }

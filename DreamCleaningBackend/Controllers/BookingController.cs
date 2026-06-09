@@ -2176,6 +2176,13 @@ namespace DreamCleaningBackend.Controllers
         [AllowAnonymous]
         public async Task<ActionResult> ConfirmPayment(int orderId, [FromBody] ConfirmPaymentDto dto, [FromQuery] string paymentIntentId = null)
         {
+            // Money-safety tracking: in the new-booking (sessionId) flow the card is charged in the
+            // browser BEFORE the order is created here. If order creation then throws, the catch
+            // block below refunds this payment intent so the customer is never left paying for an
+            // order that doesn't exist. Only set on the sessionId path; the existing-order path
+            // already has a persisted order and must not be refunded on a post-charge hiccup.
+            string chargedNewBookingPaymentIntentId = null;
+            bool newBookingOrderPersisted = false;
             try
             {
                 var userId = GetUserId();
@@ -2239,8 +2246,13 @@ namespace DreamCleaningBackend.Controllers
                         return BadRequest(new { message = "Payment not completed" });
                     }
 
+                    // Card is already charged at this point (verified succeeded above). Mark it so the
+                    // catch block can refund if order creation throws before the order is persisted.
+                    chargedNewBookingPaymentIntentId = effectivePaymentIntentId;
+
                     // Now create the order using the booking data (reuse logic from CreateBooking)
                     order = await CreateOrderFromBookingData(bookingDataDto, userId);
+                    newBookingOrderPersisted = true; // order row committed — refund net no longer applies
                     orderId = order.Id; // Update orderId for later use
                 }
                 else
@@ -2698,6 +2710,29 @@ namespace DreamCleaningBackend.Controllers
             catch (Exception ex)
             {
                 Console.WriteLine($"Error in ConfirmPayment: {ex.Message}");
+
+                // Money-safety net: the card was charged for a new booking but the order failed to
+                // persist. Refund automatically so the customer isn't charged for a non-existent
+                // order, and invite them to reach out so we can help complete the booking.
+                if (chargedNewBookingPaymentIntentId != null && !newBookingOrderPersisted)
+                {
+                    try
+                    {
+                        await _stripeService.CreateRefundAsync(chargedNewBookingPaymentIntentId);
+                        _logger.LogError(ex, "ConfirmPayment: order creation failed after charge; refunded payment intent {PaymentIntentId}", chargedNewBookingPaymentIntentId);
+                        // "code" is the stable contract the frontend keys severity off — the human
+                        // message can be reworded without breaking detection.
+                        return BadRequest(new { code = "booking_refunded", message = "We ran into a technical issue on our end while finalizing your booking, so it wasn't completed - but don't worry, any charge has been automatically refunded. Please reach out to us at hello@dreamcleaningnyc.com or call/text (929) 930-1525, and we'll be happy to help you complete your booking right away." });
+                    }
+                    catch (Exception refundEx)
+                    {
+                        _logger.LogError(refundEx, "CRITICAL: ConfirmPayment refund FAILED for payment intent {PaymentIntentId} after order creation error", chargedNewBookingPaymentIntentId);
+                        // "code" is the stable contract the frontend keys severity off — the human
+                        // message can be reworded without breaking detection.
+                        return BadRequest(new { code = "booking_refund_failed", message = "We couldn't complete your booking and the automatic refund did not go through. Please do NOT retry — contact support and we'll resolve the charge right away." });
+                    }
+                }
+
                 return BadRequest(new { message = "Failed to confirm payment: " + ex.Message });
             }
         }

@@ -1,4 +1,6 @@
+using DreamCleaningBackend.Data;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using System.Text.Json;
 
@@ -16,17 +18,61 @@ namespace DreamCleaningBackend.Controllers
         private readonly IConfiguration _configuration;
         private readonly ILogger<GoogleReviewsController> _logger;
         private readonly IMemoryCache _cache;
+        private readonly ApplicationDbContext _context;
 
         public GoogleReviewsController(
             IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
             ILogger<GoogleReviewsController> logger,
-            IMemoryCache cache)
+            IMemoryCache cache,
+            ApplicationDbContext context)
         {
             _httpClient = httpClientFactory.CreateClient();
             _configuration = configuration;
             _logger = logger;
             _cache = cache;
+            _context = context;
+        }
+
+        /// <summary>
+        /// Returns ALL reviews persisted from the Google Business Profile API (synced by
+        /// GoogleReviewSyncService), in the same legacy shape the frontend already consumes.
+        /// Hidden reviews are excluded. Returns an empty review list when none are stored yet,
+        /// so the frontend can fall back to the 5-review Places endpoint.
+        /// </summary>
+        [HttpGet("all")]
+        public async Task<IActionResult> GetAllReviews()
+        {
+            var reviews = await _context.GoogleReviews
+                .Where(r => !r.IsHidden)
+                .OrderByDescending(r => r.CreateTime)
+                .ToListAsync();
+
+            var mapped = reviews.Select(r => new
+            {
+                author_name = r.AuthorName,
+                profile_photo_url = r.ProfilePhotoUrl ?? "",
+                rating = r.Rating,
+                text = r.Text ?? "",
+                time = new DateTimeOffset(DateTime.SpecifyKind(r.CreateTime, DateTimeKind.Utc)).ToUnixTimeSeconds()
+            }).ToList();
+
+            var overallRating = reviews.Count > 0
+                ? Math.Round(reviews.Average(r => r.Rating), 1)
+                : 0;
+
+            var result = new
+            {
+                result = new
+                {
+                    name = "Dream Cleaning",
+                    rating = overallRating,
+                    user_ratings_total = reviews.Count,
+                    reviews = mapped
+                }
+            };
+
+            return Ok(result);
         }
 
         [HttpGet("{placeId}")]
