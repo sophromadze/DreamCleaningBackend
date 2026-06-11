@@ -13,6 +13,7 @@ namespace DreamCleaningBackend.DTOs
         public bool IsExperienced { get; set; }
         public string? Phone { get; set; }
         public string? Email { get; set; }
+        public string? Address { get; set; }
         public string? Location { get; set; }
         public string? Availability { get; set; }
         public bool AlreadyWorkedWithUs { get; set; }
@@ -63,6 +64,9 @@ namespace DreamCleaningBackend.DTOs
         public string? Email { get; set; }
 
         [StringLength(300)]
+        public string? Address { get; set; }
+
+        [StringLength(50)]
         public string? Location { get; set; }
 
         [StringLength(1000)]

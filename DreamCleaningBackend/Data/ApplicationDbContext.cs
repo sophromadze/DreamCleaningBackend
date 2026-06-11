@@ -50,6 +50,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<OrderAdminAssignmentHistory> OrderAdminAssignmentHistories { get; set; }
         public DbSet<AdminBonusSetting> AdminBonusSettings { get; set; }
         public DbSet<Expense> Expenses { get; set; }
+        public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<MonthlyFinancialSnapshot> MonthlyFinancialSnapshots { get; set; }
         public DbSet<TrustedDevice> TrustedDevices { get; set; }
         public DbSet<TwoFactorSession> TwoFactorSessions { get; set; }
@@ -1003,13 +1004,44 @@ namespace DreamCleaningBackend.Data
                 }
             );
 
+            // ExpenseCategory configuration — user-manageable category list (was a fixed enum).
+            // PK is ValueGeneratedNever: system rows are seeded with hand-picked Ids that match
+            // the old enum values, and the service assigns max(Id)+1 for new custom rows.
+            modelBuilder.Entity<ExpenseCategory>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Id).ValueGeneratedNever();
+                entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
+                entity.HasIndex(e => e.Name).IsUnique().HasDatabaseName("IX_ExpenseCategories_Name");
+
+                // Seed the original six enum categories at their old values (so Expenses.Category
+                // keeps resolving) plus the new "Sales" category. DisplayOrder keeps "Other" last.
+                entity.HasData(
+                    new ExpenseCategory { Id = 0, Name = "Subscriptions",  DisplayOrder = 0, IsSystem = true, CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) },
+                    new ExpenseCategory { Id = 1, Name = "Supplies",       DisplayOrder = 1, IsSystem = true, CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) },
+                    new ExpenseCategory { Id = 2, Name = "Infrastructure", DisplayOrder = 2, IsSystem = true, CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) },
+                    new ExpenseCategory { Id = 3, Name = "Marketing",      DisplayOrder = 3, IsSystem = true, CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) },
+                    new ExpenseCategory { Id = 4, Name = "Salaries",       DisplayOrder = 4, IsSystem = true, CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) },
+                    new ExpenseCategory { Id = 6, Name = "Sales",          DisplayOrder = 5, IsSystem = true, CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) },
+                    new ExpenseCategory { Id = 5, Name = "Other",          DisplayOrder = 6, IsSystem = true, CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc) }
+                );
+            });
+
             // Expense configuration — company expenses subtracted from net company revenue.
             modelBuilder.Entity<Expense>(entity =>
             {
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.StartDate).HasDatabaseName("IX_Expenses_StartDate");
-                entity.HasIndex(e => e.Category).HasDatabaseName("IX_Expenses_Category");
                 entity.HasIndex(e => e.IsRecurring).HasDatabaseName("IX_Expenses_IsRecurring");
+
+                // CategoryId reuses the existing "Category" int column (no rename, no data move).
+                entity.Property(e => e.CategoryId).HasColumnName("Category");
+                entity.HasIndex(e => e.CategoryId).HasDatabaseName("IX_Expenses_Category");
+                entity.HasOne(e => e.Category)
+                    .WithMany(c => c.Expenses)
+                    .HasForeignKey(e => e.CategoryId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
                 entity.HasOne(e => e.CreatedByUser)
                     .WithMany()
                     .HasForeignKey(e => e.CreatedByUserId)

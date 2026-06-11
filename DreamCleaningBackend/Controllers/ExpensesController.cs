@@ -83,6 +83,71 @@ namespace DreamCleaningBackend.Controllers
             return Ok(await _expenseService.GetBreakdownAsync(f, t));
         }
 
+        // Grouped Category → Name → entries view for one calendar month (defaults to current).
+        [HttpGet("grouped")]
+        public async Task<ActionResult<GroupedExpensesDto>> GetGrouped(
+            [FromQuery] int? year,
+            [FromQuery] int? month)
+        {
+            var now = DateTime.UtcNow;
+            try
+            {
+                return Ok(await _expenseService.GetGroupedAsync(year ?? now.Year, month ?? now.Month));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // ── Category management ────────────────────────────────────────────────
+
+        [HttpGet("categories")]
+        public async Task<ActionResult<List<ExpenseCategoryDto>>> GetCategories()
+        {
+            return Ok(await _expenseService.GetCategoriesAsync());
+        }
+
+        [HttpPost("categories")]
+        public async Task<ActionResult<ExpenseCategoryDto>> CreateCategory([FromBody] SaveExpenseCategoryDto dto)
+        {
+            try
+            {
+                return Ok(await _expenseService.CreateCategoryAsync(dto));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPut("categories/{id}")]
+        public async Task<ActionResult<ExpenseCategoryDto>> UpdateCategory(int id, [FromBody] SaveExpenseCategoryDto dto)
+        {
+            try
+            {
+                return Ok(await _expenseService.UpdateCategoryAsync(id, dto));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpDelete("categories/{id}")]
+        public async Task<ActionResult> DeleteCategory(int id)
+        {
+            try
+            {
+                var ok = await _expenseService.DeleteCategoryAsync(id);
+                return ok ? NoContent() : NotFound();
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         private static (DateTime From, DateTime To) ResolveRange(DateTime? from, DateTime? to)
         {
             // Match statistics convention: `to` is treated as inclusive (so we add one day).

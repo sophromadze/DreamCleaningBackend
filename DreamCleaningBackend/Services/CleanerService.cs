@@ -67,7 +67,7 @@ namespace DreamCleaningBackend.Services
             return false;
         }
 
-        public async Task<List<AvailableCleanerDto>> GetAvailableCleanersAsync(DateTime serviceDate, string serviceTime)
+        public async Task<List<AvailableCleanerDto>> GetAvailableCleanersAsync(DateTime serviceDate, string serviceTime, string? orderCity = null)
         {
             var cleaners = await _context.Cleaners
                 .Where(c => c.IsActive)
@@ -93,11 +93,37 @@ namespace DreamCleaningBackend.Services
                     FirstName = cleaner.FirstName,
                     LastName = cleaner.LastName,
                     Email = cleaner.Email ?? string.Empty,
-                    IsAvailable = isAvailable
+                    IsAvailable = isAvailable,
+                    Location = cleaner.Location,
+                    Ranking = cleaner.Ranking,
+                    Experience = cleaner.Experience,
+                    Availability = cleaner.Availability
                 });
             }
 
-            return availableCleaners.OrderBy(c => c.LastName).ToList();
+            // Suggest the best fit first: free cleaners on top, then those whose borough
+            // matches the order's city, then by ranking (Top first) and experience.
+            static string Normalize(string? value) => (value ?? string.Empty).Trim().ToLowerInvariant();
+            var city = Normalize(orderCity);
+
+            int LocationRank(AvailableCleanerDto c) =>
+                !string.IsNullOrEmpty(city) && Normalize(c.Location) == city ? 0 : 1;
+
+            static int ExperienceRank(string? experience)
+            {
+                var e = Normalize(experience);
+                if (e == "good") return 0;
+                if (e == "normal") return 1;
+                return 2;
+            }
+
+            return availableCleaners
+                .OrderByDescending(c => c.IsAvailable)
+                .ThenBy(c => LocationRank(c))
+                .ThenBy(c => (int)c.Ranking)
+                .ThenBy(c => ExperienceRank(c.Experience))
+                .ThenBy(c => c.LastName)
+                .ToList();
         }
 
         public async Task<bool> AssignCleanersToOrderAsync(AssignCleanersDto dto, int assignedBy)

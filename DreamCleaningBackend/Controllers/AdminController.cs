@@ -4521,7 +4521,7 @@ namespace DreamCleaningBackend.Controllers
             if (order == null)
                 return NotFound();
 
-            var availableCleaners = await _cleanerService.GetAvailableCleanersAsync(order.ServiceDate, order.ServiceTime.ToString());
+            var availableCleaners = await _cleanerService.GetAvailableCleanersAsync(order.ServiceDate, order.ServiceTime.ToString(), order.City);
 
             return Ok(availableCleaners);
         }
@@ -4595,6 +4595,35 @@ namespace DreamCleaningBackend.Controllers
                 .ToListAsync();
 
             return Ok(assignedCleaners);
+        }
+
+        /// <summary>
+        /// Bulk variant of GetAssignedCleanersWithIds: returns assigned cleaners for ALL orders in a
+        /// single query, keyed by orderId. The admin orders page used to call the per-order endpoint
+        /// once per row (N+1), which took several seconds with many orders; this collapses it to one round-trip.
+        /// </summary>
+        [HttpGet("orders/assigned-cleaners-with-ids/bulk")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> GetAssignedCleanersWithIdsBulk()
+        {
+            var rows = await _context.OrderCleaners
+                .Include(oc => oc.Cleaner)
+                .Select(oc => new
+                {
+                    orderId = oc.OrderId,
+                    id = oc.CleanerId,
+                    name = $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}",
+                    assignmentNotificationSentAt = oc.AssignmentNotificationSentAt
+                })
+                .ToListAsync();
+
+            var grouped = rows
+                .GroupBy(r => r.orderId)
+                .ToDictionary(
+                    g => g.Key.ToString(),
+                    g => g.Select(r => new { r.id, r.name, r.assignmentNotificationSentAt }).ToList());
+
+            return Ok(grouped);
         }
 
         [HttpDelete("orders/{orderId}/cleaners/{cleanerId}")]
@@ -5340,6 +5369,35 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 return Ok(activeReminders);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Get the set of order reminders ("start"/"end") that have already been acknowledged
+        /// by any admin. This is the authoritative source the client uses so an acknowledged
+        /// reminder never re-appears for any admin, even if the realtime SignalR event was missed.
+        /// </summary>
+        [HttpGet("orders/acknowledged-reminders")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> GetAcknowledgedOrderReminders()
+        {
+            try
+            {
+                // Acknowledgments are made near the service time; the last 2 days covers every
+                // currently-relevant reminder window while keeping the payload tiny.
+                var cutoffUtc = DateTime.UtcNow.AddDays(-2);
+                var acknowledged = await _context.OrderReminderAcknowledgments
+                    .Where(a => a.AcknowledgedAt >= cutoffUtc)
+                    .Where(a => a.Type == "start" || a.Type == "end")
+                    .Select(a => new { orderId = a.OrderId, type = a.Type })
+                    .Distinct()
+                    .ToListAsync();
+
+                return Ok(acknowledged);
             }
             catch (Exception ex)
             {

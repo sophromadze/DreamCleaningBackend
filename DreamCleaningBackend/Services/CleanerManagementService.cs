@@ -38,6 +38,7 @@ namespace DreamCleaningBackend.Services
                     c.LastName.Contains(term) ||
                     (c.Phone != null && c.Phone.Contains(term)) ||
                     (c.Email != null && c.Email.Contains(term)) ||
+                    (c.Address != null && c.Address.Contains(term)) ||
                     (c.Location != null && c.Location.Contains(term)));
             }
 
@@ -55,6 +56,7 @@ namespace DreamCleaningBackend.Services
                     IsExperienced = c.IsExperienced,
                     Phone = c.Phone,
                     Email = c.Email,
+                    Address = c.Address,
                     Location = c.Location,
                     Availability = c.Availability,
                     AlreadyWorkedWithUs = c.AlreadyWorkedWithUs,
@@ -111,6 +113,7 @@ namespace DreamCleaningBackend.Services
                 IsExperienced = dto.IsExperienced,
                 Phone = dto.Phone,
                 Email = dto.Email,
+                Address = dto.Address,
                 Location = dto.Location,
                 Availability = dto.Availability,
                 AlreadyWorkedWithUs = dto.AlreadyWorkedWithUs,
@@ -145,6 +148,7 @@ namespace DreamCleaningBackend.Services
             cleaner.IsExperienced = dto.IsExperienced;
             cleaner.Phone = dto.Phone;
             cleaner.Email = dto.Email;
+            cleaner.Address = dto.Address;
             cleaner.Location = dto.Location;
             cleaner.Availability = dto.Availability;
             cleaner.AlreadyWorkedWithUs = dto.AlreadyWorkedWithUs;
@@ -432,6 +436,7 @@ namespace DreamCleaningBackend.Services
                 IsExperienced = cleaner.IsExperienced,
                 Phone = cleaner.Phone,
                 Email = cleaner.Email,
+                Address = cleaner.Address,
                 Location = cleaner.Location,
                 Availability = cleaner.Availability,
                 AlreadyWorkedWithUs = cleaner.AlreadyWorkedWithUs,

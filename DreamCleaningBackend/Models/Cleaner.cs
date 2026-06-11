@@ -36,7 +36,15 @@ namespace DreamCleaningBackend.Models
         [StringLength(100)]
         public string? Email { get; set; }
 
+        // Free-text street address. Reuses the original "Location" column so existing
+        // free-text location data is preserved as the address with no data migration.
         [StringLength(300)]
+        [Column("Location")]
+        public string? Address { get; set; }
+
+        // Borough selection (Brooklyn / Manhattan / Queens). Stored in a new "Borough" column.
+        [StringLength(50)]
+        [Column("Borough")]
         public string? Location { get; set; }
 
         [StringLength(1000)]

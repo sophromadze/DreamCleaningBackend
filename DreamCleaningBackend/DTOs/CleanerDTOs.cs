@@ -1,3 +1,5 @@
+using DreamCleaningBackend.Models;
+
 namespace DreamCleaningBackend.DTOs
 {
     public class CleanerCalendarDto
@@ -21,6 +23,10 @@ namespace DreamCleaningBackend.DTOs
         public string LastName { get; set; }
         public string Email { get; set; }
         public bool IsAvailable { get; set; }
+        public string? Location { get; set; }
+        public CleanerRanking Ranking { get; set; }
+        public string? Experience { get; set; }
+        public string? Availability { get; set; }
     }
 
     public class AssignCleanersDto
