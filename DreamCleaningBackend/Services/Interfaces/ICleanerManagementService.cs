@@ -7,7 +7,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<List<CleanerListItemDto>> GetAllAsync(bool includeInactive = false, string? search = null);
         Task<CleanerDetailDto?> GetByIdAsync(int id);
         Task<CleanerDetailDto> CreateAsync(CreateCleanerDto dto, int adminId);
-        Task<CleanerDetailDto?> UpdateAsync(int id, UpdateCleanerDto dto);
+        Task<CleanerDetailDto?> UpdateAsync(int id, UpdateCleanerDto dto, int adminId);
         Task<bool> DeleteAsync(int id);
 
         Task<CleanerNoteDto> AddNoteAsync(int cleanerId, CreateCleanerNoteDto dto, int adminId, string adminDisplayName);

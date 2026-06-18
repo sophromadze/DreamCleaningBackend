@@ -19,14 +19,17 @@ namespace DreamCleaningBackend.Controllers
         private readonly ISpecialOfferService _specialOfferService;
         private readonly ISubscriptionService _subscriptionService;
         private readonly ApplicationDbContext _context;
+        private readonly ILogger<ProfileController> _logger;
 
         public ProfileController(
             IProfileService profileService,
             IAuditService auditService,
             ISpecialOfferService specialOfferService,
             ISubscriptionService subscriptionService,
-            ApplicationDbContext context)
+            ApplicationDbContext context,
+            ILogger<ProfileController> logger)
         {
+            _logger = logger;
             _profileService = profileService;
             _auditService = auditService;
             _specialOfferService = specialOfferService;
@@ -82,7 +85,7 @@ namespace DreamCleaningBackend.Controllers
                     catch (Exception ex)
                     {
                         // Don't fail the operation if audit fails
-                        Console.WriteLine($"Audit logging failed: {ex.Message}");
+                        _logger.LogError(ex, "Audit logging failed");
                     }
                 }
 
@@ -130,7 +133,7 @@ namespace DreamCleaningBackend.Controllers
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Audit logging failed: {ex.Message}");
+                    _logger.LogError(ex, "Audit logging failed");
                 }
 
                 return Ok(apartment);
@@ -170,7 +173,7 @@ namespace DreamCleaningBackend.Controllers
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Audit logging failed: {ex.Message}");
+                        _logger.LogError(ex, "Audit logging failed");
                     }
                 }
 
@@ -205,7 +208,7 @@ namespace DreamCleaningBackend.Controllers
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Audit logging failed: {ex.Message}");
+                    _logger.LogError(ex, "Audit logging failed");
                 }
 
                 return Ok(new { message = "Apartment deleted successfully" });

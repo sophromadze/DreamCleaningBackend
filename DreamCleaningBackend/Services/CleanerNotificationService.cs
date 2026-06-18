@@ -1,4 +1,5 @@
 ﻿using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -68,9 +69,12 @@ namespace DreamCleaningBackend.Services
             var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var emailService = scope.ServiceProvider.GetRequiredService<IEmailService>();
 
-            var now = DateTime.UtcNow;
-            var twoDaysFromNow = now.AddDays(2);
-            var fourHoursFromNow = now.AddHours(4);
+            // ServiceDate/ServiceTime are NY wall-clock values, so "today" and the
+            // hours-until-cleaning math must run on NY time, not UTC (see
+            // CustomerNotificationService for the matching customer-side fix).
+            var now = NyTimeHelper.NowNy;
+            var todayNy = now.Date;
+            var twoDaysFromNow = todayNy.AddDays(2);
 
             // Get orders for 2-day reminders
             var twoDayReminders = await context.OrderCleaners
@@ -78,7 +82,7 @@ namespace DreamCleaningBackend.Services
                     .ThenInclude(o => o.ServiceType)
                 .Include(oc => oc.Cleaner)
                 .Where(oc => oc.AssignmentNotificationSentAt != null &&
-                           oc.Order.ServiceDate.Date == twoDaysFromNow.Date &&
+                           oc.Order.ServiceDate.Date == twoDaysFromNow &&
                            oc.Order.Status == "Active" &&
                            !context.NotificationLogs.Any(nl =>
                                nl.OrderId == oc.OrderId &&
@@ -92,7 +96,7 @@ namespace DreamCleaningBackend.Services
                     .ThenInclude(o => o.ServiceType)
                 .Include(oc => oc.Cleaner)
                 .Where(oc => oc.AssignmentNotificationSentAt != null &&
-                           oc.Order.ServiceDate.Date == now.Date &&
+                           oc.Order.ServiceDate.Date == todayNy &&
                            oc.Order.Status == "Active" &&
                            !context.NotificationLogs.Any(nl =>
                                nl.OrderId == oc.OrderId &&
@@ -141,8 +145,8 @@ namespace DreamCleaningBackend.Services
                 try
                 {
                     var orderTime = orderCleaner.Order.ServiceTime;
-                    var currentTime = TimeSpan.FromHours(now.Hour) + TimeSpan.FromMinutes(now.Minute);
-                    var timeDifference = orderTime - currentTime;
+                    // now is NY wall-clock, matching how ServiceTime is stored.
+                    var timeDifference = orderTime - now.TimeOfDay;
 
                     if (timeDifference.TotalHours <= 4 && timeDifference.TotalHours > 0)
                     {

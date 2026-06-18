@@ -4,9 +4,9 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace DreamCleaningBackend.Models
 {
     /// <summary>
-    /// Multi-row admin notes attached to a user. Type discriminates between general notes
-    /// and follow-up notes. Stored in one table per the product spec, exposed as two
-    /// separate streams in the UI.
+    /// Multi-row admin notes attached to a user. Only general notes exist today —
+    /// the Type column stays as a string for forward-compat with new types.
+    /// (Follow-up notes and the NextOffer field were removed 2026-06.)
     /// </summary>
     public class UserNote
     {
@@ -19,7 +19,7 @@ namespace DreamCleaningBackend.Models
         [ForeignKey("UserId")]
         public virtual User User { get; set; } = null!;
 
-        /// <summary>"General" or "FollowUp". Stored as string for forward-compat with new types.</summary>
+        /// <summary>Always "General" today. Stored as string for forward-compat with new types.</summary>
         [Required]
         [StringLength(20)]
         public string Type { get; set; } = "General";
@@ -27,10 +27,6 @@ namespace DreamCleaningBackend.Models
         [Required]
         [StringLength(4000)]
         public string Content { get; set; } = string.Empty;
-
-        /// <summary>Optional individual offer/suggestion for the user's next service. Only used when Type == "FollowUp".</summary>
-        [StringLength(500)]
-        public string? NextOffer { get; set; }
 
         public int? CreatedByAdminId { get; set; }
 

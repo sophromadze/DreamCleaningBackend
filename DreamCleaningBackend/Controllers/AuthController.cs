@@ -28,6 +28,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IMemoryCache _cache;
         private readonly ITwoFactorService _twoFactorService;
         private readonly ApplicationDbContext _dbContext;
+        private readonly ILogger<AuthController> _logger;
 
         public AuthController(
             IAuthService authService,
@@ -35,8 +36,10 @@ namespace DreamCleaningBackend.Controllers
             IConfiguration configuration,
             IMemoryCache cache,
             ITwoFactorService twoFactorService,
-            ApplicationDbContext dbContext)
+            ApplicationDbContext dbContext,
+            ILogger<AuthController> logger)
         {
+            _logger = logger;
             _authService = authService;
             _accountMergeService = accountMergeService;
             _configuration = configuration;
@@ -408,7 +411,7 @@ namespace DreamCleaningBackend.Controllers
             catch (Exception ex)
             {
                 var frontendUrl = _configuration["Frontend:Url"] ?? "http://localhost:4200";
-                Console.WriteLine($"Apple callback error: {ex.Message}");
+                _logger.LogError(ex, "Apple callback error");
                 return Redirect($"{frontendUrl}/auth/apple-callback?error=server_error&error_description={Uri.EscapeDataString(ex.Message)}");
             }
         }
@@ -439,13 +442,7 @@ namespace DreamCleaningBackend.Controllers
             }
             catch (Exception ex)
             {
-                // Log the full exception for debugging
-                Console.WriteLine($"Apple login error: {ex.Message}");
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
-                if (ex.InnerException != null)
-                {
-                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
-                }
+                _logger.LogError(ex, "Apple login error");
                 return BadRequest(new { message = ex.Message });
             }
         }

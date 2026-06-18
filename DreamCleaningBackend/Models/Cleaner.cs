@@ -47,8 +47,11 @@ namespace DreamCleaningBackend.Models
         [Column("Borough")]
         public string? Location { get; set; }
 
-        [StringLength(1000)]
-        public string? Availability { get; set; }
+        // Recurring weekly days the cleaner is unavailable, stored as a CSV of
+        // System.DayOfWeek integers (0=Sunday … 6=Saturday), e.g. "1,2" = Mon & Tue.
+        // No hours — a marked weekday means the cleaner is busy that whole day.
+        [StringLength(50)]
+        public string? BusyDaysOfWeek { get; set; }
 
         public bool AlreadyWorkedWithUs { get; set; } = false;
 
@@ -90,5 +93,8 @@ namespace DreamCleaningBackend.Models
         public int? MigratedFromUserId { get; set; }
 
         public virtual ICollection<CleanerNote> Notes { get; set; } = new List<CleanerNote>();
+
+        // Date ranges (inclusive) the cleaner is on vacation / away.
+        public virtual ICollection<CleanerVacation> Vacations { get; set; } = new List<CleanerVacation>();
     }
 }

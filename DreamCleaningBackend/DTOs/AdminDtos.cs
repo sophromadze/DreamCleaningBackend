@@ -369,10 +369,6 @@ namespace DreamCleaningBackend.DTOs
         public int? LastBedrooms { get; set; }
         /// <summary>Bathrooms quantity from the user's most recent order, if recorded.</summary>
         public int? LastBathrooms { get; set; }
-        /// <summary>Most recent follow-up note content for quick scanning in the table.</summary>
-        public string? LastFollowUpNote { get; set; }
-        /// <summary>Most recent follow-up note's "next offer" suggestion for the table.</summary>
-        public string? NextOfferHint { get; set; }
         /// <summary>Total number of non-cancelled orders this user has placed.</summary>
         public int TotalOrdersCount { get; set; }
     }
@@ -385,7 +381,6 @@ namespace DreamCleaningBackend.DTOs
         public int UserId { get; set; }
         public string Type { get; set; } = "General";
         public string Content { get; set; } = string.Empty;
-        public string? NextOffer { get; set; }
         public int? CreatedByAdminId { get; set; }
         public string? CreatedByAdminName { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -401,9 +396,6 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         [StringLength(4000)]
         public string Content { get; set; } = string.Empty;
-
-        [StringLength(500)]
-        public string? NextOffer { get; set; }
     }
 
     public class UpdateUserNoteDto
@@ -411,9 +403,6 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         [StringLength(4000)]
         public string Content { get; set; } = string.Empty;
-
-        [StringLength(500)]
-        public string? NextOffer { get; set; }
     }
 
     // ── Cleaning photos ──

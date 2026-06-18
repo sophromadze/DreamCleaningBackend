@@ -59,7 +59,8 @@ namespace DreamCleaningBackend.Controllers
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
 
-            var result = await _service.UpdateAsync(id, dto);
+            var adminId = GetUserId();
+            var result = await _service.UpdateAsync(id, dto, adminId);
             if (result == null)
                 return NotFound();
             return Ok(result);

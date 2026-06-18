@@ -60,6 +60,7 @@ namespace DreamCleaningBackend.Data
         // Cleaners (standalone entity, separate from Users)
         public DbSet<Cleaner> Cleaners { get; set; }
         public DbSet<CleanerNote> CleanerNotes { get; set; }
+        public DbSet<CleanerVacation> CleanerVacations { get; set; }
 
         // User customer-care notes & cleaning photos (admin-only)
         public DbSet<UserNote> UserNotes { get; set; }
@@ -171,6 +172,22 @@ namespace DreamCleaningBackend.Data
                 entity.HasOne(n => n.Order)
                     .WithMany()
                     .HasForeignKey(n => n.OrderId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<CleanerVacation>(entity =>
+            {
+                entity.HasIndex(e => new { e.CleanerId, e.StartDate, e.EndDate })
+                    .HasDatabaseName("IX_CleanerVacations_CleanerId_Dates");
+
+                entity.HasOne(v => v.Cleaner)
+                    .WithMany(c => c.Vacations)
+                    .HasForeignKey(v => v.CleanerId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(v => v.CreatedByAdmin)
+                    .WithMany()
+                    .HasForeignKey(v => v.CreatedByAdminId)
                     .OnDelete(DeleteBehavior.SetNull);
             });
 

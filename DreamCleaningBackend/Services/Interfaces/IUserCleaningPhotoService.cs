@@ -35,8 +35,15 @@ namespace DreamCleaningBackend.Services.Interfaces
 
         /// <summary>
         /// Prunes photos belonging to orders older than the user's two most recent
-        /// (distinct) orders. Returns the number of pruned photos.
+        /// (distinct) orders, plus any of the user's photos without an order.
+        /// Returns the number of pruned photos.
         /// </summary>
         Task<int> PruneOldPhotosAsync(int userId);
+
+        /// <summary>
+        /// Deletes ALL photos (rows + files) that aren't attached to an order, across
+        /// all users. Run at startup — unassigned photos are not allowed to exist.
+        /// </summary>
+        Task<int> DeleteUnassignedPhotosAsync();
     }
 }

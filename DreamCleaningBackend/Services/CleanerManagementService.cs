@@ -42,30 +42,83 @@ namespace DreamCleaningBackend.Services
                     (c.Location != null && c.Location.Contains(term)));
             }
 
-            return await query
+            var cleaners = await query
                 .OrderByDescending(c => c.Ranking == CleanerRanking.Top)
                 .ThenBy(c => c.FirstName)
                 .ThenBy(c => c.LastName)
-                .Select(c => new CleanerListItemDto
-                {
-                    Id = c.Id,
-                    FirstName = c.FirstName,
-                    LastName = c.LastName,
-                    Age = c.Age,
-                    Experience = c.Experience,
-                    IsExperienced = c.IsExperienced,
-                    Phone = c.Phone,
-                    Email = c.Email,
-                    Address = c.Address,
-                    Location = c.Location,
-                    Availability = c.Availability,
-                    AlreadyWorkedWithUs = c.AlreadyWorkedWithUs,
-                    Nationality = c.Nationality,
-                    Ranking = c.Ranking,
-                    PhotoUrl = c.PhotoUrl,
-                    IsActive = c.IsActive
-                })
                 .ToListAsync();
+
+            return cleaners.Select(c => new CleanerListItemDto
+            {
+                Id = c.Id,
+                FirstName = c.FirstName,
+                LastName = c.LastName,
+                Age = c.Age,
+                Experience = c.Experience,
+                IsExperienced = c.IsExperienced,
+                Phone = c.Phone,
+                Email = c.Email,
+                Address = c.Address,
+                Location = c.Location,
+                BusyDaysOfWeek = ParseBusyDays(c.BusyDaysOfWeek),
+                AlreadyWorkedWithUs = c.AlreadyWorkedWithUs,
+                Nationality = c.Nationality,
+                Ranking = c.Ranking,
+                PhotoUrl = c.PhotoUrl,
+                IsActive = c.IsActive,
+                CreatedAt = c.CreatedAt
+            }).ToList();
+        }
+
+        // CSV (DayOfWeek ints) <-> ordered List<int> helpers for busy weekdays.
+        private static List<int> ParseBusyDays(string? csv) =>
+            CleanerService.ParseBusyDaysOfWeek(csv).Select(d => (int)d).OrderBy(x => x).ToList();
+
+        private static string? SerializeBusyDays(List<int>? days)
+        {
+            if (days == null || days.Count == 0)
+                return null;
+            var joined = string.Join(",", days.Where(d => d >= 0 && d <= 6).Distinct().OrderBy(x => x));
+            return string.IsNullOrEmpty(joined) ? null : joined;
+        }
+
+        private static List<CleanerVacationDto> MapVacations(IEnumerable<CleanerVacation>? vacations) =>
+            (vacations ?? Enumerable.Empty<CleanerVacation>())
+                .OrderBy(v => v.StartDate)
+                .Select(v => new CleanerVacationDto
+                {
+                    Id = v.Id,
+                    StartDate = v.StartDate,
+                    EndDate = v.EndDate,
+                    Note = v.Note
+                })
+                .ToList();
+
+        // Builds CleanerVacation rows from incoming DTOs, normalizing date order and skipping blanks.
+        private static List<CleanerVacation> BuildVacations(int cleanerId, List<CleanerVacationDto>? dtos, int adminId)
+        {
+            var result = new List<CleanerVacation>();
+            if (dtos == null)
+                return result;
+
+            foreach (var v in dtos)
+            {
+                var start = v.StartDate.Date;
+                var end = v.EndDate.Date;
+                if (end < start)
+                    (start, end) = (end, start);
+
+                result.Add(new CleanerVacation
+                {
+                    CleanerId = cleanerId,
+                    StartDate = start,
+                    EndDate = end,
+                    Note = string.IsNullOrWhiteSpace(v.Note) ? null : v.Note.Trim(),
+                    CreatedByAdminId = adminId,
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+            return result;
         }
 
         public async Task<CleanerDetailDto?> GetByIdAsync(int id)
@@ -74,6 +127,7 @@ namespace DreamCleaningBackend.Services
                 .Include(c => c.CreatedByAdmin)
                 .Include(c => c.Notes.OrderByDescending(n => n.CreatedAt))
                     .ThenInclude(n => n.Admin)
+                .Include(c => c.Vacations)
                 .AsSplitQuery()
                 .FirstOrDefaultAsync(c => c.Id == id);
 
@@ -115,7 +169,7 @@ namespace DreamCleaningBackend.Services
                 Email = dto.Email,
                 Address = dto.Address,
                 Location = dto.Location,
-                Availability = dto.Availability,
+                BusyDaysOfWeek = SerializeBusyDays(dto.BusyDaysOfWeek),
                 AlreadyWorkedWithUs = dto.AlreadyWorkedWithUs,
                 Nationality = dto.Nationality,
                 Ranking = dto.Ranking,
@@ -132,12 +186,21 @@ namespace DreamCleaningBackend.Services
             _context.Cleaners.Add(cleaner);
             await _context.SaveChangesAsync();
 
+            var vacations = BuildVacations(cleaner.Id, dto.Vacations, adminId);
+            if (vacations.Count > 0)
+            {
+                _context.CleanerVacations.AddRange(vacations);
+                await _context.SaveChangesAsync();
+            }
+
             return (await GetByIdAsync(cleaner.Id))!;
         }
 
-        public async Task<CleanerDetailDto?> UpdateAsync(int id, UpdateCleanerDto dto)
+        public async Task<CleanerDetailDto?> UpdateAsync(int id, UpdateCleanerDto dto, int adminId)
         {
-            var cleaner = await _context.Cleaners.FirstOrDefaultAsync(c => c.Id == id);
+            var cleaner = await _context.Cleaners
+                .Include(c => c.Vacations)
+                .FirstOrDefaultAsync(c => c.Id == id);
             if (cleaner == null)
                 return null;
 
@@ -150,7 +213,7 @@ namespace DreamCleaningBackend.Services
             cleaner.Email = dto.Email;
             cleaner.Address = dto.Address;
             cleaner.Location = dto.Location;
-            cleaner.Availability = dto.Availability;
+            cleaner.BusyDaysOfWeek = SerializeBusyDays(dto.BusyDaysOfWeek);
             cleaner.AlreadyWorkedWithUs = dto.AlreadyWorkedWithUs;
             cleaner.Nationality = dto.Nationality;
             cleaner.Ranking = dto.Ranking;
@@ -161,6 +224,13 @@ namespace DreamCleaningBackend.Services
             cleaner.DocumentType = dto.DocumentType;
             cleaner.IsActive = dto.IsActive;
             cleaner.UpdatedAt = DateTime.UtcNow;
+
+            // Replace vacation ranges wholesale to mirror the edit form's full payload.
+            if (cleaner.Vacations.Count > 0)
+                _context.CleanerVacations.RemoveRange(cleaner.Vacations);
+            var newVacations = BuildVacations(cleaner.Id, dto.Vacations, adminId);
+            if (newVacations.Count > 0)
+                _context.CleanerVacations.AddRange(newVacations);
 
             await _context.SaveChangesAsync();
             return await GetByIdAsync(id);
@@ -438,7 +508,8 @@ namespace DreamCleaningBackend.Services
                 Email = cleaner.Email,
                 Address = cleaner.Address,
                 Location = cleaner.Location,
-                Availability = cleaner.Availability,
+                BusyDaysOfWeek = ParseBusyDays(cleaner.BusyDaysOfWeek),
+                Vacations = MapVacations(cleaner.Vacations),
                 AlreadyWorkedWithUs = cleaner.AlreadyWorkedWithUs,
                 Nationality = cleaner.Nationality,
                 Ranking = cleaner.Ranking,

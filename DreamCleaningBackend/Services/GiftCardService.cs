@@ -157,11 +157,6 @@ namespace DreamCleaningBackend.Services
             // Calculate the amount to apply
             var amountToApply = Math.Min(giftCard.CurrentBalance, orderAmount);
 
-            Console.WriteLine($"=== GIFT CARD SERVICE DEBUG ===");
-            Console.WriteLine($"Gift Card Current Balance: {giftCard.CurrentBalance}");
-            Console.WriteLine($"Order Amount: {orderAmount}");
-            Console.WriteLine($"Amount to Apply: {amountToApply}");
-
             // Update gift card balance
             giftCard.CurrentBalance -= amountToApply;
             giftCard.UpdatedAt = DateTime.UtcNow;
@@ -200,9 +195,6 @@ namespace DreamCleaningBackend.Services
 
             // Log the usage creation
             await _auditService.LogCreateAsync(usageForLogging);
-
-            Console.WriteLine($"New Gift Card Balance: {giftCard.CurrentBalance}");
-            Console.WriteLine("Gift card usage recorded successfully!");
 
             return amountToApply;
         }

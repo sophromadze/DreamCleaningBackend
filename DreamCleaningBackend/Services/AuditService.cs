@@ -11,6 +11,7 @@ namespace DreamCleaningBackend.Services
     {
         private readonly ApplicationDbContext _context;
         private readonly IHttpContextAccessor _httpContextAccessor;
+        private readonly ILogger<AuditService> _logger;
 
         // ADD THIS: JSON serialization settings to handle circular references
         private readonly JsonSerializerSettings _jsonSettings = new JsonSerializerSettings
@@ -21,10 +22,11 @@ namespace DreamCleaningBackend.Services
             DateTimeZoneHandling = DateTimeZoneHandling.Utc
         };
 
-        public AuditService(ApplicationDbContext context, IHttpContextAccessor httpContextAccessor)
+        public AuditService(ApplicationDbContext context, IHttpContextAccessor httpContextAccessor, ILogger<AuditService> logger)
         {
             _context = context;
             _httpContextAccessor = httpContextAccessor;
+            _logger = logger;
         }
 
         public async Task LogCreateAsync<T>(T entity) where T : class
@@ -58,7 +60,7 @@ namespace DreamCleaningBackend.Services
             catch (Exception ex)
             {
                 // Log the error but don't throw - auditing shouldn't break the main operation
-                Console.WriteLine($"Audit logging failed: {ex.Message}");
+                _logger.LogError(ex, "Audit logging failed");
             }
         }
 
@@ -131,7 +133,7 @@ namespace DreamCleaningBackend.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Audit logging failed: {ex.Message}");
+                _logger.LogError(ex, "Audit logging failed");
             }
         }
 
@@ -165,7 +167,7 @@ namespace DreamCleaningBackend.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Audit logging failed: {ex.Message}");
+                _logger.LogError(ex, "Audit logging failed");
             }
         }
 
@@ -449,7 +451,7 @@ namespace DreamCleaningBackend.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Bubble points audit logging failed: {ex.Message}");
+                _logger.LogError(ex, "Bubble points audit logging failed");
             }
         }
 
@@ -739,7 +741,7 @@ namespace DreamCleaningBackend.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Cleaner assignment audit logging failed: {ex.Message}");
+                _logger.LogError(ex, "Cleaner assignment audit logging failed");
             }
         }
 
@@ -792,7 +794,7 @@ namespace DreamCleaningBackend.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Loyalty discount audit logging failed: {ex.Message}");
+                _logger.LogError(ex, "Loyalty discount audit logging failed");
             }
         }
     }

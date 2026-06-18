@@ -22,11 +22,26 @@ namespace DreamCleaningBackend.DTOs
         public string FirstName { get; set; }
         public string LastName { get; set; }
         public string Email { get; set; }
+
+        // True when the cleaner can be assigned (no hard scheduling conflict).
+        // Busy-day cleaners are still "available" here — they're only soft-hidden in the UI.
         public bool IsAvailable { get; set; }
+
         public string? Location { get; set; }
         public CleanerRanking Ranking { get; set; }
         public string? Experience { get; set; }
-        public string? Availability { get; set; }
+
+        // Soft: marked busy on this order's date via a recurring weekday or a vacation.
+        // Hidden by default in the assign modal; revealed by "Show busy"; still assignable.
+        public bool IsBusyDay { get; set; }
+        public string? BusyDayReason { get; set; }
+
+        // Hard: already has another Active/Pending job that day within 1 hour of this one.
+        // Cannot be assigned (blocked client-side and server-side).
+        public bool HasScheduleConflict { get; set; }
+        public string? ConflictReason { get; set; }
+
+        public DateTime CreatedAt { get; set; }
     }
 
     public class AssignCleanersDto

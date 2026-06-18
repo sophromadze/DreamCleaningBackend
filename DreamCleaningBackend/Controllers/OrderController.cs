@@ -22,9 +22,11 @@ namespace DreamCleaningBackend.Controllers
         private readonly IStripeService _stripeService;
         private readonly IEmailService _emailService;
         private readonly IAdminBonusService _adminBonusService;
+        private readonly ILogger<OrderController> _logger;
 
-        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService, IAdminBonusService adminBonusService)
+        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService, IAdminBonusService adminBonusService, ILogger<OrderController> logger)
         {
+            _logger = logger;
             _orderService = orderService;
             _context = context;
             _auditService = auditService;
@@ -34,10 +36,11 @@ namespace DreamCleaningBackend.Controllers
         }
 
         // PATCH /api/order/{id}/assigned-admin — set, change, or clear the admin assigned
-        // to an order. Admin/SuperAdmin only. Writes the change to OrderAdminAssignmentHistory
-        // so reassignments stay auditable; bonus credit is computed from the current value.
+        // to an order. SuperAdmin only — Admins see the assignment read-only in the panel.
+        // Writes the change to OrderAdminAssignmentHistory so reassignments stay auditable;
+        // bonus credit is computed from the current value.
         [HttpPatch("{orderId}/assigned-admin")]
-        [Authorize(Roles = "Admin,SuperAdmin")]
+        [Authorize(Roles = "SuperAdmin")]
         public async Task<ActionResult<OrderAssignedAdminDto>> SetAssignedAdmin(int orderId, [FromBody] AssignAdminDto dto)
         {
             try
@@ -125,8 +128,7 @@ namespace DreamCleaningBackend.Controllers
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Audit logging failed: {ex.Message}");
-                        Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                        _logger.LogError(ex, "Audit logging failed");
                     }
                 }
 
@@ -216,8 +218,7 @@ namespace DreamCleaningBackend.Controllers
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Audit logging failed: {ex.Message}");
-                        Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                        _logger.LogError(ex, "Audit logging failed");
                     }
                 }
 
@@ -461,7 +462,7 @@ namespace DreamCleaningBackend.Controllers
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Audit logging failed: {ex.Message}");
+                        _logger.LogError(ex, "Audit logging failed");
                     }
 
                     // Send cancellation notification emails
@@ -503,7 +504,7 @@ namespace DreamCleaningBackend.Controllers
                     }
                     catch (Exception emailEx)
                     {
-                        Console.WriteLine($"Cancellation email failed: {emailEx.Message}");
+                        _logger.LogError(emailEx, "Cancellation email failed");
                     }
                 }
 
@@ -549,9 +550,7 @@ namespace DreamCleaningBackend.Controllers
             }
             catch (Exception ex)
             {
-                // Log the exception details for debugging
-                Console.WriteLine($"Error calculating additional amount: {ex.Message}");
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                _logger.LogError(ex, "Error calculating additional amount");
 
                 return BadRequest(new { message = $"Failed to calculate additional amount: {ex.Message}" });
             }

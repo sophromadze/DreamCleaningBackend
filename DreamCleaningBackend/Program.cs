@@ -165,6 +165,7 @@ builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<IGiftCardService, GiftCardService>();
+builder.Services.AddScoped<IBookingCreationService, BookingCreationService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuditService, AuditService>();
 // UnverifiedUserCleanupService removed — email verification now uses OTP, accounts are never auto-deleted
@@ -282,7 +283,40 @@ using (var scope = app.Services.CreateScope())
     }
     catch (MySqlException ex) when (ex.Message.Contains("already exists"))
     {
-        Console.WriteLine("Database tables already exist. Skipping migration.");
+        logger.LogInformation("Database tables already exist. Skipping migration.");
+    }
+
+    // Cleaning photos must always belong to an order — sweep any unassigned ones
+    // (legacy uploads from before the rule existed). Rows and files both go.
+    try
+    {
+        var photoService = scope.ServiceProvider.GetRequiredService<DreamCleaningBackend.Services.Interfaces.IUserCleaningPhotoService>();
+        var sweptPhotos = await photoService.DeleteUnassignedPhotosAsync();
+        if (sweptPhotos > 0)
+            logger.LogInformation("Removed {Count} unassigned cleaning photos at startup.", sweptPhotos);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Unassigned cleaning photo sweep failed at startup.");
+    }
+
+    // Follow-up notes were removed — only general notes remain. Delete any
+    // leftover follow-up rows so they don't linger in the database.
+    try
+    {
+        var followUpNotes = await context.UserNotes
+            .Where(n => n.Type == "FollowUp")
+            .ToListAsync();
+        if (followUpNotes.Count > 0)
+        {
+            context.UserNotes.RemoveRange(followUpNotes);
+            await context.SaveChangesAsync();
+            logger.LogInformation("Removed {Count} legacy follow-up notes at startup.", followUpNotes.Count);
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Follow-up note sweep failed at startup.");
     }
 }
 
@@ -334,7 +368,9 @@ app.UseExceptionHandler(appError =>
     });
 });
 
-Console.WriteLine("Using DB: " + builder.Configuration.GetConnectionString("DefaultConnection"));
+// Log only server + database — the full connection string contains the DB password.
+var dbInfo = new MySqlConnectionStringBuilder(builder.Configuration.GetConnectionString("DefaultConnection") ?? "");
+logger.LogInformation("Using DB: {Server}/{Database}", dbInfo.Server, dbInfo.Database);
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -387,9 +423,6 @@ app.MapHub<UserManagementHub>("/userManagementHub");
 // TEMPORARILY DISABLED — Telegram bot integration is off. Hub un-mapped so visitors can't connect.
 // app.MapHub<LiveChatHub>("/liveChatHub");
 
-// Add logging to see if hub is registered
-Console.WriteLine("SignalR Hub mapped to: /userManagementHub");
-// Console.WriteLine("SignalR Hub mapped to: /liveChatHub"); // disabled with hub mapping above
 
 // REMOVE THIS ENTIRE SECTION - Not needed since Nginx handles HTTPS
 /*

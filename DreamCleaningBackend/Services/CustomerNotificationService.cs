@@ -1,4 +1,5 @@
 ﻿using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -68,15 +69,18 @@ namespace DreamCleaningBackend.Services
             var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var emailService = scope.ServiceProvider.GetRequiredService<IEmailService>();
 
-            var now = DateTime.UtcNow;
-            var twoDaysFromNow = now.AddDays(2);
-            var twoHoursFromNow = now.AddHours(2);
+            // ServiceDate/ServiceTime are NY wall-clock values, so "today" and the
+            // hours-until-cleaning math must run on NY time. Comparing against UTC
+            // made the 2-hour reminder fire ~4-5 hours early (UTC offset ahead of NY).
+            var now = NyTimeHelper.NowNy;
+            var todayNy = now.Date;
+            var twoDaysFromNow = todayNy.AddDays(2);
 
             // Get orders for 2-day customer reminders
             var twoDayReminders = await context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
-                .Where(o => o.ServiceDate.Date == twoDaysFromNow.Date &&
+                .Where(o => o.ServiceDate.Date == twoDaysFromNow &&
                            o.Status == "Active" &&
                            o.User != null &&
                            !context.NotificationLogs.Any(nl =>
@@ -88,7 +92,7 @@ namespace DreamCleaningBackend.Services
             var twoHourReminders = await context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
-                .Where(o => o.ServiceDate.Date == now.Date &&
+                .Where(o => o.ServiceDate.Date == todayNy &&
                            o.Status == "Active" &&
                            o.User != null &&
                            !context.NotificationLogs.Any(nl =>
@@ -103,9 +107,12 @@ namespace DreamCleaningBackend.Services
                 {
                     if (order.User != null)
                     {
-                        // Send customer reminder email
+                        // Send customer reminder email. Target the LIVE user-account email so an
+                        // admin who corrected a mistyped address sees reminders follow the fix —
+                        // not the contact frozen on the order at booking time. (Query already
+                        // filters User != null; ContactEmail is only a defensive fallback.)
                         await emailService.SendCustomerReminderNotificationAsync(
-                            order.ContactEmail ?? order.User.Email,
+                            order.User.Email ?? order.ContactEmail,
                             $"{order.ContactFirstName} {order.ContactLastName}",
                             order.ServiceDate,
                             order.ServiceTime.ToString(),
@@ -136,17 +143,18 @@ namespace DreamCleaningBackend.Services
                 try
                 {
                     var orderTime = order.ServiceTime;
-                    var currentTime = TimeSpan.FromHours(now.Hour) + TimeSpan.FromMinutes(now.Minute);
-                    var timeDifference = orderTime - currentTime;
+                    // now is NY wall-clock, matching how ServiceTime is stored.
+                    var timeDifference = orderTime - now.TimeOfDay;
 
                     // Check if it's within 2 hours window
                     if (timeDifference.TotalHours <= 2 && timeDifference.TotalHours > 0)
                     {
                         if (order.User != null)
                         {
-                            // Send customer reminder email
+                            // Send customer reminder email to the LIVE user-account email so a
+                            // corrected address is honored (see 2-day reminder note above).
                             await emailService.SendCustomerReminderNotificationAsync(
-                                order.ContactEmail ?? order.User.Email,
+                                order.User.Email ?? order.ContactEmail,
                                 $"{order.ContactFirstName} {order.ContactLastName}",
                                 order.ServiceDate,
                                 order.ServiceTime.ToString(),

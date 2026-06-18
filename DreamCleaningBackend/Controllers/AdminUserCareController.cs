@@ -54,7 +54,6 @@ namespace DreamCleaningBackend.Controllers
                     UserId = n.UserId,
                     Type = n.Type,
                     Content = n.Content,
-                    NextOffer = n.NextOffer,
                     CreatedByAdminId = n.CreatedByAdminId,
                     CreatedByAdminName = n.CreatedByAdminName,
                     CreatedAt = n.CreatedAt,
@@ -74,16 +73,12 @@ namespace DreamCleaningBackend.Controllers
             var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
             if (!userExists) return NotFound(new { message = "User not found" });
 
-            var type = NormalizeNoteType(dto.Type);
-            if (type == null)
-                return BadRequest(new { message = "Type must be 'General' or 'FollowUp'." });
-
+            // Only general notes exist now — follow-up notes were removed.
             var note = new UserNote
             {
                 UserId = userId,
-                Type = type,
+                Type = "General",
                 Content = dto.Content.Trim(),
-                NextOffer = string.IsNullOrWhiteSpace(dto.NextOffer) ? null : dto.NextOffer.Trim(),
                 CreatedByAdminId = GetUserId(),
                 CreatedByAdminName = GetUserDisplayName(),
                 CreatedAt = DateTime.UtcNow
@@ -105,7 +100,6 @@ namespace DreamCleaningBackend.Controllers
             if (note == null) return NotFound(new { message = "Note not found" });
 
             note.Content = dto.Content.Trim();
-            note.NextOffer = string.IsNullOrWhiteSpace(dto.NextOffer) ? null : dto.NextOffer.Trim();
             note.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
@@ -176,11 +170,12 @@ namespace DreamCleaningBackend.Controllers
                 var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
                 if (!userExists) return NotFound(new { message = "User not found" });
 
-                if (orderId.HasValue)
-                {
-                    var orderBelongs = await _context.Orders.AnyAsync(o => o.Id == orderId.Value && o.UserId == userId);
-                    if (!orderBelongs) return BadRequest(new { message = "Order does not belong to this user." });
-                }
+                // Photos must always belong to a specific order — unassigned photos are not allowed.
+                if (!orderId.HasValue)
+                    return BadRequest(new { message = "Select the order this photo belongs to." });
+
+                var orderBelongs = await _context.Orders.AnyAsync(o => o.Id == orderId.Value && o.UserId == userId);
+                if (!orderBelongs) return BadRequest(new { message = "Order does not belong to this user." });
 
                 var photo = await _photoService.SavePhotoFromFormFileAsync(
                     userId,
@@ -192,6 +187,62 @@ namespace DreamCleaningBackend.Controllers
 
                 // Prune photos for orders older than the user's two most recent distinct orders
                 var pruned = await _photoService.PruneOldPhotosAsync(userId);
+
+                return Ok(new UserCleaningPhotoUploadResultDto
+                {
+                    Photo = MapPhoto(photo),
+                    PrunedCount = pruned
+                });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>Photos attached to one order — used by the admin order detail panel.
+        /// Same shared photo store as the per-user endpoints, just scoped by OrderId.</summary>
+        [HttpGet("orders/{orderId}/cleaning-photos")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<UserCleaningPhotoDto>>> GetOrderCleaningPhotos(int orderId)
+        {
+            var orderExists = await _context.Orders.AnyAsync(o => o.Id == orderId);
+            if (!orderExists) return NotFound(new { message = "Order not found" });
+
+            var photos = await _context.UserCleaningPhotos
+                .Where(p => p.OrderId == orderId)
+                .OrderByDescending(p => p.CreatedAt)
+                .ToListAsync();
+
+            return Ok(photos.Select(MapPhoto).ToList());
+        }
+
+        /// <summary>Upload a photo directly against an order; the owning user is derived from the order.</summary>
+        [HttpPost("orders/{orderId}/cleaning-photos")]
+        [RequirePermission(Permission.Update)]
+        [RequestSizeLimit(15 * 1024 * 1024)]
+        public async Task<ActionResult<UserCleaningPhotoUploadResultDto>> UploadOrderCleaningPhoto(
+            int orderId,
+            IFormFile file,
+            [FromQuery] string? caption = null)
+        {
+            try
+            {
+                var order = await _context.Orders
+                    .Where(o => o.Id == orderId)
+                    .Select(o => new { o.Id, o.UserId })
+                    .FirstOrDefaultAsync();
+                if (order == null) return NotFound(new { message = "Order not found" });
+
+                var photo = await _photoService.SavePhotoFromFormFileAsync(
+                    order.UserId,
+                    orderId,
+                    file,
+                    caption,
+                    GetUserId(),
+                    GetUserDisplayName());
+
+                var pruned = await _photoService.PruneOldPhotosAsync(order.UserId);
 
                 return Ok(new UserCleaningPhotoUploadResultDto
                 {
@@ -448,26 +499,12 @@ namespace DreamCleaningBackend.Controllers
         //  Helpers
         // ─────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Returns "General" or "FollowUp" (canonical casing) for any acceptable input,
-        /// or null if the supplied string can't be matched to a known type.
-        /// </summary>
-        private static string? NormalizeNoteType(string? raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return "General";
-            var t = raw.Trim().Replace("_", "").Replace("-", "");
-            if (t.Equals("General", StringComparison.OrdinalIgnoreCase)) return "General";
-            if (t.Equals("FollowUp", StringComparison.OrdinalIgnoreCase)) return "FollowUp";
-            return null;
-        }
-
         private static UserNoteDto MapNote(UserNote n) => new()
         {
             Id = n.Id,
             UserId = n.UserId,
             Type = n.Type,
             Content = n.Content,
-            NextOffer = n.NextOffer,
             CreatedByAdminId = n.CreatedByAdminId,
             CreatedByAdminName = n.CreatedByAdminName,
             CreatedAt = n.CreatedAt,

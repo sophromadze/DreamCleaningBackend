@@ -15,12 +15,16 @@ namespace DreamCleaningBackend.DTOs
         public string? Email { get; set; }
         public string? Address { get; set; }
         public string? Location { get; set; }
-        public string? Availability { get; set; }
+
+        // Recurring weekdays the cleaner is busy (System.DayOfWeek ints, 0=Sun … 6=Sat).
+        public List<int> BusyDaysOfWeek { get; set; } = new();
+
         public bool AlreadyWorkedWithUs { get; set; }
         public string? Nationality { get; set; }
         public CleanerRanking Ranking { get; set; }
         public string? PhotoUrl { get; set; }
         public bool IsActive { get; set; }
+        public DateTime CreatedAt { get; set; }
     }
 
     public class CleanerDetailDto : CleanerListItemDto
@@ -31,12 +35,22 @@ namespace DreamCleaningBackend.DTOs
         public string? MainNote { get; set; }
         public string? DocumentUrl { get; set; }
         public CleanerDocumentType? DocumentType { get; set; }
-        public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
         public int? CreatedByAdminId { get; set; }
         public string? CreatedByAdminName { get; set; }
         public List<CleanerNoteDto> Notes { get; set; } = new();
         public List<CleanerAssignedOrderDto> AssignedOrders { get; set; } = new();
+        public List<CleanerVacationDto> Vacations { get; set; } = new();
+    }
+
+    public class CleanerVacationDto
+    {
+        public int? Id { get; set; }
+        public DateTime StartDate { get; set; }
+        public DateTime EndDate { get; set; }
+
+        [StringLength(200)]
+        public string? Note { get; set; }
     }
 
     public class CreateCleanerDto
@@ -69,8 +83,11 @@ namespace DreamCleaningBackend.DTOs
         [StringLength(50)]
         public string? Location { get; set; }
 
-        [StringLength(1000)]
-        public string? Availability { get; set; }
+        // Recurring weekdays the cleaner is busy (System.DayOfWeek ints, 0=Sun … 6=Sat).
+        public List<int> BusyDaysOfWeek { get; set; } = new();
+
+        // Replaces the cleaner's vacation ranges wholesale on create/update.
+        public List<CleanerVacationDto> Vacations { get; set; } = new();
 
         public bool AlreadyWorkedWithUs { get; set; } = false;
 

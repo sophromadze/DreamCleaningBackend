@@ -225,44 +225,9 @@ namespace DreamCleaningBackend.Services
             ResolveStacking(decimal loyaltyCandidateAmount, decimal loyaltyCandidatePercentage,
                             decimal subscriptionAmount, decimal promoAmount)
         {
-            // Fast path: nothing to gate.
-            if (loyaltyCandidateAmount <= 0m || loyaltyCandidatePercentage <= 0m)
-                return (0m, 0m, subscriptionAmount, promoAmount);
-
-            decimal loyalty = loyaltyCandidateAmount;
-            decimal loyaltyPct = loyaltyCandidatePercentage;
-
-            // Round 1: loyalty vs subscription. Both are subTotal-percentage-based so dollar
-            // comparison is equivalent to percentage comparison. Tie → subscription wins
-            // (preserves existing user expectation that an actively-paid subscription discount
-            // shows up). Ties are extremely unlikely in practice.
-            if (loyalty > subscriptionAmount)
-            {
-                subscriptionAmount = 0m;
-            }
-            else
-            {
-                loyalty = 0m;
-                loyaltyPct = 0m;
-            }
-
-            // Round 2: round-1 winner (loyalty, if it survived) vs promo/special/first-time.
-            // If subscription won round 1, loyalty is already zero — promo continues to stack
-            // with subscription as before (existing behavior, untouched).
-            if (loyalty > 0m)
-            {
-                if (loyalty > promoAmount)
-                {
-                    promoAmount = 0m;
-                }
-                else
-                {
-                    loyalty = 0m;
-                    loyaltyPct = 0m;
-                }
-            }
-
-            return (loyalty, loyaltyPct, subscriptionAmount, promoAmount);
+            // Single implementation lives in OrderPricingCalculator (mirrored on the frontend).
+            return OrderPricingCalculator.ResolveLoyaltyStacking(
+                loyaltyCandidateAmount, loyaltyCandidatePercentage, subscriptionAmount, promoAmount);
         }
 
         private static LoyaltyDiscountDto Project(User user)

@@ -1394,7 +1394,7 @@ namespace DreamCleaningBackend.Services
             catch (Exception ex)
             {
                 // Don't fail the email change if audit logging fails
-                Console.WriteLine($"Audit logging failed for email change: {ex.Message}");
+                _logger.LogError(ex, "Audit logging failed for email change");
             }
 
             // Send confirmation email to the new email address

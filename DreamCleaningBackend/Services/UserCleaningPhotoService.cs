@@ -116,31 +116,41 @@ namespace DreamCleaningBackend.Services
 
         public async Task<int> PruneOldPhotosAsync(int userId)
         {
-            // Distinct order IDs that this user has photos for (null OrderIds are kept as-is)
+            // Unassigned photos (no order) are no longer allowed — sweep any that exist.
+            var unassigned = await _context.UserCleaningPhotos
+                .Where(p => p.UserId == userId && p.OrderId == null)
+                .ToListAsync();
+
+            // Distinct order IDs that this user has photos for
             var orderIdsWithPhotos = await _context.UserCleaningPhotos
                 .Where(p => p.UserId == userId && p.OrderId != null)
                 .Select(p => p.OrderId!.Value)
                 .Distinct()
                 .ToListAsync();
 
-            if (orderIdsWithPhotos.Count <= 2) return 0;
+            var toDelete = new List<UserCleaningPhoto>(unassigned);
 
-            var orderDates = await _context.Orders
-                .Where(o => orderIdsWithPhotos.Contains(o.Id))
-                .Select(o => new { o.Id, o.ServiceDate })
-                .ToListAsync();
+            if (orderIdsWithPhotos.Count > 2)
+            {
+                var orderDates = await _context.Orders
+                    .Where(o => orderIdsWithPhotos.Contains(o.Id))
+                    .Select(o => new { o.Id, o.ServiceDate })
+                    .ToListAsync();
 
-            var keepOrderIds = orderDates
-                .OrderByDescending(o => o.ServiceDate)
-                .Take(2)
-                .Select(o => o.Id)
-                .ToHashSet();
+                var keepOrderIds = orderDates
+                    .OrderByDescending(o => o.ServiceDate)
+                    .Take(2)
+                    .Select(o => o.Id)
+                    .ToHashSet();
 
-            var toDelete = await _context.UserCleaningPhotos
-                .Where(p => p.UserId == userId
-                            && p.OrderId != null
-                            && !keepOrderIds.Contains(p.OrderId!.Value))
-                .ToListAsync();
+                toDelete.AddRange(await _context.UserCleaningPhotos
+                    .Where(p => p.UserId == userId
+                                && p.OrderId != null
+                                && !keepOrderIds.Contains(p.OrderId!.Value))
+                    .ToListAsync());
+            }
+
+            if (toDelete.Count == 0) return 0;
 
             foreach (var p in toDelete)
                 DeleteFileIfExists(p.PhotoUrl);
@@ -148,6 +158,25 @@ namespace DreamCleaningBackend.Services
             _context.UserCleaningPhotos.RemoveRange(toDelete);
             await _context.SaveChangesAsync();
             return toDelete.Count;
+        }
+
+        public async Task<int> DeleteUnassignedPhotosAsync()
+        {
+            // One-time/startup sweep: photos must always belong to an order, so any row
+            // without one (legacy uploads, or orders deleted before the rule existed)
+            // is removed together with its file.
+            var unassigned = await _context.UserCleaningPhotos
+                .Where(p => p.OrderId == null)
+                .ToListAsync();
+
+            if (unassigned.Count == 0) return 0;
+
+            foreach (var p in unassigned)
+                DeleteFileIfExists(p.PhotoUrl);
+
+            _context.UserCleaningPhotos.RemoveRange(unassigned);
+            await _context.SaveChangesAsync();
+            return unassigned.Count;
         }
 
         private void DeleteFileIfExists(string? publicUrl)

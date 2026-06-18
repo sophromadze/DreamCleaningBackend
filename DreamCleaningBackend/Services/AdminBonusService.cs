@@ -23,11 +23,13 @@ namespace DreamCleaningBackend.Services
 
             if (adminId.HasValue)
             {
+                // Admin or SuperAdmin — the create-for-user flow auto-assigns the creating
+                // staff member, and the owner (SuperAdmin) creates orders too.
                 var admin = await _context.Users
                     .FirstOrDefaultAsync(u => u.Id == adminId.Value
                                               && !u.IsDeleted
                                               && u.IsActive
-                                              && u.Role == UserRole.Admin);
+                                              && (u.Role == UserRole.Admin || u.Role == UserRole.SuperAdmin));
                 if (admin == null)
                     throw new InvalidOperationException("Selected user is not an active admin.");
             }

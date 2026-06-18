@@ -67,25 +67,47 @@ namespace DreamCleaningBackend.Services
             return false;
         }
 
-        public async Task<List<AvailableCleanerDto>> GetAvailableCleanersAsync(DateTime serviceDate, string serviceTime, string? orderCity = null)
+        // Minimum gap (minutes) required between the end of one job and the start of the next
+        // for the same cleaner on the same day. Below this, assignment is hard-blocked.
+        private const int MinGapMinutes = 60;
+
+        public async Task<List<AvailableCleanerDto>> GetAvailableCleanersAsync(Order order)
         {
+            var serviceDate = order.ServiceDate.Date;
+            var serviceTimeSpan = order.ServiceTime;
+            var orderCity = order.City;
+
             var cleaners = await _context.Cleaners
                 .Where(c => c.IsActive)
+                .Include(c => c.Vacations)
                 .ToListAsync();
+
+            // Pull every other Active/Pending assignment on the same calendar day in one query,
+            // then evaluate the 1-hour-gap rule per cleaner in memory.
+            var sameDayJobs = await _context.OrderCleaners
+                .Where(oc => oc.OrderId != order.Id &&
+                             oc.Order.ServiceDate.Date == serviceDate &&
+                             (oc.Order.Status == "Active" || oc.Order.Status == "Pending"))
+                .Select(oc => new SameDayJob
+                {
+                    CleanerId = oc.CleanerId,
+                    Start = oc.Order.ServiceTime,
+                    DurationMinutes = oc.Order.TotalDuration
+                })
+                .ToListAsync();
+
+            var jobsByCleaner = sameDayJobs
+                .GroupBy(j => j.CleanerId)
+                .ToDictionary(g => g.Key, g => g.ToList());
 
             var availableCleaners = new List<AvailableCleanerDto>();
 
-            // Parse the time string to TimeSpan for comparison
-            TimeSpan.TryParse(serviceTime, out var serviceTimeSpan);
-
             foreach (var cleaner in cleaners)
             {
-                // Check if cleaner is already assigned to another order at the same time
-                var isAvailable = !await _context.OrderCleaners
-                    .AnyAsync(oc => oc.CleanerId == cleaner.Id &&
-                                   oc.Order.ServiceDate.Date == serviceDate.Date &&
-                                   oc.Order.ServiceTime == serviceTimeSpan &&
-                                   oc.Order.Status == "Active");
+                var (isBusyDay, busyReason) = EvaluateBusyDay(cleaner, serviceDate);
+                jobsByCleaner.TryGetValue(cleaner.Id, out var cleanerJobs);
+                var (hasConflict, conflictReason) = EvaluateScheduleConflict(
+                    cleanerJobs, serviceTimeSpan, order.TotalDuration);
 
                 availableCleaners.Add(new AvailableCleanerDto
                 {
@@ -93,16 +115,20 @@ namespace DreamCleaningBackend.Services
                     FirstName = cleaner.FirstName,
                     LastName = cleaner.LastName,
                     Email = cleaner.Email ?? string.Empty,
-                    IsAvailable = isAvailable,
+                    IsAvailable = !hasConflict,
                     Location = cleaner.Location,
                     Ranking = cleaner.Ranking,
                     Experience = cleaner.Experience,
-                    Availability = cleaner.Availability
+                    IsBusyDay = isBusyDay,
+                    BusyDayReason = busyReason,
+                    HasScheduleConflict = hasConflict,
+                    ConflictReason = conflictReason,
+                    CreatedAt = cleaner.CreatedAt
                 });
             }
 
-            // Suggest the best fit first: free cleaners on top, then those whose borough
-            // matches the order's city, then by ranking (Top first) and experience.
+            // Suggest the best fit first: cleaners with no conflict on top, then cleaners that are
+            // not marked busy that day, then borough match, then ranking (Top first) and experience.
             static string Normalize(string? value) => (value ?? string.Empty).Trim().ToLowerInvariant();
             var city = Normalize(orderCity);
 
@@ -119,11 +145,130 @@ namespace DreamCleaningBackend.Services
 
             return availableCleaners
                 .OrderByDescending(c => c.IsAvailable)
+                .ThenBy(c => c.IsBusyDay)
                 .ThenBy(c => LocationRank(c))
                 .ThenBy(c => (int)c.Ranking)
                 .ThenBy(c => ExperienceRank(c.Experience))
                 .ThenBy(c => c.LastName)
                 .ToList();
+        }
+
+        // Lightweight projection of an existing same-day assignment used for conflict math.
+        private class SameDayJob
+        {
+            public int CleanerId { get; set; }
+            public TimeSpan Start { get; set; }
+            public decimal DurationMinutes { get; set; }
+        }
+
+        // Parses the CSV of DayOfWeek integers stored on Cleaner.BusyDaysOfWeek.
+        public static HashSet<DayOfWeek> ParseBusyDaysOfWeek(string? csv)
+        {
+            var set = new HashSet<DayOfWeek>();
+            if (string.IsNullOrWhiteSpace(csv))
+                return set;
+
+            foreach (var part in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (int.TryParse(part, out var n) && n >= 0 && n <= 6)
+                    set.Add((DayOfWeek)n);
+            }
+            return set;
+        }
+
+        // Soft "busy day" check: recurring weekday off OR a vacation range covering the date.
+        private static (bool isBusy, string? reason) EvaluateBusyDay(Cleaner cleaner, DateTime date)
+        {
+            var reasons = new List<string>();
+
+            if (ParseBusyDaysOfWeek(cleaner.BusyDaysOfWeek).Contains(date.DayOfWeek))
+                reasons.Add($"Off on {date.DayOfWeek}s");
+
+            var vacation = cleaner.Vacations?
+                .FirstOrDefault(v => v.StartDate.Date <= date && date <= v.EndDate.Date);
+            if (vacation != null)
+                reasons.Add($"On vacation {vacation.StartDate:MMM d} – {vacation.EndDate:MMM d}");
+
+            return reasons.Count == 0 ? (false, null) : (true, string.Join(" · ", reasons));
+        }
+
+        // Hard conflict check: any existing job that day whose interval is within MinGapMinutes
+        // of the new job (overlapping or less than the required gap on either side).
+        private static (bool hasConflict, string? reason) EvaluateScheduleConflict(
+            List<SameDayJob>? sameDayJobs, TimeSpan newStart, decimal newDurationMinutes)
+        {
+            if (sameDayJobs == null || sameDayJobs.Count == 0)
+                return (false, null);
+
+            var newEnd = newStart + TimeSpan.FromMinutes((double)newDurationMinutes);
+            var buffer = TimeSpan.FromMinutes(MinGapMinutes);
+
+            foreach (var job in sameDayJobs.OrderBy(j => j.Start))
+            {
+                var existStart = job.Start;
+                var existEnd = existStart + TimeSpan.FromMinutes((double)job.DurationMinutes);
+
+                // Conflict unless one job fully ends at least `buffer` before the other starts.
+                if (newStart < existEnd + buffer && existStart < newEnd + buffer)
+                {
+                    return (true,
+                        $"Booked {FormatTime(existStart)}–{FormatTime(existEnd)} that day (needs {MinGapMinutes}-min gap)");
+                }
+            }
+            return (false, null);
+        }
+
+        private static string FormatTime(TimeSpan t)
+        {
+            // Normalize into a 0–24h day for display (durations can push past midnight).
+            var minutes = ((int)t.TotalMinutes % 1440 + 1440) % 1440;
+            var hours24 = minutes / 60;
+            var mins = minutes % 60;
+            var period = hours24 >= 12 ? "PM" : "AM";
+            var hours12 = hours24 % 12;
+            if (hours12 == 0) hours12 = 12;
+            return $"{hours12}:{mins:D2} {period}";
+        }
+
+        // Returns the display names of cleaners that cannot be assigned to this order due to the
+        // 1-hour-gap rule against their other Active/Pending jobs the same day. Empty = all clear.
+        private async Task<List<string>> FindScheduleConflictsAsync(Order order, IEnumerable<int> cleanerIds)
+        {
+            var ids = cleanerIds.Distinct().ToList();
+            if (ids.Count == 0)
+                return new List<string>();
+
+            var serviceDate = order.ServiceDate.Date;
+
+            var sameDayJobs = await _context.OrderCleaners
+                .Where(oc => ids.Contains(oc.CleanerId) &&
+                             oc.OrderId != order.Id &&
+                             oc.Order.ServiceDate.Date == serviceDate &&
+                             (oc.Order.Status == "Active" || oc.Order.Status == "Pending"))
+                .Select(oc => new SameDayJob
+                {
+                    CleanerId = oc.CleanerId,
+                    Start = oc.Order.ServiceTime,
+                    DurationMinutes = oc.Order.TotalDuration
+                })
+                .ToListAsync();
+
+            if (sameDayJobs.Count == 0)
+                return new List<string>();
+
+            var jobsByCleaner = sameDayJobs.GroupBy(j => j.CleanerId).ToDictionary(g => g.Key, g => g.ToList());
+            var conflictingIds = ids
+                .Where(id => jobsByCleaner.TryGetValue(id, out var jobs) &&
+                             EvaluateScheduleConflict(jobs, order.ServiceTime, order.TotalDuration).hasConflict)
+                .ToList();
+
+            if (conflictingIds.Count == 0)
+                return new List<string>();
+
+            return await _context.Cleaners
+                .Where(c => conflictingIds.Contains(c.Id))
+                .Select(c => (c.FirstName + " " + c.LastName).Trim())
+                .ToListAsync();
         }
 
         public async Task<bool> AssignCleanersToOrderAsync(AssignCleanersDto dto, int assignedBy)
@@ -132,25 +277,36 @@ namespace DreamCleaningBackend.Services
 
             try
             {
+                var order = await _context.Orders
+                    .Include(o => o.OrderServices)
+                        .ThenInclude(os => os.Service)
+                    .FirstOrDefaultAsync(o => o.Id == dto.OrderId);
+
+                if (order == null)
+                {
+                    await transaction.RollbackAsync();
+                    return false;
+                }
+
+                // HARD RULE: refuse cleaners that already have an Active/Pending job the same day
+                // within 1 hour of this one. Admins MAY assign cleaners marked "busy" (weekday/vacation),
+                // so that is intentionally NOT blocked here — only real schedule overlaps are.
+                var conflicts = await FindScheduleConflictsAsync(order, dto.CleanerIds);
+                if (conflicts.Count > 0)
+                {
+                    throw new CleanerAssignmentException(
+                        "Cannot assign — these cleaners have another job within 1 hour the same day: "
+                        + string.Join(", ", conflicts) + ".");
+                }
+
                 // Update hourly rate and recalculate total salary if provided
                 if (dto.CleanerHourlyRate.HasValue)
                 {
-                    var order = await _context.Orders
-                        .Include(o => o.OrderServices)
-                            .ThenInclude(os => os.Service)
-                        .FirstOrDefaultAsync(o => o.Id == dto.OrderId);
-                    if (order != null)
-                    {
-                        order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
-                        // For cleaner-hours service type, TotalDuration is per cleaner; for regular, it's total across all
-                        bool hasCleanersService = order.OrderServices.Any(os =>
-                            os.Service?.ServiceRelationType == "cleaner");
-                        var perCleanerDuration = hasCleanersService
-                            ? order.TotalDuration
-                            : (order.MaidsCount > 1 ? order.TotalDuration / order.MaidsCount : order.TotalDuration);
-                        var roundedPerCleaner = (decimal)((int)Math.Round((double)perCleanerDuration / 15.0) * 15);
-                        order.CleanerTotalSalary = Math.Round(roundedPerCleaner / 60m * order.MaidsCount * order.CleanerHourlyRate, 2);
-                    }
+                    order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
+                    bool hasCleanersService = order.OrderServices.Any(os =>
+                        os.Service?.ServiceRelationType == "cleaner");
+                    order.CleanerTotalSalary = OrderPricingCalculator.CalculateCleanerTotalSalary(
+                        order.TotalDuration, order.MaidsCount, hasCleanersService, order.CleanerHourlyRate);
                 }
 
                 // DON'T remove existing assignments - just add new ones or update existing ones
@@ -191,7 +347,7 @@ namespace DreamCleaningBackend.Services
                             }
                             catch (Exception ex)
                             {
-                                Console.WriteLine($"Audit logging failed for cleaner assignment: {ex.Message}");
+                                _logger.LogError(ex, "Audit logging failed for cleaner assignment");
                             }
                         }
 
@@ -209,6 +365,11 @@ namespace DreamCleaningBackend.Services
                 await transaction.CommitAsync();
 
                 return true;
+            }
+            catch (CleanerAssignmentException)
+            {
+                await transaction.RollbackAsync();
+                throw;
             }
             catch
             {
@@ -247,7 +408,7 @@ namespace DreamCleaningBackend.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Audit logging failed for cleaner removal: {ex.Message}");
+                _logger.LogError(ex, "Audit logging failed for cleaner removal");
             }
 
             _context.OrderCleaners.Remove(assignment);
@@ -281,7 +442,7 @@ namespace DreamCleaningBackend.Services
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Background removal email sending failed: {ex.Message}");
+                        _logger.LogError(ex, "Background removal email sending failed");
                     }
                 });
             }
