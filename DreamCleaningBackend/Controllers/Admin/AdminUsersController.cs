@@ -34,6 +34,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IEmailService _emailService;
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
         private readonly IBubbleRewardsSettingsService _bubbleRewardsSettingsService;
+        private readonly IPageAccessService _pageAccessService;
         private readonly ILogger<AdminUsersController> _logger;
 
         public AdminUsersController(ApplicationDbContext context,
@@ -45,6 +46,7 @@ namespace DreamCleaningBackend.Controllers
             IEmailService emailService,
             ILoyaltyDiscountService loyaltyDiscountService,
             IBubbleRewardsSettingsService bubbleRewardsSettingsService,
+            IPageAccessService pageAccessService,
             ILogger<AdminUsersController> logger)
         {
             _logger = logger;
@@ -57,6 +59,7 @@ namespace DreamCleaningBackend.Controllers
             _emailService = emailService;
             _loyaltyDiscountService = loyaltyDiscountService;
             _bubbleRewardsSettingsService = bubbleRewardsSettingsService;
+            _pageAccessService = pageAccessService;
         }
 
         // Users Management
@@ -112,6 +115,16 @@ namespace DreamCleaningBackend.Controllers
             }
             foreach (var u in users)
                 u.AdminNotes = notesDict.TryGetValue(u.Id, out var notes) ? notes : null;
+
+            // Page-view grants (Admin-role users only) — parsed from the User.ViewablePages JSON column.
+            var viewablePagesDict = await _context.Users
+                .Where(u => userIds.Contains(u.Id) && u.ViewablePages != null)
+                .Select(u => new { u.Id, u.ViewablePages })
+                .ToDictionaryAsync(x => x.Id, x => x.ViewablePages);
+            foreach (var u in users)
+                u.ViewablePages = viewablePagesDict.TryGetValue(u.Id, out var vp)
+                    ? _pageAccessService.ParsePages(vp)
+                    : new List<string>();
 
             foreach (var u in users)
                 u.IsOnline = UserManagementHub.IsUserOnline(u.Id);
@@ -540,6 +553,51 @@ namespace DreamCleaningBackend.Controllers
             }
 
             return Ok(new { message = "Role updated successfully" });
+        }
+
+        // Grants/revokes a regular Admin read-only ("view") access to restricted admin pages
+        // (Statistics, Expenses, Bubble Rewards). SuperAdmin-only. The API enforces these grants
+        // live on every request, so changes here take effect immediately.
+        [HttpPut("users/{id}/viewable-pages")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> UpdateViewablePages(int id, UpdateViewablePagesDto dto)
+        {
+            var targetUser = await _context.Users.FindAsync(id);
+            if (targetUser == null)
+                return NotFound();
+
+            // Audit copy (captures the ViewablePages diff via the generic User update log).
+            var originalUser = new User
+            {
+                Id = targetUser.Id,
+                FirstName = targetUser.FirstName,
+                LastName = targetUser.LastName,
+                Email = targetUser.Email,
+                Role = targetUser.Role,
+                ViewablePages = targetUser.ViewablePages
+            };
+
+            List<string> saved;
+            try
+            {
+                saved = await _pageAccessService.SetGrantedPagesAsync(id, dto.Pages ?? new List<string>());
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+
+            try
+            {
+                await _context.Entry(targetUser).ReloadAsync();
+                await _auditService.LogUpdateAsync(originalUser, targetUser);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Audit logging failed for viewable-pages update");
+            }
+
+            return Ok(new { message = "Page access updated", pages = saved });
         }
 
         [HttpGet("users/{id}/online-status")]

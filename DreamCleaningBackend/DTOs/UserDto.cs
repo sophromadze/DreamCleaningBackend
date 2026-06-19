@@ -18,5 +18,7 @@ namespace DreamCleaningBackend.DTOs
         public bool HasPassword { get; set; }
         /// <summary>True when user's email has been verified.</summary>
         public bool IsEmailVerified { get; set; }
+        /// <summary>Restricted-admin-page keys this (Admin-role) user has read-only access to. Drives nav/guards client-side.</summary>
+        public List<string> ViewablePages { get; set; } = new();
     }
 }

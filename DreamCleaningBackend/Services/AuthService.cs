@@ -893,7 +893,8 @@ namespace DreamCleaningBackend.Services
                 ProfilePictureUrl = user.ProfilePictureUrl,
                 RequiresRealEmail = requiresRealEmail,
                 HasPassword = user.PasswordHash != null,
-                IsEmailVerified = user.IsEmailVerified
+                IsEmailVerified = user.IsEmailVerified,
+                ViewablePages = AdminViewablePages.Parse(user.ViewablePages)
             };
         }
 
@@ -1436,7 +1437,8 @@ namespace DreamCleaningBackend.Services
                 ProfilePictureUrl = user.ProfilePictureUrl,
                 RequiresRealEmail = requiresRealEmail,
                 HasPassword = user.PasswordHash != null,
-                IsEmailVerified = user.IsEmailVerified
+                IsEmailVerified = user.IsEmailVerified,
+                ViewablePages = AdminViewablePages.Parse(user.ViewablePages)
             };
         }
 

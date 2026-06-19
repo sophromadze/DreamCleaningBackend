@@ -40,6 +40,13 @@ namespace DreamCleaningBackend.Models
         // User role - defaults to Customer (0)
         public UserRole Role { get; set; } = UserRole.Customer;
 
+        /// <summary>
+        /// JSON array of restricted-admin-page keys this user (Admin role only) has been granted
+        /// read-only access to by a SuperAdmin (e.g. ["statistics","expenses"]). Null/empty = none.
+        /// Keys are defined in <see cref="DreamCleaningBackend.Services.AdminViewablePages"/>.
+        /// </summary>
+        public string? ViewablePages { get; set; }
+
         // Refresh token for JWT
         public string? RefreshToken { get; set; }
         public DateTime? RefreshTokenExpiryTime { get; set; }

@@ -351,6 +351,8 @@ namespace DreamCleaningBackend.DTOs
         public bool FirstTimeOrder { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
+        /// <summary>Restricted-admin-page keys this (Admin-role) user has been granted read-only access to.</summary>
+        public List<string> ViewablePages { get; set; } = new();
         /// <summary>When true, user can receive emails and (in future) SMS from the company.</summary>
         public bool CanReceiveCommunications { get; set; }
         public bool CanReceiveEmails { get; set; }
@@ -438,6 +440,12 @@ namespace DreamCleaningBackend.DTOs
     {
         [Required]
         public string Role { get; set; }
+    }
+
+    /// <summary>Restricted-admin-page keys to grant a regular Admin read-only access to.</summary>
+    public class UpdateViewablePagesDto
+    {
+        public List<string> Pages { get; set; } = new();
     }
 
     public class UpdateUserStatusDto

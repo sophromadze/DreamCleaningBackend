@@ -50,7 +50,7 @@ namespace DreamCleaningBackend.Controllers
         // ───── Statistics (SuperAdmin only) ─────
 
         [HttpGet("statistics")]
-        [Authorize(Roles = "SuperAdmin")]
+        [RequirePageView(AdminViewablePages.Statistics)]
         public async Task<ActionResult<OrderStatisticsDto>> GetOrderStatistics(
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)
@@ -128,7 +128,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpGet("statistics/daily")]
-        [Authorize(Roles = "SuperAdmin")]
+        [RequirePageView(AdminViewablePages.Statistics)]
         public async Task<ActionResult<List<DailyStatisticsDto>>> GetDailyStatistics(
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)
@@ -238,7 +238,7 @@ namespace DreamCleaningBackend.Controllers
         // another.
 
         [HttpGet("statistics/financial-rates")]
-        [Authorize(Roles = "SuperAdmin")]
+        [RequirePageView(AdminViewablePages.Statistics)]
         public async Task<ActionResult<List<MonthlyFinancialRateDto>>> GetFinancialRates(
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)

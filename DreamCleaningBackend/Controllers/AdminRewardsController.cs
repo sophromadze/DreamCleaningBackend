@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 using System.Security.Claims;
 using System.Text.Json;
@@ -43,6 +45,7 @@ namespace DreamCleaningBackend.Controllers
         // ─── Settings ───────────────────────────────────────────────────────────
 
         [HttpGet("settings")]
+        [RequirePageView(AdminViewablePages.BubbleRewards)]
         public async Task<ActionResult<List<BubbleRewardsSettingDto>>> GetSettings()
         {
             try
@@ -770,6 +773,7 @@ namespace DreamCleaningBackend.Controllers
         // ─── Stats ───────────────────────────────────────────────────────────────
 
         [HttpGet("stats")]
+        [RequirePageView(AdminViewablePages.BubbleRewards)]
         public async Task<ActionResult<RewardsStatsDto>> GetStats()
         {
             try

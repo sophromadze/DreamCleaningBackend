@@ -18,6 +18,7 @@ using Microsoft.OpenApi.Models;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddScoped<IPermissionService, PermissionService>();
+builder.Services.AddScoped<IPageAccessService, PageAccessService>();
 
 // Add memory cache for short-lived tokens (e.g. Google merge initiation)
 builder.Services.AddMemoryCache();
