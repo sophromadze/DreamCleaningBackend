@@ -25,6 +25,15 @@ namespace DreamCleaningBackend.Models
         public int ServiceTypeId { get; set; }
         public virtual ServiceType ServiceType { get; set; }
 
+        // For the custom ("Pre-Arranged") service type only: the per-order display name an admin
+        // chose at booking time (e.g. "Deep", "Office", "Move In/Out"). Stored WITHOUT the trailing
+        // "Cleaning" word. Customer/cleaner-facing surfaces show "<this> Cleaning" instead of the
+        // generic custom service-type name; the admin orders table shows just "<this>". Null for
+        // non-custom orders and for legacy custom orders booked before this field existed.
+        // Use GetDisplayServiceTypeName() (OrderServiceTypeNameExtensions) to resolve the effective name.
+        [StringLength(100)]
+        public string? CustomServiceDisplayName { get; set; }
+
         // Order details
         [Required]
         public DateTime OrderDate { get; set; }

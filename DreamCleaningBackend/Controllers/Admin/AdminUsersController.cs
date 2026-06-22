@@ -140,7 +140,9 @@ namespace DreamCleaningBackend.Controllers
                     {
                         o.UserId,
                         o.ServiceDate,
-                        ServiceTypeName = o.ServiceType.Name,
+                        ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
+                            ? o.CustomServiceDisplayName + " Cleaning"
+                            : (o.ServiceType != null ? o.ServiceType.Name : ""),
                         o.BedroomsQuantity,
                         o.BathroomsQuantity
                     })
@@ -239,7 +241,9 @@ namespace DreamCleaningBackend.Controllers
                         o.UserId,
                         o.ServiceDate,
                         o.ServiceTime,
-                        ServiceTypeName = o.ServiceType.Name,
+                        ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
+                            ? o.CustomServiceDisplayName + " Cleaning"
+                            : (o.ServiceType != null ? o.ServiceType.Name : ""),
                         o.ServiceAddress,
                         o.AptSuite,
                         o.City,
@@ -973,7 +977,11 @@ namespace DreamCleaningBackend.Controllers
                         ContactEmail = o.ContactEmail,
                         ContactFirstName = o.ContactFirstName,
                         ContactLastName = o.ContactLastName,
-                        ServiceTypeName = o.ServiceType.Name,
+                        ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
+                            ? o.CustomServiceDisplayName + " Cleaning"
+                            : (o.ServiceType != null ? o.ServiceType.Name : ""),
+                        IsCustomServiceType = o.ServiceType != null && o.ServiceType.IsCustom,
+                        CustomServiceDisplayName = o.CustomServiceDisplayName,
                         ServiceDate = o.ServiceDate,
                         ServiceTime = o.ServiceTime,
                         Status = o.Status,

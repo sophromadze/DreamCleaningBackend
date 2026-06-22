@@ -9,7 +9,12 @@ namespace DreamCleaningBackend.DTOs
         public int Id { get; set; }
         public int UserId { get; set; }
         public int ServiceTypeId { get; set; }
+        // Already resolved through OrderServiceTypeNameExtensions — "<label> Cleaning" for custom orders.
         public string ServiceTypeName { get; set; }
+        // True when this order uses the custom ("Pre-Arranged") service type.
+        public bool IsCustomServiceType { get; set; }
+        // Bare admin-chosen label for custom orders (no "Cleaning" suffix), e.g. "Deep". Null otherwise.
+        public string? CustomServiceDisplayName { get; set; }
         public DateTime OrderDate { get; set; }
         public DateTime ServiceDate { get; set; }
         public TimeSpan ServiceTime { get; set; }
@@ -167,6 +172,22 @@ namespace DreamCleaningBackend.DTOs
         public string PaymentIntentId { get; set; }
     }
 
+    // SuperAdmin-only: change the display label of an existing custom ("Pre-Arranged") order.
+    public class UpdateOrderCustomServiceNameDto
+    {
+        [StringLength(100)]
+        public string? CustomServiceDisplayName { get; set; }
+    }
+
+    public class OrderCustomServiceNameResultDto
+    {
+        public int OrderId { get; set; }
+        // Bare label (no "Cleaning"), e.g. "Deep". Null when cleared.
+        public string? CustomServiceDisplayName { get; set; }
+        // Effective customer/cleaner-facing name, e.g. "Deep Cleaning".
+        public string ServiceTypeName { get; set; } = string.Empty;
+    }
+
     public class OrderListDto
     {
         public int Id { get; set; }
@@ -176,11 +197,15 @@ namespace DreamCleaningBackend.DTOs
         public string ContactLastName { get; set; }  
         public string ServiceTypeName { get; set; }
         public bool IsCustomServiceType { get; set; }
+        // Bare admin-chosen label for custom orders (no "Cleaning" suffix), e.g. "Deep". Null otherwise.
+        // The admin orders table shows this directly; legacy custom orders (null) fall back to "Arranged".
+        public string? CustomServiceDisplayName { get; set; }
         public DateTime ServiceDate { get; set; }
         public TimeSpan ServiceTime { get; set; }
         public string Status { get; set; }
         public decimal Total { get; set; }
         public string ServiceAddress { get; set; }
+        public string City { get; set; }
         public DateTime OrderDate { get; set; }
         public decimal TotalDuration { get; set; }
         public decimal Tips { get; set; }

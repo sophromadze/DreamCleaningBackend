@@ -66,6 +66,13 @@ namespace DreamCleaningBackend.Data
         public DbSet<UserNote> UserNotes { get; set; }
         public DbSet<UserCleaningPhoto> UserCleaningPhotos { get; set; }
 
+        // CRM — sales pipeline
+        public DbSet<Lead> Leads { get; set; }
+        public DbSet<LeadActivity> LeadActivities { get; set; }
+        public DbSet<CustomerTag> CustomerTags { get; set; }
+        public DbSet<AutomationRule> AutomationRules { get; set; }
+        public DbSet<AutomationAlert> AutomationAlerts { get; set; }
+
         // Marketing — homepage before/after gallery
         public DbSet<BeforeAfterPhoto> BeforeAfterPhotos { get; set; }
 
@@ -912,6 +919,66 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(e => e.AdminId)
                     .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // CRM Lead configuration
+            modelBuilder.Entity<Lead>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Stage).HasDatabaseName("IX_Leads_Stage");
+                entity.HasIndex(e => e.Source).HasDatabaseName("IX_Leads_Source");
+                entity.HasIndex(e => e.AssignedToAdminId).HasDatabaseName("IX_Leads_AssignedTo");
+                entity.HasIndex(e => e.LastActivityAt).HasDatabaseName("IX_Leads_LastActivity");
+                entity.HasOne(e => e.AssignedToAdmin)
+                    .WithMany()
+                    .HasForeignKey(e => e.AssignedToAdminId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // CRM LeadActivity configuration
+            modelBuilder.Entity<LeadActivity>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.LeadId).HasDatabaseName("IX_LeadActivities_LeadId");
+                entity.HasOne(e => e.Lead)
+                    .WithMany(l => l.Activities)
+                    .HasForeignKey(e => e.LeadId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.Admin)
+                    .WithMany()
+                    .HasForeignKey(e => e.AdminId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // CRM CustomerTag configuration
+            modelBuilder.Entity<CustomerTag>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                // One label per customer — prevents duplicate pills.
+                entity.HasIndex(e => new { e.UserId, e.Label }).IsUnique().HasDatabaseName("IX_CustomerTags_User_Label");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // CRM AutomationRule configuration
+            modelBuilder.Entity<AutomationRule>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Key).IsUnique().HasDatabaseName("IX_AutomationRules_Key");
+            });
+
+            // CRM AutomationAlert configuration
+            modelBuilder.Entity<AutomationAlert>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.RuleKey, e.Status }).HasDatabaseName("IX_AutomationAlerts_Rule_Status");
+                entity.HasIndex(e => new { e.RuleKey, e.UserId }).HasDatabaseName("IX_AutomationAlerts_Rule_User");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
 
             // HandoverNote configuration

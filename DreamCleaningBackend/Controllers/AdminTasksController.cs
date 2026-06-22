@@ -134,7 +134,9 @@ namespace DreamCleaningBackend.Controllers
                     ContactEmail = o.ContactEmail,
                     ContactPhone = o.ContactPhone,
                     ServiceAddress = o.ServiceAddress,
-                    ServiceTypeName = o.ServiceType != null ? o.ServiceType.Name : "",
+                    ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
+                        ? o.CustomServiceDisplayName + " Cleaning"
+                        : (o.ServiceType != null ? o.ServiceType.Name : ""),
                     ServiceDate = o.ServiceDate,
                     Status = o.Status
                 })

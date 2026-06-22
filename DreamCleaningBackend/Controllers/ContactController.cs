@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using DreamCleaningBackend.Services.Interfaces;
 using System.ComponentModel.DataAnnotations;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -12,15 +13,26 @@ namespace DreamCleaningBackend.Controllers
         private readonly IEmailService _emailService;
         private readonly IConfiguration _configuration;
         private readonly ILogger<ContactController> _logger;
+        private readonly ILeadCaptureService _leadCapture;
 
         public ContactController(
             IEmailService emailService,
             IConfiguration configuration,
-            ILogger<ContactController> logger)
+            ILogger<ContactController> logger,
+            ILeadCaptureService leadCapture)
         {
             _emailService = emailService;
             _configuration = configuration;
             _logger = logger;
+            _leadCapture = leadCapture;
+        }
+
+        /// <summary>Split a single "First Last" string into (first, last) for lead capture.</summary>
+        private static (string? first, string? last) SplitName(string? fullName)
+        {
+            if (string.IsNullOrWhiteSpace(fullName)) return (null, null);
+            var parts = fullName.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length == 1 ? (parts[0], null) : (parts[0], parts[1]);
         }
 
         [HttpPost]
@@ -75,6 +87,14 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 _logger.LogInformation($"Contact form submitted by {contactForm.FullName} ({contactForm.Email})");
+
+                // Capture as a CRM lead (best-effort — never blocks the contact flow).
+                var (firstName, lastName) = SplitName(contactForm.FullName);
+                await _leadCapture.CaptureAsync(
+                    LeadSource.ContactForm,
+                    firstName, lastName,
+                    contactForm.Email, contactForm.Phone,
+                    message: contactForm.Message);
 
                 return Ok(new { message = "Your message has been sent successfully!" });
             }
@@ -204,6 +224,15 @@ namespace DreamCleaningBackend.Controllers
                 await _emailService.SendContactFormEmailAsync(companyEmail, subject, body);
 
                 _logger.LogInformation($"Quote request submitted by {fullName} (Phone: {FormatPhoneNumber(quoteRequest.Phone)}, Email: {quoteRequest.Email})");
+
+                // Capture as a CRM lead (best-effort — never blocks the quote flow).
+                await _leadCapture.CaptureAsync(
+                    LeadSource.QuoteRequest,
+                    quoteRequest.FirstName, quoteRequest.LastName,
+                    quoteRequest.Email, quoteRequest.Phone,
+                    serviceAddress: quoteRequest.HomeAddress,
+                    cleaningType: quoteRequest.CleaningType,
+                    message: quoteRequest.Message);
 
                 return Ok(new { message = "Your quote request has been received! We'll call you back soon." });
             }

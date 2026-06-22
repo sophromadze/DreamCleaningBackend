@@ -941,7 +941,7 @@ namespace DreamCleaningBackend.Services
             string tipsValue = perCleanerTips > 0 ? $"${perCleanerTips:F2}" : "—";
 
             var rows = new System.Text.StringBuilder();
-            rows.Append(BuildRow(labels["cleaningType"], order.ServiceType?.Name ?? "—"));
+            rows.Append(BuildRow(labels["cleaningType"], order.GetDisplayServiceTypeName("—")));
             // Bedrooms / bathrooms are stored on the order as nullable ints when the customer
             // picked them at booking time. Only emit a row when set (0 is still meaningful — a
             // studio shows "0 bedrooms" — so we check HasValue, not the count).
@@ -1056,7 +1056,7 @@ namespace DreamCleaningBackend.Services
             var perCleanerTips = Math.Round(order.Tips / maidsCount, 2);
 
             var lines = new List<string>();
-            lines.Add($"#{order.Id} {order.ServiceType?.Name ?? "—"}");
+            lines.Add($"#{order.Id} {order.GetDisplayServiceTypeName("—")}");
 
             // Compact bed/bath line — fits both in one row when set, e.g. "2 bd / 1 ba".
             var bb = new List<string>();

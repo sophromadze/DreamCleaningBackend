@@ -167,6 +167,8 @@ builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<IGiftCardService, GiftCardService>();
 builder.Services.AddScoped<IBookingCreationService, BookingCreationService>();
+builder.Services.AddScoped<ILeadCaptureService, LeadCaptureService>();
+builder.Services.AddScoped<IAutomationEvaluationService, AutomationEvaluationService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuditService, AuditService>();
 // UnverifiedUserCleanupService removed — email verification now uses OTP, accounts are never auto-deleted
@@ -222,6 +224,7 @@ builder.Services.AddScoped<ITwoFactorService, TwoFactorService>();
 // hour. Settings are read fresh per cycle (cached 5 min inside BubbleRewardsSettingsService).
 builder.Services.AddScoped<ILoyaltyDiscountService, LoyaltyDiscountService>();
 builder.Services.AddHostedService<LoyaltyReengagementService>();
+builder.Services.AddHostedService<AutomationBackgroundService>();
 
 // LiveChat services
 // TEMPORARILY DISABLED — Telegram bot integration is off. The Singleton registrations

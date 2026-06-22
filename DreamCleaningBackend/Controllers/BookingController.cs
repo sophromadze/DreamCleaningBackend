@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Services;
@@ -634,7 +635,7 @@ namespace DreamCleaningBackend.Controllers
                             {
                                 await _emailService.SendCustomerBookingConfirmationAsync(
                                     manualContactEmail, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
-                                    order.ServiceType.Name, manualAddressDisplay, order.Id,
+                                    order.GetDisplayServiceTypeName(), manualAddressDisplay, order.Id,
                                     manualHasCleaningSupplies, manualIsDeepCleaning, manualIsCustomServiceType,
                                     order.FloorTypes, order.FloorTypeOther,
                                     // Manual payment path: customer pays cleaners on arrival, so drop
@@ -1393,7 +1394,7 @@ namespace DreamCleaningBackend.Controllers
                                 customerName,
                                 order.ServiceDate,
                                 serviceTimeStr,
-                                order.ServiceType.Name,
+                                order.GetDisplayServiceTypeName(),
                                 addressDisplay,
                                 order.Id,
                                 hasCleaningSupplies,
@@ -1456,7 +1457,7 @@ namespace DreamCleaningBackend.Controllers
                             order.ContactPhone,
                             order.ServiceDate,
                             order.ServiceTime.ToString(),
-                            order.ServiceType.Name,
+                            order.GetDisplayServiceTypeName(),
                             order.ServiceAddress,
                             order.AptSuite,
                             order.City,

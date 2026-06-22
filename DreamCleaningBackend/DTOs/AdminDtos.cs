@@ -484,6 +484,17 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentNotes { get; set; }
     }
 
+    // SuperAdmin-only: record a non-Stripe payment for a single additional-amount (order-edit) row.
+    // Used when the order top-up was collected outside Stripe (e.g. Zelle/Cash/Check). PaymentMethod
+    // must be a non-Normal value; parsed case-insensitively.
+    public class RecordManualAdditionalPaymentDto
+    {
+        [Required]
+        public string PaymentMethod { get; set; }
+        public string? PaymentReference { get; set; }
+        public string? PaymentNotes { get; set; }
+    }
+
     // SuperAdmin-only: full user edit (all changes are audit-logged)
     public class SuperAdminUpdateUserDto
     {

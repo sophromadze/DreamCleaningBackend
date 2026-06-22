@@ -66,7 +66,8 @@ namespace DreamCleaningBackend.Services
                 Ranking = c.Ranking,
                 PhotoUrl = c.PhotoUrl,
                 IsActive = c.IsActive,
-                CreatedAt = c.CreatedAt
+                CreatedAt = c.CreatedAt,
+                MainNote = c.MainNote
             }).ToList();
         }
 
@@ -134,11 +135,11 @@ namespace DreamCleaningBackend.Services
             if (cleaner == null)
                 return null;
 
+            // Guard against orphaned OrderCleaner rows (e.g. an order hard-deleted out from
+            // under the assignment): dereferencing oc.Order on a missing order throws and
+            // surfaces as a 500 on the cleaner-detail endpoint.
             var assignments = await _context.OrderCleaners
-                .Where(oc => oc.CleanerId == id)
-                .Include(oc => oc.Order)
-                    .ThenInclude(o => o.ServiceType)
-                .OrderByDescending(oc => oc.Order.ServiceDate)
+                .Where(oc => oc.CleanerId == id && oc.Order != null)
                 .Select(oc => new CleanerAssignedOrderDto
                 {
                     OrderId = oc.OrderId,
@@ -151,6 +152,7 @@ namespace DreamCleaningBackend.Services
                     AssignedAt = oc.AssignedAt,
                     AssignmentNotificationSentAt = oc.AssignmentNotificationSentAt
                 })
+                .OrderByDescending(dto => dto.ServiceDate)
                 .ToListAsync();
 
             return MapToDetail(cleaner, assignments);

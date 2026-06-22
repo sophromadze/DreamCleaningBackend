@@ -21,5 +21,12 @@
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
         public string? UpdateNotes { get; set; }
+
+        // Manual payment of the additional amount (Zelle/Cash/Check/Other). "Normal" means the
+        // top-up was paid via Stripe (or is still unpaid). Lets the admin panel show e.g.
+        public string PaymentMethod { get; set; } = "Normal";
+        public string? PaymentReference { get; set; }
+        public string? PaymentNotes { get; set; }
+        public DateTime? ManualPaymentRecordedAt { get; set; }
     }
 }

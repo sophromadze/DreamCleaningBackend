@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Repositories.Interfaces;
@@ -53,13 +54,15 @@ namespace DreamCleaningBackend.Services
                 ContactEmail = o.ContactEmail,
                 ContactFirstName = o.ContactFirstName,
                 ContactLastName = o.ContactLastName,
-                ServiceTypeName = o.ServiceType?.Name ?? "",
+                ServiceTypeName = o.GetDisplayServiceTypeName(),
                 IsCustomServiceType = o.ServiceType?.IsCustom ?? false,
+                CustomServiceDisplayName = o.CustomServiceDisplayName,
                 ServiceDate = o.ServiceDate,
                 ServiceTime = o.ServiceTime,
                 Status = o.Status,
                 Total = o.Total,
                 ServiceAddress = o.ServiceAddress + (string.IsNullOrEmpty(o.AptSuite) ? "" : $", {o.AptSuite}"),
+                City = o.City,
                 OrderDate = o.OrderDate,
                 TotalDuration = o.TotalDuration,
                 Tips = o.Tips,
@@ -139,13 +142,15 @@ namespace DreamCleaningBackend.Services
                 ContactEmail = o.ContactEmail,  
                 ContactFirstName = o.ContactFirstName,  
                 ContactLastName = o.ContactLastName,  
-                ServiceTypeName = o.ServiceType?.Name ?? "",
+                ServiceTypeName = o.GetDisplayServiceTypeName(),
                 IsCustomServiceType = o.ServiceType?.IsCustom ?? false,
+                CustomServiceDisplayName = o.CustomServiceDisplayName,
                 ServiceDate = o.ServiceDate,
                 ServiceTime = o.ServiceTime,
                 Status = o.Status,
                 Total = o.Total,
                 ServiceAddress = o.ServiceAddress + (string.IsNullOrEmpty(o.AptSuite) ? "" : $", {o.AptSuite}"),
+                City = o.City,
                 OrderDate = o.OrderDate,
                 TotalDuration = o.TotalDuration,
                 Tips = o.Tips,
@@ -737,13 +742,15 @@ namespace DreamCleaningBackend.Services
                 ContactEmail = o.ContactEmail,
                 ContactFirstName = o.ContactFirstName,
                 ContactLastName = o.ContactLastName,
-                ServiceTypeName = o.ServiceType?.Name ?? "",
+                ServiceTypeName = o.GetDisplayServiceTypeName(),
                 IsCustomServiceType = o.ServiceType?.IsCustom ?? false,
+                CustomServiceDisplayName = o.CustomServiceDisplayName,
                 ServiceDate = o.ServiceDate,
                 ServiceTime = o.ServiceTime,
                 Status = o.Status,
                 Total = o.Total,
                 ServiceAddress = o.ServiceAddress + (string.IsNullOrEmpty(o.AptSuite) ? "" : $", {o.AptSuite}"),
+                City = o.City,
                 OrderDate = o.OrderDate,
                 TotalDuration = o.TotalDuration,
                 Tips = o.Tips,

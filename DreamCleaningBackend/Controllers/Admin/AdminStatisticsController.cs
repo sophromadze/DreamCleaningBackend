@@ -96,8 +96,21 @@ namespace DreamCleaningBackend.Controllers
                 .GroupBy(_ => 1)
                 .Select(g => new { Count = g.Count(), Total = g.Sum(o => o.Total) })
                 .FirstOrDefaultAsync();
+
+            // Mixed-payment correction: when a Stripe order was later topped up via an order edit
+            // whose additional amount was collected OUTSIDE Stripe (Zelle/Cash/Check), that part of
+            // o.Total never went through the card. Subtract those manually-paid additional amounts
+            // from the percentage-fee base so no Stripe fee is charged on money Stripe never touched.
+            // The per-order fixed fee stays — the base order still had one real card transaction.
+            var manualAdditionalsOnStripeOrders = await windowed
+                .Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal)
+                .SelectMany(o => o.UpdateHistory)
+                .Where(h => h.IsPaid && h.PaymentMethod != PaymentMethod.Normal)
+                .SumAsync(h => (decimal?)h.AdditionalAmount) ?? 0m;
+
             stats.StripeFees = stripeAgg == null ? 0m
-                : decimal.Round(stripeAgg.Total * StripeFeePercent + stripeAgg.Count * StripeFixedFee, 2);
+                : decimal.Round((stripeAgg.Total - manualAdditionalsOnStripeOrders) * StripeFeePercent
+                                + stripeAgg.Count * StripeFixedFee, 2);
 
             // Admin bonuses (GEL), converted to USD per-month at each month's locked FX rate.
             // Eligible = assigned + Done + (paid or manual), matching AdminBonusService.
@@ -146,6 +159,7 @@ namespace DreamCleaningBackend.Controllers
             var orders = await query
                 .Select(o => new
                 {
+                    o.Id,
                     o.ServiceDate,
                     o.SubTotal,
                     o.Tax,
@@ -158,6 +172,16 @@ namespace DreamCleaningBackend.Controllers
                     o.AssignedAdminId
                 })
                 .ToListAsync();
+
+            // Per-order sum of additional amounts that were paid OUTSIDE Stripe (mirrors the
+            // mixed-payment correction in /statistics). Subtracted from each order's Stripe-fee
+            // base below so the daily chart's fees/revenue match the totals page.
+            var manualAdditionalsByOrder = await query
+                .SelectMany(o => o.UpdateHistory)
+                .Where(h => h.IsPaid && h.PaymentMethod != PaymentMethod.Normal)
+                .GroupBy(h => h.OrderId)
+                .Select(g => new { OrderId = g.Key, Sum = g.Sum(x => x.AdditionalAmount) })
+                .ToDictionaryAsync(x => x.OrderId, x => x.Sum);
 
             // Preload the locked month snapshots for every month present in the data (not the raw
             // window — an open-ended "all time" range must not iterate from year 1).
@@ -190,7 +214,8 @@ namespace DreamCleaningBackend.Controllers
                 .ToDictionary(g => g.Key, g =>
                 {
                     var stripeFees = g.Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal)
-                                      .Sum(o => StripeFeeFor(o.Total));
+                                      .Sum(o => StripeFeeFor(o.Total
+                                          - (manualAdditionalsByOrder.TryGetValue(o.Id, out var mAdd) ? mAdd : 0m)));
                     var adminBonuses = g.Where(o => o.AssignedAdminId != null)
                                         .Sum(o => BonusUsdFor(o.ServiceDate.Year, o.ServiceDate.Month));
                     var computed = stripeFees + adminBonuses;

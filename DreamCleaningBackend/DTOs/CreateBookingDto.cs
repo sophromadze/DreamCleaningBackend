@@ -7,6 +7,11 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public int ServiceTypeId { get; set; }
 
+        // Admin-chosen display label for the custom ("Pre-Arranged") service type (e.g. "Deep").
+        // Stored without the "Cleaning" suffix; ignored unless the selected service type IsCustom.
+        [StringLength(100)]
+        public string? CustomServiceDisplayName { get; set; }
+
         [Required]
         public List<BookingServiceDto> Services { get; set; } = new List<BookingServiceDto>();
 

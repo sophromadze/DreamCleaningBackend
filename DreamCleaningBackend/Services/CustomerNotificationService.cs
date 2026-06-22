@@ -116,7 +116,7 @@ namespace DreamCleaningBackend.Services
                             $"{order.ContactFirstName} {order.ContactLastName}",
                             order.ServiceDate,
                             order.ServiceTime.ToString(),
-                            order.ServiceType?.Name ?? "Cleaning Service",
+                            order.GetDisplayServiceTypeName("Cleaning Service"),
                             order.ServiceAddress,
                             true // This is a 2-day reminder
                         );
@@ -158,7 +158,7 @@ namespace DreamCleaningBackend.Services
                                 $"{order.ContactFirstName} {order.ContactLastName}",
                                 order.ServiceDate,
                                 order.ServiceTime.ToString(),
-                                order.ServiceType?.Name ?? "Cleaning Service",
+                                order.GetDisplayServiceTypeName("Cleaning Service"),
                                 order.ServiceAddress,
                                 false // This is a 2-hour (same day) reminder
                             );

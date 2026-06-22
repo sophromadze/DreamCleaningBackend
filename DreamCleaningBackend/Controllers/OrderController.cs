@@ -6,6 +6,7 @@ using DreamCleaningBackend.Services.Interfaces;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 
@@ -50,6 +51,56 @@ namespace DreamCleaningBackend.Controllers
                 return Ok(result);
             }
             catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // PATCH /api/order/{id}/custom-service-name — change the display label of an existing
+        // custom ("Pre-Arranged") order. SuperAdmin and Admin. Rejected for non-custom orders so
+        // the label can never be set on a regular service type. Used to fix legacy "Arranged" orders.
+        [HttpPatch("{orderId}/custom-service-name")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        public async Task<ActionResult<OrderCustomServiceNameResultDto>> SetCustomServiceName(int orderId, [FromBody] UpdateOrderCustomServiceNameDto dto)
+        {
+            try
+            {
+                var order = await _context.Orders
+                    .Include(o => o.ServiceType)
+                    .FirstOrDefaultAsync(o => o.Id == orderId);
+
+                if (order == null)
+                    return NotFound(new { message = "Order not found" });
+
+                if (order.ServiceType == null || !order.ServiceType.IsCustom)
+                    return BadRequest(new { message = "Service type name can only be changed for custom service type orders." });
+
+                // Snapshot before for the audit diff.
+                var before = new Order { Id = order.Id, CustomServiceDisplayName = order.CustomServiceDisplayName };
+
+                var trimmed = dto.CustomServiceDisplayName?.Trim();
+                order.CustomServiceDisplayName = string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+                order.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                try
+                {
+                    var after = new Order { Id = order.Id, CustomServiceDisplayName = order.CustomServiceDisplayName };
+                    await _auditService.LogUpdateAsync(before, after);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to audit custom-service-name change for order {orderId}");
+                }
+
+                return Ok(new OrderCustomServiceNameResultDto
+                {
+                    OrderId = order.Id,
+                    CustomServiceDisplayName = order.CustomServiceDisplayName,
+                    ServiceTypeName = order.GetDisplayServiceTypeName()
+                });
+            }
+            catch (Exception ex)
             {
                 return BadRequest(new { message = ex.Message });
             }

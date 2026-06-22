@@ -969,11 +969,90 @@ namespace DreamCleaningBackend.Controllers
                     h.IsPaid,
                     h.PaidAt,
                     h.UpdateNotes,
-                    h.UpdatedPaymentNotificationSentAt
+                    h.UpdatedPaymentNotificationSentAt,
+                    PaymentMethod = h.PaymentMethod.ToString(),
+                    h.PaymentReference,
+                    h.PaymentNotes,
+                    h.ManualPaymentRecordedAt
                 })
                 .ToListAsync();
 
             return Ok(history);
+        }
+
+        /// <summary>
+        /// Record a manual (non-Stripe) payment for a single additional-amount row. Used when the
+        /// customer paid the order top-up outside Stripe (e.g. Zelle/Cash/Check) — typically after
+        /// the cleaning ran longer and the order was edited up. Marks just this history row paid via
+        /// the chosen method; the base order's PaymentMethod stays Normal so it still counts as a
+        /// Stripe order. Statistics exclude this manually-paid additional from the Stripe-fee base.
+        /// Gated on the Update permission (Admins with order-update rights + SuperAdmin), matching
+        /// the order status-update and cancel endpoints.
+        /// </summary>
+        [HttpPost("orders/{orderId}/update-history/{historyId}/record-manual-payment")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> RecordManualAdditionalPayment(
+            int orderId, int historyId, [FromBody] RecordManualAdditionalPaymentDto dto)
+        {
+            if (!Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm) ||
+                pm == PaymentMethod.Normal)
+            {
+                return BadRequest(new { message = "PaymentMethod must be one of: Cash, Zelle, Check, Other." });
+            }
+
+            var history = await _context.OrderUpdateHistories
+                .FirstOrDefaultAsync(h => h.Id == historyId && h.OrderId == orderId);
+            if (history == null)
+                return NotFound(new { message = "Update-history record not found for this order." });
+
+            if (history.AdditionalAmount <= 0.01m)
+                return BadRequest(new { message = "This update has no additional amount to collect." });
+
+            if (history.IsPaid)
+                return BadRequest(new { message = "This additional amount is already marked as paid." });
+
+            history.IsPaid = true;
+            history.PaidAt = DateTime.UtcNow;
+            history.PaymentMethod = pm;
+            history.PaymentReference = dto.PaymentReference;
+            history.PaymentNotes = dto.PaymentNotes;
+            history.ManualPaymentRecordedAt = DateTime.UtcNow;
+            history.ManualPaymentRecordedByUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+
+            await _context.SaveChangesAsync();
+
+            // Mirror the Stripe additional-payment confirmation (OrderController): once there are
+            // no more unpaid additional amounts, flip the order Pending -> Active. The edit that
+            // created the additional amount moved it to Pending ("awaiting payment"); collecting
+            // the top-up (here, manually) completes it. Don't touch Done/Cancelled.
+            var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+            bool statusReactivated = false;
+            if (order != null)
+            {
+                var hasRemainingUnpaid = await _context.OrderUpdateHistories.AnyAsync(h =>
+                    h.OrderId == orderId &&
+                    !h.IsPaid &&
+                    h.AdditionalAmount > 0.01m);
+
+                if (!hasRemainingUnpaid &&
+                    order.IsPaid &&
+                    string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
+                {
+                    order.Status = "Active";
+                    await _context.SaveChangesAsync();
+                    statusReactivated = true;
+                }
+            }
+
+            return Ok(new
+            {
+                message = $"Recorded {pm} payment of ${history.AdditionalAmount:F2} for the additional charge.",
+                historyId = history.Id,
+                paymentMethod = pm.ToString(),
+                paidAt = history.PaidAt,
+                statusReactivated,
+                status = order?.Status
+            });
         }
 
         /// <summary>Send a gentle reminder (email + SMS) to the customer about their unpaid additional payment. Requires View or Update.</summary>

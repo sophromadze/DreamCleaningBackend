@@ -1,6 +1,7 @@
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -146,7 +147,7 @@ namespace DreamCleaningBackend.Controllers
                     {
                         OrderId = g.Key,
                         OrderServiceDate = first.Order?.ServiceDate,
-                        OrderServiceTypeName = first.Order?.ServiceType?.Name,
+                        OrderServiceTypeName = first.Order != null ? first.Order.GetDisplayServiceTypeName() : null,
                         Photos = g.OrderByDescending(p => p.CreatedAt).Select(MapPhoto).ToList()
                     };
                 })

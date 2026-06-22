@@ -101,6 +101,10 @@ namespace DreamCleaningBackend.Services
             {
                 UserId = orderUserId,
                 ServiceTypeId = dto.ServiceTypeId,
+                // Per-order display label, only meaningful for the custom service type.
+                CustomServiceDisplayName = serviceType.IsCustom
+                    ? (string.IsNullOrWhiteSpace(dto.CustomServiceDisplayName) ? null : dto.CustomServiceDisplayName.Trim())
+                    : null,
                 ApartmentId = dto.ApartmentId,
                 ApartmentName = dto.ApartmentName,
                 ServiceAddress = dto.ServiceAddress,

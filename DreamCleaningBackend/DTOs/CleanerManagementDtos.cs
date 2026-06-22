@@ -25,6 +25,9 @@ namespace DreamCleaningBackend.DTOs
         public string? PhotoUrl { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
+
+        // Included in the list so the dashboard doesn't need an N+1 detail fetch per cleaner.
+        public string? MainNote { get; set; }
     }
 
     public class CleanerDetailDto : CleanerListItemDto
@@ -32,7 +35,6 @@ namespace DreamCleaningBackend.DTOs
         public string? RestrictedReason { get; set; }
         public string? Allergies { get; set; }
         public string? Restrictions { get; set; }
-        public string? MainNote { get; set; }
         public string? DocumentUrl { get; set; }
         public CleanerDocumentType? DocumentType { get; set; }
         public DateTime? UpdatedAt { get; set; }

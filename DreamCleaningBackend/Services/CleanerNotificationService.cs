@@ -116,7 +116,7 @@ namespace DreamCleaningBackend.Services
                             $"{orderCleaner.Cleaner.FirstName} {orderCleaner.Cleaner.LastName}",
                             orderCleaner.Order.ServiceDate,
                             orderCleaner.Order.ServiceTime.ToString(),
-                            orderCleaner.Order.ServiceType?.Name ?? "Cleaning Service",
+                            orderCleaner.Order.GetDisplayServiceTypeName("Cleaning Service"),
                             orderCleaner.Order.ServiceAddress,
                             true,
                             orderCleaner.Cleaner.Nationality
@@ -157,7 +157,7 @@ namespace DreamCleaningBackend.Services
                                 $"{orderCleaner.Cleaner.FirstName} {orderCleaner.Cleaner.LastName}",
                                 orderCleaner.Order.ServiceDate,
                                 orderCleaner.Order.ServiceTime.ToString(),
-                                orderCleaner.Order.ServiceType?.Name ?? "Cleaning Service",
+                                orderCleaner.Order.GetDisplayServiceTypeName("Cleaning Service"),
                                 orderCleaner.Order.ServiceAddress,
                                 false,
                                 orderCleaner.Cleaner.Nationality

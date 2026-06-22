@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260621085913_AddOrderCustomServiceDisplayName")]
+    partial class AddOrderCustomServiceDisplayName
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -355,129 +358,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasDatabaseName("IX_AuditLogs_Entity");
 
                     b.ToTable("AuditLogs");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.AutomationAlert", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("Attempts")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("CustomerName")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<DateTime?>("LastAttemptAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasMaxLength(400)
-                        .HasColumnType("varchar(400)");
-
-                    b.Property<DateTime?>("RemindAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<DateTime?>("ResolvedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int?>("ResolvedByAdminId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("ResolvedByAdminName")
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("RuleKey")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("varchar(40)");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)");
-
-                    b.Property<int>("UserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId");
-
-                    b.HasIndex("RuleKey", "Status")
-                        .HasDatabaseName("IX_AutomationAlerts_Rule_Status");
-
-                    b.HasIndex("RuleKey", "UserId")
-                        .HasDatabaseName("IX_AutomationAlerts_Rule_User");
-
-                    b.ToTable("AutomationAlerts");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.AutomationRule", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Action")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)");
-
-                    b.Property<int>("CooldownDays")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(400)
-                        .HasColumnType("varchar(400)");
-
-                    b.Property<bool>("IsEnabled")
-                        .HasColumnType("tinyint(1)");
-
-                    b.Property<string>("Key")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("varchar(40)");
-
-                    b.Property<DateTime?>("LastRunAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int>("LastRunCreatedCount")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(120)
-                        .HasColumnType("varchar(120)");
-
-                    b.Property<int>("ThresholdDays")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Key")
-                        .IsUnique()
-                        .HasDatabaseName("IX_AutomationRules_Key");
-
-                    b.ToTable("AutomationRules");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.BeforeAfterPhoto", b =>
@@ -1340,45 +1220,6 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("ClientInteractions");
                 });
 
-            modelBuilder.Entity("DreamCleaningBackend.Models.CustomerTag", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Color")
-                        .HasMaxLength(10)
-                        .HasColumnType("varchar(10)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int?>("CreatedByAdminId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("CreatedByAdminName")
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("Label")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("varchar(50)");
-
-                    b.Property<int>("UserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId", "Label")
-                        .IsUnique()
-                        .HasDatabaseName("IX_CustomerTags_User_Label");
-
-                    b.ToTable("CustomerTags");
-                });
-
             modelBuilder.Entity("DreamCleaningBackend.Models.Expense", b =>
                 {
                     b.Property<int>("Id")
@@ -1602,7 +1443,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 1,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3359),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7462),
                             Description = "Thorough cleaning of all surfaces and hard-to-reach areas",
                             DisplayOrder = 1,
                             Duration = 60m,
@@ -1621,7 +1462,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 2,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3361),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7465),
                             Description = "Most intensive cleaning service available",
                             DisplayOrder = 2,
                             Duration = 120m,
@@ -1640,7 +1481,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 3,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3363),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7467),
                             Description = "Get your cleaning done today",
                             DisplayOrder = 3,
                             Duration = 0m,
@@ -1659,7 +1500,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 4,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3365),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7469),
                             Description = "Interior window cleaning",
                             DisplayOrder = 4,
                             Duration = 20m,
@@ -1678,7 +1519,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 5,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3367),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7471),
                             Description = "Spot cleaning of walls",
                             DisplayOrder = 5,
                             Duration = 30m,
@@ -1697,7 +1538,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 6,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3369),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7472),
                             Description = "Professional organizing of your space",
                             DisplayOrder = 6,
                             Duration = 30m,
@@ -1716,7 +1557,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 7,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3371),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7474),
                             Description = "Washing and folding service",
                             DisplayOrder = 7,
                             Duration = 45m,
@@ -1736,7 +1577,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 8,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3377),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7478),
                             Description = "Deep cleaning inside and outside",
                             DisplayOrder = 8,
                             Duration = 30m,
@@ -1755,7 +1596,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 9,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3379),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7479),
                             Description = "Deep cleaning of oven interior",
                             DisplayOrder = 9,
                             Duration = 45m,
@@ -1985,137 +1826,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasDatabaseName("IX_HandoverNotes_AdminId");
 
                     b.ToTable("HandoverNotes");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.Lead", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int?>("AssignedToAdminId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("CleaningType")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
-                    b.Property<int?>("ClientId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("ConvertedOrderId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("Email")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
-                    b.Property<decimal?>("EstimatedValue")
-                        .HasColumnType("decimal(10,2)");
-
-                    b.Property<string>("FirstName")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
-                    b.Property<DateTime>("LastActivityAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("LastName")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
-                    b.Property<string>("LostReason")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
-                    b.Property<string>("Message")
-                        .HasMaxLength(2000)
-                        .HasColumnType("varchar(2000)");
-
-                    b.Property<DateTime?>("NextFollowUpDate")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("Phone")
-                        .HasMaxLength(50)
-                        .HasColumnType("varchar(50)");
-
-                    b.Property<string>("ServiceAddress")
-                        .HasMaxLength(500)
-                        .HasColumnType("varchar(500)");
-
-                    b.Property<string>("Source")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("varchar(30)");
-
-                    b.Property<string>("Stage")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AssignedToAdminId")
-                        .HasDatabaseName("IX_Leads_AssignedTo");
-
-                    b.HasIndex("LastActivityAt")
-                        .HasDatabaseName("IX_Leads_LastActivity");
-
-                    b.HasIndex("Source")
-                        .HasDatabaseName("IX_Leads_Source");
-
-                    b.HasIndex("Stage")
-                        .HasDatabaseName("IX_Leads_Stage");
-
-                    b.ToTable("Leads");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.LeadActivity", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int?>("AdminId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("AdminName")
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("Content")
-                        .HasMaxLength(2000)
-                        .HasColumnType("varchar(2000)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int>("LeadId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Type")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AdminId");
-
-                    b.HasIndex("LeadId")
-                        .HasDatabaseName("IX_LeadActivities_LeadId");
-
-                    b.ToTable("LeadActivities");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.MaintenanceMode", b =>
@@ -3481,7 +3191,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 1,
                             Cost = 25m,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3280),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7376),
                             DisplayOrder = 1,
                             InputType = "dropdown",
                             IsActive = true,
@@ -3498,7 +3208,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 2,
                             Cost = 35m,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3283),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7379),
                             DisplayOrder = 2,
                             InputType = "dropdown",
                             IsActive = true,
@@ -3515,7 +3225,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 3,
                             Cost = 0.10m,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3287),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7383),
                             DisplayOrder = 3,
                             InputType = "slider",
                             IsActive = true,
@@ -3533,7 +3243,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 4,
                             Cost = 40m,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3310),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7405),
                             DisplayOrder = 1,
                             InputType = "dropdown",
                             IsActive = true,
@@ -3552,7 +3262,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 5,
                             Cost = 0m,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 958, DateTimeKind.Utc).AddTicks(3312),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(7407),
                             DisplayOrder = 2,
                             InputType = "dropdown",
                             IsActive = true,
@@ -3618,7 +3328,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 1,
                             BasePrice = 120m,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 957, DateTimeKind.Utc).AddTicks(6930),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(724),
                             Description = "Complete home cleaning service",
                             DisplayOrder = 1,
                             HasPoll = false,
@@ -3631,7 +3341,7 @@ namespace DreamCleaningBackend.Migrations
                         {
                             Id = 2,
                             BasePrice = 200m,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 957, DateTimeKind.Utc).AddTicks(6932),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(727),
                             Description = "Professional office cleaning service",
                             DisplayOrder = 2,
                             HasPoll = false,
@@ -3750,7 +3460,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 1,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 957, DateTimeKind.Utc).AddTicks(6761),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(546),
                             Description = "Single cleaning service",
                             DiscountPercentage = 0m,
                             DisplayOrder = 1,
@@ -3761,7 +3471,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 2,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 957, DateTimeKind.Utc).AddTicks(6765),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(553),
                             Description = "Cleaning every week",
                             DiscountPercentage = 15m,
                             DisplayOrder = 2,
@@ -3772,7 +3482,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 3,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 957, DateTimeKind.Utc).AddTicks(6767),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(554),
                             Description = "Cleaning every two weeks",
                             DiscountPercentage = 10m,
                             DisplayOrder = 3,
@@ -3783,7 +3493,7 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 4,
-                            CreatedAt = new DateTime(2026, 6, 22, 22, 53, 40, 957, DateTimeKind.Utc).AddTicks(6768),
+                            CreatedAt = new DateTime(2026, 6, 21, 8, 59, 13, 193, DateTimeKind.Utc).AddTicks(586),
                             Description = "Cleaning once a month",
                             DiscountPercentage = 5m,
                             DisplayOrder = 4,
@@ -4413,17 +4123,6 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("DreamCleaningBackend.Models.AutomationAlert", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.User", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("DreamCleaningBackend.Models.BeforeAfterPhoto", b =>
                 {
                     b.HasOne("DreamCleaningBackend.Models.User", "UploadedByAdmin")
@@ -4527,17 +4226,6 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("Admin");
                 });
 
-            modelBuilder.Entity("DreamCleaningBackend.Models.CustomerTag", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.User", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("DreamCleaningBackend.Models.Expense", b =>
                 {
                     b.HasOne("DreamCleaningBackend.Models.ExpenseCategory", "Category")
@@ -4613,34 +4301,6 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired();
 
                     b.Navigation("Admin");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.Lead", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.User", "AssignedToAdmin")
-                        .WithMany()
-                        .HasForeignKey("AssignedToAdminId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("AssignedToAdmin");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.LeadActivity", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.User", "Admin")
-                        .WithMany()
-                        .HasForeignKey("AdminId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("DreamCleaningBackend.Models.Lead", "Lead")
-                        .WithMany("Activities")
-                        .HasForeignKey("LeadId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Admin");
-
-                    b.Navigation("Lead");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.MonthlyFinancialSnapshot", b =>
@@ -5154,11 +4814,6 @@ namespace DreamCleaningBackend.Migrations
             modelBuilder.Entity("DreamCleaningBackend.Models.GiftCard", b =>
                 {
                     b.Navigation("GiftCardUsages");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.Lead", b =>
-                {
-                    b.Navigation("Activities");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.Order", b =>

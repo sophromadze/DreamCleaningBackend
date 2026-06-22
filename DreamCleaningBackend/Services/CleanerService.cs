@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -394,7 +395,7 @@ namespace DreamCleaningBackend.Services
             var cleanerFirstName = assignment.Cleaner.FirstName;
             var serviceDate = assignment.Order.ServiceDate;
             var serviceTime = assignment.Order.ServiceTime.ToString();
-            var serviceTypeName = assignment.Order.ServiceType.Name;
+            var serviceTypeName = assignment.Order.GetDisplayServiceTypeName();
 
             // LOG CLEANER REMOVAL TO AUDIT BEFORE REMOVING
             try

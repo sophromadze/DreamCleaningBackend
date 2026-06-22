@@ -1,4 +1,5 @@
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Services
@@ -21,7 +22,10 @@ namespace DreamCleaningBackend.Services
                 Id = order.Id,
                 UserId = order.UserId,
                 ServiceTypeId = order.ServiceTypeId,
-                ServiceTypeName = order.ServiceType?.Name ?? "",
+                // Effective name: "<label> Cleaning" for custom orders, ServiceType.Name otherwise.
+                ServiceTypeName = order.GetDisplayServiceTypeName(),
+                IsCustomServiceType = order.ServiceType?.IsCustom ?? false,
+                CustomServiceDisplayName = order.CustomServiceDisplayName,
                 OrderDate = order.OrderDate,
                 ServiceDate = order.ServiceDate,
                 ServiceTime = order.ServiceTime,
