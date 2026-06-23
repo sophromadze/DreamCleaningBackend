@@ -185,6 +185,12 @@ builder.Services.AddHostedService<AuditLogCleanupService>();
 builder.Services.AddHostedService<ScheduledMailService>();
 builder.Services.AddHostedService<ScheduledSmsService>();
 
+// Call tracking — provider-agnostic. Swap RingCentralCallProvider for another ICallProvider
+// adapter to change telephony provider; the sync service + storage + export stay unchanged.
+builder.Services.AddSingleton<DreamCleaningBackend.Services.CallTracking.ICallProvider,
+    DreamCleaningBackend.Services.CallTracking.RingCentralCallProvider>();
+builder.Services.AddHostedService<DreamCleaningBackend.Services.CallTracking.CallLogSyncService>();
+
 // Google Business Profile reviews — outbound HTTP must force IPv4 (VPS has IPv6 disabled; see CLAUDE.md).
 builder.Services.AddHttpClient(GoogleBusinessProfileService.HttpClientName)
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler

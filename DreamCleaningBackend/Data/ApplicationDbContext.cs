@@ -69,6 +69,8 @@ namespace DreamCleaningBackend.Data
         // CRM — sales pipeline
         public DbSet<Lead> Leads { get; set; }
         public DbSet<LeadActivity> LeadActivities { get; set; }
+        public DbSet<CallRecord> CallRecords { get; set; }
+        public DbSet<CallSyncState> CallSyncStates { get; set; }
         public DbSet<CustomerTag> CustomerTags { get; set; }
         public DbSet<AutomationRule> AutomationRules { get; set; }
         public DbSet<AutomationAlert> AutomationAlerts { get; set; }
@@ -948,6 +950,37 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(e => e.AdminId)
                     .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // Call tracking configuration
+            modelBuilder.Entity<CallRecord>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                // Dedupe: a provider's call-record id is unique within that provider.
+                entity.HasIndex(e => new { e.Provider, e.ExternalId })
+                    .IsUnique()
+                    .HasDatabaseName("IX_CallRecords_Provider_ExternalId");
+                // Range queries for the calls list / export / summary.
+                entity.HasIndex(e => e.StartTimeUtc).HasDatabaseName("IX_CallRecords_StartTime");
+                entity.HasOne(e => e.Lead)
+                    .WithMany()
+                    .HasForeignKey(e => e.LeadId)
+                    .OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(e => e.MatchedCleaner)
+                    .WithMany()
+                    .HasForeignKey(e => e.MatchedCleanerId)
+                    .OnDelete(DeleteBehavior.SetNull);
+                // Filtered by category in the calls list / summary / export.
+                entity.HasIndex(e => e.CallCategory).HasDatabaseName("IX_CallRecords_Category");
+                // DB default so existing rows backfill to "Unknown" on migration; the reclassify
+                // endpoint then recomputes proper categories.
+                entity.Property(e => e.CallCategory).HasDefaultValue(Models.CallCategory.Unknown);
+            });
+
+            modelBuilder.Entity<CallSyncState>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Provider).IsUnique().HasDatabaseName("IX_CallSyncStates_Provider");
             });
 
             // CRM CustomerTag configuration
