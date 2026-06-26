@@ -93,13 +93,18 @@ namespace DreamCleaningBackend.Services
                 {
                     CleanerId = oc.CleanerId,
                     Start = oc.Order.ServiceTime,
-                    DurationMinutes = oc.Order.TotalDuration
+                    TotalDuration = oc.Order.TotalDuration,
+                    MaidsCount = oc.Order.MaidsCount,
+                    HasCleanerService = oc.Order.OrderServices
+                        .Any(os => os.Service.ServiceRelationType == "cleaner")
                 })
                 .ToListAsync();
 
             var jobsByCleaner = sameDayJobs
                 .GroupBy(j => j.CleanerId)
                 .ToDictionary(g => g.Key, g => g.ToList());
+
+            var newJobWallClock = await GetOrderWallClockMinutesAsync(order);
 
             var availableCleaners = new List<AvailableCleanerDto>();
 
@@ -108,7 +113,7 @@ namespace DreamCleaningBackend.Services
                 var (isBusyDay, busyReason) = EvaluateBusyDay(cleaner, serviceDate);
                 jobsByCleaner.TryGetValue(cleaner.Id, out var cleanerJobs);
                 var (hasConflict, conflictReason) = EvaluateScheduleConflict(
-                    cleanerJobs, serviceTimeSpan, order.TotalDuration);
+                    cleanerJobs, serviceTimeSpan, newJobWallClock);
 
                 availableCleaners.Add(new AvailableCleanerDto
                 {
@@ -159,7 +164,33 @@ namespace DreamCleaningBackend.Services
         {
             public int CleanerId { get; set; }
             public TimeSpan Start { get; set; }
-            public decimal DurationMinutes { get; set; }
+            // TOTAL cleaner-minutes (per-cleaner × maids) as stored on Order.TotalDuration —
+            // NOT the wall-clock time a single cleaner is on site. Convert via WallClockMinutes.
+            public decimal TotalDuration { get; set; }
+            public int MaidsCount { get; set; }
+            public bool HasCleanerService { get; set; }
+        }
+
+        // Wall-clock minutes a single cleaner is actually on site. Order.TotalDuration stores
+        // TOTAL cleaner-minutes for most service types (split across MaidsCount cleaners), so a
+        // 6h/2-maid job is only 3h on site. Cleaner-hours service types already store per-cleaner
+        // time, so they are used as-is. Mirrors OrderPricingCalculator.CalculateCleanerTotalSalary.
+        private static decimal WallClockMinutes(decimal totalDuration, int maidsCount, bool hasCleanerService)
+        {
+            var maids = Math.Max(1, maidsCount);
+            return hasCleanerService ? totalDuration : totalDuration / maids;
+        }
+
+        // Computes the new order's per-cleaner wall-clock duration for conflict math, querying
+        // OrderServices when the cleaner-hours flag can't be derived from already-loaded data.
+        private async Task<decimal> GetOrderWallClockMinutesAsync(Order order)
+        {
+            bool hasCleanerService = order.OrderServices != null && order.OrderServices.Count > 0
+                ? order.OrderServices.Any(os => os.Service?.ServiceRelationType == "cleaner")
+                : await _context.OrderServices
+                    .AnyAsync(os => os.OrderId == order.Id && os.Service.ServiceRelationType == "cleaner");
+
+            return WallClockMinutes(order.TotalDuration, order.MaidsCount, hasCleanerService);
         }
 
         // Parses the CSV of DayOfWeek integers stored on Cleaner.BusyDaysOfWeek.
@@ -196,18 +227,19 @@ namespace DreamCleaningBackend.Services
         // Hard conflict check: any existing job that day whose interval is within MinGapMinutes
         // of the new job (overlapping or less than the required gap on either side).
         private static (bool hasConflict, string? reason) EvaluateScheduleConflict(
-            List<SameDayJob>? sameDayJobs, TimeSpan newStart, decimal newDurationMinutes)
+            List<SameDayJob>? sameDayJobs, TimeSpan newStart, decimal newWallClockMinutes)
         {
             if (sameDayJobs == null || sameDayJobs.Count == 0)
                 return (false, null);
 
-            var newEnd = newStart + TimeSpan.FromMinutes((double)newDurationMinutes);
+            var newEnd = newStart + TimeSpan.FromMinutes((double)newWallClockMinutes);
             var buffer = TimeSpan.FromMinutes(MinGapMinutes);
 
             foreach (var job in sameDayJobs.OrderBy(j => j.Start))
             {
                 var existStart = job.Start;
-                var existEnd = existStart + TimeSpan.FromMinutes((double)job.DurationMinutes);
+                var existEnd = existStart + TimeSpan.FromMinutes(
+                    (double)WallClockMinutes(job.TotalDuration, job.MaidsCount, job.HasCleanerService));
 
                 // Conflict unless one job fully ends at least `buffer` before the other starts.
                 if (newStart < existEnd + buffer && existStart < newEnd + buffer)
@@ -250,17 +282,22 @@ namespace DreamCleaningBackend.Services
                 {
                     CleanerId = oc.CleanerId,
                     Start = oc.Order.ServiceTime,
-                    DurationMinutes = oc.Order.TotalDuration
+                    TotalDuration = oc.Order.TotalDuration,
+                    MaidsCount = oc.Order.MaidsCount,
+                    HasCleanerService = oc.Order.OrderServices
+                        .Any(os => os.Service.ServiceRelationType == "cleaner")
                 })
                 .ToListAsync();
 
             if (sameDayJobs.Count == 0)
                 return new List<string>();
 
+            var newJobWallClock = await GetOrderWallClockMinutesAsync(order);
+
             var jobsByCleaner = sameDayJobs.GroupBy(j => j.CleanerId).ToDictionary(g => g.Key, g => g.ToList());
             var conflictingIds = ids
                 .Where(id => jobsByCleaner.TryGetValue(id, out var jobs) &&
-                             EvaluateScheduleConflict(jobs, order.ServiceTime, order.TotalDuration).hasConflict)
+                             EvaluateScheduleConflict(jobs, order.ServiceTime, newJobWallClock).hasConflict)
                 .ToList();
 
             if (conflictingIds.Count == 0)

@@ -9,6 +9,10 @@ namespace DreamCleaningBackend.DTOs
         public decimal Total { get; set; }
         public string PaymentIntentId { get; set; }
         public string PaymentClientSecret { get; set; }
+        // False when the payable total is below Stripe's minimum charge (e.g. a gift card
+        // fully covers the order). In that case no PaymentIntent/ClientSecret is created and
+        // the frontend must skip the Stripe card step and confirm the booking directly.
+        public bool RequiresPayment { get; set; } = true;
         public string SessionId { get; set; } // For new bookings created via prepare-payment
         // Guest booking: returned when user was auto-created so frontend can authenticate
         public string? GuestToken { get; set; }

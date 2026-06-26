@@ -19,6 +19,8 @@ namespace DreamCleaningBackend.DTOs
         public int? LeadId { get; set; }
         public string? LeadName { get; set; }
         public string Category { get; set; } = "Unknown";
+        /// <summary>Independent of Category: the call was placed to the dedicated ad tracking number.</summary>
+        public bool IsAdCall { get; set; }
         public int? MatchedCleanerId { get; set; }
         public string? MatchedCleanerName { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -55,6 +57,9 @@ namespace DreamCleaningBackend.DTOs
         public int Cleaner { get; set; }
         public int Spam { get; set; }
         public int Unknown { get; set; }
+
+        // Independent ad-call dimension (overlaps the categories above, not additive with them).
+        public int AdCall { get; set; }
 
         public List<CallDayCountDto> PerDay { get; set; } = new();
     }

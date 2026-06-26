@@ -41,6 +41,11 @@ namespace DreamCleaningBackend.Controllers
         private readonly IBookingCreationService _bookingCreationService;
         private readonly IAdminBonusService _adminBonusService;
 
+        // Stripe rejects any charge below $0.50 USD. When the payable total falls under this
+        // (a gift card / credits fully cover the order), we skip Stripe entirely and treat the
+        // order as fully paid — the customer pays nothing. Any sub-minimum remainder is waived.
+        private const decimal StripeMinimumChargeAmount = 0.50m;
+
         public BookingController(ApplicationDbContext context,
             IConfiguration configuration,
             ISubscriptionService subscriptionService,
@@ -949,15 +954,25 @@ namespace DreamCleaningBackend.Controllers
                 var sessionId = $"prepare_payment_{userId}_{DateTime.UtcNow.Ticks}";
                 _bookingDataService.StoreBookingData(sessionId, dto);
 
-                // Create Stripe payment intent with sessionId in metadata
-                var metadata = new Dictionary<string, string>
-                {
-                    { "sessionId", sessionId },
-                    { "userId", userId.ToString() },
-                    { "type", "booking" }
-                };
+                // When a gift card (or credits/points) fully covers the order, the payable total
+                // is below Stripe's minimum charge. Skip the PaymentIntent entirely — the frontend
+                // sees RequiresPayment=false, bypasses the card step, and confirms directly. The
+                // gift card is still drawn down server-side during order creation in confirm-payment.
+                var requiresPayment = total >= StripeMinimumChargeAmount;
+                Stripe.PaymentIntent paymentIntent = null;
 
-                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata);
+                if (requiresPayment)
+                {
+                    // Create Stripe payment intent with sessionId in metadata
+                    var metadata = new Dictionary<string, string>
+                    {
+                        { "sessionId", sessionId },
+                        { "userId", userId.ToString() },
+                        { "type", "booking" }
+                    };
+
+                    paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata);
+                }
 
                 // Guest auto-registration: in cookie-auth mode (production) the frontend
                 // interceptor authenticates via cookies and ignores any body token, so the
@@ -975,8 +990,9 @@ namespace DreamCleaningBackend.Controllers
                     OrderId = 0, // No order created yet
                     Status = "Pending",
                     Total = total,
-                    PaymentIntentId = paymentIntent.Id,
-                    PaymentClientSecret = paymentIntent.ClientSecret,
+                    RequiresPayment = requiresPayment,
+                    PaymentIntentId = paymentIntent?.Id,
+                    PaymentClientSecret = paymentIntent?.ClientSecret,
                     SessionId = sessionId, // Return sessionId so frontend can use it in confirm-payment
                     // Guest booking: include auth token so frontend can authenticate before calling confirm-payment
                     GuestToken = guestAuth?.Token,
@@ -1010,6 +1026,21 @@ namespace DreamCleaningBackend.Controllers
                 if (order.IsPaid)
                     return BadRequest(new { message = "Order is already paid" });
 
+                // Fully covered (e.g. gift card) — payable total below Stripe's minimum. Skip the
+                // PaymentIntent; the frontend confirms directly and confirm-payment marks it paid.
+                if (order.Total < StripeMinimumChargeAmount)
+                {
+                    return Ok(new BookingResponseDto
+                    {
+                        OrderId = order.Id,
+                        Status = order.Status,
+                        Total = order.Total,
+                        RequiresPayment = false,
+                        PaymentIntentId = null,
+                        PaymentClientSecret = null
+                    });
+                }
+
                 // Create Stripe payment intent
                 var metadata = new Dictionary<string, string>
                 {
@@ -1029,6 +1060,7 @@ namespace DreamCleaningBackend.Controllers
                     OrderId = order.Id,
                     Status = order.Status,
                     Total = order.Total,
+                    RequiresPayment = true,
                     PaymentIntentId = paymentIntent.Id,
                     PaymentClientSecret = paymentIntent.ClientSecret
                 });
@@ -1088,7 +1120,12 @@ namespace DreamCleaningBackend.Controllers
                 var effectivePaymentIntentId = !string.IsNullOrWhiteSpace(dto?.PaymentIntentId) ? dto.PaymentIntentId : paymentIntentId;
                 var effectiveSessionId = dto?.SessionId;
 
-                if (string.IsNullOrWhiteSpace(effectivePaymentIntentId))
+                // A payment intent is required UNLESS this is a gift-card-fully-covered booking,
+                // which carries a sessionId (new booking) or an existing orderId but no intent.
+                // Those zero-charge paths are validated server-side below against the authoritative
+                // order Total before being marked paid.
+                if (string.IsNullOrWhiteSpace(effectivePaymentIntentId) &&
+                    string.IsNullOrWhiteSpace(effectiveSessionId) && orderId <= 0)
                     return BadRequest(new { message = "Payment intent ID is required." });
 
                 Order order = null;
@@ -1100,27 +1137,56 @@ namespace DreamCleaningBackend.Controllers
                 {
                     sessionId = effectiveSessionId;
                     bookingDataDto = _bookingDataService.GetBookingData(sessionId);
-                    
+
                     if (bookingDataDto == null)
                     {
                         return BadRequest(new { message = "Booking data not found. Please start over." });
                     }
 
-                    // Verify payment with Stripe first before creating order
-                    var paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
-                    if (paymentIntent.Status != "succeeded" && paymentIntent.Status != "processing")
+                    // A gift-card-fully-covered booking arrives here with no payment intent (the
+                    // card step was skipped because the payable total was below Stripe's minimum).
+                    var hasPaymentIntent = !string.IsNullOrWhiteSpace(effectivePaymentIntentId);
+
+                    if (hasPaymentIntent)
                     {
-                        return BadRequest(new { message = "Payment not completed" });
+                        // Verify payment with Stripe first before creating order
+                        var paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
+                        if (paymentIntent.Status != "succeeded" && paymentIntent.Status != "processing")
+                        {
+                            return BadRequest(new { message = "Payment not completed" });
+                        }
+
+                        // Card is already charged at this point (verified succeeded above). Mark it so the
+                        // catch block can refund if order creation throws before the order is persisted.
+                        chargedNewBookingPaymentIntentId = effectivePaymentIntentId;
                     }
 
-                    // Card is already charged at this point (verified succeeded above). Mark it so the
-                    // catch block can refund if order creation throws before the order is persisted.
-                    chargedNewBookingPaymentIntentId = effectivePaymentIntentId;
-
-                    // Now create the order using the booking data (reuse logic from CreateBooking)
+                    // Now create the order using the booking data (reuse logic from CreateBooking).
+                    // The gift card is drawn down here against its REAL balance, so order.Total below
+                    // is authoritative regardless of what the client claimed.
                     order = await CreateOrderFromBookingData(bookingDataDto, userId);
                     newBookingOrderPersisted = true; // order row committed — refund net no longer applies
                     orderId = order.Id; // Update orderId for later use
+
+                    if (!hasPaymentIntent)
+                    {
+                        // No charge was taken — only allow this when nothing is actually owed.
+                        // order.Total already has the gift card applied; bubble points + reward
+                        // credits (consumed later in this method) reduce it further. We PROJECT
+                        // those here read-only, clamped to the user's REAL balances exactly as the
+                        // consumption below does, so the check can't be gamed by inflated client
+                        // values. Anything still owing $0.50+ means a real payment was skipped —
+                        // reject before consuming anything and leave the order unpaid.
+                        var projectedDeductions = await ProjectPostCreationDeductionsAsync(bookingDataDto, userId);
+                        var remaining = order.Total - projectedDeductions;
+                        if (remaining >= StripeMinimumChargeAmount)
+                        {
+                            _logger.LogWarning("Confirm-payment without a payment intent for payable order {OrderId} (remaining {Remaining}). Leaving unpaid.", order.Id, remaining);
+                            return BadRequest(new { message = "Payment is required to complete this booking." });
+                        }
+                        // Synthetic reference so downstream code (which expects a non-null PaymentIntentId) works.
+                        effectivePaymentIntentId = $"giftcard_full_{Guid.NewGuid():N}";
+                    }
                 }
                 else
                 {
@@ -1138,28 +1204,42 @@ namespace DreamCleaningBackend.Controllers
                     if (order.IsPaid)
                         return BadRequest(new { message = "Order is already paid" });
 
-                    // Verify payment with Stripe - payment already succeeded in browser
-                    Stripe.PaymentIntent paymentIntent;
-                    try
-                    {
-                        paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
-                    }
-                    catch (Exception stripeEx)
-                    {
-                        _logger.LogError(stripeEx, $"ConfirmPayment Stripe GetPaymentIntent failed for order {orderId}");
-                        return BadRequest(new { message = "Could not verify payment with Stripe. Please ensure you're using the same Stripe account (test/live) as the payment page. " + stripeEx.Message });
-                    }
+                    var hasPaymentIntent = !string.IsNullOrWhiteSpace(effectivePaymentIntentId);
 
-                    var status = paymentIntent.Status ?? "";
-                    var paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase) || status.Equals("requires_capture", StringComparison.OrdinalIgnoreCase);
-                    if (!paid)
+                    if (!hasPaymentIntent)
                     {
-                        await Task.Delay(2000);
-                        paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
-                        status = paymentIntent.Status ?? "";
-                        paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase) || status.Equals("requires_capture", StringComparison.OrdinalIgnoreCase);
+                        // Fully-covered existing order (e.g. gift card) — no Stripe charge possible.
+                        // Only allow it when the persisted Total is genuinely below Stripe's minimum.
+                        if (order.Total >= StripeMinimumChargeAmount)
+                            return BadRequest(new { message = "Payment is required to complete this booking." });
+
+                        effectivePaymentIntentId = $"giftcard_full_{Guid.NewGuid():N}";
+                    }
+                    else
+                    {
+                        // Verify payment with Stripe - payment already succeeded in browser
+                        Stripe.PaymentIntent paymentIntent;
+                        try
+                        {
+                            paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
+                        }
+                        catch (Exception stripeEx)
+                        {
+                            _logger.LogError(stripeEx, $"ConfirmPayment Stripe GetPaymentIntent failed for order {orderId}");
+                            return BadRequest(new { message = "Could not verify payment with Stripe. Please ensure you're using the same Stripe account (test/live) as the payment page. " + stripeEx.Message });
+                        }
+
+                        var status = paymentIntent.Status ?? "";
+                        var paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase) || status.Equals("requires_capture", StringComparison.OrdinalIgnoreCase);
                         if (!paid)
-                            return BadRequest(new { message = "Payment not completed. Status: " + status });
+                        {
+                            await Task.Delay(2000);
+                            paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
+                            status = paymentIntent.Status ?? "";
+                            paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase) || status.Equals("requires_capture", StringComparison.OrdinalIgnoreCase);
+                            if (!paid)
+                                return BadRequest(new { message = "Payment not completed. Status: " + status });
+                        }
                     }
 
                     order.PaymentIntentId = effectivePaymentIntentId;
@@ -1595,6 +1675,46 @@ namespace DreamCleaningBackend.Controllers
             // Some parts of the codebase use custom "UserId" claim; fall back to NameIdentifier.
             var userIdClaim = User.FindFirst("UserId")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             return int.TryParse(userIdClaim, out var userId) ? userId : 0;
+        }
+
+        // Read-only projection of the bubble-points + reward-credit dollar deductions that
+        // ConfirmPayment applies AFTER order creation (the order's Total only has the gift card
+        // applied at that point). Clamped to the user's REAL balances exactly as the consumption
+        // code does, so it can be used to validate that a no-charge confirmation owes nothing.
+        // Does NOT consume anything.
+        private async Task<decimal> ProjectPostCreationDeductionsAsync(CreateBookingDto bookingDataDto, int userId)
+        {
+            if (bookingDataDto == null || userId <= 0)
+                return 0m;
+
+            decimal deductions = 0m;
+
+            // Bubble points → dollar credit (mirrors the points deduction in ConfirmPayment).
+            if (bookingDataDto.PointsToRedeem > 0)
+            {
+                var bubbleSvc = HttpContext.RequestServices.GetService<IBubblePointsService>();
+                if (bubbleSvc != null)
+                {
+                    var pointsUser = await _context.Users.AsNoTracking()
+                        .Where(u => u.Id == userId).Select(u => new { u.BubblePoints }).FirstOrDefaultAsync();
+                    if (pointsUser != null && pointsUser.BubblePoints >= bookingDataDto.PointsToRedeem)
+                    {
+                        var (credit, valid, _) = await bubbleSvc.GetPointsCreditForBooking(bookingDataDto.PointsToRedeem);
+                        if (valid) deductions += credit;
+                    }
+                }
+            }
+
+            // Bubble reward balance / credits (mirrors the credits deduction in ConfirmPayment).
+            if (bookingDataDto.UseCredits && bookingDataDto.CreditsToApply > 0)
+            {
+                var creditUser = await _context.Users.AsNoTracking()
+                    .Where(u => u.Id == userId).Select(u => new { u.BubbleCredits }).FirstOrDefaultAsync();
+                if (creditUser != null && creditUser.BubbleCredits > 0)
+                    deductions += Math.Min(creditUser.BubbleCredits, bookingDataDto.CreditsToApply);
+            }
+
+            return OrderPricingCalculator.Round2(deductions);
         }
 
         // Returns an error message if the promo code's MinimumOrderAmount isn't met by subTotal,

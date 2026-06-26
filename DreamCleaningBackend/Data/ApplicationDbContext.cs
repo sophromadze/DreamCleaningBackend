@@ -929,6 +929,9 @@ namespace DreamCleaningBackend.Data
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.Stage).HasDatabaseName("IX_Leads_Stage");
                 entity.HasIndex(e => e.Source).HasDatabaseName("IX_Leads_Source");
+                entity.HasIndex(e => e.Type).HasDatabaseName("IX_Leads_Type");
+                // Default so pre-existing leads (and DB-side inserts) land as Residential.
+                entity.Property(e => e.Type).HasDefaultValue(LeadType.Residential);
                 entity.HasIndex(e => e.AssignedToAdminId).HasDatabaseName("IX_Leads_AssignedTo");
                 entity.HasIndex(e => e.LastActivityAt).HasDatabaseName("IX_Leads_LastActivity");
                 entity.HasOne(e => e.AssignedToAdmin)

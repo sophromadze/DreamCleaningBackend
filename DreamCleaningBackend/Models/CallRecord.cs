@@ -77,6 +77,14 @@ namespace DreamCleaningBackend.Models
         [ForeignKey("MatchedCleanerId")]
         public virtual Cleaner? MatchedCleaner { get; set; }
 
+        /// <summary>
+        /// True when the call was placed TO the dedicated ad tracking number (the frontend swaps
+        /// the displayed number for Google Ads visitors). An INDEPENDENT dimension from
+        /// <see cref="CallCategory"/> — an ad call can also be Customer/Cleaner/Spam. Recomputed at
+        /// sync time and by the reclassify endpoint; never edited by hand.
+        /// </summary>
+        public bool IsAdCall { get; set; }
+
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 

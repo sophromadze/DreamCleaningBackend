@@ -330,7 +330,6 @@ namespace DreamCleaningBackend.Services
 
             // Store the original values
             var originalTotal = order.Total;
-            var originalGiftCardAmountUsed = order.GiftCardAmountUsed;
 
             // store original values before they're modified:
             var originalSubTotal = order.SubTotal;
@@ -428,84 +427,14 @@ namespace DreamCleaningBackend.Services
             order.Tax = totals.Tax;
 
             // Bubble points + reward balance credits applied at booking time. They must be
-            // subtracted from every Total branch below (like gift cards), otherwise editing an
-            // order silently inflates the total by these amounts.
+            // subtracted (like gift cards), otherwise editing an order silently inflates the total.
             var pointsAndRewardCredits = order.PointsRedeemedDiscount + order.RewardBalanceUsed;
 
-            // Total BEFORE gift card — the gift card branches below finish the job.
-            var totalBeforeGiftCard = totals.TotalBeforeGiftCard;
-
-            // Handle gift card adjustment if there was a gift card applied
-            if (!string.IsNullOrEmpty(order.GiftCardCode) && originalGiftCardAmountUsed > 0)
-            {
-                // Get current gift card
-                var giftCard = await _context.GiftCards
-                    .FirstOrDefaultAsync(g => g.Code == order.GiftCardCode);
-
-                if (giftCard != null && giftCard.IsActive)
-                {
-                    // Calculate available balance (current balance + what was originally used)
-                    var availableBalance = giftCard.CurrentBalance + originalGiftCardAmountUsed;
-
-                    // Calculate new gift card usage amount
-                    var newGiftCardAmountToUse = Math.Min(availableBalance, totalBeforeGiftCard);
-
-                    // Calculate the difference
-                    var giftCardDifference = newGiftCardAmountToUse - originalGiftCardAmountUsed;
-
-                    if (Math.Abs(giftCardDifference) > 0.01m) // Only update if there's a meaningful difference
-                    {
-                        // Update gift card balance
-                        giftCard.CurrentBalance = availableBalance - newGiftCardAmountToUse;
-
-                        // Update order
-                        order.GiftCardAmountUsed = newGiftCardAmountToUse;
-                        order.Total = totalBeforeGiftCard - newGiftCardAmountToUse - pointsAndRewardCredits;
-
-                        // Find and update the existing gift card usage record
-                        var existingUsage = await _context.GiftCardUsages
-                            .FirstOrDefaultAsync(u => u.GiftCardId == giftCard.Id && u.OrderId == order.Id);
-
-                        if (existingUsage != null)
-                        {
-                            // Update existing usage record
-                            existingUsage.AmountUsed = newGiftCardAmountToUse;
-                            existingUsage.BalanceAfterUsage = giftCard.CurrentBalance;
-                            existingUsage.UsedAt = DateTime.UtcNow; // Update timestamp
-                        }
-                        else
-                        {
-                            _logger.LogWarning("No existing GiftCardUsage record for gift card {GiftCardId} on order {OrderId} — creating one during order edit", giftCard.Id, order.Id);
-                            // This shouldn't happen, but create a new usage record if needed
-                            var newUsage = new GiftCardUsage
-                            {
-                                GiftCardId = giftCard.Id,
-                                OrderId = order.Id,
-                                UserId = userId,
-                                AmountUsed = newGiftCardAmountToUse,
-                                BalanceAfterUsage = giftCard.CurrentBalance,
-                                UsedAt = DateTime.UtcNow
-                            };
-                            _context.GiftCardUsages.Add(newUsage);
-                        }
-                    }
-                    else
-                    {
-                        // No significant gift card change, keep the original amount
-                        order.Total = totalBeforeGiftCard - originalGiftCardAmountUsed - pointsAndRewardCredits;
-                    }
-                }
-                else
-                {
-                    _logger.LogWarning("Gift card {GiftCardCode} not found or inactive while editing order {OrderId} — keeping original amount used", order.GiftCardCode, order.Id);
-                    order.Total = totalBeforeGiftCard - originalGiftCardAmountUsed;
-                }
-            }
-            else
-            {
-                // No gift card applied
-                order.Total = totalBeforeGiftCard - pointsAndRewardCredits;
-            }
+            // Re-resolve + re-apply the gift card against the new pre-gift-card total (shared with
+            // the admin edit path). Sets order.GiftCardAmountUsed and order.Total, and mutates the
+            // gift card balance/usage. A price increase is absorbed by leftover gift-card funds
+            // before any card charge — see ApplyEditGiftCardAsync.
+            await ApplyEditGiftCardAsync(order, totals.TotalBeforeGiftCard, pointsAndRewardCredits);
 
             // Final check to ensure the new total is not less than the original
             // Use the tolerance to handle floating-point precision issues
@@ -651,6 +580,88 @@ namespace DreamCleaningBackend.Services
         private Task<OrderPricingCalculator.QuoteInput> BuildUpdateQuoteInputAsync(Order order, UpdateOrderDto dto)
             => OrderPricingInputBuilder.FromUpdateDtoAsync(_context, order, dto);
 
+        // ===== Gift card re-resolution on edit (single source for user + admin edits) =====
+        // When an order's total changes during an edit, the gift card is re-applied: what this
+        // order already consumed is "given back" to the live balance first, then re-drawn up to
+        // min(availableBalance, newTotalBeforeGiftCard). So a price increase is absorbed by any
+        // leftover gift-card funds BEFORE the customer's card is charged, and a decrease releases
+        // funds back to the gift card. The amount formula lives here once.
+        private static decimal ResolveEditGiftCardUse(decimal giftCardCurrentBalance, decimal originalAmountUsed, decimal totalBeforeGiftCard)
+            => Math.Min(giftCardCurrentBalance + originalAmountUsed, totalBeforeGiftCard);
+
+        // Read-only: the order's would-be Total after re-resolving the gift card (no mutation).
+        // Used by CalculateAdditionalAmount so its preview matches what UpdateOrder will persist.
+        private async Task<decimal> CalculateEditTotalAfterGiftCardAsync(Order order, decimal totalBeforeGiftCard, decimal pointsAndRewardCredits)
+        {
+            var newGiftCardAmountToUse = order.GiftCardAmountUsed;
+            if (!string.IsNullOrEmpty(order.GiftCardCode) && order.GiftCardAmountUsed > 0)
+            {
+                var giftCard = await _context.GiftCards.AsNoTracking()
+                    .FirstOrDefaultAsync(g => g.Code == order.GiftCardCode);
+                if (giftCard != null && giftCard.IsActive)
+                    newGiftCardAmountToUse = ResolveEditGiftCardUse(giftCard.CurrentBalance, order.GiftCardAmountUsed, totalBeforeGiftCard);
+                // else: can't re-resolve — keep what was already used (matches ApplyEditGiftCardAsync)
+            }
+            return Math.Max(0m, totalBeforeGiftCard - newGiftCardAmountToUse - pointsAndRewardCredits);
+        }
+
+        // Mutating: re-resolves the gift card, updates its balance + usage record, and sets
+        // order.GiftCardAmountUsed and order.Total. Used by BOTH user (UpdateOrder) and admin
+        // (SuperAdminFullUpdateOrder) edits so they stay consistent.
+        private async Task ApplyEditGiftCardAsync(Order order, decimal totalBeforeGiftCard, decimal pointsAndRewardCredits)
+        {
+            var originalGiftCardAmountUsed = order.GiftCardAmountUsed;
+
+            if (string.IsNullOrEmpty(order.GiftCardCode) || originalGiftCardAmountUsed <= 0)
+            {
+                order.Total = Math.Max(0m, totalBeforeGiftCard - pointsAndRewardCredits);
+                return;
+            }
+
+            var giftCard = await _context.GiftCards.FirstOrDefaultAsync(g => g.Code == order.GiftCardCode);
+            if (giftCard == null || !giftCard.IsActive)
+            {
+                _logger.LogWarning("Gift card {GiftCardCode} not found or inactive while editing order {OrderId} — keeping original amount used", order.GiftCardCode, order.Id);
+                order.Total = Math.Max(0m, totalBeforeGiftCard - originalGiftCardAmountUsed - pointsAndRewardCredits);
+                return;
+            }
+
+            var availableBalance = giftCard.CurrentBalance + originalGiftCardAmountUsed;
+            var newGiftCardAmountToUse = ResolveEditGiftCardUse(giftCard.CurrentBalance, originalGiftCardAmountUsed, totalBeforeGiftCard);
+            var giftCardDifference = newGiftCardAmountToUse - originalGiftCardAmountUsed;
+
+            if (Math.Abs(giftCardDifference) > 0.01m) // only touch records on a meaningful change
+            {
+                giftCard.CurrentBalance = availableBalance - newGiftCardAmountToUse;
+                giftCard.UpdatedAt = DateTime.UtcNow;
+                order.GiftCardAmountUsed = newGiftCardAmountToUse;
+
+                var existingUsage = await _context.GiftCardUsages
+                    .FirstOrDefaultAsync(u => u.GiftCardId == giftCard.Id && u.OrderId == order.Id);
+                if (existingUsage != null)
+                {
+                    existingUsage.AmountUsed = newGiftCardAmountToUse;
+                    existingUsage.BalanceAfterUsage = giftCard.CurrentBalance;
+                    existingUsage.UsedAt = DateTime.UtcNow;
+                }
+                else
+                {
+                    _logger.LogWarning("No existing GiftCardUsage record for gift card {GiftCardId} on order {OrderId} — creating one during order edit", giftCard.Id, order.Id);
+                    _context.GiftCardUsages.Add(new GiftCardUsage
+                    {
+                        GiftCardId = giftCard.Id,
+                        OrderId = order.Id,
+                        UserId = order.UserId,
+                        AmountUsed = newGiftCardAmountToUse,
+                        BalanceAfterUsage = giftCard.CurrentBalance,
+                        UsedAt = DateTime.UtcNow
+                    });
+                }
+            }
+
+            order.Total = Math.Max(0m, totalBeforeGiftCard - order.GiftCardAmountUsed - pointsAndRewardCredits);
+        }
+
         public async Task<decimal> CalculateAdditionalAmount(int orderId, UpdateOrderDto updateOrderDto)
         {
             var order = await _orderRepository.GetByIdWithDetailsAsync(orderId);
@@ -679,9 +690,11 @@ namespace DreamCleaningBackend.Services
             var subscriptionDiscountAmount = updateOrderDto.SubscriptionDiscountAmount ?? order.SubscriptionDiscountAmount;
             var loyaltyDiscountAmount = updateOrderDto.LoyaltyDiscountAmount ?? order.LoyaltyDiscountAmount;
 
-            // Gift card intentionally NOT subtracted here — UpdateOrder re-resolves gift card
-            // usage against the live balance; this method compares pre-gift-card totals the
-            // same way the original implementation did.
+            // Compute the pre-gift-card total, then re-resolve the gift card the SAME way
+            // UpdateOrder will persist it (via the shared helpers). This is what makes the
+            // additional charge reflect any leftover gift-card balance absorbing the increase —
+            // otherwise the customer is charged the full difference even though the gift card
+            // covered part/all of it.
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
             {
                 SubTotal = quote.SubTotal,
@@ -689,11 +702,11 @@ namespace DreamCleaningBackend.Services
                 SubscriptionDiscountAmount = subscriptionDiscountAmount,
                 LoyaltyDiscountAmount = loyaltyDiscountAmount,
                 Tips = updateOrderDto.Tips,
-                CompanyDevelopmentTips = updateOrderDto.CompanyDevelopmentTips,
-                PointsRedeemedDiscount = order.PointsRedeemedDiscount,
-                RewardBalanceUsed = order.RewardBalanceUsed
+                CompanyDevelopmentTips = updateOrderDto.CompanyDevelopmentTips
+                // gift card + points/rewards applied below to mirror UpdateOrder
             });
-            var newTotal = totals.Total;
+            var pointsAndRewardCredits = order.PointsRedeemedDiscount + order.RewardBalanceUsed;
+            var newTotal = await CalculateEditTotalAfterGiftCardAsync(order, totals.TotalBeforeGiftCard, pointsAndRewardCredits);
 
             var finalAdditionalAmount = newTotal - originalTotal;
 
@@ -859,6 +872,13 @@ namespace DreamCleaningBackend.Services
             if (dto.LoyaltyDiscountAmount.HasValue) order.LoyaltyDiscountAmount = dto.LoyaltyDiscountAmount.Value;
             if (dto.CleanerHourlyRate.HasValue) order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
             if (dto.CleanerTotalSalary.HasValue) order.CleanerTotalSalary = dto.CleanerTotalSalary.Value;
+            // Custom ("Pre-Arranged") orders only: relabel the display name. null = no change,
+            // empty string = clear back to "Arranged". Mirrors OrderController.SetCustomServiceName.
+            if (dto.CustomServiceDisplayName != null && order.ServiceType?.IsCustom == true)
+            {
+                var trimmedName = dto.CustomServiceDisplayName.Trim();
+                order.CustomServiceDisplayName = string.IsNullOrWhiteSpace(trimmedName) ? null : trimmedName;
+            }
 
             // Auto-recalculate cleaner total salary when hourly rate or duration or maids count changes
             if (dto.CleanerHourlyRate.HasValue || dto.TotalDuration.HasValue || dto.MaidsCount.HasValue)
@@ -874,7 +894,9 @@ namespace DreamCleaningBackend.Services
             }
 
             // Auto-calculate tax/total through the shared calculator (so SuperAdmin only needs
-            // to edit SubTotal). Loyalty is included alongside subscription + promo.
+            // to edit SubTotal). Loyalty is included alongside subscription + promo. Gift card is
+            // applied via the shared re-resolution below (NOT baked in here) so an increased total
+            // draws additional funds from any leftover gift-card balance before the customer pays.
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
             {
                 SubTotal = order.SubTotal,
@@ -882,13 +904,12 @@ namespace DreamCleaningBackend.Services
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
                 Tips = order.Tips,
-                CompanyDevelopmentTips = order.CompanyDevelopmentTips,
-                GiftCardAmountUsed = order.GiftCardAmountUsed,
-                PointsRedeemedDiscount = order.PointsRedeemedDiscount,
-                RewardBalanceUsed = order.RewardBalanceUsed
+                CompanyDevelopmentTips = order.CompanyDevelopmentTips
+                // gift card + points/rewards applied below to mirror the user edit path
             });
             order.Tax = totals.Tax;
-            order.Total = totals.Total;
+            var pointsAndRewardCredits = order.PointsRedeemedDiscount + order.RewardBalanceUsed;
+            await ApplyEditGiftCardAsync(order, totals.TotalBeforeGiftCard, pointsAndRewardCredits);
 
             if (dto.Services != null)
             {

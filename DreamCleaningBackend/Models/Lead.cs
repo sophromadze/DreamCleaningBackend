@@ -40,6 +40,11 @@ namespace DreamCleaningBackend.Models
         [StringLength(100)]
         public string? CleaningType { get; set; }
 
+        /// <summary>Property category for the lead. One of LeadType.* — see <see cref="LeadType"/>.</summary>
+        [Required]
+        [StringLength(20)]
+        public string Type { get; set; } = LeadType.Residential;
+
         /// <summary>The message the prospect submitted, if any.</summary>
         [StringLength(2000)]
         public string? Message { get; set; }
@@ -113,6 +118,16 @@ namespace DreamCleaningBackend.Models
         public const string Booking = "Booking";
 
         public static readonly string[] All = { ContactForm, QuoteRequest, LiveChat, Manual, Booking };
+        public static bool IsValid(string? s) => s != null && All.Contains(s);
+    }
+
+    /// <summary>Property category a lead is for. Defaults to Residential.</summary>
+    public static class LeadType
+    {
+        public const string Residential = "Residential";
+        public const string Commercial = "Commercial";
+
+        public static readonly string[] All = { Residential, Commercial };
         public static bool IsValid(string? s) => s != null && All.Contains(s);
     }
 }

@@ -14,6 +14,7 @@ namespace DreamCleaningBackend.DTOs
         public string? Phone { get; set; }
         public string? ServiceAddress { get; set; }
         public string? CleaningType { get; set; }
+        public string Type { get; set; } = "Residential";
         public string? Message { get; set; }
         public string Stage { get; set; } = "New";
         public string Source { get; set; } = "Manual";
@@ -75,6 +76,10 @@ namespace DreamCleaningBackend.DTOs
         [StringLength(100)]
         public string? CleaningType { get; set; }
 
+        /// <summary>Defaults to Residential when omitted. Validated against LeadType.</summary>
+        [StringLength(20)]
+        public string? Type { get; set; }
+
         [StringLength(2000)]
         public string? Message { get; set; }
 
@@ -111,6 +116,10 @@ namespace DreamCleaningBackend.DTOs
 
         [StringLength(100)]
         public string? CleaningType { get; set; }
+
+        /// <summary>Validated against LeadType; ignored when null/invalid.</summary>
+        [StringLength(20)]
+        public string? Type { get; set; }
 
         [StringLength(2000)]
         public string? Message { get; set; }

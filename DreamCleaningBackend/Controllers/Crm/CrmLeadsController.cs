@@ -39,9 +39,10 @@ namespace DreamCleaningBackend.Controllers.Crm
         public async Task<ActionResult<List<LeadPipelineColumnDto>>> GetPipeline(
             [FromQuery] string? search,
             [FromQuery] string? source,
+            [FromQuery] string? type,
             [FromQuery] int? assignedToAdminId)
         {
-            var query = BuildFilteredQuery(search, source, assignedToAdminId, stage: null);
+            var query = BuildFilteredQuery(search, source, type, assignedToAdminId, stage: null);
 
             var leads = await query
                 .Include(l => l.AssignedToAdmin)
@@ -107,9 +108,10 @@ namespace DreamCleaningBackend.Controllers.Crm
             [FromQuery] string? search,
             [FromQuery] string? stage,
             [FromQuery] string? source,
+            [FromQuery] string? type,
             [FromQuery] int? assignedToAdminId)
         {
-            var leads = await BuildFilteredQuery(search, source, assignedToAdminId, stage)
+            var leads = await BuildFilteredQuery(search, source, type, assignedToAdminId, stage)
                 .Include(l => l.AssignedToAdmin)
                 .OrderByDescending(l => l.LastActivityAt)
                 .ToListAsync();
@@ -143,6 +145,7 @@ namespace DreamCleaningBackend.Controllers.Crm
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
             var source = LeadSource.IsValid(dto.Source) ? dto.Source! : LeadSource.Manual;
+            var type = LeadType.IsValid(dto.Type) ? dto.Type! : LeadType.Residential;
 
             var lead = new Lead
             {
@@ -152,6 +155,7 @@ namespace DreamCleaningBackend.Controllers.Crm
                 Phone = dto.Phone,
                 ServiceAddress = Trim(dto.ServiceAddress),
                 CleaningType = Trim(dto.CleaningType),
+                Type = type,
                 Message = Trim(dto.Message),
                 Stage = LeadStage.New,
                 Source = source,
@@ -193,6 +197,7 @@ namespace DreamCleaningBackend.Controllers.Crm
             if (dto.Phone != null) lead.Phone = dto.Phone;
             if (dto.ServiceAddress != null) lead.ServiceAddress = Trim(dto.ServiceAddress);
             if (dto.CleaningType != null) lead.CleaningType = Trim(dto.CleaningType);
+            if (LeadType.IsValid(dto.Type)) lead.Type = dto.Type!;
             if (dto.Message != null) lead.Message = Trim(dto.Message);
             if (dto.EstimatedValue.HasValue) lead.EstimatedValue = dto.EstimatedValue;
 
@@ -290,7 +295,7 @@ namespace DreamCleaningBackend.Controllers.Crm
         //  Helpers
         // ─────────────────────────────────────────────────────────
 
-        private IQueryable<Lead> BuildFilteredQuery(string? search, string? source, int? assignedToAdminId, string? stage)
+        private IQueryable<Lead> BuildFilteredQuery(string? search, string? source, string? type, int? assignedToAdminId, string? stage)
         {
             var query = _context.Leads.AsQueryable();
 
@@ -299,6 +304,9 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             if (!string.IsNullOrWhiteSpace(source) && LeadSource.IsValid(source))
                 query = query.Where(l => l.Source == source);
+
+            if (!string.IsNullOrWhiteSpace(type) && LeadType.IsValid(type))
+                query = query.Where(l => l.Type == type);
 
             if (assignedToAdminId.HasValue)
                 query = query.Where(l => l.AssignedToAdminId == assignedToAdminId.Value);
@@ -344,6 +352,7 @@ namespace DreamCleaningBackend.Controllers.Crm
             Phone = l.Phone,
             ServiceAddress = l.ServiceAddress,
             CleaningType = l.CleaningType,
+            Type = l.Type,
             Message = l.Message,
             Stage = l.Stage,
             Source = l.Source,
@@ -374,6 +383,7 @@ namespace DreamCleaningBackend.Controllers.Crm
                 Phone = baseDto.Phone,
                 ServiceAddress = baseDto.ServiceAddress,
                 CleaningType = baseDto.CleaningType,
+                Type = baseDto.Type,
                 Message = baseDto.Message,
                 Stage = baseDto.Stage,
                 Source = baseDto.Source,

@@ -86,6 +86,7 @@ namespace DreamCleaningBackend.Services.CallTracking
 
             // Load cleaner phones once per run for classification (not a query per call).
             var cleanerPhoneMap = await CallClassifier.LoadCleanerPhoneMapAsync(context, ct);
+            var adNumberDigits = CallClassifier.ResolveAdNumberDigits(_configuration);
 
             int inserted = 0, skipped = 0;
             foreach (var dto in calls)
@@ -121,7 +122,7 @@ namespace DreamCleaningBackend.Services.CallTracking
                 await LinkToLeadAsync(context, record, ct);
 
                 // Classify after linking so it can read the resolved LeadId (Customer vs Spam).
-                CallClassifier.Classify(record, cleanerPhoneMap);
+                CallClassifier.Classify(record, cleanerPhoneMap, adNumberDigits);
 
                 context.CallRecords.Add(record);
                 inserted++;

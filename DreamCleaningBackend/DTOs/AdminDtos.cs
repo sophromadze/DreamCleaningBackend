@@ -580,6 +580,9 @@ namespace DreamCleaningBackend.DTOs
         public decimal? LoyaltyDiscountAmount { get; set; }
         public decimal? CleanerHourlyRate { get; set; }
         public decimal? CleanerTotalSalary { get; set; }
+        /// <summary>Display label for custom ("Pre-Arranged") orders. Empty string clears it
+        /// (back to "Arranged"); null means "no change". Ignored for non-custom service types.</summary>
+        public string? CustomServiceDisplayName { get; set; }
         public List<SuperAdminOrderServiceUpdateDto>? Services { get; set; }
         public List<SuperAdminOrderExtraServiceUpdateDto>? ExtraServices { get; set; }
     }

@@ -26,11 +26,16 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly ILogger<AdminCallsController> _logger;
+        private readonly IConfiguration _configuration;
 
-        public AdminCallsController(ApplicationDbContext context, ILogger<AdminCallsController> logger)
+        public AdminCallsController(
+            ApplicationDbContext context,
+            ILogger<AdminCallsController> logger,
+            IConfiguration configuration)
         {
             _context = context;
             _logger = logger;
+            _configuration = configuration;
         }
 
         // GET /api/admin/calls?from=&to=&direction=&category=&excludeNonCustomer=&page=&pageSize=
@@ -39,14 +44,14 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<CallListResultDto>> GetCalls(
             [FromQuery] DateTime? from, [FromQuery] DateTime? to,
             [FromQuery] string? direction, [FromQuery] string? category,
-            [FromQuery] bool excludeNonCustomer = false,
+            [FromQuery] bool excludeNonCustomer = false, [FromQuery] bool adOnly = false,
             [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             if (page < 1) page = 1;
             if (pageSize < 1) pageSize = 20;
             if (pageSize > 500) pageSize = 500;
 
-            var query = BuildQuery(from, to, direction, category, excludeNonCustomer);
+            var query = BuildQuery(from, to, direction, category, excludeNonCustomer, adOnly);
 
             var totalCount = await query.CountAsync();
             var entities = await query
@@ -76,13 +81,13 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<CallSummaryDto>> GetSummary(
             [FromQuery] DateTime? from, [FromQuery] DateTime? to, [FromQuery] string? direction)
         {
-            var query = BuildQuery(from, to, direction, null, false);
+            var query = BuildQuery(from, to, direction, null, false, false);
 
             var rows = await query
-                .Select(c => new { c.StartTimeUtc, c.Direction, c.Result, c.CallCategory })
+                .Select(c => new { c.StartTimeUtc, c.Direction, c.Result, c.CallCategory, c.IsAdCall })
                 .ToListAsync();
 
-            var summary = Aggregate(rows.Select(r => (r.StartTimeUtc, r.Direction, r.Result, r.CallCategory)));
+            var summary = Aggregate(rows.Select(r => (r.StartTimeUtc, r.Direction, r.Result, r.CallCategory, r.IsAdCall)));
             return Ok(summary);
         }
 
@@ -92,9 +97,9 @@ namespace DreamCleaningBackend.Controllers
         public async Task<IActionResult> Export(
             [FromQuery] DateTime? from, [FromQuery] DateTime? to,
             [FromQuery] string? direction, [FromQuery] string? category,
-            [FromQuery] bool excludeNonCustomer = false)
+            [FromQuery] bool excludeNonCustomer = false, [FromQuery] bool adOnly = false)
         {
-            var query = BuildQuery(from, to, direction, category, excludeNonCustomer);
+            var query = BuildQuery(from, to, direction, category, excludeNonCustomer, adOnly);
             var entities = await query
                 .Include(c => c.Lead)
                 .Include(c => c.MatchedCleaner)
@@ -102,7 +107,7 @@ namespace DreamCleaningBackend.Controllers
                 .ToListAsync();
             var calls = entities.Select(ToDto).ToList();
 
-            var summary = Aggregate(calls.Select(c => (c.StartTimeUtc, c.Direction, c.Result, c.Category)));
+            var summary = Aggregate(calls.Select(c => (c.StartTimeUtc, c.Direction, c.Result, c.Category, c.IsAdCall)));
 
             using var workbook = new XLWorkbook();
             BuildCallsSheet(workbook, calls);
@@ -129,11 +134,12 @@ namespace DreamCleaningBackend.Controllers
         public async Task<IActionResult> Reclassify(CancellationToken ct)
         {
             var cleanerPhoneMap = await CallClassifier.LoadCleanerPhoneMapAsync(_context, ct);
+            var adNumberDigits = CallClassifier.ResolveAdNumberDigits(_configuration);
 
             // Tracked load (no AsNoTracking) so the recomputed values persist on SaveChanges.
             var all = await _context.CallRecords.ToListAsync(ct);
             foreach (var record in all)
-                CallClassifier.Classify(record, cleanerPhoneMap);
+                CallClassifier.Classify(record, cleanerPhoneMap, adNumberDigits);
 
             await _context.SaveChangesAsync(ct);
 
@@ -145,14 +151,16 @@ namespace DreamCleaningBackend.Controllers
                 customer = all.Count(c => c.CallCategory == CallCategory.Customer),
                 cleaner = all.Count(c => c.CallCategory == CallCategory.Cleaner),
                 spam = all.Count(c => c.CallCategory == CallCategory.Spam),
-                unknown = all.Count(c => c.CallCategory == CallCategory.Unknown)
+                unknown = all.Count(c => c.CallCategory == CallCategory.Unknown),
+                adCall = all.Count(c => c.IsAdCall)
             });
         }
 
         // ── Helpers ──
 
         private IQueryable<CallRecord> BuildQuery(
-            DateTime? from, DateTime? to, string? direction, string? category, bool excludeNonCustomer)
+            DateTime? from, DateTime? to, string? direction, string? category,
+            bool excludeNonCustomer, bool adOnly)
         {
             var query = _context.CallRecords.AsNoTracking().AsQueryable();
 
@@ -183,6 +191,11 @@ namespace DreamCleaningBackend.Controllers
                     c.CallCategory == CallCategory.Customer || c.CallCategory == CallCategory.Unknown);
             }
 
+            // Ad calls only — independent of the category/hide filters above, so it composes
+            // with them (e.g. "Customer + ad calls only").
+            if (adOnly)
+                query = query.Where(c => c.IsAdCall);
+
             return query;
         }
 
@@ -203,6 +216,7 @@ namespace DreamCleaningBackend.Controllers
             LeadId = c.LeadId,
             LeadName = c.Lead != null ? c.Lead.FullName : null,
             Category = c.CallCategory,
+            IsAdCall = c.IsAdCall,
             MatchedCleanerId = c.MatchedCleanerId,
             MatchedCleanerName = c.MatchedCleaner != null
                 ? $"{c.MatchedCleaner.FirstName} {c.MatchedCleaner.LastName}".Trim()
@@ -217,7 +231,7 @@ namespace DreamCleaningBackend.Controllers
             string.Equals(result, "Missed", StringComparison.OrdinalIgnoreCase);
 
         private static CallSummaryDto Aggregate(
-            IEnumerable<(DateTime StartTimeUtc, string Direction, string Result, string Category)> rows)
+            IEnumerable<(DateTime StartTimeUtc, string Direction, string Result, string Category, bool IsAdCall)> rows)
         {
             var list = rows.ToList();
             var total = list.Count;
@@ -248,6 +262,7 @@ namespace DreamCleaningBackend.Controllers
                 Cleaner = list.Count(r => r.Category == CallCategory.Cleaner),
                 Spam = list.Count(r => r.Category == CallCategory.Spam),
                 Unknown = list.Count(r => r.Category == CallCategory.Unknown),
+                AdCall = list.Count(r => r.IsAdCall),
                 PerDay = perDay
             };
         }
@@ -266,7 +281,7 @@ namespace DreamCleaningBackend.Controllers
 
             var headers = new[]
             {
-                "Date", "Time", "Direction", "Category", "From Number", "From Name",
+                "Date", "Time", "Direction", "Category", "Ad Call", "From Number", "From Name",
                 "To Number", "Duration (m:ss)", "Result", "Linked Lead", "Matched Cleaner", "Recording URL"
             };
             for (var i = 0; i < headers.Length; i++)
@@ -284,14 +299,15 @@ namespace DreamCleaningBackend.Controllers
                 ws.Cell(row, 2).Value = c.StartTimeUtc.ToString("HH:mm:ss");
                 ws.Cell(row, 3).Value = c.Direction;
                 ws.Cell(row, 4).Value = c.Category;
-                ws.Cell(row, 5).Value = c.FromNumber ?? "";
-                ws.Cell(row, 6).Value = c.FromName ?? "";
-                ws.Cell(row, 7).Value = c.ToNumber ?? "";
-                ws.Cell(row, 8).Value = FormatDurationMmSs(c.DurationSeconds);
-                ws.Cell(row, 9).Value = c.Result;
-                ws.Cell(row, 10).Value = c.LeadName ?? "";
-                ws.Cell(row, 11).Value = c.MatchedCleanerName ?? "";
-                ws.Cell(row, 12).Value = c.RecordingUrl ?? "";
+                ws.Cell(row, 5).Value = c.IsAdCall ? "Yes" : "No";
+                ws.Cell(row, 6).Value = c.FromNumber ?? "";
+                ws.Cell(row, 7).Value = c.FromName ?? "";
+                ws.Cell(row, 8).Value = c.ToNumber ?? "";
+                ws.Cell(row, 9).Value = FormatDurationMmSs(c.DurationSeconds);
+                ws.Cell(row, 10).Value = c.Result;
+                ws.Cell(row, 11).Value = c.LeadName ?? "";
+                ws.Cell(row, 12).Value = c.MatchedCleanerName ?? "";
+                ws.Cell(row, 13).Value = c.RecordingUrl ?? "";
                 row++;
             }
 
@@ -318,9 +334,12 @@ namespace DreamCleaningBackend.Controllers
             ws.Cell(4, 2).Value = summary.Missed;
             ws.Cell(5, 1).Value = "Answer rate (%)";
             ws.Cell(5, 2).Value = summary.AnswerRate;
+            // Ad calls — independent dimension (a call can be Customer/Cleaner/Spam AND ad-sourced).
+            ws.Cell(6, 1).Value = "Ad calls";
+            ws.Cell(6, 2).Value = summary.AdCall;
 
             // Category breakdown.
-            var catRow = 7;
+            var catRow = 8;
             ws.Cell(catRow, 1).Value = "Category";
             ws.Cell(catRow, 2).Value = "Count";
             var catHeader = ws.Range(catRow, 1, catRow, 2);
