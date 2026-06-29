@@ -3,6 +3,7 @@ using System.Text.Json;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace DreamCleaningBackend.Services
 {
@@ -24,6 +25,10 @@ namespace DreamCleaningBackend.Services
         // Named HttpClient registered in Program.cs with an IPv4-forced handler (VPS has IPv6 disabled).
         public const string HttpClientName = "GoogleBusinessProfile";
 
+        // IMemoryCache key for the full non-hidden review snapshot served by GoogleReviewsController.
+        // Evicted here after a successful sync so a fresh pull shows up without waiting out the TTL.
+        public const string AllReviewsCacheKey = "GoogleReviews:All";
+
         private const string TokenEndpoint = "https://oauth2.googleapis.com/token";
         // v4 is the only Business Profile API version that exposes reviews.
         private const string ReviewsApiBase = "https://mybusiness.googleapis.com/v4";
@@ -33,17 +38,20 @@ namespace DreamCleaningBackend.Services
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _configuration;
         private readonly ILogger<GoogleBusinessProfileService> _logger;
+        private readonly IMemoryCache _cache;
 
         public GoogleBusinessProfileService(
             IServiceProvider serviceProvider,
             IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
-            ILogger<GoogleBusinessProfileService> logger)
+            ILogger<GoogleBusinessProfileService> logger,
+            IMemoryCache cache)
         {
             _serviceProvider = serviceProvider;
             _httpClientFactory = httpClientFactory;
             _configuration = configuration;
             _logger = logger;
+            _cache = cache;
         }
 
         private string? ClientId => _configuration["GoogleBusinessProfile:ClientId"];
@@ -255,6 +263,10 @@ namespace DreamCleaningBackend.Services
             }
 
             await context.SaveChangesAsync(cancellationToken);
+
+            // Drop the cached snapshot so GoogleReviewsController rebuilds it from the fresh DB state.
+            _cache.Remove(AllReviewsCacheKey);
+
             return fetched.Count;
         }
     }
