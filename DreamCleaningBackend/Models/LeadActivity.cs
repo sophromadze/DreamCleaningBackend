@@ -43,12 +43,13 @@ namespace DreamCleaningBackend.Models
     {
         public const string Note = "Note";
         public const string StageChange = "StageChange";
+        public const string Update = "Update";
         public const string Call = "Call";
         public const string Email = "Email";
         public const string Sms = "Sms";
         public const string System = "System";
 
-        public static readonly string[] All = { Note, StageChange, Call, Email, Sms, System };
+        public static readonly string[] All = { Note, StageChange, Update, Call, Email, Sms, System };
         public static bool IsValid(string? s) => s != null && All.Contains(s);
     }
 }

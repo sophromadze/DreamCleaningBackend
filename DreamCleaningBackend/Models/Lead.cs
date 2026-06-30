@@ -88,6 +88,15 @@ namespace DreamCleaningBackend.Models
         /// <summary>Last time the lead was touched (stage move, note, contact). Drives sort + staleness.</summary>
         public DateTime LastActivityAt { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// Soft-archive flag. Archived leads drop out of the active Kanban board into the
+        /// archive drawer below it. Admins can archive/restore; only SuperAdmins can hard-delete.
+        /// </summary>
+        public bool IsArchived { get; set; } = false;
+
+        /// <summary>When the lead was archived. Null while active.</summary>
+        public DateTime? ArchivedAt { get; set; }
+
         public virtual ICollection<LeadActivity> Activities { get; set; } = new List<LeadActivity>();
 
         [NotMapped]

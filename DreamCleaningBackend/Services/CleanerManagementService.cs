@@ -39,7 +39,8 @@ namespace DreamCleaningBackend.Services
                     (c.Phone != null && c.Phone.Contains(term)) ||
                     (c.Email != null && c.Email.Contains(term)) ||
                     (c.Address != null && c.Address.Contains(term)) ||
-                    (c.Location != null && c.Location.Contains(term)));
+                    (c.Location != null && c.Location.Contains(term)) ||
+                    (c.OperatingAreas != null && c.OperatingAreas.Contains(term)));
             }
 
             var cleaners = await query
@@ -60,6 +61,7 @@ namespace DreamCleaningBackend.Services
                 Email = c.Email,
                 Address = c.Address,
                 Location = c.Location,
+                OperatingAreas = c.OperatingAreas,
                 BusyDaysOfWeek = ParseBusyDays(c.BusyDaysOfWeek),
                 AlreadyWorkedWithUs = c.AlreadyWorkedWithUs,
                 Nationality = c.Nationality,
@@ -171,6 +173,7 @@ namespace DreamCleaningBackend.Services
                 Email = dto.Email,
                 Address = dto.Address,
                 Location = dto.Location,
+                OperatingAreas = dto.OperatingAreas,
                 BusyDaysOfWeek = SerializeBusyDays(dto.BusyDaysOfWeek),
                 AlreadyWorkedWithUs = dto.AlreadyWorkedWithUs,
                 Nationality = dto.Nationality,
@@ -215,6 +218,7 @@ namespace DreamCleaningBackend.Services
             cleaner.Email = dto.Email;
             cleaner.Address = dto.Address;
             cleaner.Location = dto.Location;
+            cleaner.OperatingAreas = dto.OperatingAreas;
             cleaner.BusyDaysOfWeek = SerializeBusyDays(dto.BusyDaysOfWeek);
             cleaner.AlreadyWorkedWithUs = dto.AlreadyWorkedWithUs;
             cleaner.Nationality = dto.Nationality;
@@ -510,6 +514,7 @@ namespace DreamCleaningBackend.Services
                 Email = cleaner.Email,
                 Address = cleaner.Address,
                 Location = cleaner.Location,
+                OperatingAreas = cleaner.OperatingAreas,
                 BusyDaysOfWeek = ParseBusyDays(cleaner.BusyDaysOfWeek),
                 Vacations = MapVacations(cleaner.Vacations),
                 AlreadyWorkedWithUs = cleaner.AlreadyWorkedWithUs,

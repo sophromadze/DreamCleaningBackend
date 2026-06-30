@@ -28,6 +28,8 @@ namespace DreamCleaningBackend.DTOs
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
         public DateTime LastActivityAt { get; set; }
+        public bool IsArchived { get; set; }
+        public DateTime? ArchivedAt { get; set; }
     }
 
     /// <summary>Lead with its timeline — returned by the detail endpoint.</summary>

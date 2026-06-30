@@ -1026,6 +1026,11 @@ namespace DreamCleaningBackend.Controllers
                 if (order.IsPaid)
                     return BadRequest(new { message = "Order is already paid" });
 
+                // Manual-paid orders (Cash/Zelle/Check/Other) were settled outside Stripe and keep
+                // IsPaid=false by design — there is nothing to charge on the website.
+                if (order.PaymentMethod != PaymentMethod.Normal)
+                    return BadRequest(new { message = "This order was paid outside the website and has no payment due." });
+
                 // Fully covered (e.g. gift card) — payable total below Stripe's minimum. Skip the
                 // PaymentIntent; the frontend confirms directly and confirm-payment marks it paid.
                 if (order.Total < StripeMinimumChargeAmount)

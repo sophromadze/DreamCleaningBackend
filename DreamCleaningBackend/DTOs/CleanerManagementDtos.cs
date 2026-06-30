@@ -15,6 +15,7 @@ namespace DreamCleaningBackend.DTOs
         public string? Email { get; set; }
         public string? Address { get; set; }
         public string? Location { get; set; }
+        public string? OperatingAreas { get; set; }
 
         // Recurring weekdays the cleaner is busy (System.DayOfWeek ints, 0=Sun … 6=Sat).
         public List<int> BusyDaysOfWeek { get; set; } = new();
@@ -84,6 +85,9 @@ namespace DreamCleaningBackend.DTOs
 
         [StringLength(50)]
         public string? Location { get; set; }
+
+        [StringLength(50)]
+        public string? OperatingAreas { get; set; }
 
         // Recurring weekdays the cleaner is busy (System.DayOfWeek ints, 0=Sun … 6=Sat).
         public List<int> BusyDaysOfWeek { get; set; } = new();

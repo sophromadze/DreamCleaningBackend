@@ -42,10 +42,15 @@ namespace DreamCleaningBackend.Models
         [Column("Location")]
         public string? Address { get; set; }
 
-        // Borough selection (Brooklyn / Manhattan / Queens). Stored in a new "Borough" column.
+        // Borough the cleaner LIVES in (single: Brooklyn / Manhattan / Queens). Stored in the "Borough" column.
         [StringLength(50)]
         [Column("Borough")]
         public string? Location { get; set; }
+
+        // Boroughs the cleaner WORKS in (multi-select), stored as CSV e.g. "Brooklyn,Queens".
+        // Distinct from Location (residence). Empty = treated as working everywhere.
+        [StringLength(50)]
+        public string? OperatingAreas { get; set; }
 
         // Recurring weekly days the cleaner is unavailable, stored as a CSV of
         // System.DayOfWeek integers (0=Sunday … 6=Saturday), e.g. "1,2" = Mon & Tue.
