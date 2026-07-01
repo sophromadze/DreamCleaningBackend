@@ -199,7 +199,46 @@ namespace DreamCleaningBackend.Services
                 }
             }
 
+            // The customer just booked, so any open win-back alert for them is moot — auto-resolve
+            // it so the CRM automation feed doesn't keep showing a stale "hasn't ordered" prompt.
+            // Best-effort: a failure here must never undo the committed order.
+            await ResolveOpenWinbackAlertsAsync(orderUserId);
+
             return order;
+        }
+
+        // Closes any Open/Snoozed win-back alert for a customer who has just placed an order.
+        // The win-back alert's Reason text is a frozen snapshot from when it was created, and the
+        // evaluator skips users who already have an open alert — so without this the alert would
+        // linger with a stale last-order date until an admin cleared it by hand.
+        private async Task ResolveOpenWinbackAlertsAsync(int userId)
+        {
+            try
+            {
+                var openAlerts = await _context.AutomationAlerts
+                    .Where(a => a.UserId == userId
+                                && a.RuleKey == AutomationRuleKeys.Winback
+                                && (a.Status == AutomationAlertStatus.Open
+                                    || a.Status == AutomationAlertStatus.Snoozed))
+                    .ToListAsync();
+
+                if (openAlerts.Count == 0) return;
+
+                foreach (var alert in openAlerts)
+                {
+                    alert.Status = AutomationAlertStatus.Done;
+                    alert.RemindAt = null;
+                    alert.ResolvedAt = DateTime.UtcNow;
+                    alert.ResolvedByAdminId = null;
+                    alert.ResolvedByAdminName = "System (customer rebooked)";
+                }
+
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to auto-resolve win-back alerts for user {UserId} after booking.", userId);
+            }
         }
 
         // Resolves the loyalty discount + stacking for the target user, then mutates the
