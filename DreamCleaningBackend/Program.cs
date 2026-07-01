@@ -219,6 +219,35 @@ builder.Services.AddScoped<IAdminBonusService, AdminBonusService>();
 // Company expenses — flat + recurring entries that subtract from net company revenue.
 builder.Services.AddScoped<IExpenseService, ExpenseService>();
 
+// Google Ads daily spend → Expenses. Reads the "GoogleAds" appsettings section (strongly typed).
+builder.Services.Configure<DreamCleaningBackend.Configuration.GoogleAdsOptions>(
+    builder.Configuration.GetSection(DreamCleaningBackend.Configuration.GoogleAdsOptions.SectionName));
+// Named HttpClient for the Google Ads REST calls. When GoogleAds:ForceIpv4 is true (default) the
+// handler forces IPv4 — the production VPS has IPv6 disabled and the Google Ads gRPC SDK offers no
+// in-process hook to force it, so we call REST over our own SocketsHttpHandler (see CLAUDE.md).
+var googleAdsForceIpv4 = builder.Configuration.GetValue<bool>(
+    $"{DreamCleaningBackend.Configuration.GoogleAdsOptions.SectionName}:ForceIpv4", true);
+builder.Services.AddHttpClient(GoogleAdsCostService.HttpClientName)
+    .ConfigurePrimaryHttpMessageHandler(() =>
+    {
+        var handler = new SocketsHttpHandler();
+        if (googleAdsForceIpv4)
+        {
+            handler.ConnectCallback = async (context, cancellationToken) =>
+            {
+                var socket = new System.Net.Sockets.Socket(
+                    System.Net.Sockets.AddressFamily.InterNetwork, // Force IPv4
+                    System.Net.Sockets.SocketType.Stream,
+                    System.Net.Sockets.ProtocolType.Tcp);
+                await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+                return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+            };
+        }
+        return handler;
+    });
+builder.Services.AddScoped<IGoogleAdsCostService, GoogleAdsCostService>();
+builder.Services.AddHostedService<GoogleAdsSyncBackgroundService>();
+
 // Per-month locked FX (GEL→USD) + bonus-rate snapshots for the statistics page.
 builder.Services.AddScoped<IFinancialRateService, FinancialRateService>();
 

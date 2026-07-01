@@ -1154,6 +1154,11 @@ namespace DreamCleaningBackend.Data
                 entity.HasIndex(e => e.StartDate).HasDatabaseName("IX_Expenses_StartDate");
                 entity.HasIndex(e => e.IsRecurring).HasDatabaseName("IX_Expenses_IsRecurring");
 
+                // One row per externally-synced day. MySQL/MariaDB treat NULLs as distinct in a
+                // UNIQUE index, so the many manual expenses (SourceKey == NULL) coexist while
+                // synced rows (e.g. "googleads:2026-02-16") stay unique — the upsert key.
+                entity.HasIndex(e => e.SourceKey).IsUnique().HasDatabaseName("IX_Expenses_SourceKey");
+
                 // CategoryId reuses the existing "Category" int column (no rename, no data move).
                 entity.Property(e => e.CategoryId).HasColumnName("Category");
                 entity.HasIndex(e => e.CategoryId).HasDatabaseName("IX_Expenses_Category");

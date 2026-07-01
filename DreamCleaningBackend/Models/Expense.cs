@@ -59,6 +59,15 @@ namespace DreamCleaningBackend.Models
         [StringLength(1000)]
         public string? Notes { get; set; }
 
+        // Idempotency marker for externally-synced expenses. NULL for manually-entered rows;
+        // "googleads:yyyy-MM-dd" for a Google Ads daily-spend row. A UNIQUE index on this column
+        // (see ApplicationDbContext) guarantees exactly one row per ad-spend day and makes
+        // re-syncs an upsert-by-key. On MySQL/MariaDB a UNIQUE index allows many NULLs, so manual
+        // expenses are unaffected. Kept short/bounded so the column maps to varchar (indexable),
+        // not TEXT (which can't be uniquely indexed without a prefix length).
+        [StringLength(100)]
+        public string? SourceKey { get; set; }
+
         public int CreatedByUserId { get; set; }
 
         [ForeignKey("CreatedByUserId")]
