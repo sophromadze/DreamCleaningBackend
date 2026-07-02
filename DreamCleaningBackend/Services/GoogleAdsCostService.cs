@@ -73,8 +73,8 @@ namespace DreamCleaningBackend.Services
             if (start.Date > yesterday)
                 return new GoogleAdsSyncResult();
 
-            var costs = await QueryDailyCostsAsync(start.Date, yesterday, ct);
-            return await UpsertDaysAsync(costs, ct);
+            var metrics = await QueryDailyMetricsAsync(start.Date, yesterday, ct);
+            return await UpsertAsync(metrics, ct);
         }
 
         public async Task<GoogleAdsSyncResult> SyncRecentAsync(CancellationToken ct = default)
@@ -86,15 +86,17 @@ namespace DreamCleaningBackend.Services
             var today = NyTimeHelper.NowNy.Date;
             var from = today.AddDays(-7);
 
-            var costs = await QueryDailyCostsAsync(from, today, ct);
-            return await UpsertDaysAsync(costs, ct);
+            var metrics = await QueryDailyMetricsAsync(from, today, ct);
+            return await UpsertAsync(metrics, ct);
         }
 
         // ── Google Ads query ────────────────────────────────────────────────────────────
 
-        // Returns account-total cost (USD, 2dp) per calendar day in [from, to], account timezone.
-        // Only days with cost_micros > 0 are included, so callers never touch zero-spend days.
-        private async Task<Dictionary<DateTime, decimal>> QueryDailyCostsAsync(
+        // Per-day account metrics (cost, clicks, conversions) for [from, to] in the account
+        // timezone. A day is included when it has any of cost/clicks/conversions > 0.
+        private readonly record struct DailyMetrics(decimal CostUsd, int Clicks, decimal Conversions);
+
+        private async Task<Dictionary<DateTime, DailyMetrics>> QueryDailyMetricsAsync(
             DateTime from, DateTime to, CancellationToken ct)
         {
             var accessToken = await GetAccessTokenAsync(ct);
@@ -102,7 +104,7 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException("Could not obtain a Google Ads access token.");
 
             var gaql =
-                "SELECT segments.date, metrics.cost_micros " +
+                "SELECT segments.date, metrics.cost_micros, metrics.clicks, metrics.conversions " +
                 "FROM customer " +
                 $"WHERE segments.date BETWEEN '{from:yyyy-MM-dd}' AND '{to:yyyy-MM-dd}'";
 
@@ -129,15 +131,15 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException($"Google Ads searchStream returned {(int)response.StatusCode}.");
             }
 
-            return ParseDailyCosts(body);
+            return ParseDailyMetrics(body);
         }
 
         // searchStream returns a JSON array of stream chunks, each { "results": [ { segments.date,
-        // metrics.costMicros } ] }. Aggregate cost per date (defensively summing, though FROM
-        // customer already yields one row per date).
-        private static Dictionary<DateTime, decimal> ParseDailyCosts(string body)
+        // metrics.{costMicros,clicks,conversions} } ] }. Aggregate per date (defensively summing,
+        // though FROM customer already yields one row per date).
+        private static Dictionary<DateTime, DailyMetrics> ParseDailyMetrics(string body)
         {
-            var result = new Dictionary<DateTime, decimal>();
+            var result = new Dictionary<DateTime, DailyMetrics>();
 
             var root = JToken.Parse(body);
             // A stream body is normally an array; tolerate a single object too.
@@ -150,19 +152,28 @@ namespace DreamCleaningBackend.Services
                 foreach (var row in rows)
                 {
                     var dateStr = row["segments"]?["date"]?.Value<string>();
-                    var microsStr = row["metrics"]?["costMicros"]?.Value<string>();
-
                     if (string.IsNullOrEmpty(dateStr) ||
                         !DateTime.TryParseExact(dateStr, "yyyy-MM-dd", CultureInfo.InvariantCulture,
                             DateTimeStyles.None, out var date))
                         continue;
 
-                    if (!long.TryParse(microsStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out var micros)
-                        || micros <= 0)
+                    var metrics = row["metrics"];
+                    long.TryParse(metrics?["costMicros"]?.Value<string>(), NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out var micros);
+                    long.TryParse(metrics?["clicks"]?.Value<string>(), NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out var clicks);
+                    var conversions = metrics?["conversions"]?.Value<decimal>() ?? 0m;
+
+                    if (micros <= 0 && clicks <= 0 && conversions <= 0)
                         continue;
 
-                    var amountUsd = Math.Round(micros / 1_000_000m, 2, MidpointRounding.AwayFromZero);
-                    result[date.Date] = result.TryGetValue(date.Date, out var acc) ? acc + amountUsd : amountUsd;
+                    var costUsd = Math.Round(micros / 1_000_000m, 2, MidpointRounding.AwayFromZero);
+
+                    var acc = result.TryGetValue(date.Date, out var existing) ? existing : default;
+                    result[date.Date] = new DailyMetrics(
+                        acc.CostUsd + costUsd,
+                        acc.Clicks + (int)clicks,
+                        acc.Conversions + conversions);
                 }
             }
 
@@ -194,53 +205,77 @@ namespace DreamCleaningBackend.Services
             return JObject.Parse(body)["access_token"]?.Value<string>();
         }
 
-        // ── Expense upsert ──────────────────────────────────────────────────────────────
+        // ── Upsert (Expenses + daily stats) ─────────────────────────────────────────────
 
-        private async Task<GoogleAdsSyncResult> UpsertDaysAsync(
-            Dictionary<DateTime, decimal> costsByDate, CancellationToken ct)
+        private async Task<GoogleAdsSyncResult> UpsertAsync(
+            Dictionary<DateTime, DailyMetrics> metricsByDate, CancellationToken ct)
         {
             var result = new GoogleAdsSyncResult();
-            if (costsByDate.Count == 0)
+            if (metricsByDate.Count == 0)
                 return result;
 
             var categoryId = await GetOrCreateCategoryIdAsync(ct);
-            int? systemUserId = null; // resolved lazily, only if we actually insert
+            int? systemUserId = null; // resolved lazily, only if we actually insert an expense
             var now = DateTime.UtcNow;
 
-            foreach (var (date, amountUsd) in costsByDate)
+            foreach (var (date, m) in metricsByDate)
             {
-                if (amountUsd <= 0) continue; // zero-spend days are never written (spec)
-
-                var key = $"googleads:{date:yyyy-MM-dd}";
-                var existing = await _context.Expenses.FirstOrDefaultAsync(e => e.SourceKey == key, ct);
-
-                if (existing != null)
+                // Ad spend → Expenses (unchanged rule: only days with cost > 0 are written).
+                if (m.CostUsd > 0)
                 {
-                    if (existing.Amount != amountUsd)
+                    var key = $"googleads:{date:yyyy-MM-dd}";
+                    var existing = await _context.Expenses.FirstOrDefaultAsync(e => e.SourceKey == key, ct);
+
+                    if (existing != null)
                     {
-                        existing.Amount = amountUsd;
-                        existing.UpdatedAt = now;
+                        if (existing.Amount != m.CostUsd)
+                        {
+                            existing.Amount = m.CostUsd;
+                            existing.UpdatedAt = now;
+                        }
+                    }
+                    else
+                    {
+                        systemUserId ??= await ResolveSystemUserIdAsync(ct);
+                        _context.Expenses.Add(new Expense
+                        {
+                            Name = "Google Ads Spend",
+                            Amount = m.CostUsd,
+                            CategoryId = categoryId,
+                            StartDate = date,          // account-tz calendar date, stored date-only as-is
+                            IsRecurring = false,
+                            SourceKey = key,
+                            CreatedByUserId = systemUserId.Value,
+                            CreatedAt = now,
+                            UpdatedAt = now
+                        });
+                    }
+
+                    result.DaysSynced++;
+                    result.TotalUsd += m.CostUsd;
+                }
+
+                // Clicks/conversions → GoogleAdsDailyStat (separate table; upsert by day).
+                var stat = await _context.GoogleAdsDailyStats.FirstOrDefaultAsync(s => s.Date == date, ct);
+                if (stat != null)
+                {
+                    if (stat.Clicks != m.Clicks || stat.Conversions != m.Conversions)
+                    {
+                        stat.Clicks = m.Clicks;
+                        stat.Conversions = m.Conversions;
+                        stat.UpdatedAt = now;
                     }
                 }
                 else
                 {
-                    systemUserId ??= await ResolveSystemUserIdAsync(ct);
-                    _context.Expenses.Add(new Expense
+                    _context.GoogleAdsDailyStats.Add(new GoogleAdsDailyStat
                     {
-                        Name = "Google Ads Spend",
-                        Amount = amountUsd,
-                        CategoryId = categoryId,
-                        StartDate = date,          // account-tz calendar date, stored date-only as-is
-                        IsRecurring = false,
-                        SourceKey = key,
-                        CreatedByUserId = systemUserId.Value,
-                        CreatedAt = now,
+                        Date = date,
+                        Clicks = m.Clicks,
+                        Conversions = m.Conversions,
                         UpdatedAt = now
                     });
                 }
-
-                result.DaysSynced++;
-                result.TotalUsd += amountUsd;
             }
 
             await _context.SaveChangesAsync(ct);

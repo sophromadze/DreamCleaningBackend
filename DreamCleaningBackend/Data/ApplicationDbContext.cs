@@ -51,6 +51,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<AdminBonusSetting> AdminBonusSettings { get; set; }
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
+        public DbSet<GoogleAdsDailyStat> GoogleAdsDailyStats { get; set; }
         public DbSet<MonthlyFinancialSnapshot> MonthlyFinancialSnapshots { get; set; }
         public DbSet<TrustedDevice> TrustedDevices { get; set; }
         public DbSet<TwoFactorSession> TwoFactorSessions { get; set; }
@@ -1171,6 +1172,14 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(e => e.CreatedByUserId)
                     .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // GoogleAdsDailyStat — one row per day of Google Ads clicks/conversions (spend lives
+            // in Expenses). Unique on Date makes the daily sync an upsert-by-day.
+            modelBuilder.Entity<GoogleAdsDailyStat>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Date).IsUnique().HasDatabaseName("IX_GoogleAdsDailyStats_Date");
             });
 
             // TrustedDevice configuration — remembered post-2FA devices for staff users.
