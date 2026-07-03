@@ -17,5 +17,10 @@ namespace DreamCleaningBackend.Controllers
             Enum.TryParse<UserRole>(roleClaim, out var role);
             return role;
         }
+
+        protected int GetCurrentUserId()
+        {
+            return int.TryParse(User.FindFirst("UserId")?.Value, out var id) ? id : 0;
+        }
     }
 }

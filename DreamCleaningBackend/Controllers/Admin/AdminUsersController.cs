@@ -6,6 +6,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Attributes;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Hubs;
 using System.Linq;
 using Newtonsoft.Json;
@@ -76,7 +77,8 @@ namespace DreamCleaningBackend.Controllers
                     Id = u.Id,
                     FirstName = u.FirstName,
                     LastName = u.LastName,
-                    Email = u.Email,
+                    Email = u.IsNoEmailUser ? "" : u.Email,
+                    IsNoEmailUser = u.IsNoEmailUser,
                     Phone = u.Phone,
                     Role = u.Role.ToString(),
                     AuthProvider = u.AuthProvider,
@@ -367,7 +369,7 @@ namespace DreamCleaningBackend.Controllers
                             ws.Cell(row, col).Value = u.Phone ?? "";
                             break;
                         case "email":
-                            ws.Cell(row, col).Value = u.Email ?? "";
+                            ws.Cell(row, col).Value = NoEmailHelper.IsPlaceholder(u.Email) ? "" : (u.Email ?? "");
                             break;
                         case "lastServiceType":
                             ws.Cell(row, col).Value = serviceTypeLabel;
@@ -423,10 +425,23 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<object>> RegisterUser([FromBody] AdminRegisterUserDto dto)
         {
-            var emailLower = dto.Email.Trim().ToLowerInvariant();
-            var existing = await _context.Users.AnyAsync(u => u.Email.ToLower() == emailLower);
-            if (existing)
-                return StatusCode(409, new { message = "A user with this email already exists." });
+            string emailLower;
+            if (dto.NoEmail)
+            {
+                // Cash customer without any email: phone is the only way to reach them.
+                if (string.IsNullOrWhiteSpace(dto.Phone))
+                    return BadRequest(new { message = "Phone is required for customers without an email." });
+                emailLower = NoEmailHelper.GeneratePlaceholder();
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(dto.Email))
+                    return BadRequest(new { message = "Email is required." });
+                emailLower = dto.Email.Trim().ToLowerInvariant();
+                var existing = await _context.Users.AnyAsync(u => u.Email.ToLower() == emailLower);
+                if (existing)
+                    return StatusCode(409, new { message = "A user with this email already exists." });
+            }
 
             var user = new User
             {
@@ -442,7 +457,9 @@ namespace DreamCleaningBackend.Controllers
                 Role = UserRole.Customer,
                 FirstTimeOrder = true,
                 CreatedAt = DateTime.UtcNow,
-                RequiresRealEmail = false
+                RequiresRealEmail = false,
+                IsNoEmailUser = dto.NoEmail,
+                CanReceiveEmails = !dto.NoEmail
             };
 
             _context.Users.Add(user);
@@ -458,16 +475,19 @@ namespace DreamCleaningBackend.Controllers
                 _logger.LogError(ex, $"Failed to grant special offers to user {user.Id}");
             }
 
-            try
+            if (!user.IsNoEmailUser)
             {
-                var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
-                var loginUrl = $"{frontendUrl}/login";
-                await _emailService.SendAdminWelcomeEmailAsync(user.Email, user.FirstName, loginUrl);
-            }
-            catch (Exception ex)
-            {
-                // Admin confirmed identity by phone; keep the user even if email fails
-                _logger.LogError(ex, $"Failed to send admin welcome email to {user.Email}");
+                try
+                {
+                    var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
+                    var loginUrl = $"{frontendUrl}/login";
+                    await _emailService.SendAdminWelcomeEmailAsync(user.Email, user.FirstName, loginUrl);
+                }
+                catch (Exception ex)
+                {
+                    // Admin confirmed identity by phone; keep the user even if email fails
+                    _logger.LogError(ex, $"Failed to send admin welcome email to {user.Email}");
+                }
             }
 
             try
@@ -484,10 +504,11 @@ namespace DreamCleaningBackend.Controllers
                 id = user.Id,
                 firstName = user.FirstName,
                 lastName = user.LastName,
-                email = user.Email,
+                email = user.IsNoEmailUser ? null : user.Email,
                 phone = user.Phone,
                 role = user.Role.ToString(),
-                authProvider = user.AuthProvider
+                authProvider = user.AuthProvider,
+                isNoEmailUser = user.IsNoEmailUser
             });
         }
 
@@ -758,13 +779,35 @@ namespace DreamCleaningBackend.Controllers
 
             targetUser.FirstName = dto.FirstName;
             targetUser.LastName = dto.LastName;
-            targetUser.Email = dto.Email;
+            // No-email accounts keep their hidden placeholder unless the admin types a real address;
+            // once a real email lands, the account becomes a normal one (flag clears, mail allowed).
+            var becameEmailUser = false;
+            var newEmail = dto.Email?.Trim().ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(newEmail) && !NoEmailHelper.IsPlaceholder(newEmail) && newEmail != targetUser.Email.ToLowerInvariant())
+            {
+                var emailTaken = await _context.Users.AnyAsync(u => u.Id != id && u.Email.ToLower() == newEmail);
+                if (emailTaken)
+                    return StatusCode(409, new { message = "Another user already uses this email." });
+
+                targetUser.Email = newEmail;
+                if (targetUser.IsNoEmailUser)
+                {
+                    targetUser.IsNoEmailUser = false;
+                    targetUser.IsEmailVerified = true; // admin vouched for the address
+                    becameEmailUser = true;
+                }
+            }
+            else if (!targetUser.IsNoEmailUser && !string.IsNullOrWhiteSpace(dto.Email))
+            {
+                targetUser.Email = dto.Email;
+            }
             targetUser.Phone = dto.Phone ?? targetUser.Phone;
             targetUser.Role = newRole;
             targetUser.IsActive = dto.IsActive;
             targetUser.FirstTimeOrder = dto.FirstTimeOrder;
             targetUser.CanReceiveCommunications = dto.CanReceiveCommunications;
-            targetUser.CanReceiveEmails = dto.CanReceiveEmails;
+            // The dto carries the pre-edit value; a freshly emailed account should start receiving mail.
+            targetUser.CanReceiveEmails = becameEmailUser || dto.CanReceiveEmails;
             targetUser.CanReceiveMessages = dto.CanReceiveMessages;
             targetUser.UpdatedAt = DateTime.UtcNow;
 
@@ -848,6 +891,7 @@ namespace DreamCleaningBackend.Controllers
                 await _context.GiftCardUsages.Where(g => g.UserId == id).ExecuteDeleteAsync();
                 await _context.NotificationLogs.Where(n => n.CustomerId == id).ExecuteDeleteAsync();
                 await _context.AuditLogs.Where(a => a.UserId == id).ExecuteDeleteAsync();
+                await _context.OrderTransfers.Where(t => t.FromUserId == id || t.ToUserId == id).ExecuteDeleteAsync();
                 await _context.Orders.Where(o => o.UserId == id).ExecuteDeleteAsync();
                 _context.Users.Remove(user);
                 await _context.SaveChangesAsync();

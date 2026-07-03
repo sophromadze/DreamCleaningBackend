@@ -15,7 +15,7 @@ namespace DreamCleaningBackend.Services
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
         }
 
-        public async Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string> metadata = null)
+        public async Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string> metadata = null, string receiptEmail = null)
         {
             try
             {
@@ -24,7 +24,10 @@ namespace DreamCleaningBackend.Services
                     Amount = (long)(amount * 100), // Convert to cents
                     Currency = "usd",
                     PaymentMethodTypes = new List<string> { "card" },
-                    Metadata = metadata ?? new Dictionary<string, string>()
+                    Metadata = metadata ?? new Dictionary<string, string>(),
+                    // Stripe's receipt goes to the ORDER's email regardless of who pays —
+                    // guest payment links may be settled by a relative/helper.
+                    ReceiptEmail = string.IsNullOrWhiteSpace(receiptEmail) ? null : receiptEmail.Trim()
                 };
 
                 var service = new PaymentIntentService();

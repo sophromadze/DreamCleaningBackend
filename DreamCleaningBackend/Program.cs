@@ -213,6 +213,9 @@ builder.Services.AddScoped<IBubbleRewardsSettingsService, BubbleRewardsSettingsS
 builder.Services.AddScoped<IReferralService, ReferralService>();
 builder.Services.AddScoped<IBubblePointsService, BubblePointsService>();
 
+// SuperAdmin order transfer between user accounts (undoable, snapshot-based).
+builder.Services.AddScoped<IOrderTransferService, OrderTransferService>();
+
 // Admin per-order bonus (configurable rate × eligible orders assigned to the admin).
 builder.Services.AddScoped<IAdminBonusService, AdminBonusService>();
 

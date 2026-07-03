@@ -169,6 +169,14 @@ namespace DreamCleaningBackend.Services
 
         public async Task SendEmailAsync(string to, string subject, string html)
         {
+            // No-email (cash) customers carry a generated non-routable placeholder address —
+            // silently skip instead of handing a dead address to SMTP.
+            if (Helpers.NoEmailHelper.IsPlaceholder(to))
+            {
+                _logger.LogInformation($"Skipping email to no-email placeholder address (subject: {subject})");
+                return;
+            }
+
             // Check if email sending is disabled in configuration
             var emailEnabled = _configuration.GetValue<bool>("Email:EnableEmailSending", true);
 
@@ -619,6 +627,13 @@ namespace DreamCleaningBackend.Services
 
         private async Task SendEmailWithInlineImageAsync(string to, string subject, string html, string imagePath, string fallbackDataUri)
         {
+            // Same guard as SendEmailAsync — never mail a no-email placeholder address.
+            if (Helpers.NoEmailHelper.IsPlaceholder(to))
+            {
+                _logger.LogInformation($"Skipping email to no-email placeholder address (subject: {subject})");
+                return;
+            }
+
             // Check if email sending is disabled in configuration
             var emailEnabled = _configuration.GetValue<bool>("Email:EnableEmailSending", true);
 

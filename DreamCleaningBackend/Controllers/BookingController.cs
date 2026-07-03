@@ -434,6 +434,10 @@ namespace DreamCleaningBackend.Controllers
                 if (userId == 0)
                     return Unauthorized();
 
+                // Email stays mandatory on the public flow (only admin create-for-user may omit it).
+                if (string.IsNullOrWhiteSpace(dto.ContactEmail))
+                    return BadRequest(new { message = "Contact email is required." });
+
                 // Find the user
                 var user = await _context.Users.FindAsync(userId);
                 if (user == null)
@@ -502,7 +506,8 @@ namespace DreamCleaningBackend.Controllers
                     { "type", "booking" }
                 };
 
-                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(order.Total, metadata);
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(order.Total, metadata,
+                    receiptEmail: OrderReceiptEmail(order));
 
                 // Update order with payment intent ID
                 order.PaymentIntentId = paymentIntent.Id;
@@ -542,6 +547,10 @@ namespace DreamCleaningBackend.Controllers
                 var targetUser = await _context.Users.FindAsync(dto.TargetUserId);
                 if (targetUser == null)
                     return NotFound(new { message = "Target user not found" });
+
+                // Contact email may be omitted only for no-email (cash) customers.
+                if (string.IsNullOrWhiteSpace(dto.BookingData.ContactEmail) && !targetUser.IsNoEmailUser)
+                    return BadRequest(new { message = "Contact email is required." });
 
                 // Parse manual payment method up front so order construction can choose the
                 // initial Status (Pending for Stripe / Normal, Active for manual). Anything
@@ -726,7 +735,8 @@ namespace DreamCleaningBackend.Controllers
                         }
 
                         var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
-                        var orderLink = $"{frontendUrl}/order/{order.Id}/pay";
+                        // Tokenized link: opens the payment page without login while unpaid.
+                        var orderLink = await PaymentLinkHelper.BuildPaymentLinkAsync(_context, order, frontendUrl);
                         
                         // Capitalize first letter of names
                         var capitalizedFirstName = CapitalizeName(targetUser.FirstName);
@@ -1007,21 +1017,24 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("create-payment-intent/{orderId}")]
-        [Authorize]
-        public async Task<ActionResult<BookingResponseDto>> CreatePaymentIntentForOrder(int orderId)
+        [AllowAnonymous]
+        public async Task<ActionResult<BookingResponseDto>> CreatePaymentIntentForOrder(int orderId, [FromQuery] string? guestToken = null)
         {
             try
             {
+                // Access rule: the order's owner, OR anyone presenting the secret payment-link
+                // token (from /order/{id}/pay?t=...) — logged out or logged in as another user.
+                // Token holders act on the owner's behalf.
                 var userId = GetUserId();
-                if (userId == 0)
-                    return Unauthorized();
-
                 var order = await _context.Orders
                     .Include(o => o.ServiceType)
-                    .FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
+                    .FirstOrDefaultAsync(o => o.Id == orderId);
 
                 if (order == null)
                     return NotFound(new { message = "Order not found" });
+                if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, guestToken))
+                    return NotFound(new { message = "Order not found" });
+                userId = order.UserId;
 
                 if (order.IsPaid)
                     return BadRequest(new { message = "Order is already paid" });
@@ -1054,7 +1067,8 @@ namespace DreamCleaningBackend.Controllers
                     { "type", "booking" }
                 };
 
-                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(order.Total, metadata);
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(order.Total, metadata,
+                    receiptEmail: OrderReceiptEmail(order));
 
                 // Update order with payment intent ID
                 order.PaymentIntentId = paymentIntent.Id;
@@ -1074,6 +1088,16 @@ namespace DreamCleaningBackend.Controllers
             {
                 return BadRequest(new { message = "Failed to create payment intent: " + ex.Message });
             }
+        }
+
+        /// <summary>Stripe receipt address for an order: the order's frozen contact email —
+        /// never a no-email placeholder, null when the order has no usable address.</summary>
+        private static string? OrderReceiptEmail(Order order)
+        {
+            var email = order.ContactEmail;
+            if (string.IsNullOrWhiteSpace(email) || NoEmailHelper.IsPlaceholder(email))
+                return null;
+            return email;
         }
 
         [HttpPost("confirm-payment/{orderId}")]
@@ -1116,6 +1140,17 @@ namespace DreamCleaningBackend.Controllers
                         }
                         catch { /* ignore Stripe errors here; will fail below */ }
                     }
+                }
+
+                // Payment link (tokenized /order/{id}/pay?t=...): the secret token lets ANYONE —
+                // logged out or logged in as a different user — confirm an existing order's
+                // payment on the owner's behalf. Existing-order flow only; never the sessionId
+                // (new booking) path.
+                if (orderId > 0 && !string.IsNullOrWhiteSpace(dto?.GuestToken))
+                {
+                    var tokenOrder = await _context.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId);
+                    if (tokenOrder != null && PaymentLinkHelper.TokenMatches(tokenOrder, dto.GuestToken))
+                        userId = tokenOrder.UserId;
                 }
 
                 if (userId == 0)

@@ -80,6 +80,15 @@ namespace DreamCleaningBackend.Models
         public DateTime? UpdatedAt { get; set; }
         public bool IsActive { get; set; } = true;
 
+        /// <summary>
+        /// True for admin-created customers who have no email address at all (e.g. elderly
+        /// customers who pay by cash, Zelle, check, ...). Email holds a generated non-routable
+        /// placeholder (see NoEmailHelper) that must never be displayed or mailed to. These
+        /// accounts cannot log in; admins manage everything for them. Setting a real email via
+        /// admin edit clears this flag.
+        /// </summary>
+        public bool IsNoEmailUser { get; set; } = false;
+
         // Email verification
         public bool IsEmailVerified { get; set; } = false;
         /// <summary>True when user signed in with Apple "Hide My Email" and must provide a real email before using the platform.</summary>

@@ -26,5 +26,9 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentIntentId { get; set; }
         [JsonPropertyName("sessionId")]
         public string? SessionId { get; set; } // Optional: for new bookings only; not sent for admin-scheduled / profile payments
+        // Optional: secret payment-link token (/order/{id}/pay?t=...) — lets a logged-out payer
+        // confirm an existing order's payment when there is no Stripe intent to resolve them from.
+        [JsonPropertyName("guestToken")]
+        public string? GuestToken { get; set; }
     }
 }

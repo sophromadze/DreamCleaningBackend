@@ -17,11 +17,13 @@ namespace DreamCleaningBackend.Attributes
     /// </summary>
     public class RequirePageViewAttribute : AuthorizeAttribute, IAsyncAuthorizationFilter
     {
-        private readonly string _pageKey;
+        // An endpoint may back more than one page (e.g. /statistics feeds both the statistics
+        // page and the finances page); a grant to ANY of the listed keys unlocks reads.
+        private readonly string[] _pageKeys;
 
-        public RequirePageViewAttribute(string pageKey)
+        public RequirePageViewAttribute(params string[] pageKeys)
         {
-            _pageKey = pageKey;
+            _pageKeys = pageKeys;
         }
 
         public async Task OnAuthorizationAsync(AuthorizationFilterContext context)
@@ -58,7 +60,7 @@ namespace DreamCleaningBackend.Attributes
                     if (pageAccessService != null)
                     {
                         var granted = await pageAccessService.GetGrantedPagesAsync(userId);
-                        if (granted.Contains(_pageKey))
+                        if (_pageKeys.Any(granted.Contains))
                             return;
                     }
                 }

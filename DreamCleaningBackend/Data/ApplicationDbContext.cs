@@ -87,6 +87,9 @@ namespace DreamCleaningBackend.Data
         public DbSet<BubblePointsHistory> BubblePointsHistories { get; set; }
         public DbSet<Referral> Referrals { get; set; }
 
+        // SuperAdmin order transfers (order moved between user accounts, undoable)
+        public DbSet<OrderTransfer> OrderTransfers { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -109,6 +112,16 @@ namespace DreamCleaningBackend.Data
             {
                 entity.HasIndex(e => e.Date)
                     .HasDatabaseName("IX_BlockedTimeSlots_Date");
+            });
+
+            // OrderTransfer configuration — restrict deletes so a user with transfer history
+            // can't be silently hard-deleted out from under the audit trail.
+            modelBuilder.Entity<OrderTransfer>(entity =>
+            {
+                entity.HasIndex(e => e.OrderId).HasDatabaseName("IX_OrderTransfers_OrderId");
+                entity.HasOne(e => e.Order).WithMany().HasForeignKey(e => e.OrderId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.FromUser).WithMany().HasForeignKey(e => e.FromUserId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.ToUser).WithMany().HasForeignKey(e => e.ToUserId).OnDelete(DeleteBehavior.Restrict);
             });
 
             // User configuration

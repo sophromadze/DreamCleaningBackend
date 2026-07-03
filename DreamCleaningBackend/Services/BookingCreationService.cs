@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -120,7 +121,8 @@ namespace DreamCleaningBackend.Services
                 FloorTypeOther = dto.FloorTypeOther,
                 ContactFirstName = dto.ContactFirstName,
                 ContactLastName = dto.ContactLastName,
-                ContactEmail = dto.ContactEmail,
+                // Empty (never null) for no-email cash customers — the column is non-nullable.
+                ContactEmail = dto.ContactEmail?.Trim() ?? "",
                 ContactPhone = dto.ContactPhone,
                 PromoCode = promoCode,
                 GiftCardCode = giftCardCode,
@@ -128,6 +130,9 @@ namespace DreamCleaningBackend.Services
                 Tips = dto.Tips,
                 CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                 Status = options.InitialStatus,
+                // Secret for tokenized payment links — lets the emailed/SMSed link open the
+                // payment page without login while the order still has something unpaid.
+                PaymentAccessToken = PaymentLinkHelper.GenerateToken(),
                 OrderDate = DateTime.UtcNow,
                 SubscriptionId = dto.SubscriptionId == 0 ? null : (int?)dto.SubscriptionId,
                 OrderServices = new List<Models.OrderService>(),

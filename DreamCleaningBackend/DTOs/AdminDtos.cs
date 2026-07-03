@@ -322,10 +322,42 @@ namespace DreamCleaningBackend.DTOs
         public string FirstName { get; set; }
         [Required]
         public string LastName { get; set; }
-        [Required]
+        /// <summary>Required unless NoEmail is true (validated in the controller — a placeholder is generated then).</summary>
         [EmailAddress]
-        public string Email { get; set; }
+        public string? Email { get; set; }
         public string? Phone { get; set; }
+        /// <summary>Customer has no email at all (cash customer). Phone becomes required; account cannot log in.</summary>
+        public bool NoEmail { get; set; }
+    }
+
+    // ── SuperAdmin order transfer ──
+
+    public class TransferOrderRequestDto
+    {
+        [Required]
+        public int TargetUserId { get; set; }
+        [StringLength(500)]
+        public string? Notes { get; set; }
+    }
+
+    public class OrderTransferDto
+    {
+        public int Id { get; set; }
+        public int OrderId { get; set; }
+        public int FromUserId { get; set; }
+        public string FromUserName { get; set; } = "";
+        public int ToUserId { get; set; }
+        public string ToUserName { get; set; } = "";
+        public int TransferredByUserId { get; set; }
+        public string TransferredByName { get; set; } = "";
+        public string? Notes { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public bool IsUndone { get; set; }
+        public DateTime? UndoneAt { get; set; }
+        public string? UndoneByName { get; set; }
+        public int PointsMoved { get; set; }
+        public decimal SpentAmountMoved { get; set; }
+        public int PhotosMoved { get; set; }
     }
 
     /// <summary>SuperAdmin users-list export request. Columns is the set of column keys to include;
@@ -344,6 +376,8 @@ namespace DreamCleaningBackend.DTOs
         public string FirstName { get; set; }
         public string LastName { get; set; }
         public string Email { get; set; }
+        /// <summary>True for admin-created cash customers with no email; Email is blanked in responses.</summary>
+        public bool IsNoEmailUser { get; set; }
         public string? Phone { get; set; }
         public string Role { get; set; }
         public string? AuthProvider { get; set; }
@@ -495,6 +529,20 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentNotes { get; set; }
     }
 
+    // SuperAdmin-only: switch an existing order between the Stripe (Normal) flow and a manual
+    // payment method (Cash/Zelle/Check/Other) from the admin order panel — e.g. the order was
+    // created expecting Stripe but the customer decided to pay cash. Parsed case-insensitively.
+    // StringLength caps mirror Order.PaymentReference / Order.PaymentNotes.
+    public class UpdateOrderPaymentMethodDto
+    {
+        [Required]
+        public string PaymentMethod { get; set; }
+        [StringLength(255)]
+        public string? PaymentReference { get; set; }
+        [StringLength(1000)]
+        public string? PaymentNotes { get; set; }
+    }
+
     // SuperAdmin-only: full user edit (all changes are audit-logged)
     public class SuperAdminUpdateUserDto
     {
@@ -506,10 +554,11 @@ namespace DreamCleaningBackend.DTOs
         [StringLength(50)]
         public string LastName { get; set; }
 
-        [Required]
+        // Optional so a no-email (cash) account can be edited with the field left blank;
+        // the controller only applies a change when a real address is provided.
         [EmailAddress]
         [StringLength(100)]
-        public string Email { get; set; }
+        public string? Email { get; set; }
 
         [StringLength(20)]
         public string? Phone { get; set; }

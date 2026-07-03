@@ -136,6 +136,51 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        /// <summary>
+        /// Guest access to the payment page's order details via the secret payment-link token
+        /// (/order/{id}/pay?t=...). Works ONLY while something is unpaid — the initial payment or
+        /// a pending additional payment. Once fully settled it returns 403 so old links can't be
+        /// used to browse order details.
+        /// </summary>
+        [HttpGet("{orderId}/guest")]
+        [AllowAnonymous]
+        public async Task<ActionResult> GetOrderByIdGuest(int orderId, [FromQuery(Name = "token")] string? token)
+        {
+            var order = await _context.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null || !PaymentLinkHelper.TokenMatches(order, token))
+                return NotFound(new { message = "Order not found" });
+
+            if (!await HasGuestPayableAmountAsync(order))
+                return StatusCode(403, new { message = "This order has no pending payments. Please log in to view its details." });
+
+            var dto = await _orderService.GetOrderById(orderId, order.UserId);
+            return Ok(dto);
+        }
+
+        /// <summary>True while the payment link should keep working for logged-out visitors:
+        /// unpaid Stripe-flow order, or a pending unpaid additional amount — never for
+        /// cancelled or manually-settled orders.</summary>
+        private async Task<bool> HasGuestPayableAmountAsync(Order order)
+        {
+            if (order.Status == "Cancelled")
+                return false;
+            // Manual-paid (Cash/Zelle/Check/Other) orders were settled outside Stripe.
+            if (order.PaymentMethod != PaymentMethod.Normal)
+                return false;
+            if (!order.IsPaid)
+                return true;
+            return await _context.OrderUpdateHistories
+                .AnyAsync(h => h.OrderId == order.Id && !h.IsPaid && h.AdditionalAmount > 0.01m);
+        }
+
+        /// <summary>GetUserId variant that returns 0 (instead of throwing) for anonymous callers —
+        /// used by the token-gated guest payment endpoints.</summary>
+        private int TryGetUserId()
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            return int.TryParse(userIdClaim, out var userId) ? userId : 0;
+        }
+
         [HttpPut("{orderId}")]
         public async Task<ActionResult> UpdateOrder(int orderId, UpdateOrderDto updateOrderDto)
         {
@@ -286,15 +331,21 @@ namespace DreamCleaningBackend.Controllers
         /// This is used when an admin/superadmin increases the order total and the customer needs to pay the difference later.
         /// </summary>
         [HttpPost("{orderId}/create-pending-update-payment-intent")]
-        public async Task<ActionResult> CreatePendingUpdatePaymentIntent(int orderId)
+        [AllowAnonymous]
+        public async Task<ActionResult> CreatePendingUpdatePaymentIntent(int orderId, [FromQuery] string? guestToken = null)
         {
             try
             {
-                var userId = GetUserId();
-
-                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
+                // Access rule: the order's owner, OR anyone presenting the secret payment-link
+                // token — logged out or logged in as another user. Token holders act on the
+                // owner's behalf.
+                var userId = TryGetUserId();
+                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
                 if (order == null)
                     return NotFound(new { message = "Order not found" });
+                if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, guestToken))
+                    return NotFound(new { message = "Order not found" });
+                userId = order.UserId;
 
                 if (order.Status == "Cancelled" || order.Status == "Done")
                     return BadRequest(new { message = $"Cannot pay for a {order.Status.ToLower()} order" });
@@ -336,7 +387,12 @@ namespace DreamCleaningBackend.Controllers
                     { "additionalAmount", amountToCharge.ToString("F2") }
                 };
 
-                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amountToCharge, metadata);
+                // Receipt goes to the order's frozen contact email (never a no-email placeholder),
+                // regardless of who actually pays via a guest link.
+                var receiptEmail = string.IsNullOrWhiteSpace(order.ContactEmail) || NoEmailHelper.IsPlaceholder(order.ContactEmail)
+                    ? null
+                    : order.ContactEmail;
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amountToCharge, metadata, receiptEmail);
 
                 // Attach the payment intent id to all unpaid histories so we can mark them paid when they pay this amount
                 foreach (var h in unpaidHistories)
@@ -364,14 +420,17 @@ namespace DreamCleaningBackend.Controllers
         /// Confirms a pending additional payment (created by prior order updates) and marks the related update-history rows as paid.
         /// </summary>
         [HttpPost("{orderId}/confirm-pending-update-payment")]
-        public async Task<ActionResult> ConfirmPendingUpdatePayment(int orderId, [FromBody] ConfirmPendingUpdatePaymentDto dto)
+        [AllowAnonymous]
+        public async Task<ActionResult> ConfirmPendingUpdatePayment(int orderId, [FromBody] ConfirmPendingUpdatePaymentDto dto, [FromQuery] string? guestToken = null)
         {
             try
             {
-                var userId = GetUserId();
-
-                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId && o.UserId == userId);
+                // Same access rule as create-pending-update-payment-intent: owner or token holder.
+                var userId = TryGetUserId();
+                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
                 if (order == null)
+                    return NotFound(new { message = "Order not found" });
+                if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, guestToken))
                     return NotFound(new { message = "Order not found" });
 
                 // Verify payment with Stripe

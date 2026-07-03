@@ -42,9 +42,10 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public string ContactLastName { get; set; }
 
-        [Required]
+        // Required for all public booking flows (enforced in the controller actions). Nullable at
+        // the DTO level only so admins can book for no-email (cash) customers via create-for-user.
         [EmailAddress]
-        public string ContactEmail { get; set; }
+        public string? ContactEmail { get; set; }
 
         [Required]
         [Phone]

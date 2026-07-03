@@ -1117,6 +1117,9 @@ namespace DreamCleaningBackend.Services
             if (user == null)
                 throw new Exception("User not found");
 
+            if (user.IsNoEmailUser)
+                throw new Exception("This account has no email on file. Please contact us by phone.");
+
             if (user.PasswordHash != null)
                 throw new Exception("This account already has a password. Please log in with your password.");
 

@@ -483,6 +483,10 @@ namespace DreamCleaningBackend.Services
             "NotificationLog", "ScheduledMail", "ScheduledSms",
             // Order-update history rows track money owed; reverting these breaks payment accounting.
             "OrderUpdateHistory",
+            // Order transfers move points/spent/photos across users; the generic row revert would
+            // only delete the record without moving anything back. Use the dedicated
+            // POST api/admin/order-transfers/{id}/undo endpoint instead.
+            "OrderTransfer",
             // NOTE: UserLoyaltyDiscount is intentionally NOT in this list. It's a virtual entity
             // type that scopes loyalty fields on the User row; the generic reflection dispatcher
             // can't resolve it, so UndoAsync / RedoAsync handle it explicitly below.

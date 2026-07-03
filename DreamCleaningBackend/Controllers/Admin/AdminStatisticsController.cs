@@ -50,7 +50,7 @@ namespace DreamCleaningBackend.Controllers
         // ───── Statistics (SuperAdmin only) ─────
 
         [HttpGet("statistics")]
-        [RequirePageView(AdminViewablePages.Statistics)]
+        [RequirePageView(AdminViewablePages.Statistics, AdminViewablePages.Finances)]
         public async Task<ActionResult<OrderStatisticsDto>> GetOrderStatistics(
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)

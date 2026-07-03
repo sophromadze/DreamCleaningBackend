@@ -184,6 +184,15 @@ namespace DreamCleaningBackend.Models
         [StringLength(50)]
         public string Status { get; set; } = "Pending";
 
+        /// <summary>
+        /// Secret token embedded in emailed/SMSed payment links (/order/{id}/pay?t=...). Lets the
+        /// recipient open the order's payment page WITHOUT logging in — but only while something
+        /// is unpaid (initial payment or a pending additional payment); guest access dies once
+        /// fully paid. Null on legacy orders until a link is (re)sent, which backfills it lazily.
+        /// </summary>
+        [StringLength(64)]
+        public string? PaymentAccessToken { get; set; }
+
         // Payment info
         [StringLength(100)]
         public string? PaymentIntentId { get; set; } // Stripe payment intent

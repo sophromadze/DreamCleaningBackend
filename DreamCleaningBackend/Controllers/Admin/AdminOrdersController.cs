@@ -36,6 +36,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IHubContext<UserManagementHub> _hubContext;
         private readonly IBubblePointsService _bubblePointsService;
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
+        private readonly IOrderTransferService _orderTransferService;
         private readonly ILogger<AdminOrdersController> _logger;
 
         public AdminOrdersController(ApplicationDbContext context,
@@ -48,6 +49,7 @@ namespace DreamCleaningBackend.Controllers
             IHubContext<UserManagementHub> hubContext,
             IBubblePointsService bubblePointsService,
             ILoyaltyDiscountService loyaltyDiscountService,
+            IOrderTransferService orderTransferService,
             ILogger<AdminOrdersController> logger)
         {
             _logger = logger;
@@ -61,6 +63,50 @@ namespace DreamCleaningBackend.Controllers
             _hubContext = hubContext;
             _bubblePointsService = bubblePointsService;
             _loyaltyDiscountService = loyaltyDiscountService;
+            _orderTransferService = orderTransferService;
+        }
+
+        // ── SuperAdmin order transfer (move an order between user accounts, undoable) ──
+
+        /// <summary>SuperAdmin-only: move an order — and everything it gave its current owner
+        /// (points, spent amount, first-time flag, photos, service address) — to another user.</summary>
+        [HttpPost("orders/{orderId}/transfer")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<OrderTransferDto>> TransferOrder(int orderId, [FromBody] TransferOrderRequestDto dto)
+        {
+            try
+            {
+                var result = await _orderTransferService.TransferAsync(orderId, dto.TargetUserId, GetCurrentUserId(), dto.Notes);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>SuperAdmin-only: transfer history for one order (newest first).</summary>
+        [HttpGet("orders/{orderId}/transfers")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<List<OrderTransferDto>>> GetOrderTransfers(int orderId)
+        {
+            return Ok(await _orderTransferService.GetTransfersForOrderAsync(orderId));
+        }
+
+        /// <summary>SuperAdmin-only: revert a transfer using its recorded snapshot.</summary>
+        [HttpPost("order-transfers/{transferId}/undo")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<OrderTransferDto>> UndoOrderTransfer(int transferId)
+        {
+            try
+            {
+                var result = await _orderTransferService.UndoAsync(transferId, GetCurrentUserId());
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
         }
 
         // Orders Management
@@ -270,6 +316,116 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 return Ok(new { message = $"Order status updated to {dto.Status}" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// SuperAdmin-only: change an existing order's payment method from the admin panel —
+        /// e.g. it was created expecting Stripe but the customer decided to pay cash/Zelle.
+        /// Switching away from Normal moves the order onto the manual-payment flow: the manual
+        /// tracking fields are stamped, IsPaid stays false, statistics stop counting Stripe fees
+        /// for it, auto-cancel treats it as settled, the customer's pay-online endpoints reject
+        /// it, and a Pending order (waiting for the Stripe payment) becomes Active — matching how
+        /// admin-created manual orders start. Switching back to Normal reverses all of that
+        /// (an unpaid Active order returns to Pending, i.e. awaiting online payment). Orders
+        /// Stripe actually charged (IsPaid) can't be relabelled — correct those with a refund.
+        /// </summary>
+        [HttpPut("orders/{orderId}/payment-method")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> UpdateOrderPaymentMethod(int orderId, [FromBody] UpdateOrderPaymentMethodDto dto)
+        {
+            try
+            {
+                if (!Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm))
+                    return BadRequest(new { message = "PaymentMethod must be one of: Normal, Cash, Zelle, Check, Other." });
+
+                var order = await _context.Orders.FindAsync(orderId);
+                if (order == null)
+                    return NotFound();
+
+                if (order.IsPaid && pm != PaymentMethod.Normal)
+                    return BadRequest(new { message = "This order was already paid through Stripe. Refund the charge before recording a manual payment method." });
+
+                var originalOrder = new Order
+                {
+                    Id = order.Id,
+                    UserId = order.UserId,
+                    Status = order.Status,
+                    PaymentMethod = order.PaymentMethod,
+                    PaymentReference = order.PaymentReference,
+                    PaymentNotes = order.PaymentNotes,
+                    UpdatedAt = order.UpdatedAt
+                };
+
+                order.PaymentMethod = pm;
+                order.PaymentReference = pm != PaymentMethod.Normal ? dto.PaymentReference : null;
+                order.PaymentNotes = pm != PaymentMethod.Normal ? dto.PaymentNotes : null;
+                if (pm != PaymentMethod.Normal)
+                {
+                    order.ManualPaymentRecordedAt = DateTime.UtcNow;
+                    order.ManualPaymentRecordedByUserId = GetCurrentUserId();
+                }
+                else
+                {
+                    order.ManualPaymentRecordedAt = null;
+                    order.ManualPaymentRecordedByUserId = null;
+                }
+
+                // Keep the status consistent with the payment flow, mirroring admin booking
+                // creation (Stripe orders start Pending until paid; manual orders start Active).
+                // Done/Cancelled orders keep their status.
+                if (!string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (pm != PaymentMethod.Normal &&
+                        string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
+                    {
+                        order.Status = "Active";
+                    }
+                    else if (pm == PaymentMethod.Normal && !order.IsPaid &&
+                             string.Equals(order.Status, "Active", StringComparison.OrdinalIgnoreCase))
+                    {
+                        order.Status = "Pending";
+                    }
+                }
+
+                order.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                var updatedOrder = new Order
+                {
+                    Id = order.Id,
+                    UserId = order.UserId,
+                    Status = order.Status,
+                    PaymentMethod = order.PaymentMethod,
+                    PaymentReference = order.PaymentReference,
+                    PaymentNotes = order.PaymentNotes,
+                    UpdatedAt = order.UpdatedAt
+                };
+
+                try
+                {
+                    await _auditService.LogUpdateAsync(originalOrder, updatedOrder);
+                }
+                catch (Exception auditEx)
+                {
+                    _logger.LogError(auditEx, "Audit logging failed");
+                }
+
+                return Ok(new
+                {
+                    message = pm == PaymentMethod.Normal
+                        ? $"Order #{orderId} moved back to the Stripe payment flow."
+                        : $"Order #{orderId} payment method changed to {pm}.",
+                    paymentMethod = pm.ToString(),
+                    paymentReference = order.PaymentReference,
+                    paymentNotes = order.PaymentNotes,
+                    status = order.Status
+                });
             }
             catch (Exception ex)
             {
@@ -1093,10 +1249,13 @@ namespace DreamCleaningBackend.Controllers
             if (string.IsNullOrWhiteSpace(customerName))
                 customerName = order.User?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
             var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : order.User?.Email;
+            // No-email (cash) accounts carry a non-routable placeholder — treat as no email.
+            if (NoEmailHelper.IsPlaceholder(customerEmail)) customerEmail = null;
             var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
 
             var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
-            var paymentLink = $"{frontendUrl.TrimEnd('/')}/order/{orderId}/pay";
+            // Tokenized link: opens the payment page without login while something is unpaid.
+            var paymentLink = await PaymentLinkHelper.BuildPaymentLinkAsync(_context, order, frontendUrl);
 
             // Track per-channel outcome so the admin sees a clear "email sent, SMS skipped" hint
             // when RingCentral rejects the phone number, rather than a hard 400.
@@ -1172,7 +1331,8 @@ namespace DreamCleaningBackend.Controllers
                 customerName = order.User?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
 
             var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
-            var paymentLink = $"{frontendUrl.TrimEnd('/')}/order/{orderId}/pay";
+            // Tokenized link: opens the payment page without login while something is unpaid.
+            var paymentLink = await PaymentLinkHelper.BuildPaymentLinkAsync(_context, order, frontendUrl);
 
             bool emailSent = false, smsSent = false, smsInvalid = false;
             string? sentToEmail = null, sentToPhone = null;
@@ -1183,7 +1343,7 @@ namespace DreamCleaningBackend.Controllers
                 // creation path uses. Surface it so the admin knows why nothing went out.
                 var isAppleHiddenMail = !string.IsNullOrEmpty(customerEmail) &&
                     customerEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
-                if (string.IsNullOrWhiteSpace(customerEmail))
+                if (string.IsNullOrWhiteSpace(customerEmail) || NoEmailHelper.IsPlaceholder(customerEmail))
                     return BadRequest(new { message = "No email on the customer's account to send to." });
                 if (isAppleHiddenMail)
                     return BadRequest(new { message = "The customer's account email is an Apple private-relay address and can't receive mail." });
@@ -1280,10 +1440,13 @@ namespace DreamCleaningBackend.Controllers
             if (string.IsNullOrWhiteSpace(customerName))
                 customerName = order.User?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
             var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : order.User?.Email;
+            // No-email (cash) accounts carry a non-routable placeholder — treat as no email.
+            if (NoEmailHelper.IsPlaceholder(customerEmail)) customerEmail = null;
             var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
 
             var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
-            var paymentLink = $"{frontendUrl.TrimEnd('/')}/order/{orderId}/pay";
+            // Tokenized link: opens the payment page without login while something is unpaid.
+            var paymentLink = await PaymentLinkHelper.BuildPaymentLinkAsync(_context, order, frontendUrl);
 
             bool emailSent = false, smsSent = false, smsInvalid = false;
 
