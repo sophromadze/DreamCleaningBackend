@@ -72,6 +72,9 @@ namespace DreamCleaningBackend.DTOs
         public string? ReferralCode { get; set; }
         public decimal GiftCardAmountToUse { get; set; }
         public int? UserSpecialOfferId { get; set; }
+        // Public special offer applied without a per-user grant (guest flow). The frontend
+        // has always sent this; it is used to re-derive the discount amount server-side.
+        public int? SpecialOfferId { get; set; }
 
         public decimal Tax { get; set; }
         public decimal Total { get; set; }

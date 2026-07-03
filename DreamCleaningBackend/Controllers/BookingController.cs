@@ -451,9 +451,12 @@ namespace DreamCleaningBackend.Controllers
                 if (serviceType == null)
                     return BadRequest(new { message = "Invalid service type" });
 
-                // Resolve gift-card-vs-promo via the shared rule, then validate promo minimum.
+                // Resolve gift-card-vs-promo via the shared rule, then validate the promo
+                // minimum against the RECOMPUTED subtotal (never the client-sent dto.SubTotal).
                 var (promoCode, _, _) = _bookingCreationService.ResolveGiftCardAndPromo(dto);
-                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, dto.SubTotal);
+                var createQuoteInput = await BuildQuoteInputAsync(serviceType, dto);
+                var createQuote = OrderPricingCalculator.CalculateQuote(createQuoteInput);
+                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, createQuote.SubTotal);
                 if (promoMinError != null)
                     return BadRequest(new { message = promoMinError });
 
@@ -571,9 +574,12 @@ namespace DreamCleaningBackend.Controllers
                 if (serviceType == null)
                     return BadRequest(new { message = "Invalid service type" });
 
-                // Resolve gift-card-vs-promo via the shared rule, then validate promo minimum.
+                // Resolve gift-card-vs-promo via the shared rule, then validate the promo
+                // minimum against the RECOMPUTED subtotal (never the client-sent SubTotal).
                 var (promoCode, _, _) = _bookingCreationService.ResolveGiftCardAndPromo(dto.BookingData);
-                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, dto.BookingData.SubTotal);
+                var forUserQuoteInput = await BuildQuoteInputAsync(serviceType, dto.BookingData);
+                var forUserQuote = OrderPricingCalculator.CalculateQuote(forUserQuoteInput);
+                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, forUserQuote.SubTotal);
                 if (promoMinError != null)
                     return BadRequest(new { message = promoMinError });
 
@@ -878,23 +884,48 @@ namespace DreamCleaningBackend.Controllers
                 // Resolve gift-card-vs-promo via the shared rule (single definition in BookingCreationService).
                 var (promoCode, giftCardCode, giftCardAmountUsed) = _bookingCreationService.ResolveGiftCardAndPromo(dto);
 
-                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, dto.SubTotal);
-                if (promoMinError != null)
-                    return BadRequest(new { message = promoMinError });
+                // Verify the gift card and clamp the claimed draw to its REAL balance before the
+                // charge amount is computed — the reconciliation at order creation happens after
+                // the Stripe charge, which is too late to protect the captured amount.
+                if (!string.IsNullOrEmpty(giftCardCode) && giftCardAmountUsed > 0)
+                {
+                    var giftCardValidation = await _giftCardService.ValidateGiftCard(giftCardCode);
+                    if (giftCardValidation == null || !giftCardValidation.IsValid)
+                        return BadRequest(new { message = giftCardValidation?.Message ?? "Invalid gift card." });
+                    giftCardAmountUsed = Math.Min(giftCardAmountUsed, giftCardValidation.AvailableBalance);
+                    // Keep the session-stored booking data consistent with the verified draw so
+                    // confirm-payment's order creation starts from the same number.
+                    dto.GiftCardAmountToUse = giftCardAmountUsed;
+                }
 
                 // Price through the shared calculator (single source of truth — see OrderPricingCalculator).
                 var quoteInput = await BuildQuoteInputAsync(serviceType, dto);
                 var quote = OrderPricingCalculator.CalculateQuote(quoteInput);
+
+                // Promo minimum is validated against the RECOMPUTED subtotal — never the
+                // client-sent dto.SubTotal, which could be inflated to slip past the gate.
+                var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, quote.SubTotal);
+                if (promoMinError != null)
+                    return BadRequest(new { message = promoMinError });
 
                 if (Math.Abs(dto.TotalDuration - quote.TotalDuration) > 5)
                 {
                     _logger.LogWarning($"Duration mismatch — frontend sent {dto.TotalDuration}, backend calculated {quote.TotalDuration}. Backend value wins.");
                 }
 
-                // Loyalty + stacking preview — this endpoint produces the payment-intent amount,
-                // so the numbers must match what CreateBooking will persist downstream. Guests
-                // (just auto-created above) have no loyalty, so stacking is a no-op for them.
+                // Server-derived promo/first-time/subscription discounts — this endpoint produces
+                // the payment-intent amount, so the client's dollar figures must never reach it.
+                // Overwrites the dto slots so the stacking below and the session-stored booking
+                // data both carry the trusted values.
                 decimal calculatedSubTotal = quote.SubTotal;
+                var (resolvedDiscountAmount, resolvedSubscriptionDiscountAmount) =
+                    await _bookingCreationService.ResolveDiscountsAsync(dto, userId, calculatedSubTotal);
+                dto.DiscountAmount = resolvedDiscountAmount;
+                dto.SubscriptionDiscountAmount = resolvedSubscriptionDiscountAmount;
+
+                // Loyalty + stacking preview — must match what CreateBooking will persist
+                // downstream. Guests (just auto-created above) have no loyalty, so stacking
+                // is a no-op for them.
                 decimal loyaltyAmount = 0m;
                 decimal loyaltyPct = 0m;
                 if (userId > 0)

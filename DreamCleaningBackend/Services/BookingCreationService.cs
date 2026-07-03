@@ -35,6 +35,17 @@ namespace DreamCleaningBackend.Services
         /// controllers' promo-minimum validation.
         /// </summary>
         (string? promoCode, string? giftCardCode, decimal giftCardAmountToUse) ResolveGiftCardAndPromo(CreateBookingDto dto);
+
+        /// <summary>
+        /// Server-side derivation of the promo/first-time/special-offer discount and the
+        /// subscription discount from the DB — the client's dollar figures are never trusted,
+        /// only WHICH code/offer/subscription was selected. Same trust model as
+        /// LoyaltyDiscountService.CalculateForOrderAsync (loyalty itself stays there).
+        /// Throws InvalidOperationException when a claimed discount is invalid, so the caller
+        /// rejects the booking instead of silently charging more than the client previewed.
+        /// </summary>
+        Task<(decimal discountAmount, decimal subscriptionDiscountAmount)> ResolveDiscountsAsync(
+            CreateBookingDto dto, int orderUserId, decimal subTotal);
     }
 
     /// <summary>
@@ -74,7 +85,150 @@ namespace DreamCleaningBackend.Services
                 promoCode = null;
             }
 
-            return (promoCode, giftCardCode, dto.GiftCardAmountToUse);
+            // No gift card code — no gift card draw. Without this a request could claim a
+            // GiftCardAmountToUse with no card at all and shrink the charged total.
+            var giftCardAmountToUse = string.IsNullOrEmpty(giftCardCode) ? 0m : dto.GiftCardAmountToUse;
+
+            return (promoCode, giftCardCode, giftCardAmountToUse);
+        }
+
+        public async Task<(decimal discountAmount, decimal subscriptionDiscountAmount)> ResolveDiscountsAsync(
+            CreateBookingDto dto, int orderUserId, decimal subTotal)
+        {
+            var (promoCode, _, _) = ResolveGiftCardAndPromo(dto);
+
+            // Promo slot priority mirrors the booking page's calculateTotal():
+            // special offer > first-time marker ("firstUse") > regular promo code.
+            var discountAmount = 0m;
+
+            if (dto.UserSpecialOfferId.HasValue && dto.UserSpecialOfferId.Value > 0)
+            {
+                var userOffer = await _context.UserSpecialOffers
+                    .AsNoTracking()
+                    .Include(uso => uso.SpecialOffer)
+                    .FirstOrDefaultAsync(uso =>
+                        uso.Id == dto.UserSpecialOfferId.Value &&
+                        uso.UserId == orderUserId &&
+                        !uso.IsUsed);
+
+                if (userOffer == null || !userOffer.SpecialOffer.IsActive)
+                    throw new InvalidOperationException("The selected special offer is not available on this account.");
+                if (userOffer.ExpiresAt.HasValue && userOffer.ExpiresAt.Value < DateTime.UtcNow)
+                    throw new InvalidOperationException("The selected special offer has expired.");
+
+                discountAmount = userOffer.SpecialOffer.IsPercentage
+                    ? OrderPricingCalculator.Round2(subTotal * userOffer.SpecialOffer.DiscountValue / 100m)
+                    : Math.Min(userOffer.SpecialOffer.DiscountValue, subTotal);
+            }
+            else if (dto.SpecialOfferId.HasValue && dto.SpecialOfferId.Value > 0)
+            {
+                // Public special offer (guest flow — no per-user grant). Same eligibility
+                // rules as the /special-offers/public listing endpoint.
+                var now = DateTime.UtcNow;
+                var offer = await _context.SpecialOffers
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(o => o.Id == dto.SpecialOfferId.Value &&
+                                              o.IsActive &&
+                                              (o.ValidFrom == null || o.ValidFrom <= now) &&
+                                              (o.ValidTo == null || o.ValidTo > now));
+
+                if (offer == null)
+                    throw new InvalidOperationException("The selected special offer is no longer available.");
+                if (offer.MinimumOrderAmount.HasValue && subTotal < offer.MinimumOrderAmount.Value)
+                    throw new InvalidOperationException(
+                        $"Minimum order amount of ${offer.MinimumOrderAmount.Value:0.##} required to use this special offer.");
+                if (offer.RequiresFirstTimeCustomer)
+                {
+                    var isFirstTimeCustomer = await _context.Users
+                        .AsNoTracking()
+                        .Where(u => u.Id == orderUserId)
+                        .Select(u => (bool?)u.FirstTimeOrder)
+                        .FirstOrDefaultAsync() ?? false;
+                    if (!isFirstTimeCustomer)
+                        throw new InvalidOperationException("This special offer is for first-time customers only.");
+                }
+
+                discountAmount = offer.IsPercentage
+                    ? OrderPricingCalculator.Round2(subTotal * offer.DiscountValue / 100m)
+                    : Math.Min(offer.DiscountValue, subTotal);
+            }
+            else if (promoCode == "firstUse")
+            {
+                // First-time discount: the user must actually still be a first-time customer,
+                // and the percentage comes from their granted FirstTime special offer in the DB.
+                var isFirstTime = await _context.Users
+                    .AsNoTracking()
+                    .Where(u => u.Id == orderUserId)
+                    .Select(u => (bool?)u.FirstTimeOrder)
+                    .FirstOrDefaultAsync() ?? false;
+
+                var firstTimeOffer = await _context.UserSpecialOffers
+                    .AsNoTracking()
+                    .Include(uso => uso.SpecialOffer)
+                    .Where(uso => uso.UserId == orderUserId &&
+                                  !uso.IsUsed &&
+                                  uso.SpecialOffer.IsActive &&
+                                  uso.SpecialOffer.Type == OfferType.FirstTime)
+                    .OrderByDescending(uso => uso.GrantedAt)
+                    .FirstOrDefaultAsync();
+
+                if (!isFirstTime || firstTimeOffer == null)
+                    throw new InvalidOperationException("The first-time discount is no longer available on this account.");
+
+                discountAmount = firstTimeOffer.SpecialOffer.IsPercentage
+                    ? OrderPricingCalculator.Round2(subTotal * firstTimeOffer.SpecialOffer.DiscountValue / 100m)
+                    : Math.Min(firstTimeOffer.SpecialOffer.DiscountValue, subTotal);
+            }
+            else if (!string.IsNullOrEmpty(promoCode) && !promoCode.StartsWith("SPECIAL_OFFER:", StringComparison.OrdinalIgnoreCase))
+            {
+                // Same checks as the validate-promo endpoint, re-run at charge time.
+                var pc = await _context.PromoCodes
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Code.ToLower() == promoCode.ToLower() && p.IsActive);
+
+                if (pc == null)
+                    throw new InvalidOperationException("Invalid promo code.");
+                if (pc.ValidFrom.HasValue && pc.ValidFrom.Value > DateTime.UtcNow)
+                    throw new InvalidOperationException("Promo code is not yet valid.");
+                if (pc.ValidTo.HasValue && pc.ValidTo.Value < DateTime.UtcNow)
+                    throw new InvalidOperationException("Promo code has expired.");
+                if (pc.MaxUsageCount.HasValue && pc.CurrentUsageCount >= pc.MaxUsageCount.Value)
+                    throw new InvalidOperationException("Promo code usage limit reached.");
+
+                discountAmount = pc.IsPercentage
+                    ? OrderPricingCalculator.Round2(subTotal * pc.DiscountValue / 100m)
+                    : pc.DiscountValue;
+            }
+
+            // Subscription discount: only when the ORDER OWNER's active (non-expired)
+            // subscription matches the selected tier — the booking page's rule.
+            var subscriptionDiscountAmount = 0m;
+            if (dto.SubscriptionId > 0)
+            {
+                var selected = await _context.Subscriptions
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.Id == dto.SubscriptionId);
+
+                if (selected != null && selected.SubscriptionDays > 0 && selected.DiscountPercentage > 0)
+                {
+                    var owner = await _context.Users
+                        .AsNoTracking()
+                        .Include(u => u.Subscription)
+                        .FirstOrDefaultAsync(u => u.Id == orderUserId);
+
+                    var hasActiveSubscription = owner?.SubscriptionId != null &&
+                        (!owner.SubscriptionExpiryDate.HasValue || owner.SubscriptionExpiryDate.Value >= DateTime.UtcNow);
+
+                    if (hasActiveSubscription && owner!.Subscription != null &&
+                        owner.Subscription.SubscriptionDays == selected.SubscriptionDays)
+                    {
+                        subscriptionDiscountAmount = OrderPricingCalculator.Round2(
+                            subTotal * selected.DiscountPercentage / 100m);
+                    }
+                }
+            }
+
+            return (discountAmount, subscriptionDiscountAmount);
         }
 
         public async Task<Order> CreateOrderAsync(CreateBookingDto dto, int orderUserId, BookingCreationOptions? options = null)
@@ -97,6 +251,12 @@ namespace DreamCleaningBackend.Services
             {
                 _logger.LogWarning($"Duration mismatch — frontend sent {dto.TotalDuration}, backend calculated {quote.TotalDuration}. Backend value wins.");
             }
+
+            // Promo/first-time/special-offer and subscription discounts are derived from the
+            // DB against the backend subtotal — dto.DiscountAmount / dto.SubscriptionDiscountAmount
+            // are never trusted (same model as the loyalty slot below).
+            var (discountAmount, subscriptionDiscountAmount) =
+                await ResolveDiscountsAsync(dto, orderUserId, quote.SubTotal);
 
             var order = new Order
             {
@@ -150,8 +310,8 @@ namespace DreamCleaningBackend.Services
                 MaidsCount = quote.MaidsCount,
                 TotalDuration = quote.TotalDuration,
                 SubTotal = quote.SubTotal,
-                DiscountAmount = dto.DiscountAmount, // promo/first-time discount ONLY
-                SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
+                DiscountAmount = discountAmount, // promo/first-time discount ONLY (server-derived)
+                SubscriptionDiscountAmount = subscriptionDiscountAmount,
                 BedroomsQuantity = dto.BedroomsQuantity,
                 BathroomsQuantity = dto.BathroomsQuantity
             };
@@ -314,7 +474,8 @@ namespace DreamCleaningBackend.Services
             order.GiftCardAmountUsed = actualAmountUsed;
             if (actualAmountUsed != giftCardAmountUsed)
             {
-                order.Total = totalBeforeGiftCard - actualAmountUsed;
+                // Same rounding + clamping the calculator applies everywhere else.
+                order.Total = OrderPricingCalculator.Round2(Math.Max(0m, totalBeforeGiftCard - actualAmountUsed));
             }
             await _context.SaveChangesAsync();
         }

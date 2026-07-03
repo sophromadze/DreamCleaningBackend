@@ -397,23 +397,35 @@ namespace DreamCleaningBackend.Services
             _context.OrderExtraServices.RemoveRange(order.OrderExtraServices);
             OrderPricingCalculator.AddOrderLinesFromQuote(order, quote);
 
-            order.MaidsCount = updateOrderDto.MaidsCount;
+            // Backend-authoritative, like TotalDuration below — the calculator derives the
+            // maids count from the same selections, so the client's copy is redundant at best.
+            order.MaidsCount = quote.MaidsCount;
             order.TotalDuration = quote.TotalDuration;
 
             // Recompute cleaner total salary so it stays in sync with the new duration/maids.
             order.CleanerTotalSalary = OrderPricingCalculator.CalculateCleanerTotalSalary(
                 order.TotalDuration, order.MaidsCount, quote.HasCleanerService, order.CleanerHourlyRate);
 
-            // Recalculate totals. Edit flows keep the ratio-rescaled discounts from the
-            // frontend (original percentages preserved); the loyalty $ amount scales with the
-            // subtotal while order.LoyaltyDiscountPercentage stays the booking-time snapshot.
+            // Recalculate totals. Edit flows rescale the ORIGINAL discounts server-side:
+            // promo/subscription by the subtotal ratio, loyalty from the locked percentage
+            // snapshot — the same math as the order-edit page preview (calculateNewTotal),
+            // so the client's discount dollar figures in the DTO are never trusted.
             order.SubTotal = quote.SubTotal;
-            if (updateOrderDto.DiscountAmount.HasValue)
-                order.DiscountAmount = updateOrderDto.DiscountAmount.Value;
-            if (updateOrderDto.SubscriptionDiscountAmount.HasValue)
-                order.SubscriptionDiscountAmount = updateOrderDto.SubscriptionDiscountAmount.Value;
-            if (updateOrderDto.LoyaltyDiscountAmount.HasValue)
-                order.LoyaltyDiscountAmount = updateOrderDto.LoyaltyDiscountAmount.Value;
+            if (originalSubTotal > 0)
+            {
+                order.DiscountAmount = OrderPricingCalculator.Round2(
+                    quote.SubTotal * (order.DiscountAmount / originalSubTotal));
+                order.SubscriptionDiscountAmount = OrderPricingCalculator.Round2(
+                    quote.SubTotal * (order.SubscriptionDiscountAmount / originalSubTotal));
+            }
+            else
+            {
+                order.DiscountAmount = 0m;
+                order.SubscriptionDiscountAmount = 0m;
+            }
+            order.LoyaltyDiscountAmount = order.LoyaltyDiscountPercentage > 0
+                ? OrderPricingCalculator.Round2(quote.SubTotal * (order.LoyaltyDiscountPercentage / 100m))
+                : 0m;
 
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
             {
@@ -659,7 +671,9 @@ namespace DreamCleaningBackend.Services
                 }
             }
 
-            order.Total = Math.Max(0m, totalBeforeGiftCard - order.GiftCardAmountUsed - pointsAndRewardCredits);
+            // Same rounding + clamping the calculator applies everywhere else.
+            order.Total = OrderPricingCalculator.Round2(
+                Math.Max(0m, totalBeforeGiftCard - order.GiftCardAmountUsed - pointsAndRewardCredits));
         }
 
         public async Task<decimal> CalculateAdditionalAmount(int orderId, UpdateOrderDto updateOrderDto)
@@ -683,12 +697,19 @@ namespace DreamCleaningBackend.Services
                     updateOrderDto.TotalDuration, quote.TotalDuration);
             }
 
-            // Edit flows keep the ratio-rescaled discounts from the frontend; fall back to the
-            // order's stored amounts when not provided. Loyalty is included so this gate matches
-            // UpdateOrder's final total and the frontend's preview.
-            var discountAmount = updateOrderDto.DiscountAmount ?? order.DiscountAmount;
-            var subscriptionDiscountAmount = updateOrderDto.SubscriptionDiscountAmount ?? order.SubscriptionDiscountAmount;
-            var loyaltyDiscountAmount = updateOrderDto.LoyaltyDiscountAmount ?? order.LoyaltyDiscountAmount;
+            // Server-derived discounts, matching exactly what UpdateOrder will persist:
+            // promo/subscription rescaled by the subtotal ratio, loyalty re-derived from the
+            // locked percentage snapshot. The DTO's discount fields are intentionally ignored
+            // (client dollar figures are never trusted).
+            var discountAmount = order.SubTotal > 0
+                ? OrderPricingCalculator.Round2(quote.SubTotal * (order.DiscountAmount / order.SubTotal))
+                : 0m;
+            var subscriptionDiscountAmount = order.SubTotal > 0
+                ? OrderPricingCalculator.Round2(quote.SubTotal * (order.SubscriptionDiscountAmount / order.SubTotal))
+                : 0m;
+            var loyaltyDiscountAmount = order.LoyaltyDiscountPercentage > 0
+                ? OrderPricingCalculator.Round2(quote.SubTotal * (order.LoyaltyDiscountPercentage / 100m))
+                : 0m;
 
             // Compute the pre-gift-card total, then re-resolve the gift card the SAME way
             // UpdateOrder will persist it (via the shared helpers). This is what makes the
