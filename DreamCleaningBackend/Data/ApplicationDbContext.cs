@@ -5,6 +5,15 @@ namespace DreamCleaningBackend.Data
 {
     public class ApplicationDbContext : DbContext
     {
+        /// <summary>
+        /// Fixed CreatedAt for ALL HasData seed rows. Must be a compile-time-stable
+        /// value: seeding with DateTime.UtcNow made every `dotnet ef migrations add`
+        /// see different seed values than the snapshot and emit 20 phantom UpdateData
+        /// calls (ExtraServices/ServiceTypes/Services/Subscriptions) per migration.
+        /// The date itself is arbitrary — it just must never change.
+        /// </summary>
+        private static readonly DateTime SeedCreatedAt = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
         public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
             : base(options)
         {
@@ -90,9 +99,36 @@ namespace DreamCleaningBackend.Data
         // SuperAdmin order transfers (order moved between user accounts, undoable)
         public DbSet<OrderTransfer> OrderTransfers { get; set; }
 
+        // AI chat agent (DB-persisted sessions; distinct from the in-memory LiveChat models)
+        public DbSet<ChatAgentSession> ChatAgentSessions { get; set; }
+        public DbSet<ChatAgentMessage> ChatAgentMessages { get; set; }
+        public DbSet<ChatAgentSettings> ChatAgentSettings { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+
+            // AI chat agent configuration
+            modelBuilder.Entity<ChatAgentSession>(entity =>
+            {
+                entity.HasIndex(e => e.TelegramTopicId).HasDatabaseName("IX_ChatAgentSessions_TelegramTopicId");
+                entity.HasIndex(e => e.GuestIdentifier).HasDatabaseName("IX_ChatAgentSessions_GuestIdentifier");
+                entity.HasIndex(e => e.LastMessageAt).HasDatabaseName("IX_ChatAgentSessions_LastMessageAt");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.SetNull); // session history outlives a deleted account
+            });
+
+            modelBuilder.Entity<ChatAgentMessage>(entity =>
+            {
+                entity.HasIndex(e => new { e.ChatSessionId, e.CreatedAt }).HasDatabaseName("IX_ChatAgentMessages_Session_CreatedAt");
+                entity.HasIndex(e => e.ImageExpiresAt).HasDatabaseName("IX_ChatAgentMessages_ImageExpiresAt");
+                entity.HasOne(e => e.ChatSession)
+                    .WithMany(s => s.Messages)
+                    .HasForeignKey(e => e.ChatSessionId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
 
             // AuditLog configuration
             modelBuilder.Entity<AuditLog>(entity =>
@@ -477,6 +513,10 @@ namespace DreamCleaningBackend.Data
                 .IsUnique();
 
             // Seed initial subscriptions
+            // NOTE: all seeded rows use the fixed SeedCreatedAt constant. Never use
+            // DateTime.UtcNow in HasData — dynamic values differ from the model
+            // snapshot on every `migrations add`, generating phantom UpdateData ops
+            // on ExtraServices/ServiceTypes/Services/Subscriptions in every migration.
             modelBuilder.Entity<Subscription>().HasData(
                  new Subscription
                  {
@@ -486,7 +526,7 @@ namespace DreamCleaningBackend.Data
                      SubscriptionDays = 0,
                      DiscountPercentage = 0,
                      DisplayOrder = 1,
-                     CreatedAt = DateTime.UtcNow
+                     CreatedAt = SeedCreatedAt
                  },
                 new Subscription
                 {
@@ -496,7 +536,7 @@ namespace DreamCleaningBackend.Data
                     SubscriptionDays = 7,
                     DiscountPercentage = 15,
                     DisplayOrder = 2,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new Subscription
                 {
@@ -506,7 +546,7 @@ namespace DreamCleaningBackend.Data
                     SubscriptionDays = 14,
                     DiscountPercentage = 10,
                     DisplayOrder = 3,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new Subscription
                 {
@@ -516,7 +556,7 @@ namespace DreamCleaningBackend.Data
                     SubscriptionDays = 30,
                     DiscountPercentage = 5,
                     DisplayOrder = 4,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 }
             );
 
@@ -531,7 +571,7 @@ namespace DreamCleaningBackend.Data
                     DisplayOrder = 1,
                     IsActive = true,
                     TimeDuration = 90,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ServiceType
                 {
@@ -542,7 +582,7 @@ namespace DreamCleaningBackend.Data
                     DisplayOrder = 2,
                     IsActive = true,
                     TimeDuration = 120,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 }
             );
 
@@ -705,7 +745,7 @@ namespace DreamCleaningBackend.Data
                     StepValue = 1,
                     DisplayOrder = 1,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new Service
                 {
@@ -721,7 +761,7 @@ namespace DreamCleaningBackend.Data
                     StepValue = 1,
                     DisplayOrder = 2,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new Service
                 {
@@ -739,7 +779,7 @@ namespace DreamCleaningBackend.Data
                     Unit = "per sqft",
                     DisplayOrder = 3,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 }
             );
 
@@ -761,7 +801,7 @@ namespace DreamCleaningBackend.Data
                     ServiceRelationType = "cleaner",
                     DisplayOrder = 1,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new Service
                 {
@@ -778,7 +818,7 @@ namespace DreamCleaningBackend.Data
                     ServiceRelationType = "hours",
                     DisplayOrder = 2,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 }
             );
 
@@ -797,7 +837,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 1,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ExtraService
                 {
@@ -812,7 +852,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 2,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ExtraService
                 {
@@ -826,7 +866,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 3,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ExtraService
                 {
@@ -840,7 +880,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 4,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ExtraService
                 {
@@ -854,7 +894,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 5,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ExtraService
                 {
@@ -868,7 +908,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 6,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ExtraService
                 {
@@ -883,7 +923,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = false,
                     DisplayOrder = 7,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ExtraService
                 {
@@ -896,7 +936,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 8,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 },
                 new ExtraService
                 {
@@ -909,7 +949,7 @@ namespace DreamCleaningBackend.Data
                     IsAvailableForAll = true,
                     DisplayOrder = 9,
                     IsActive = true,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = SeedCreatedAt
                 }
             );
 

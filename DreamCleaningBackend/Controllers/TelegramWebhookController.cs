@@ -1,12 +1,24 @@
+using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Hubs;
 using DreamCleaningBackend.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 
 namespace DreamCleaningBackend.Controllers;
 
+/// <summary>
+/// Inbound Telegram updates. Two routing targets, checked in order:
+///  1. DB-persisted AI chat-agent sessions (ChatAgentSessions.TelegramTopicId) —
+///     agent replies are persisted as HumanAgent messages and reach the visitor
+///     via the widget's history polling endpoint.
+///  2. The legacy in-memory live-chat sessions (LiveChatSessionManager) — replies
+///     are pushed over the LiveChatHub SignalR connection.
+/// Gated by TelegramBot:Enabled (via TelegramBotService.IsConfigured): while the
+/// integration is off, always respond 410 Gone so Telegram backs off.
+/// </summary>
 [ApiController]
 [Route("api/telegram")]
 public class TelegramWebhookController : ControllerBase
@@ -14,30 +26,35 @@ public class TelegramWebhookController : ControllerBase
     private readonly LiveChatSessionManager _sessionManager;
     private readonly TelegramBotService _telegramBot;
     private readonly IHubContext<LiveChatHub> _hubContext;
+    private readonly ApplicationDbContext _context;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<TelegramWebhookController> _logger;
 
     public TelegramWebhookController(
         LiveChatSessionManager sessionManager,
         TelegramBotService telegramBot,
         IHubContext<LiveChatHub> hubContext,
+        ApplicationDbContext context,
+        IConfiguration configuration,
         ILogger<TelegramWebhookController> logger)
     {
         _sessionManager = sessionManager;
         _telegramBot = telegramBot;
         _hubContext = hubContext;
+        _context = context;
+        _configuration = configuration;
         _logger = logger;
     }
 
     [HttpPost("webhook")]
     public async Task<IActionResult> HandleWebhook()
     {
-        // TEMPORARILY DISABLED — Telegram integration is off site-wide.
-        // Always respond 410 Gone so Telegram backs off / disables push retries.
-        _logger.LogInformation("Telegram webhook hit while integration is disabled — returning 410 Gone.");
-        await Task.CompletedTask;
-        return StatusCode(StatusCodes.Status410Gone, new { message = "Telegram integration is temporarily disabled." });
+        if (!_telegramBot.IsConfigured)
+        {
+            _logger.LogInformation("Telegram webhook hit while integration is disabled — returning 410 Gone.");
+            return StatusCode(StatusCodes.Status410Gone, new { message = "Telegram integration is disabled." });
+        }
 
-        #pragma warning disable CS0162 // Unreachable code — preserved so re-enabling is a one-line revert.
         // Telegram.Bot v22 uses System.Text.Json with custom converters (snake_case,
         // Unix timestamps, ChatId, etc.) exposed via JsonBotAPI.Options.
         // We deserialize manually so ASP.NET Core's default STJ settings don't interfere.
@@ -71,6 +88,16 @@ public class TelegramWebhookController : ControllerBase
 
         var topicThreadId = message.MessageThreadId.Value;
 
+        // 1. AI chat-agent sessions (DB-persisted, escalated conversations)
+        var chatAgentSession = await _context.ChatAgentSessions
+            .FirstOrDefaultAsync(s => s.TelegramTopicId == topicThreadId);
+        if (chatAgentSession != null)
+        {
+            await PersistAgentReplyAsync(chatAgentSession, message);
+            return Ok();
+        }
+
+        // 2. Legacy in-memory live-chat sessions (SignalR push)
         var session = _sessionManager.GetSessionByTopicThreadId(topicThreadId);
         if (session == null)
         {
@@ -136,6 +163,62 @@ public class TelegramWebhookController : ControllerBase
         }
 
         return Ok();
-        #pragma warning restore CS0162
+    }
+
+    /// <summary>
+    /// Persists a human agent's Telegram reply onto the DB chat session (text and/or
+    /// photo — photos are saved under chat-photos with the standard 30-day expiry).
+    /// The visitor receives it through GET /api/chat/session/{id}/messages polling.
+    /// </summary>
+    private async Task PersistAgentReplyAsync(Models.ChatAgentSession chatSession, Message message)
+    {
+        var now = DateTime.UtcNow;
+        string? imagePath = null;
+
+        // Photo (or an image sent as a document)
+        var fileId = message.Photo is { Length: > 0 }
+            ? message.Photo.OrderByDescending(p => p.FileSize).First().FileId
+            : message.Document?.MimeType?.StartsWith("image/") == true ? message.Document.FileId : null;
+
+        if (fileId != null)
+        {
+            try
+            {
+                var imageData = await _telegramBot.DownloadFile(fileId);
+                var uploadRoot = _configuration["FileUpload:Path"];
+                if (imageData != null && !string.IsNullOrEmpty(uploadRoot))
+                {
+                    var directory = Path.Combine(Path.GetFullPath(uploadRoot), "chat-photos");
+                    Directory.CreateDirectory(directory);
+                    var fileName = $"{Guid.NewGuid():N}.jpg"; // Telegram photos arrive as JPEG
+                    await System.IO.File.WriteAllBytesAsync(Path.Combine(directory, fileName), imageData);
+                    imagePath = $"/chat-photos/{fileName}";
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to store Telegram agent photo for chat session {SessionId}", chatSession.Id);
+            }
+        }
+
+        var text = message.Text ?? message.Caption;
+        if (string.IsNullOrWhiteSpace(text) && imagePath == null)
+            return; // nothing relayable (sticker, voice note, etc.)
+
+        _context.ChatAgentMessages.Add(new Models.ChatAgentMessage
+        {
+            Id = Guid.NewGuid(),
+            ChatSessionId = chatSession.Id,
+            Role = Models.ChatMessageRole.HumanAgent,
+            Content = string.IsNullOrWhiteSpace(text) ? null : text,
+            ImagePath = imagePath,
+            ImageExpiresAt = imagePath != null ? now.AddDays(30) : null,
+            CreatedAt = now
+        });
+        chatSession.LastMessageAt = now;
+        await _context.SaveChangesAsync();
+        // Note: the visitor is intentionally NOT emailed when the team replies — they
+        // pick up replies via the widget's polling. GuestEmail may still be collected
+        // at escalation for potential future use, but nothing sends to it now.
     }
 }

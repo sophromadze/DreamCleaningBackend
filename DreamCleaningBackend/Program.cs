@@ -1,5 +1,8 @@
 using System.Data;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
+using DreamCleaningBackend.Controllers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
@@ -272,6 +275,15 @@ builder.Services.AddSingleton<LiveChatSessionManager>();
 builder.Services.AddSingleton<TelegramBotService>();
 // builder.Services.AddHostedService<LiveChatCleanupService>();
 
+// AI chat agent (public /api/chat endpoints). TelegramBotService above doubles as the
+// escalation hand-off channel (gated by TelegramBot:Enabled — see TelegramBotService).
+builder.Services.AddScoped<IChatCatalogService, ChatCatalogService>();
+builder.Services.AddSingleton<AnthropicMessagesClient>(); // raw HttpClient forcing IPv4 (VPS quirk)
+builder.Services.AddScoped<IChatAgentService, ChatAgentService>();
+builder.Services.AddHostedService<ChatImageCleanupService>(); // daily 30-day photo retention sweep
+builder.Services.AddSingleton<IWebsitePageContentService, WebsitePageContentService>(); // get_page_content tool cache
+builder.Services.AddHostedService<WebsiteContentRefreshService>(); // pre-warm + refresh every WebsiteContent:CacheHours
+
 builder.Services.AddHttpClient();
 
 // CORS Configuration - Updated for cookie auth
@@ -301,6 +313,34 @@ builder.Services.AddCors(options =>
                 .AllowAnyMethod()
                 .AllowCredentials(); // Important for cookies
         });
+});
+
+// Rate limiting — first limiter in the app (2026-07). Only the named policy below
+// is registered; there is NO global limiter, so endpoints without
+// [EnableRateLimiting] are unaffected. Currently applied to the public,
+// unauthenticated chat-agent pricing endpoints (ChatController).
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.AddPolicy(ChatController.RateLimitPolicy, httpContext =>
+    {
+        // Production sits behind Cloudflare + Apache, so RemoteIpAddress is the
+        // proxy — partition by CF-Connecting-IP / X-Forwarded-For when present.
+        var clientIp = httpContext.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+            ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
+        if (string.IsNullOrEmpty(clientIp))
+            clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        // 60/min: the chat widget polls escalated sessions every 4s (15/min) on top of
+        // sends, uploads and the visibility check — 30/min would 429 legitimate users.
+        return RateLimitPartition.GetFixedWindowLimiter(clientIp, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        });
+    });
 });
 
 var app = builder.Build();
@@ -414,6 +454,9 @@ app.UseExceptionHandler(appError =>
 var dbInfo = new MySqlConnectionStringBuilder(builder.Configuration.GetConnectionString("DefaultConnection") ?? "");
 logger.LogInformation("Using DB: {Server}/{Database}", dbInfo.Server, dbInfo.Database);
 
+// Enforces the [EnableRateLimiting] policies (currently only /api/chat/*).
+app.UseRateLimiter();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -496,17 +539,27 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// Register Telegram webhook on startup — TEMPORARILY DISABLED.
-// Telegram bot integration is off entirely; do not call SetWebhook.
-// if (!app.Environment.IsDevelopment())
-// {
-//     using var scope = app.Services.CreateScope();
-//     var telegramBot = scope.ServiceProvider.GetRequiredService<TelegramBotService>();
-//     if (telegramBot.IsConfigured)
-//     {
-//         var webhookBase = builder.Configuration["TelegramBot:WebhookBaseUrl"] ?? "https://dreamcleaningnyc.com";
-//         await telegramBot.SetWebhook($"{webhookBase}/api/telegram/webhook");
-//     }
-// }
+// Register the Telegram webhook on every production boot — self-healing against
+// domain/token/path changes (a stale URL once silently broke agent-reply relay:
+// the webhook still pointed at the legacy domain, whose 301 Telegram won't follow).
+// setWebhook is idempotent: re-registering an unchanged URL is a no-op that keeps
+// pending updates intact. No-op while TelegramBot:Enabled=false (IsConfigured).
+if (!app.Environment.IsDevelopment())
+{
+    var telegramBot = app.Services.GetRequiredService<TelegramBotService>(); // singleton — no scope needed
+    var webhookBase = builder.Configuration["TelegramBot:WebhookBaseUrl"];
+    if (telegramBot.IsConfigured && !string.IsNullOrWhiteSpace(webhookBase))
+    {
+        try
+        {
+            await telegramBot.SetWebhook($"{webhookBase.TrimEnd('/')}/api/telegram/webhook");
+        }
+        catch (Exception ex)
+        {
+            // A Telegram outage must never block a deploy — log and continue.
+            logger.LogError(ex, "Failed to register the Telegram webhook at startup");
+        }
+    }
+}
 
 app.Run();

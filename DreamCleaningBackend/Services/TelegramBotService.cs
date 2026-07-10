@@ -16,14 +16,17 @@ public class TelegramBotService
     {
         _logger = logger;
 
-        // TEMPORARILY DISABLED — Telegram bot integration is off site-wide.
-        // Force the unconfigured branch so all bot methods become no-ops and no outbound
-        // HTTP/SetWebhook calls fire. Re-enable by removing this early return.
-        _logger.LogWarning("TelegramBotService: Telegram integration is TEMPORARILY DISABLED in code.");
-        _isConfigured = false;
-        return;
+        // Telegram integration is gated by config (TelegramBot:Enabled, default false)
+        // instead of the old hard-coded disable — flip the flag to re-enable without a
+        // code change. While off, all bot methods are no-ops and no outbound
+        // HTTP/SetWebhook calls fire.
+        if (!config.GetValue<bool>("TelegramBot:Enabled", false))
+        {
+            _logger.LogWarning("TelegramBotService: Telegram integration is disabled (TelegramBot:Enabled=false).");
+            _isConfigured = false;
+            return;
+        }
 
-        #pragma warning disable CS0162 // Unreachable code — preserved so re-enabling is a one-line revert.
         var token = config["TelegramBot:Token"];
         var chatId = config["TelegramBot:GroupChatId"];
 
@@ -35,21 +38,20 @@ public class TelegramBotService
         }
 
         var httpClient = new HttpClient(new SocketsHttpHandler
-{
-    ConnectCallback = async (context, cancellationToken) =>
-    {
-        var socket = new System.Net.Sockets.Socket(
-            System.Net.Sockets.AddressFamily.InterNetwork, // Force IPv4
-            System.Net.Sockets.SocketType.Stream,
-            System.Net.Sockets.ProtocolType.Tcp);
-        await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
-        return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
-    }
-});
-_bot = new TelegramBotClient(token, httpClient);
+        {
+            ConnectCallback = async (context, cancellationToken) =>
+            {
+                var socket = new System.Net.Sockets.Socket(
+                    System.Net.Sockets.AddressFamily.InterNetwork, // Force IPv4
+                    System.Net.Sockets.SocketType.Stream,
+                    System.Net.Sockets.ProtocolType.Tcp);
+                await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+                return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+            }
+        });
+        _bot = new TelegramBotClient(token, httpClient);
         _groupChatId = long.Parse(chatId);
         _isConfigured = true;
-        #pragma warning restore CS0162
     }
 
     public bool IsConfigured => _isConfigured;
