@@ -17,6 +17,9 @@ namespace DreamCleaningBackend.Services
         public string? PaymentNotes { get; set; }
         /// <summary>Admin who recorded a manual payment (create-for-user flow).</summary>
         public int? ManualPaymentRecordedByUserId { get; set; }
+        /// <summary>Admin creating the order via create-for-user (any payment method).
+        /// Null = the customer booked it themselves.</summary>
+        public int? BookedByAdminUserId { get; set; }
     }
 
     public interface IBookingCreationService
@@ -305,6 +308,8 @@ namespace DreamCleaningBackend.Services
                 PaymentNotes = manualPayment ? options.PaymentNotes : null,
                 ManualPaymentRecordedAt = manualPayment ? DateTime.UtcNow : (DateTime?)null,
                 ManualPaymentRecordedByUserId = manualPayment ? options.ManualPaymentRecordedByUserId : null,
+                // Who booked it: the create-for-user flow passes the admin; self-service leaves null.
+                BookedByAdminUserId = options.BookedByAdminUserId,
                 // Backend-authoritative pricing from the shared calculator (Tax/Total are
                 // finalized below after loyalty stacking).
                 MaidsCount = quote.MaidsCount,

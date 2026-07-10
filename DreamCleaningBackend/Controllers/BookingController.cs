@@ -592,7 +592,8 @@ namespace DreamCleaningBackend.Controllers
                     PaymentMethod = paymentMethod,
                     PaymentReference = dto.PaymentReference,
                     PaymentNotes = dto.PaymentNotes,
-                    ManualPaymentRecordedByUserId = adminUserId
+                    ManualPaymentRecordedByUserId = adminUserId,
+                    BookedByAdminUserId = adminUserId
                 });
 
                 // Auto-assign the creating admin to the order (goes through AdminBonusService so

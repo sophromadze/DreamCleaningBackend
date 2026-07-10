@@ -260,6 +260,14 @@ namespace DreamCleaningBackend.Models
         [ForeignKey("AssignedAdminId")]
         public virtual User? AssignedAdmin { get; set; }
 
+        // Admin who created this order through the create-for-user flow. Null = the customer
+        // booked it themselves (public booking / guest flow). Distinct from AssignedAdminId,
+        // which tracks bonus responsibility and can change after creation.
+        public int? BookedByAdminUserId { get; set; }
+
+        [ForeignKey("BookedByAdminUserId")]
+        public virtual User? BookedByAdmin { get; set; }
+
         public virtual ICollection<OrderAdminAssignmentHistory> AdminAssignmentHistory { get; set; }
             = new List<OrderAdminAssignmentHistory>();
     }

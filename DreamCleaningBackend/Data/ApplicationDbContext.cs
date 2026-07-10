@@ -361,6 +361,19 @@ namespace DreamCleaningBackend.Data
                 .HasIndex(o => o.AssignedAdminId)
                 .HasDatabaseName("IX_Orders_AssignedAdminId");
 
+            // Order ↔ BookedByAdmin (admin who created the order via create-for-user;
+            // null = customer self-booked). SetNull so deleting an admin account keeps
+            // the orders and simply drops the booked-by link.
+            modelBuilder.Entity<Order>()
+                .HasOne(o => o.BookedByAdmin)
+                .WithMany()
+                .HasForeignKey(o => o.BookedByAdminUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            modelBuilder.Entity<Order>()
+                .HasIndex(o => o.BookedByAdminUserId)
+                .HasDatabaseName("IX_Orders_BookedByAdminUserId");
+
             // OrderCleaner configuration
             modelBuilder.Entity<OrderCleaner>(entity =>
             {

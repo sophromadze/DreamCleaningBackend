@@ -245,6 +245,10 @@ namespace DreamCleaningBackend.DTOs
         public string? AssignedAdminFirstName { get; set; }
         public string? AssignedAdminLastName { get; set; }
         public string? AssignedAdminDisplayName { get; set; }
+
+        // True when an admin created the order (create-for-user flow) rather than the
+        // customer booking it themselves. Drives the "booked by" filter in the admin table.
+        public bool BookedByAdmin { get; set; }
     }
 
     public class CancelOrderDto

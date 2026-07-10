@@ -66,6 +66,242 @@ namespace DreamCleaningBackend.Controllers
             _orderTransferService = orderTransferService;
         }
 
+        /// <summary>SuperAdmin-only: export orders to an .xlsx file (same pattern as the users-tab
+        /// export). The body's Columns list controls which columns are written (empty = all);
+        /// OrderIds limits the export to those orders — the UI sends the currently filtered rows
+        /// so the file matches what's on screen (empty = all orders).</summary>
+        [HttpPost("orders/export")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<IActionResult> ExportOrders([FromBody] OrdersExportRequestDto? dto)
+        {
+            var requested = dto?.Columns?
+                .Where(c => !string.IsNullOrWhiteSpace(c))
+                .Select(c => c.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // All available columns, in the order they should appear in the spreadsheet.
+            var allColumns = new List<(string Key, string Header)>
+            {
+                ("orderId",       "ID"),
+                ("customer",      "Customer"),
+                ("email",         "Email"),
+                ("phone",         "Phone"),
+                ("serviceAt",     "Date & Time"),
+                ("serviceType",   "Service Type"),
+                ("address",       "Address"),
+                ("borough",       "Borough"),
+                ("zip",           "Zip"),
+                ("rooms",         "Rooms"),
+                ("squareFeet",    "Sq.Ft"),
+                ("maids",         "Maids"),
+                ("duration",      "Duration (hrs)"),
+                ("subTotal",      "Subtotal"),
+                ("tips",          "Tips"),
+                ("tax",           "Tax"),
+                ("total",         "Total"),
+                ("status",        "Status"),
+                ("paymentMethod", "Payment")
+            };
+
+            var includeAll = requested.Count == 0;
+            var columns = allColumns.Where(c => includeAll || requested.Contains(c.Key)).ToList();
+            if (columns.Count == 0)
+                return BadRequest(new { message = "No columns selected for export." });
+
+            var idFilter = dto?.OrderIds?.Where(id => id > 0).ToHashSet();
+            var query = _context.Orders.AsQueryable();
+            if (idFilter != null && idFilter.Count > 0)
+                query = query.Where(o => idFilter.Contains(o.Id));
+
+            var orders = await query
+                .OrderBy(o => o.Id)
+                .Select(o => new
+                {
+                    o.Id,
+                    o.ContactFirstName,
+                    o.ContactLastName,
+                    o.ContactEmail,
+                    o.ContactPhone,
+                    o.ServiceDate,
+                    o.ServiceTime,
+                    ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
+                        ? o.CustomServiceDisplayName + " Cleaning"
+                        : (o.ServiceType != null ? o.ServiceType.Name : ""),
+                    o.ServiceAddress,
+                    o.AptSuite,
+                    o.City,
+                    o.ZipCode,
+                    o.BedroomsQuantity,
+                    o.BathroomsQuantity,
+                    o.MaidsCount,
+                    o.TotalDuration,
+                    o.SubTotal,
+                    o.Tips,
+                    o.Tax,
+                    o.Total,
+                    o.Status,
+                    o.PaymentMethod
+                })
+                .ToListAsync();
+
+            // Deep-cleaning detection (residential → Deep/Regular), same as the users export:
+            // any extra service with IsDeepCleaning (and not IsSuperDeepCleaning) on the order.
+            var exportOrderIds = orders.Select(o => o.Id).ToList();
+            var deepOrderIds = await _context.OrderExtraServices
+                .Where(oes => exportOrderIds.Contains(oes.OrderId)
+                              && oes.ExtraService.IsDeepCleaning
+                              && !oes.ExtraService.IsSuperDeepCleaning)
+                .Select(oes => oes.OrderId)
+                .Distinct()
+                .ToListAsync();
+            var deepOrderIdSet = new HashSet<int>(deepOrderIds);
+
+            // Square feet: stored as a quantity on the OrderServices row whose Service.ServiceKey == "sqft".
+            var sqftByOrder = await _context.OrderServices
+                .Where(os => exportOrderIds.Contains(os.OrderId) && os.Service.ServiceKey == "sqft")
+                .Select(os => new { os.OrderId, os.Quantity })
+                .ToDictionaryAsync(x => x.OrderId, x => x.Quantity);
+
+            using var workbook = new ClosedXML.Excel.XLWorkbook();
+            var ws = workbook.Worksheets.Add("Orders");
+
+            // Header row
+            for (int i = 0; i < columns.Count; i++)
+            {
+                var cell = ws.Cell(1, i + 1);
+                cell.Value = columns[i].Header;
+                cell.Style.Font.Bold = true;
+                cell.Style.Fill.BackgroundColor = ClosedXML.Excel.XLColor.FromHtml("#F1F5F9");
+                cell.Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+            }
+
+            int row = 2;
+            foreach (var o in orders)
+            {
+                var st = (o.ServiceTypeName ?? "").Trim();
+                string serviceTypeLabel;
+                if (st.ToLowerInvariant().Contains("residential"))
+                {
+                    serviceTypeLabel = deepOrderIdSet.Contains(o.Id) ? "Deep" : "Regular";
+                }
+                else
+                {
+                    // Strip "Cleaning" from non-residential names: "Office Cleaning" → "Office".
+                    serviceTypeLabel = System.Text.RegularExpressions.Regex
+                        .Replace(st, @"\s*\bcleaning\b\s*", " ", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                        .Trim();
+                }
+
+                var serviceAt = (o.ServiceDate.Date + o.ServiceTime).ToString("yyyy-MM-dd HH:mm");
+
+                // Street portion only — borough and zip have their own columns.
+                var rawStreet = (o.ServiceAddress ?? "").Trim();
+                var commaIdx = rawStreet.IndexOf(',');
+                var street = commaIdx >= 0 ? rawStreet.Substring(0, commaIdx).Trim() : rawStreet;
+                var address = string.IsNullOrWhiteSpace(o.AptSuite) ? street : $"{street}, {o.AptSuite}";
+
+                string rooms = "";
+                if (o.BedroomsQuantity.HasValue || o.BathroomsQuantity.HasValue)
+                {
+                    var bd = o.BedroomsQuantity.HasValue
+                        ? (o.BedroomsQuantity.Value == 0 ? "Studio" : $"{o.BedroomsQuantity.Value} bd")
+                        : "—";
+                    var bt = o.BathroomsQuantity.HasValue ? $"{o.BathroomsQuantity.Value} ba" : "—";
+                    rooms = $"{bd} / {bt}";
+                }
+
+                for (int i = 0; i < columns.Count; i++)
+                {
+                    var col = i + 1;
+                    switch (columns[i].Key)
+                    {
+                        case "orderId":
+                            ws.Cell(row, col).Value = o.Id;
+                            break;
+                        case "customer":
+                            ws.Cell(row, col).Value = ($"{o.ContactFirstName} {o.ContactLastName}").Trim();
+                            break;
+                        case "email":
+                            ws.Cell(row, col).Value = NoEmailHelper.IsPlaceholder(o.ContactEmail) ? "" : (o.ContactEmail ?? "");
+                            break;
+                        case "phone":
+                            ws.Cell(row, col).Value = o.ContactPhone ?? "";
+                            break;
+                        case "serviceAt":
+                            ws.Cell(row, col).Value = serviceAt;
+                            break;
+                        case "serviceType":
+                            ws.Cell(row, col).Value = serviceTypeLabel;
+                            break;
+                        case "address":
+                            ws.Cell(row, col).Value = address;
+                            break;
+                        case "borough":
+                            ws.Cell(row, col).Value = o.City ?? "";
+                            break;
+                        case "zip":
+                            ws.Cell(row, col).Value = o.ZipCode ?? "";
+                            break;
+                        case "rooms":
+                            ws.Cell(row, col).Value = rooms;
+                            break;
+                        case "squareFeet":
+                            if (sqftByOrder.TryGetValue(o.Id, out var sf)) ws.Cell(row, col).Value = sf;
+                            else ws.Cell(row, col).Value = "";
+                            break;
+                        case "maids":
+                            ws.Cell(row, col).Value = o.MaidsCount;
+                            break;
+                        case "duration":
+                            ws.Cell(row, col).Value = o.TotalDuration;
+                            break;
+                        case "subTotal":
+                            ws.Cell(row, col).Value = o.SubTotal;
+                            ws.Cell(row, col).Style.NumberFormat.Format = "$#,##0.00";
+                            break;
+                        case "tips":
+                            ws.Cell(row, col).Value = o.Tips;
+                            ws.Cell(row, col).Style.NumberFormat.Format = "$#,##0.00";
+                            break;
+                        case "tax":
+                            ws.Cell(row, col).Value = o.Tax;
+                            ws.Cell(row, col).Style.NumberFormat.Format = "$#,##0.00";
+                            break;
+                        case "total":
+                            ws.Cell(row, col).Value = o.Total;
+                            ws.Cell(row, col).Style.NumberFormat.Format = "$#,##0.00";
+                            break;
+                        case "status":
+                            ws.Cell(row, col).Value = o.Status ?? "";
+                            break;
+                        case "paymentMethod":
+                            ws.Cell(row, col).Value = o.PaymentMethod.ToString();
+                            break;
+                    }
+                }
+                row++;
+            }
+
+            ws.Columns().AdjustToContents();
+            // AdjustToContents can produce extremely wide columns (long addresses); clamp the upper bound.
+            foreach (var c in ws.ColumnsUsed())
+            {
+                if (c.Width > 50) c.Width = 50;
+            }
+            ws.SheetView.FreezeRows(1);
+
+            using var ms = new MemoryStream();
+            workbook.SaveAs(ms);
+            var bytes = ms.ToArray();
+
+            var fileName = $"orders-export-{DateTime.UtcNow:yyyyMMdd-HHmm}.xlsx";
+            return File(
+                bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fileName);
+        }
+
         // ── SuperAdmin order transfer (move an order between user accounts, undoable) ──
 
         /// <summary>SuperAdmin-only: move an order — and everything it gave its current owner

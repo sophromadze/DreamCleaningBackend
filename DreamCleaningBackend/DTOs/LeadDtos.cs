@@ -58,6 +58,25 @@ namespace DreamCleaningBackend.DTOs
         public DateTime CreatedAt { get; set; }
     }
 
+    /// <summary>
+    /// Add-lead form values derived from an existing order — returned by the
+    /// order-prefill endpoint so the admin UI can fill the form from an order id.
+    /// </summary>
+    public class LeadOrderPrefillDto
+    {
+        public int OrderId { get; set; }
+        public string? FirstName { get; set; }
+        public string? LastName { get; set; }
+        public string? Email { get; set; }
+        public string? Phone { get; set; }
+        public string? ServiceAddress { get; set; }
+        public string? CleaningType { get; set; }
+        public string Type { get; set; } = "Residential";
+        public string? Message { get; set; }
+        public decimal? EstimatedValue { get; set; }
+        public int? ClientId { get; set; }
+    }
+
     public class CreateLeadDto
     {
         [StringLength(100)]
@@ -95,6 +114,9 @@ namespace DreamCleaningBackend.DTOs
         public int? AssignedToAdminId { get; set; }
 
         public int? ClientId { get; set; }
+
+        /// <summary>Order the form was prefilled from (optional) — recorded in the lead's timeline.</summary>
+        public int? SourceOrderId { get; set; }
 
         public DateTime? NextFollowUpDate { get; set; }
     }

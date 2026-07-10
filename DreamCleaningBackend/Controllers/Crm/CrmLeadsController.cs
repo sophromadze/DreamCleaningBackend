@@ -168,6 +168,71 @@ namespace DreamCleaningBackend.Controllers.Crm
             return Ok(dto);
         }
 
+        /// <summary>
+        /// Add-lead form values derived from an existing order, so the admin can create a
+        /// lead by order id and have the form auto-filled (contact, address, cleaning type,
+        /// order total as estimated value, special instructions).
+        /// </summary>
+        [HttpGet("order-prefill/{orderId}")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<LeadOrderPrefillDto>> GetOrderPrefill(int orderId)
+        {
+            var order = await _context.Orders
+                .Include(o => o.ServiceType)
+                .Include(o => o.OrderExtraServices).ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null) return NotFound(new { message = $"Order #{orderId} not found" });
+
+            // Compose the full one-line address the same way order views display it.
+            var addressParts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(order.ServiceAddress)) addressParts.Add(order.ServiceAddress.Trim());
+            if (!string.IsNullOrWhiteSpace(order.AptSuite)) addressParts.Add($"Apt {order.AptSuite.Trim()}");
+            var cityLine = string.Join(", ", new[] { order.City, order.State }
+                .Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s!.Trim()));
+            if (!string.IsNullOrWhiteSpace(order.ZipCode)) cityLine = $"{cityLine} {order.ZipCode.Trim()}".Trim();
+            if (!string.IsNullOrWhiteSpace(cityLine)) addressParts.Add(cityLine);
+
+            var serviceTypeName = order.GetDisplayServiceTypeName();
+            var isCommercial = serviceTypeName.Contains("office", StringComparison.OrdinalIgnoreCase)
+                || serviceTypeName.Contains("commercial", StringComparison.OrdinalIgnoreCase);
+
+            // Residential orders are split into Deep / Regular the same way the admin orders
+            // table does it: a deep-cleaning extra on the order (not super-deep) marks it Deep.
+            // Prefer the ExtraService flags; fall back to name matching for legacy data.
+            var normalizedTypeName = new string(serviceTypeName.ToLowerInvariant()
+                .Where(char.IsLetter).ToArray());
+            if (normalizedTypeName == "residentialcleaning")
+            {
+                var isDeep = order.OrderExtraServices.Any(oes =>
+                    oes.ExtraService != null
+                    && !oes.ExtraService.IsSuperDeepCleaning
+                    && (oes.ExtraService.IsDeepCleaning
+                        || (oes.ExtraService.Name != null
+                            && oes.ExtraService.Name.Contains("deep", StringComparison.OrdinalIgnoreCase)
+                            && !oes.ExtraService.Name.Contains("super", StringComparison.OrdinalIgnoreCase))));
+                serviceTypeName = isDeep ? "Deep Cleaning" : "Regular Cleaning";
+            }
+
+            var dto = new LeadOrderPrefillDto
+            {
+                OrderId = order.Id,
+                FirstName = Trim(order.ContactFirstName),
+                LastName = Trim(order.ContactLastName),
+                // Never copy generated no-email placeholders into a lead.
+                Email = NoEmailHelper.IsPlaceholder(order.ContactEmail) ? null : Trim(order.ContactEmail),
+                Phone = Trim(order.ContactPhone),
+                ServiceAddress = addressParts.Count > 0 ? string.Join(", ", addressParts) : null,
+                CleaningType = Trim(serviceTypeName),
+                Type = isCommercial ? LeadType.Commercial : LeadType.Residential,
+                Message = Trim(order.SpecialInstructions),
+                EstimatedValue = order.Total,
+                ClientId = order.UserId
+            };
+
+            return Ok(dto);
+        }
+
         // ─────────────────────────────────────────────────────────
         //  CREATE / UPDATE / DELETE
         // ─────────────────────────────────────────────────────────
@@ -206,6 +271,8 @@ namespace DreamCleaningBackend.Controllers.Crm
             await _context.SaveChangesAsync();
 
             await AddActivity(lead.Id, LeadActivityType.System, "Lead created", system: true);
+            if (dto.SourceOrderId.HasValue)
+                await AddActivity(lead.Id, LeadActivityType.System, $"Imported from order #{dto.SourceOrderId.Value}", system: true);
             await _context.SaveChangesAsync();
 
             await _context.Entry(lead).Reference(l => l.AssignedToAdmin).LoadAsync();

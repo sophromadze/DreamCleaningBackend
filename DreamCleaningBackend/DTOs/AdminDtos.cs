@@ -369,6 +369,15 @@ namespace DreamCleaningBackend.DTOs
         public List<string>? Columns { get; set; }
     }
 
+    /// <summary>SuperAdmin orders-list export request. Columns is the set of column keys to include
+    /// (empty/missing = all). OrderIds limits the export to those orders — the admin UI passes the
+    /// currently filtered rows so the file matches what's on screen; empty/missing = all orders.</summary>
+    public class OrdersExportRequestDto
+    {
+        public List<string>? Columns { get; set; }
+        public List<int>? OrderIds { get; set; }
+    }
+
     // User Management DTOs
     public class UserAdminDto
     {

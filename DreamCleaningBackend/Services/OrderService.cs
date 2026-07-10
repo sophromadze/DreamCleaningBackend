@@ -81,7 +81,10 @@ namespace DreamCleaningBackend.Services
                 AssignedAdminLastName = o.AssignedAdmin != null ? o.AssignedAdmin.LastName : null,
                 AssignedAdminDisplayName = o.AssignedAdmin != null
                     ? AdminBonusService.FormatDisplayName(o.AssignedAdmin.FirstName, o.AssignedAdmin.LastName)
-                    : null
+                    : null,
+                // Legacy orders predate BookedByAdminUserId; a manual-payment recorder means
+                // an admin created it, so those still count as admin-booked.
+                BookedByAdmin = o.BookedByAdminUserId != null || o.ManualPaymentRecordedByUserId != null
             }).ToList();
         }
 
