@@ -160,6 +160,20 @@ namespace DreamCleaningBackend.Controllers
                 .Take(500)
                 .ToListAsync();
 
+            // Agent names resolve at read time from the mapping table, so a mapping
+            // added later retroactively names past replies. Unmapped → null → "Team".
+            var senderIds = messages
+                .Where(m => m.SenderTelegramUserId != null)
+                .Select(m => m.SenderTelegramUserId!.Value)
+                .Distinct()
+                .ToList();
+            var agentNames = senderIds.Count == 0
+                ? new Dictionary<long, string>()
+                : await _context.TelegramAgentDisplayNames
+                    .AsNoTracking()
+                    .Where(d => senderIds.Contains(d.TelegramUserId))
+                    .ToDictionaryAsync(d => d.TelegramUserId, d => d.DisplayName);
+
             return Ok(new ChatAdminTranscriptDto
             {
                 SessionId = session.Id,
@@ -180,6 +194,9 @@ namespace DreamCleaningBackend.Controllers
                     },
                     Content = m.Content,
                     ImagePath = m.ImagePath,
+                    AgentName = m.SenderTelegramUserId != null
+                        ? agentNames.GetValueOrDefault(m.SenderTelegramUserId.Value)
+                        : null,
                     CreatedAt = m.CreatedAt
                 }).ToList()
             });
@@ -208,6 +225,113 @@ namespace DreamCleaningBackend.Controllers
             var deleted = await _chatAgentService.DeleteSessionAsync(sessionId);
             if (!deleted)
                 return NotFound(new { message = "Session not found" });
+            return Ok(new { status = "deleted" });
+        }
+
+        // ===== Telegram agent display names =====
+        // Admin-chosen, visitor-facing names for Telegram accounts replying in chat
+        // topics — deliberately never auto-populated from Telegram profile names.
+        // Messages store only the sender's numeric id; names resolve at read time, so
+        // an upsert here retroactively (re)names that person's past replies everywhere.
+
+        /// <summary>Current mappings plus Telegram senders seen in chat replies that
+        /// have no mapping yet (so admins can name them without hunting for ids).</summary>
+        [HttpGet("agent-names")]
+        public async Task<ActionResult<TelegramAgentDisplayNamesResponseDto>> GetAgentDisplayNames()
+        {
+            var mappings = await _context.TelegramAgentDisplayNames
+                .AsNoTracking()
+                .OrderBy(d => d.DisplayName)
+                .Select(d => new TelegramAgentDisplayNameDto
+                {
+                    TelegramUserId = d.TelegramUserId,
+                    DisplayName = d.DisplayName,
+                    CreatedAt = d.CreatedAt,
+                    UpdatedAt = d.UpdatedAt
+                })
+                .ToListAsync();
+
+            var mappedIds = mappings.Select(m => m.TelegramUserId).ToHashSet();
+
+            var unmapped = (await _context.ChatAgentMessages
+                    .AsNoTracking()
+                    .Where(m => m.SenderTelegramUserId != null)
+                    .GroupBy(m => m.SenderTelegramUserId!.Value)
+                    .Select(g => new UnmappedTelegramSenderDto
+                    {
+                        TelegramUserId = g.Key,
+                        LastSeenAt = g.Max(m => m.CreatedAt),
+                        MessageCount = g.Count()
+                    })
+                    .ToListAsync())
+                .Where(s => !mappedIds.Contains(s.TelegramUserId))
+                .OrderByDescending(s => s.LastSeenAt)
+                .ToList();
+
+            return Ok(new TelegramAgentDisplayNamesResponseDto
+            {
+                Mappings = mappings,
+                UnmappedSenders = unmapped
+            });
+        }
+
+        /// <summary>Creates or updates the display name for a Telegram user id (upsert —
+        /// the UI's "add new", "name this sender" and inline edit all land here).</summary>
+        [HttpPut("agent-names/{telegramUserId:long}")]
+        public async Task<ActionResult<TelegramAgentDisplayNameDto>> UpsertAgentDisplayName(
+            long telegramUserId, [FromBody] UpsertTelegramAgentDisplayNameDto dto)
+        {
+            if (telegramUserId <= 0)
+                return BadRequest(new { message = "Telegram user id must be a positive number" });
+
+            var displayName = dto.DisplayName?.Trim();
+            if (string.IsNullOrEmpty(displayName))
+                return BadRequest(new { message = "Display name is required" });
+            if (displayName.Length > 50)
+                return BadRequest(new { message = "Display name must be 50 characters or fewer" });
+
+            var now = DateTime.UtcNow;
+            var entry = await _context.TelegramAgentDisplayNames
+                .FirstOrDefaultAsync(d => d.TelegramUserId == telegramUserId);
+            if (entry == null)
+            {
+                entry = new TelegramAgentDisplayName
+                {
+                    TelegramUserId = telegramUserId,
+                    DisplayName = displayName,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                };
+                _context.TelegramAgentDisplayNames.Add(entry);
+            }
+            else
+            {
+                entry.DisplayName = displayName;
+                entry.UpdatedAt = now;
+            }
+            await _context.SaveChangesAsync();
+
+            return Ok(new TelegramAgentDisplayNameDto
+            {
+                TelegramUserId = entry.TelegramUserId,
+                DisplayName = entry.DisplayName,
+                CreatedAt = entry.CreatedAt,
+                UpdatedAt = entry.UpdatedAt
+            });
+        }
+
+        /// <summary>Removes a mapping — that sender's replies (past and future) fall
+        /// back to "Team" until a new name is set.</summary>
+        [HttpDelete("agent-names/{telegramUserId:long}")]
+        public async Task<IActionResult> DeleteAgentDisplayName(long telegramUserId)
+        {
+            var entry = await _context.TelegramAgentDisplayNames
+                .FirstOrDefaultAsync(d => d.TelegramUserId == telegramUserId);
+            if (entry == null)
+                return NotFound(new { message = "No mapping for that Telegram user id" });
+
+            _context.TelegramAgentDisplayNames.Remove(entry);
+            await _context.SaveChangesAsync();
             return Ok(new { status = "deleted" });
         }
 

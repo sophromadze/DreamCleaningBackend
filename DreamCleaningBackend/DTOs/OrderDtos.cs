@@ -208,6 +208,12 @@ namespace DreamCleaningBackend.DTOs
         public string City { get; set; }
         public DateTime OrderDate { get; set; }
         public decimal TotalDuration { get; set; }
+        // Surfaced on the list DTO so the admin table can render the staffing-review
+        // badge (per-cleaner load > 6h) without fetching full details. HasCleanersService
+        // is true for cleaner+hours service types (TotalDuration is per-cleaner there),
+        // which the badge skips — cleaners × hours is already explicit for those.
+        public int MaidsCount { get; set; }
+        public bool HasCleanersService { get; set; }
         public decimal Tips { get; set; }
         public decimal CompanyDevelopmentTips { get; set; }
         public bool IsPaid { get; set; }

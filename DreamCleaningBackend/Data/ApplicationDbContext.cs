@@ -103,6 +103,8 @@ namespace DreamCleaningBackend.Data
         public DbSet<ChatAgentSession> ChatAgentSessions { get; set; }
         public DbSet<ChatAgentMessage> ChatAgentMessages { get; set; }
         public DbSet<ChatAgentSettings> ChatAgentSettings { get; set; }
+        // Admin-chosen visitor-facing names for Telegram agents (never from Telegram profiles)
+        public DbSet<TelegramAgentDisplayName> TelegramAgentDisplayNames { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -128,6 +130,13 @@ namespace DreamCleaningBackend.Data
                     .WithMany(s => s.Messages)
                     .HasForeignKey(e => e.ChatSessionId)
                     .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<TelegramAgentDisplayName>(entity =>
+            {
+                entity.HasIndex(e => e.TelegramUserId)
+                    .IsUnique()
+                    .HasDatabaseName("IX_TelegramAgentDisplayNames_TelegramUserId");
             });
 
             // AuditLog configuration

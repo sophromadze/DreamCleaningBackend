@@ -211,6 +211,8 @@ namespace DreamCleaningBackend.Controllers
                 .Take(200)
                 .ToListAsync();
 
+            var agentNames = await ResolveAgentDisplayNamesAsync(messages);
+
             return Ok(new ChatSessionHistoryDto
             {
                 SessionId = session.Id,
@@ -231,6 +233,9 @@ namespace DreamCleaningBackend.Controllers
                     },
                     Content = m.Content,
                     ImagePath = m.ImagePath,
+                    AgentName = m.SenderTelegramUserId != null
+                        ? agentNames.GetValueOrDefault(m.SenderTelegramUserId.Value)
+                        : null,
                     CreatedAt = m.CreatedAt
                 }).ToList()
             });
@@ -251,6 +256,28 @@ namespace DreamCleaningBackend.Controllers
             if (!resolved)
                 return NotFound(new { message = "Session not found" });
             return Ok(new { status = "resolved" });
+        }
+
+        /// <summary>
+        /// Admin-chosen display names for the human-agent senders in a message batch
+        /// (TelegramAgentDisplayNames, one dictionary query). Names resolve at read time
+        /// so a mapping added later retroactively names past replies; unmapped senders
+        /// stay null and the UI falls back to "Team". The numeric ids never leave the API.
+        /// </summary>
+        private async Task<Dictionary<long, string>> ResolveAgentDisplayNamesAsync(
+            IEnumerable<ChatAgentMessage> messages)
+        {
+            var senderIds = messages
+                .Where(m => m.SenderTelegramUserId != null)
+                .Select(m => m.SenderTelegramUserId!.Value)
+                .Distinct()
+                .ToList();
+            if (senderIds.Count == 0) return new Dictionary<long, string>();
+
+            return await _context.TelegramAgentDisplayNames
+                .AsNoTracking()
+                .Where(d => senderIds.Contains(d.TelegramUserId))
+                .ToDictionaryAsync(d => d.TelegramUserId, d => d.DisplayName);
         }
 
         /// <summary>

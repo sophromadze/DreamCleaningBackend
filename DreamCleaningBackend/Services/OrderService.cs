@@ -47,6 +47,14 @@ namespace DreamCleaningBackend.Services
 
             await AutoCancelExpiredUnpaidOrdersIfNeeded(orders);
 
+            // Cleaner+hours detection for the staffing-review badge, without loading every
+            // order's service lines: one grouped ID query (same pattern as the Excel export).
+            var cleanerServiceOrderIds = new HashSet<int>(await _context.OrderServices
+                .Where(os => os.Service.ServiceRelationType == "cleaner")
+                .Select(os => os.OrderId)
+                .Distinct()
+                .ToListAsync());
+
             return orders.Select(o => new OrderListDto
             {
                 Id = o.Id,
@@ -65,6 +73,8 @@ namespace DreamCleaningBackend.Services
                 City = o.City,
                 OrderDate = o.OrderDate,
                 TotalDuration = o.TotalDuration,
+                MaidsCount = o.MaidsCount,
+                HasCleanersService = cleanerServiceOrderIds.Contains(o.Id),
                 Tips = o.Tips,
                 CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                 IsPaid = o.IsPaid,
@@ -402,7 +412,13 @@ namespace DreamCleaningBackend.Services
 
             // Backend-authoritative, like TotalDuration below — the calculator derives the
             // maids count from the same selections, so the client's copy is redundant at best.
-            order.MaidsCount = quote.MaidsCount;
+            // With auto-staffing off, the count is an admin decision for regular service types,
+            // so a customer edit must not reset it; cleaner-hours types still follow the
+            // customer's explicit cleaner quantity.
+            if (OrderPricingCalculator.AutoAddCleanersByDuration || quote.HasCleanerService)
+                order.MaidsCount = quote.MaidsCount;
+            else
+                order.MaidsCount = Math.Max(order.MaidsCount, quote.MaidsCount);
             order.TotalDuration = quote.TotalDuration;
 
             // Recompute cleaner total salary so it stays in sync with the new duration/maids.

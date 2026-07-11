@@ -31,6 +31,14 @@ namespace DreamCleaningBackend.Models
         /// <summary>CreatedAt + 30 days when an image is attached; nulled (with ImagePath) once the file is purged.</summary>
         public DateTime? ImageExpiresAt { get; set; }
 
+        /// <summary>
+        /// Telegram numeric user id of the human agent who sent this reply (HumanAgent
+        /// role only; null otherwise and for messages predating this column). The
+        /// visitor-facing name is resolved at READ time via TelegramAgentDisplayNames —
+        /// unmapped ids fall back to "Team" in the UI. Never exposed in DTOs.
+        /// </summary>
+        public long? SenderTelegramUserId { get; set; }
+
         public DateTime CreatedAt { get; set; }
     }
 }

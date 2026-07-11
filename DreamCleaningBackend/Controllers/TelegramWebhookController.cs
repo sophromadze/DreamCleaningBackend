@@ -111,6 +111,10 @@ public class TelegramWebhookController : ControllerBase
             return Ok();
         }
 
+        // Admin-chosen display name for this sender (never their Telegram profile name);
+        // null when unmapped — the widget falls back to "Team".
+        var agentName = await ResolveAgentDisplayNameAsync(message.From?.Id);
+
         // Text message from admin
         if (!string.IsNullOrEmpty(message.Text))
         {
@@ -119,6 +123,7 @@ public class TelegramWebhookController : ControllerBase
                 id = Guid.NewGuid().ToString(),
                 content = message.Text,
                 isFromVisitor = false,
+                agentName,
                 timestamp = DateTime.UtcNow
             });
         }
@@ -138,6 +143,7 @@ public class TelegramWebhookController : ControllerBase
                     imageMimeType = "image/jpeg",
                     content = message.Caption ?? "",
                     isFromVisitor = false,
+                    agentName,
                     timestamp = DateTime.UtcNow
                 });
             }
@@ -157,12 +163,23 @@ public class TelegramWebhookController : ControllerBase
                     imageMimeType = message.Document.MimeType,
                     content = message.Caption ?? "",
                     isFromVisitor = false,
+                    agentName,
                     timestamp = DateTime.UtcNow
                 });
             }
         }
 
         return Ok();
+    }
+
+    /// <summary>Admin-chosen display name for a Telegram sender, or null when unmapped.</summary>
+    private async Task<string?> ResolveAgentDisplayNameAsync(long? telegramUserId)
+    {
+        if (telegramUserId == null) return null;
+        return await _context.TelegramAgentDisplayNames
+            .Where(d => d.TelegramUserId == telegramUserId.Value)
+            .Select(d => d.DisplayName)
+            .FirstOrDefaultAsync();
     }
 
     /// <summary>
@@ -213,6 +230,10 @@ public class TelegramWebhookController : ControllerBase
             Content = string.IsNullOrWhiteSpace(text) ? null : text,
             ImagePath = imagePath,
             ImageExpiresAt = imagePath != null ? now.AddDays(30) : null,
+            // Only the numeric id is stored — the visitor-facing name is resolved at
+            // read time from TelegramAgentDisplayNames (unmapped → "Team" in the UI),
+            // so a mapping added later retroactively names this agent's past replies.
+            SenderTelegramUserId = message.From?.Id,
             CreatedAt = now
         });
         chatSession.LastMessageAt = now;

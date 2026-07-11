@@ -35,6 +35,16 @@ namespace DreamCleaningBackend.Services
         /// <summary>A single maid can work at most this many hours; above it we add maids.</summary>
         public const decimal MaxHoursPerMaid = 6m;
 
+        /// <summary>
+        /// Legacy auto-staffing rule: above MaxHoursPerMaid we used to add cleaners and show
+        /// the duration divided per cleaner. Disabled 2026-07 — customers now always see the
+        /// full total duration and admins set MaidsCount manually per order (the 1-per-6h math
+        /// survives only as an admin-panel suggestion). Flip to true together with
+        /// AUTO_ADD_CLEANERS_BY_DURATION in order-pricing.calculator.ts to restore.
+        /// static readonly (not const) so gated branches don't fold into unreachable code.
+        /// </summary>
+        public static readonly bool AutoAddCleanersByDuration = false;
+
         /// <summary>Per-maid minimum duration in minutes.</summary>
         public const decimal PerMaidMinimumMinutes = 60m;
 
@@ -332,15 +342,15 @@ namespace DreamCleaningBackend.Services
             else
             {
                 var totalHours = totalDuration / 60m;
-                baseMaidsCount = totalHours <= MaxHoursPerMaid
-                    ? 1
-                    : (int)Math.Ceiling(totalHours / MaxHoursPerMaid);
+                baseMaidsCount = AutoAddCleanersByDuration && totalHours > MaxHoursPerMaid
+                    ? (int)Math.Ceiling(totalHours / MaxHoursPerMaid)
+                    : 1;
                 displayDuration = totalDuration;
             }
 
             var maidsCount = baseMaidsCount + extraCleaners;
 
-            if (maidsCount > 1 && !hasCleanerService)
+            if (AutoAddCleanersByDuration && maidsCount > 1 && !hasCleanerService)
             {
                 displayDuration = Math.Ceiling(totalDuration / maidsCount);
             }
@@ -360,6 +370,10 @@ namespace DreamCleaningBackend.Services
                 ? perMaidMinMinutes
                 : perMaidMinMinutes * Math.Max(1, maidsCount);
             actualTotalDuration = Math.Max(actualTotalDuration, totalMinMinutes);
+
+            // Auto-staffing off: customers see the full (floored) total, never a per-maid split.
+            if (!AutoAddCleanersByDuration && !hasCleanerService)
+                displayDuration = actualTotalDuration;
 
             // Deep cleaning fee lands AFTER service costs.
             subTotal += deepCleaningFee;

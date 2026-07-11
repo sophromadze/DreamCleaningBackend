@@ -71,6 +71,9 @@ namespace DreamCleaningBackend.Services
                 ExtraServices = activeExtras
                     .Where(es => es.ServiceTypeId == st.Id && !es.IsAvailableForAll)
                     .Concat(activeExtras.Where(es => es.IsAvailableForAll && es.ServiceTypeId == null))
+                    // Extra Cleaners is hidden from customers (admin-only) — cleaner
+                    // count is the team's decision now, so chat must not offer it.
+                    .Where(es => es.Name != OrderPricingCalculator.ExtraCleanersName)
                     .Select(es => new ChatExtraServiceDto
                     {
                         Id = es.Id,
@@ -165,7 +168,6 @@ namespace DreamCleaningBackend.Services
                 // ceiling (vs the calculator's internal nearest-15 salary rounding)
                 // errs toward over-quoting time to the customer, never under.
                 DisplayDurationMinutes = Math.Ceiling(quote.DisplayDuration / 15m) * 15m,
-                MaidsCount = quote.MaidsCount,
                 DeepCleaningFee = quote.DeepCleaningFee,
                 Note = EstimateNote
             }, null);

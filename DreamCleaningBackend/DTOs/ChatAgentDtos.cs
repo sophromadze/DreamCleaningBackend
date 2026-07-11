@@ -40,6 +40,9 @@ namespace DreamCleaningBackend.DTOs
         public string Role { get; set; } = string.Empty; // user | assistant | humanAgent
         public string? Content { get; set; }
         public string? ImagePath { get; set; }
+        /// <summary>Admin-chosen agent name for humanAgent messages (TelegramAgentDisplayNames,
+        /// resolved at read time). Null when unmapped — the widget falls back to "Team".</summary>
+        public string? AgentName { get; set; }
         public DateTime CreatedAt { get; set; }
     }
 
@@ -82,6 +85,9 @@ namespace DreamCleaningBackend.DTOs
         public string Role { get; set; } = "user"; // user | assistant | humanAgent | system
         public string? Content { get; set; }
         public string? ImagePath { get; set; }
+        /// <summary>Admin-chosen agent name for humanAgent messages (TelegramAgentDisplayNames,
+        /// resolved at read time). Null when unmapped — the transcript falls back to "Team".</summary>
+        public string? AgentName { get; set; }
         public DateTime CreatedAt { get; set; }
     }
 
@@ -113,5 +119,36 @@ namespace DreamCleaningBackend.DTOs
     public class ChatWidgetVisibilityDto
     {
         public bool Visible { get; set; }
+    }
+
+    // ===== Telegram agent display names (admin-managed, never from Telegram profiles) =====
+
+    public class TelegramAgentDisplayNameDto
+    {
+        public long TelegramUserId { get; set; }
+        public string DisplayName { get; set; } = string.Empty;
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+    }
+
+    /// <summary>A Telegram sender seen in chat replies that has no mapping yet.</summary>
+    public class UnmappedTelegramSenderDto
+    {
+        public long TelegramUserId { get; set; }
+        public DateTime LastSeenAt { get; set; }
+        public int MessageCount { get; set; }
+    }
+
+    public class TelegramAgentDisplayNamesResponseDto
+    {
+        public List<TelegramAgentDisplayNameDto> Mappings { get; set; } = new();
+        public List<UnmappedTelegramSenderDto> UnmappedSenders { get; set; } = new();
+    }
+
+    public class UpsertTelegramAgentDisplayNameDto
+    {
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.StringLength(50)]
+        public string DisplayName { get; set; } = string.Empty;
     }
 }

@@ -62,7 +62,8 @@ namespace DreamCleaningBackend.DTOs
         public decimal EstimatedTax { get; set; }
         public decimal EstimatedTotal { get; set; }
         public decimal DisplayDurationMinutes { get; set; }
-        public int MaidsCount { get; set; }
+        // MaidsCount was removed 2026-07: cleaner count is decided by the team per
+        // order and must never be quoted in chat (see CLEANER COUNT rule in the prompt).
         public decimal DeepCleaningFee { get; set; }
         public string Note { get; set; } = string.Empty;
     }
