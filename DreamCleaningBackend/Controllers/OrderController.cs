@@ -106,6 +106,50 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        // PATCH /api/order/{id}/booked-by-admin — mark or unmark an order as admin-booked.
+        // SuperAdmin only. Exists to backfill orders created before BookedByAdminUserId
+        // (2026-07) — create-for-user stamps new orders automatically, so this is only
+        // needed for legacy admin bookings paid via Stripe, which left no marker. Marking
+        // stores the acting SuperAdmin's id (the actual creator is unknown for legacy orders).
+        [HttpPatch("{orderId}/booked-by-admin")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<OrderBookedByAdminResultDto>> SetBookedByAdmin(int orderId, [FromBody] UpdateOrderBookedByAdminDto dto)
+        {
+            try
+            {
+                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+                if (order == null)
+                    return NotFound(new { message = "Order not found" });
+
+                // Snapshot before for the audit diff.
+                var before = new Order { Id = order.Id, BookedByAdminUserId = order.BookedByAdminUserId };
+
+                order.BookedByAdminUserId = dto.BookedByAdmin ? GetUserId() : (int?)null;
+                order.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                try
+                {
+                    var after = new Order { Id = order.Id, BookedByAdminUserId = order.BookedByAdminUserId };
+                    await _auditService.LogUpdateAsync(before, after);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to audit booked-by-admin change for order {orderId}");
+                }
+
+                return Ok(new OrderBookedByAdminResultDto
+                {
+                    OrderId = order.Id,
+                    BookedByAdmin = order.IsBookedByAdmin()
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpGet]
         public async Task<ActionResult> GetUserOrders()
         {

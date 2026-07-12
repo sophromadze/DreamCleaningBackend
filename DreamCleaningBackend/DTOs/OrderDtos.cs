@@ -188,6 +188,21 @@ namespace DreamCleaningBackend.DTOs
         public string ServiceTypeName { get; set; } = string.Empty;
     }
 
+    // SuperAdmin-only: mark/unmark an order as admin-booked. Exists to backfill orders
+    // created before BookedByAdminUserId (2026-07); new orders are stamped automatically.
+    public class UpdateOrderBookedByAdminDto
+    {
+        public bool BookedByAdmin { get; set; }
+    }
+
+    public class OrderBookedByAdminResultDto
+    {
+        public int OrderId { get; set; }
+        // Effective flag after the change (via OrderBookedByAdminExtensions) — legacy
+        // orders with a creation-time manual-payment stamp stay true even when cleared.
+        public bool BookedByAdmin { get; set; }
+    }
+
     public class OrderListDto
     {
         public int Id { get; set; }
