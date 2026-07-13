@@ -284,6 +284,13 @@ builder.Services.AddHostedService<ChatImageCleanupService>(); // daily 30-day ph
 builder.Services.AddSingleton<IWebsitePageContentService, WebsitePageContentService>(); // get_page_content tool cache
 builder.Services.AddHostedService<WebsiteContentRefreshService>(); // pre-warm + refresh every WebsiteContent:CacheHours
 
+// Blog (AI-drafted, human-published). Content pipeline is stateless → Singleton;
+// generation reuses the IPv4-forcing AnthropicMessagesClient above with a per-call
+// model override (chat stays on Haiku, blog uses Blog:GenerationModel).
+builder.Services.AddSingleton<BlogContentService>();
+builder.Services.AddScoped<IBlogGenerationService, BlogGenerationService>();
+builder.Services.AddHostedService<BlogGenerationBackgroundService>();
+
 builder.Services.AddHttpClient();
 
 // CORS Configuration - Updated for cookie auth
@@ -477,7 +484,8 @@ app.Use(async (context, next) =>
         "/api/auth/verify-email-code", 
         "/api/auth/confirm-account-merge", // Merge temp Apple account with existing account (email code only)
         "/api/auth/resend-merge-code",     // Resend merge confirmation code
-        "/api/auth/logout" 
+        "/api/auth/logout",
+        "/api/blog"                        // Public blog content — readable pre-verification
     };
     if (allowPaths.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
     {

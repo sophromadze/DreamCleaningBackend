@@ -106,6 +106,11 @@ namespace DreamCleaningBackend.Data
         // Admin-chosen visitor-facing names for Telegram agents (never from Telegram profiles)
         public DbSet<TelegramAgentDisplayName> TelegramAgentDisplayNames { get; set; }
 
+        // Blog (AI-drafted, human-published articles)
+        public DbSet<BlogPost> BlogPosts { get; set; }
+        public DbSet<BlogTopic> BlogTopics { get; set; }
+        public DbSet<BlogSettings> BlogSettings { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -137,6 +142,25 @@ namespace DreamCleaningBackend.Data
                 entity.HasIndex(e => e.TelegramUserId)
                     .IsUnique()
                     .HasDatabaseName("IX_TelegramAgentDisplayNames_TelegramUserId");
+            });
+
+            // Blog configuration
+            modelBuilder.Entity<BlogPost>(entity =>
+            {
+                entity.HasIndex(e => e.Slug).IsUnique().HasDatabaseName("IX_BlogPosts_Slug");
+                entity.HasIndex(e => new { e.Status, e.PublishedAt }).HasDatabaseName("IX_BlogPosts_Status_PublishedAt");
+                entity.Property(e => e.ContentMarkdown).HasColumnType("LONGTEXT");
+                entity.Property(e => e.ContentHtml).HasColumnType("LONGTEXT");
+            });
+
+            modelBuilder.Entity<BlogTopic>(entity =>
+            {
+                entity.HasIndex(e => new { e.Status, e.Priority }).HasDatabaseName("IX_BlogTopics_Status_Priority");
+                // Topic keeps pointing at its draft; deleting the post just clears the link.
+                entity.HasOne(e => e.GeneratedBlogPost)
+                    .WithMany()
+                    .HasForeignKey(e => e.GeneratedBlogPostId)
+                    .OnDelete(DeleteBehavior.SetNull);
             });
 
             // AuditLog configuration

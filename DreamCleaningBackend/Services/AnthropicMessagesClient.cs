@@ -72,20 +72,25 @@ namespace DreamCleaningBackend.Services
             List<AnthropicMessage> messages,
             List<AnthropicTool>? tools,
             int? maxTokensOverride = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            string? modelOverride = null,
+            AnthropicOutputConfig? outputConfig = null)
         {
             if (!IsConfigured || _http == null)
                 throw new InvalidOperationException("Anthropic API key is not configured");
 
             var request = new AnthropicRequest
             {
-                Model = _model,
+                // Chat agent uses the configured default (Haiku); blog generation passes
+                // its own model (Blog:GenerationModel) without touching chat behavior.
+                Model = string.IsNullOrWhiteSpace(modelOverride) ? _model : modelOverride,
                 // Admin-mode QA answers pass a higher cap so multi-page discrepancy
                 // reports aren't truncated; customer replies keep the default.
                 MaxTokens = maxTokensOverride is > 0 ? maxTokensOverride.Value : _maxTokens,
                 System = systemPrompt,
                 Messages = messages,
-                Tools = tools
+                Tools = tools,
+                OutputConfig = outputConfig
             };
 
             var json = JsonSerializer.Serialize(request, JsonOptions);
@@ -117,6 +122,25 @@ namespace DreamCleaningBackend.Services
         [JsonPropertyName("system")] public string? System { get; set; }
         [JsonPropertyName("messages")] public List<AnthropicMessage> Messages { get; set; } = new();
         [JsonPropertyName("tools")] public List<AnthropicTool>? Tools { get; set; }
+        [JsonPropertyName("output_config")] public AnthropicOutputConfig? OutputConfig { get; set; }
+    }
+
+    /// <summary>Structured outputs: output_config.format with a json_schema guarantees the
+    /// response text is valid JSON matching the schema (used by blog generation).</summary>
+    public class AnthropicOutputConfig
+    {
+        [JsonPropertyName("format")] public AnthropicOutputFormat? Format { get; set; }
+
+        public static AnthropicOutputConfig JsonSchema(object schema) => new()
+        {
+            Format = new AnthropicOutputFormat { Type = "json_schema", Schema = schema }
+        };
+    }
+
+    public class AnthropicOutputFormat
+    {
+        [JsonPropertyName("type")] public string Type { get; set; } = "json_schema";
+        [JsonPropertyName("schema")] public object? Schema { get; set; }
     }
 
     public class AnthropicMessage

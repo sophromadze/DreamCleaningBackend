@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260712111602_AddBlogSystem")]
+    partial class AddBlogSystem
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -689,19 +692,12 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<bool>("AutoGenerateEnabled")
                         .HasColumnType("tinyint(1)");
 
-                    b.Property<string>("GenerationModel")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
                     b.Property<DateTime?>("LastRunAt")
                         .HasColumnType("datetime(6)");
 
                     b.Property<string>("LastRunResult")
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");
-
-                    b.Property<bool>("PublicVisible")
-                        .HasColumnType("tinyint(1)");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime(6)");
