@@ -27,5 +27,8 @@
         public const string LoyaltyReminder30 = "LoyaltyReminder30";
         public const string LoyaltyReminder60 = "LoyaltyReminder60";
         public const string LoyaltyReminder90 = "LoyaltyReminder90";
+        // Admin-triggered "we miss you" reminder (Send Reminder button in the users panel).
+        // Same copy as LoyaltyReminder30; logged separately so we know who/what sent it.
+        public const string ManualReminder = "ManualReminder";
     }
 }

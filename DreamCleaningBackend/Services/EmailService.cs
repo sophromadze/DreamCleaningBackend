@@ -2387,5 +2387,42 @@ namespace DreamCleaningBackend.Services
                 _logger.LogError(ex, "Failed to send loyalty 90-day reminder email to {Email}", toEmail);
             }
         }
+
+        public async Task SendFirstBookingReminderAsync(string toEmail, string firstName, decimal? firstTimeDiscountPercentage)
+        {
+            try
+            {
+                var discountLine = firstTimeDiscountPercentage is > 0
+                    ? $"<p>As a welcome from us, first-time customers get <strong>{firstTimeDiscountPercentage.Value:0.##}% off</strong> their first cleaning.</p>"
+                    : string.Empty;
+
+                var subject = $"Your home's first sparkle awaits, {firstName} ✨";
+                var body = $@"
+                <html>
+                <head><style>{LoyaltyEmailStyle}</style></head>
+                <body>
+                    <div class='container'>
+                        <div class='header'><h1>Hi {firstName},</h1></div>
+                        <p>Thanks for joining Dream Cleaning! We noticed you haven't booked your first cleaning yet — and we'd love to show you what a truly spotless home feels like.</p>
+                        {discountLine}
+                        <p>Whenever you're ready, booking takes just a couple of minutes.</p>
+                        <p><a href='{LoyaltyBookingUrl}' class='button'>Book Your First Cleaning →</a></p>
+                        <p>Warmly,<br/>The Dream Cleaning Team</p>
+                        <div class='footer'>
+                            You're receiving this because you have a Dream Cleaning account.<br/>
+                            Manage email preferences in your profile.
+                        </div>
+                    </div>
+                </body>
+                </html>";
+
+                await SendEmailAsync(toEmail, subject, body);
+                _logger.LogInformation("First-booking reminder email sent to {Email}", toEmail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send first-booking reminder email to {Email}", toEmail);
+            }
+        }
     }
 }

@@ -219,6 +219,14 @@ namespace DreamCleaningBackend.Services
             await SendSmsAsync(phone, msg);
         }
 
+        public async Task SendFirstBookingReminderSmsAsync(string phone, string firstName, decimal? firstTimeDiscountPercentage)
+        {
+            var msg = firstTimeDiscountPercentage is > 0
+                ? $"Hi {firstName}! Your home's first Dream Cleaning sparkle is waiting — first-time customers get {firstTimeDiscountPercentage.Value:0.##}% off. Book today: dreamcleaningnyc.com Reply STOP to opt out."
+                : $"Hi {firstName}! Your home's first Dream Cleaning sparkle is waiting. Book today: dreamcleaningnyc.com Reply STOP to opt out.";
+            await SendSmsAsync(phone, msg);
+        }
+
         /// <summary>
         /// Normalize US/NA phone to E.164 (e.g. +19295551234). Handles 10-digit, 11-digit with leading 1, or already E.164.
         /// </summary>

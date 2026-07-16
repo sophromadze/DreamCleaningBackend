@@ -264,11 +264,15 @@ namespace DreamCleaningBackend.Services
 
             // Idempotency: skip if we've already logged a reminder of this type for this user
             // since their last completed order. Combined with NotificationLog write below, this
-            // guarantees at-most-once delivery per cycle.
+            // guarantees at-most-once delivery per cycle. An admin-sent ManualReminder uses the
+            // same "we miss you" copy as the 30-day milestone, so it also suppresses that one —
+            // but NOT the 60/90 sends, whose discount content the manual reminder doesn't carry.
             var alreadySent = await context.NotificationLogs
                 .AnyAsync(nl =>
                     nl.CustomerId == c.UserId &&
-                    nl.NotificationType == milestoneType &&
+                    (nl.NotificationType == milestoneType ||
+                     (milestoneType == NotificationTypes.LoyaltyReminder30 &&
+                      nl.NotificationType == NotificationTypes.ManualReminder)) &&
                     nl.SentAt >= c.LastCompletedOrderDate);
             if (alreadySent)
             {

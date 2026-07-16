@@ -33,6 +33,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly ISpecialOfferService _specialOfferService;
         private readonly IProfileService _profileService;
         private readonly IEmailService _emailService;
+        private readonly ISmsService _smsService;
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
         private readonly IBubbleRewardsSettingsService _bubbleRewardsSettingsService;
         private readonly IPageAccessService _pageAccessService;
@@ -45,6 +46,7 @@ namespace DreamCleaningBackend.Controllers
             ISpecialOfferService specialOfferService,
             IProfileService profileService,
             IEmailService emailService,
+            ISmsService smsService,
             ILoyaltyDiscountService loyaltyDiscountService,
             IBubbleRewardsSettingsService bubbleRewardsSettingsService,
             IPageAccessService pageAccessService,
@@ -58,6 +60,7 @@ namespace DreamCleaningBackend.Controllers
             _specialOfferService = specialOfferService;
             _profileService = profileService;
             _emailService = emailService;
+            _smsService = smsService;
             _loyaltyDiscountService = loyaltyDiscountService;
             _bubbleRewardsSettingsService = bubbleRewardsSettingsService;
             _pageAccessService = pageAccessService;
@@ -1347,6 +1350,140 @@ namespace DreamCleaningBackend.Controllers
             {
                 return NotFound(new { message = ex.Message });
             }
+        }
+
+        // ── Manual "we miss you" reminder ──
+        // Backs the Send Reminder button in the users detail panel. Reuses the automatic 30-day
+        // loyalty reminder copy (email + SMS) and logs to NotificationLogs, so this button and
+        // LoyaltyReengagementService see each other's sends and don't double-remind.
+
+        /// <summary>All NotificationLog types that count as "the customer was already reminded".</summary>
+        private static readonly string[] ReminderNotificationTypes =
+        {
+            NotificationTypes.LoyaltyReminder30,
+            NotificationTypes.LoyaltyReminder60,
+            NotificationTypes.LoyaltyReminder90,
+            NotificationTypes.ManualReminder
+        };
+
+        /// <summary>When the user last received a reminder (automatic 30/60/90 or manual) — the
+        /// confirm dialog uses this to warn "already got a reminder N days ago".</summary>
+        [HttpGet("users/{userId}/reminder-status")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<object>> GetUserReminderStatus(int userId)
+        {
+            var userExists = await _context.Users.AnyAsync(u => u.Id == userId && !u.IsDeleted);
+            if (!userExists) return NotFound(new { message = "User not found" });
+
+            var last = await _context.NotificationLogs
+                .Where(nl => nl.CustomerId == userId && ReminderNotificationTypes.Contains(nl.NotificationType))
+                .OrderByDescending(nl => nl.SentAt)
+                .Select(nl => new { nl.NotificationType, nl.SentAt })
+                .FirstOrDefaultAsync();
+
+            // Whether the user ever placed a real order — the frontend picks the confirm-dialog
+            // wording from this ("we miss you" vs "book your first cleaning").
+            var hasOrders = await _context.Orders.AnyAsync(o => o.UserId == userId && o.Status != "cancelled");
+
+            if (last == null)
+                return Ok(new { lastReminderSentAt = (DateTime?)null, daysAgo = (int?)null, lastReminderType = (string?)null, hasOrders });
+
+            var daysAgo = (int)Math.Floor((DateTime.UtcNow.Date - last.SentAt.Date).TotalDays);
+            return Ok(new
+            {
+                lastReminderSentAt = (DateTime?)last.SentAt,
+                daysAgo = (int?)daysAgo,
+                lastReminderType = (string?)last.NotificationType,
+                hasOrders
+            });
+        }
+
+        /// <summary>Manually send the "we miss you" reminder (same copy as the automatic 30-day
+        /// loyalty reminder). Respects CanReceiveEmails / CanReceiveMessages and skips no-email
+        /// placeholder addresses. The frontend confirms (incl. the already-reminded warning)
+        /// before calling this.</summary>
+        [HttpPost("users/{userId}/send-reminder")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<object>> SendUserReminder(int userId)
+        {
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted);
+            if (user == null) return NotFound(new { message = "User not found" });
+            if (user.Role != UserRole.Customer)
+                return BadRequest(new { message = "Reminders can only be sent to customers." });
+
+            var canEmail = user.CanReceiveEmails
+                && !string.IsNullOrWhiteSpace(user.Email)
+                && !NoEmailHelper.IsPlaceholder(user.Email);
+            var normalizedPhone = string.IsNullOrWhiteSpace(user.Phone) ? null : SmsService.NormalizePhoneToE164(user.Phone);
+            var canSms = user.CanReceiveMessages && !string.IsNullOrEmpty(normalizedPhone) && _smsService.IsSmsEnabled();
+
+            if (!canEmail && !canSms)
+                return BadRequest(new { message = "This user can't receive reminders — no usable email or phone, or their communication preferences are turned off." });
+
+            // Never-ordered users get "book your first cleaning" copy instead of "we miss you".
+            // The first-time discount % is read from the DB (SpecialOffers) — never hardcoded —
+            // and only mentioned while the user still qualifies (FirstTimeOrder flag).
+            var hasOrders = await _context.Orders.AnyAsync(o => o.UserId == user.Id && o.Status != "cancelled");
+            decimal? firstTimePct = null;
+            if (!hasOrders && user.FirstTimeOrder)
+            {
+                var pct = await _specialOfferService.GetFirstTimeDiscountPercentage();
+                if (pct > 0) firstTimePct = pct;
+            }
+
+            // Log BEFORE sending (same pattern as LoyaltyReengagementService): the row is what
+            // both the reminder-status warning and the worker's dedup check read.
+            _context.NotificationLogs.Add(new NotificationLog
+            {
+                CustomerId = user.Id,
+                NotificationType = NotificationTypes.ManualReminder,
+                SentAt = DateTime.UtcNow
+            });
+            await _context.SaveChangesAsync();
+
+            var emailSent = false;
+            var smsSent = false;
+
+            if (canEmail)
+            {
+                // Both email templates log and swallow their own SMTP failures.
+                if (hasOrders)
+                    await _emailService.SendLoyaltyReminder30Async(user.Email, user.FirstName);
+                else
+                    await _emailService.SendFirstBookingReminderAsync(user.Email, user.FirstName, firstTimePct);
+                emailSent = true;
+            }
+
+            if (canSms)
+            {
+                try
+                {
+                    if (hasOrders)
+                        await _smsService.SendLoyaltyReminder30SmsAsync(normalizedPhone!, user.FirstName);
+                    else
+                        await _smsService.SendFirstBookingReminderSmsAsync(normalizedPhone!, user.FirstName, firstTimePct);
+                    smsSent = true;
+                }
+                catch (InvalidPhoneNumberException)
+                {
+                    _logger.LogWarning("Manual reminder SMS skipped for user {UserId}: RingCentral rejected the number", user.Id);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Manual reminder SMS failed for user {UserId}", user.Id);
+                }
+            }
+
+            var channels = new List<string>();
+            if (emailSent) channels.Add("email");
+            if (smsSent) channels.Add("SMS");
+            var message = channels.Count > 0
+                ? $"Reminder sent via {string.Join(" and ", channels)}."
+                : "Reminder was logged, but no channel could be delivered — check the server logs.";
+
+            return Ok(new { emailSent, smsSent, message });
         }
 
         [HttpGet("loyalty-discount-settings")]

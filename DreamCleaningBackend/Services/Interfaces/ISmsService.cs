@@ -44,5 +44,9 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendLoyaltyReminder30SmsAsync(string phone, string firstName);
         Task SendLoyaltyReminder60SmsAsync(string phone, string firstName, decimal percentage);
         Task SendLoyaltyReminder90SmsAsync(string phone, string firstName, decimal percentage);
+
+        /// <summary>Manual reminder for registered users who never ordered — "book your first
+        /// cleaning" copy. Discount % comes from the DB (SpecialOffers), never hardcoded.</summary>
+        Task SendFirstBookingReminderSmsAsync(string phone, string firstName, decimal? firstTimeDiscountPercentage);
     }
 }
