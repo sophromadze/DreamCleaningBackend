@@ -22,6 +22,10 @@ namespace DreamCleaningBackend.Services
                 Id = order.Id,
                 UserId = order.UserId,
                 ServiceTypeId = order.ServiceTypeId,
+                // Owner's admin-only problem flag (derived from User.Flag). "None" when the
+                // owning User isn't loaded — admin fetches Include(o => o.User) for accuracy.
+                Flag = (order.User?.Flag ?? CustomerFlagLevel.None).ToString(),
+                FlagReason = order.User?.FlagReason,
                 // Effective name: "<label> Cleaning" for custom orders, ServiceType.Name otherwise.
                 ServiceTypeName = order.GetDisplayServiceTypeName(),
                 IsCustomServiceType = order.ServiceType?.IsCustom ?? false,
@@ -110,7 +114,15 @@ namespace DreamCleaningBackend.Services
                 AssignedAdminLastName = order.AssignedAdmin?.LastName,
                 AssignedAdminDisplayName = order.AssignedAdmin != null
                     ? AdminBonusService.FormatDisplayName(order.AssignedAdmin.FirstName, order.AssignedAdmin.LastName)
-                    : null
+                    : null,
+                AcquisitionChannel = order.AcquisitionChannel,
+                AcquisitionSource = order.AcquisitionSource,
+                AcquisitionMedium = order.AcquisitionMedium,
+                AcquisitionCampaign = order.AcquisitionCampaign,
+                ConvertingChannel = order.ConvertingChannel,
+                ConvertingSource = order.ConvertingSource,
+                ConvertingMedium = order.ConvertingMedium,
+                ConvertingCampaign = order.ConvertingCampaign
             };
         }
 

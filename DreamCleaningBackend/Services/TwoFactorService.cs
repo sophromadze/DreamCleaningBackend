@@ -49,13 +49,22 @@ namespace DreamCleaningBackend.Services
 
         public async Task<bool> IsDeviceTrustedAsync(int userId, string? rawDeviceToken)
         {
+            // The client sends every device token it holds, comma-separated — one per staff
+            // user who has trusted this browser. A single shared token slot broke multi-admin
+            // machines: each user's token overwrote the previous one, so switching accounts
+            // re-triggered the full challenge every time. Any token matching THIS user wins.
             if (string.IsNullOrWhiteSpace(rawDeviceToken)) return false;
-            var hash = HashToken(rawDeviceToken);
+            var hashes = rawDeviceToken
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Take(20)
+                .Select(HashToken)
+                .ToList();
+            if (hashes.Count == 0) return false;
 
             var device = await _context.TrustedDevices
                 .FirstOrDefaultAsync(d =>
                     d.UserId == userId
-                    && d.TokenHash == hash
+                    && hashes.Contains(d.TokenHash)
                     && d.RevokedAt == null);
 
             if (device == null) return false;
@@ -251,6 +260,24 @@ namespace DreamCleaningBackend.Services
             var now = DateTime.UtcNow;
             foreach (var r in rows) r.RevokedAt = now;
             await _context.SaveChangesAsync();
+        }
+
+        public async Task ResetPinAsync(int userId)
+        {
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId)
+                ?? throw new InvalidOperationException("User not found.");
+
+            // Wipe the PIN + any active lockout. With no PIN hash the login gate treats the
+            // account as first-time-staff and forces a fresh PIN setup next time in.
+            user.TwoFactorPinHash = null;
+            user.TwoFactorPinSetAt = null;
+            user.TwoFactorPinFailedAttempts = 0;
+            user.TwoFactorPinLockedUntil = null;
+            await _context.SaveChangesAsync();
+
+            // Revoke every trusted device too, so the reset takes hold everywhere: the user
+            // re-authenticates and sets a new PIN on their next login on any device.
+            await RevokeAllTrustedDevicesAsync(userId);
         }
 
         // ──────────────────────────────────────────────────────────────────────

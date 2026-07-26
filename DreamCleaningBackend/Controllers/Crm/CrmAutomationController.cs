@@ -41,8 +41,10 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             var rules = await _context.AutomationRules.OrderBy(r => r.Id).ToListAsync();
 
+            // Alerts for blocked (deactivated) users are hidden everywhere in the CRM,
+            // so the badge counts must exclude them too to match the visible list.
             var openCounts = await _context.AutomationAlerts
-                .Where(a => a.Status == AutomationAlertStatus.Open)
+                .Where(a => a.Status == AutomationAlertStatus.Open && a.User.IsActive)
                 .GroupBy(a => a.RuleKey)
                 .Select(g => new { RuleKey = g.Key, Count = g.Count() })
                 .ToListAsync();
@@ -68,7 +70,7 @@ namespace DreamCleaningBackend.Controllers.Crm
             await _context.SaveChangesAsync();
 
             var openCount = await _context.AutomationAlerts
-                .CountAsync(a => a.RuleKey == rule.Key && a.Status == AutomationAlertStatus.Open);
+                .CountAsync(a => a.RuleKey == rule.Key && a.Status == AutomationAlertStatus.Open && a.User.IsActive);
             return Ok(MapRule(rule, openCount));
         }
 
@@ -96,7 +98,9 @@ namespace DreamCleaningBackend.Controllers.Crm
             // Snoozed alerts whose remind date has arrived flip back to Open before we read.
             await _evaluator.WakeDueSnoozedAlertsAsync();
 
-            var query = _context.AutomationAlerts.AsQueryable();
+            // Blocked (deactivated) users never surface in the CRM — their alerts hide with them
+            // and reappear if the user is unblocked.
+            var query = _context.AutomationAlerts.Where(a => a.User.IsActive);
 
             if (!string.IsNullOrWhiteSpace(status) && status != "all")
                 query = query.Where(a => a.Status == status);
@@ -153,7 +157,8 @@ namespace DreamCleaningBackend.Controllers.Crm
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<AutomationSummaryDto>> GetSummary()
         {
-            var open = await _context.AutomationAlerts.CountAsync(a => a.Status == AutomationAlertStatus.Open);
+            var open = await _context.AutomationAlerts
+                .CountAsync(a => a.Status == AutomationAlertStatus.Open && a.User.IsActive);
             return Ok(new AutomationSummaryDto { OpenAlerts = open });
         }
 

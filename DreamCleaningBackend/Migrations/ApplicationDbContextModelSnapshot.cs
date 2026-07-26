@@ -2351,6 +2351,45 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("GoogleAdsDailyStats");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.GoogleAdsKeywordDailyStat", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Clicks")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("Conversions")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("CostUsd")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("Impressions")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SearchTerm")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date")
+                        .HasDatabaseName("IX_GoogleAdsKeywordDailyStats_Date");
+
+                    b.ToTable("GoogleAdsKeywordDailyStats");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.GoogleReview", b =>
                 {
                     b.Property<string>("ReviewId")
@@ -2700,6 +2739,22 @@ namespace DreamCleaningBackend.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AcquisitionCampaign")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("AcquisitionChannel")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<string>("AcquisitionMedium")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("AcquisitionSource")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
                     b.Property<int?>("ApartmentId")
                         .HasColumnType("int");
 
@@ -2760,6 +2815,22 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("varchar(20)");
+
+                    b.Property<string>("ConvertingCampaign")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("ConvertingChannel")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<string>("ConvertingMedium")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("ConvertingSource")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
@@ -3880,6 +3951,45 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("ScheduledSms");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.SearchConsoleDailyStat", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Clicks")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("Ctr")
+                        .HasColumnType("decimal(9,4)");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("Impressions")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("Position")
+                        .HasColumnType("decimal(9,2)");
+
+                    b.Property<string>("Query")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date")
+                        .HasDatabaseName("IX_SearchConsoleDailyStats_Date");
+
+                    b.ToTable("SearchConsoleDailyStats");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.SentMailLog", b =>
                 {
                     b.Property<int>("Id")
@@ -4160,6 +4270,56 @@ namespace DreamCleaningBackend.Migrations
                             Name = "Office Cleaning",
                             TimeDuration = 120m
                         });
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.SessionDailyStat", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Campaign")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Medium")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("Origin")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<int>("Sessions")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date", "Channel")
+                        .HasDatabaseName("IX_SessionDailyStats_Date_Channel");
+
+                    b.ToTable("SessionDailyStats");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.SpecialOffer", b =>
@@ -4530,6 +4690,10 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
 
+                    b.Property<string>("DefaultPaymentMethodId")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("datetime(6)");
 
@@ -4566,6 +4730,19 @@ namespace DreamCleaningBackend.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("tinyint(1)")
                         .HasDefaultValue(true);
+
+                    b.Property<int>("Flag")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FlagReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<DateTime?>("FlaggedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("FlaggedByUserId")
+                        .HasColumnType("int");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("tinyint(1)");
@@ -4660,9 +4837,21 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<int>("Role")
                         .HasColumnType("int");
 
+                    b.Property<string>("SavedCardBrand")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("SavedCardLast4")
+                        .HasMaxLength(4)
+                        .HasColumnType("varchar(4)");
+
                     b.Property<string>("ShiftColor")
                         .HasMaxLength(10)
                         .HasColumnType("varchar(10)");
+
+                    b.Property<string>("StripeCustomerId")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
 
                     b.Property<DateTime?>("SubscriptionExpiryDate")
                         .HasColumnType("datetime(6)");

@@ -25,6 +25,30 @@ namespace DreamCleaningBackend.Services
             _context = context;
         }
 
+        /// <summary>
+        /// Blocked (deactivated) users must receive no email from us at all until an admin
+        /// unblocks them. Every SMTP-sending path in this service calls this gate with the
+        /// recipient address; a match on a blocked, non-deleted account suppresses the send.
+        /// </summary>
+        private async Task<bool> IsBlockedUserEmailAsync(string to)
+        {
+            if (string.IsNullOrWhiteSpace(to)) return false;
+            try
+            {
+                // Match the blocked user's account email, and also the contact email on any of
+                // their orders — reminder flows address the order contact, which can differ.
+                return await _context.Users.AnyAsync(u => !u.IsActive && !u.IsDeleted && u.Email == to)
+                    || await _context.Orders.AnyAsync(o => o.ContactEmail == to
+                        && !o.User.IsActive && !o.User.IsDeleted);
+            }
+            catch (Exception ex)
+            {
+                // A lookup failure must not take the email pipeline down with it.
+                _logger.LogError(ex, "Blocked-user email check failed for {Email}; allowing send", to);
+                return false;
+            }
+        }
+
         public async Task SendEmailVerificationAsync(string email, string firstName, string verificationLink)
         {
             var subject = "Verify Your Email - Dream Cleaning";
@@ -174,6 +198,12 @@ namespace DreamCleaningBackend.Services
             if (Helpers.NoEmailHelper.IsPlaceholder(to))
             {
                 _logger.LogInformation($"Skipping email to no-email placeholder address (subject: {subject})");
+                return;
+            }
+
+            if (await IsBlockedUserEmailAsync(to))
+            {
+                _logger.LogWarning("Suppressing email to blocked user {Email} (subject: {Subject})", to, subject);
                 return;
             }
 
@@ -631,6 +661,12 @@ namespace DreamCleaningBackend.Services
             if (Helpers.NoEmailHelper.IsPlaceholder(to))
             {
                 _logger.LogInformation($"Skipping email to no-email placeholder address (subject: {subject})");
+                return;
+            }
+
+            if (await IsBlockedUserEmailAsync(to))
+            {
+                _logger.LogWarning("Suppressing email to blocked user {Email} (subject: {Subject})", to, subject);
                 return;
             }
 
@@ -1840,6 +1876,12 @@ namespace DreamCleaningBackend.Services
 
         public async Task SendPollSubmissionEmailWithPhotosAsync(string toEmail, string subject, string htmlBody, List<PhotoUploadDto> uploadedPhotos = null)
         {
+            if (await IsBlockedUserEmailAsync(toEmail))
+            {
+                _logger.LogWarning("Suppressing email to blocked user {Email} (subject: {Subject})", toEmail, subject);
+                return;
+            }
+
             try
             {
                 var email = new MimeMessage();

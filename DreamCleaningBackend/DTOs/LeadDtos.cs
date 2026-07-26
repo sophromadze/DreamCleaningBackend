@@ -30,6 +30,14 @@ namespace DreamCleaningBackend.DTOs
         public DateTime LastActivityAt { get; set; }
         public bool IsArchived { get; set; }
         public DateTime? ArchivedAt { get; set; }
+
+        /// <summary>
+        /// Admin-only problem flag of the registered customer this lead matches (by ClientId,
+        /// else email, else phone): "None" | "Yellow" | "Red". Derived from User.Flag — the
+        /// lead itself is never flagged. Drives the lead-card tint on the pipeline board.
+        /// </summary>
+        public string Flag { get; set; } = "None";
+        public string? FlagReason { get; set; }
     }
 
     /// <summary>Lead with its timeline — returned by the detail endpoint.</summary>

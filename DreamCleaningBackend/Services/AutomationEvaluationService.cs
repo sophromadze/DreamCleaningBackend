@@ -122,9 +122,10 @@ namespace DreamCleaningBackend.Services
 
             var lapsedIds = lapsed.Keys.ToList();
 
-            // Of the lapsed customers, keep the real ones (Customer role, not deleted).
+            // Of the lapsed customers, keep the real ones (Customer role, not deleted,
+            // not blocked — blocked users must not surface anywhere in the CRM).
             var candidates = await _context.Users
-                .Where(u => u.Role == UserRole.Customer && !u.IsDeleted && lapsedIds.Contains(u.Id))
+                .Where(u => u.Role == UserRole.Customer && !u.IsDeleted && u.IsActive && lapsedIds.Contains(u.Id))
                 .Select(u => new
                 {
                     u.Id, u.FirstName, u.LastName,

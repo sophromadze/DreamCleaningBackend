@@ -54,6 +54,12 @@ namespace DreamCleaningBackend.Services.Interfaces
         // Revokes ALL of a user's trusted devices. Called on password change/reset and
         // when SuperAdmin resets a staff PIN.
         Task RevokeAllTrustedDevicesAsync(int userId);
+
+        // SuperAdmin recovery action: wipes a staff member's PIN, clears the failed-attempt
+        // lockout, and revokes all their trusted devices. Their next login then flows through
+        // the "no PIN yet" path and forces a brand-new PIN setup — used to rescue a coworker
+        // who is locked out or has forgotten their PIN.
+        Task ResetPinAsync(int userId);
     }
 
     public class TwoFactorVerificationResult

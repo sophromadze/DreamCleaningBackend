@@ -123,9 +123,10 @@ namespace DreamCleaningBackend.Controllers.Crm
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<CrmCustomerDetailDto>> GetCustomer(int id)
         {
+            // Blocked (deactivated) users are hidden from the CRM entirely — same rule as the list.
             var user = await _context.Users
                 .Include(u => u.Subscription)
-                .FirstOrDefaultAsync(u => u.Id == id && !u.IsDeleted);
+                .FirstOrDefaultAsync(u => u.Id == id && !u.IsDeleted && u.IsActive);
 
             if (user == null) return NotFound(new { message = "Customer not found" });
 
@@ -212,7 +213,7 @@ namespace DreamCleaningBackend.Controllers.Crm
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
-            var userExists = await _context.Users.AnyAsync(u => u.Id == id && !u.IsDeleted);
+            var userExists = await _context.Users.AnyAsync(u => u.Id == id && !u.IsDeleted && u.IsActive);
             if (!userExists) return NotFound(new { message = "Customer not found" });
 
             var label = dto.Label.Trim();
@@ -256,8 +257,10 @@ namespace DreamCleaningBackend.Controllers.Crm
         /// </summary>
         private async Task<List<CrmCustomerListItemDto>> BuildComputedCustomers(string? search)
         {
+            // Blocked (deactivated) users are deliberately invisible to the CRM —
+            // they exist only in the admin Users tab until they're unblocked.
             var usersQuery = _context.Users
-                .Where(u => u.Role == UserRole.Customer && !u.IsDeleted);
+                .Where(u => u.Role == UserRole.Customer && !u.IsDeleted && u.IsActive);
 
             if (!string.IsNullOrWhiteSpace(search))
             {

@@ -16,13 +16,19 @@ namespace DreamCleaningBackend.Services
         public const string Expenses = "expenses";
         public const string BubbleRewards = "bubble-rewards";
         public const string Finances = "finances";
+        public const string Ads = "ads";
+        public const string Traffic = "traffic";
+        public const string Keywords = "keywords";
 
         public static readonly IReadOnlyList<string> All = new[]
         {
             Statistics,
             Expenses,
             BubbleRewards,
-            Finances
+            Finances,
+            Ads,
+            Traffic,
+            Keywords
         };
 
         public static bool IsValid(string? key) => key != null && All.Contains(key);

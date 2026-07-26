@@ -91,6 +91,23 @@ namespace DreamCleaningBackend.DTOs
         public string? AssignedAdminFirstName { get; set; }
         public string? AssignedAdminLastName { get; set; }
         public string? AssignedAdminDisplayName { get; set; }
+
+        // Marketing attribution (admin "Origin" line). First touch = how they first found us;
+        // converting = the session that produced this order (shown only when it differs). Both null
+        // for legacy/unknown; first-touch channel is "Phone/Unknown" for admin-booked orders.
+        public string? AcquisitionChannel { get; set; }
+        public string? AcquisitionSource { get; set; }
+        public string? AcquisitionMedium { get; set; }
+        public string? AcquisitionCampaign { get; set; }
+        public string? ConvertingChannel { get; set; }
+        public string? ConvertingSource { get; set; }
+        public string? ConvertingMedium { get; set; }
+        public string? ConvertingCampaign { get; set; }
+
+        // Owner's admin-only problem flag ("None" | "Yellow" | "Red"), derived from User.Flag.
+        // Lets the order detail panel show/set the flag. Internal only.
+        public string Flag { get; set; } = "None";
+        public string? FlagReason { get; set; }
     }
 
     public class OrderServiceDto
@@ -270,6 +287,11 @@ namespace DreamCleaningBackend.DTOs
         // True when an admin created the order (create-for-user flow) rather than the
         // customer booking it themselves. Drives the "booked by" filter in the admin table.
         public bool BookedByAdmin { get; set; }
+
+        // Owner's admin-only problem flag ("None" | "Yellow" | "Red"), derived from User.Flag.
+        // Drives the row tint in the admin orders table. Reason shown in the row tooltip.
+        public string Flag { get; set; } = "None";
+        public string? FlagReason { get; set; }
     }
 
     public class CancelOrderDto

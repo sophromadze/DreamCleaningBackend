@@ -270,5 +270,41 @@ namespace DreamCleaningBackend.Models
 
         public virtual ICollection<OrderAdminAssignmentHistory> AdminAssignmentHistory { get; set; }
             = new List<OrderAdminAssignmentHistory>();
+
+        // First-touch marketing attribution captured client-side (GA4-style channel grouping) and
+        // sent with the booking. Populated only for self-service bookings; admin-created orders
+        // (create-for-user, after a phone call) get AcquisitionChannel = "Phone/Unknown" with the
+        // rest null. Null on legacy orders booked before this tracking existed — the CRM Ads
+        // breakdown buckets those as "Unattributed". SelfService-vs-AdminManual is NOT stored here;
+        // it is derived from BookedByAdminUserId (see OrderBookedByAdminExtensions).
+        [StringLength(50)]
+        public string? AcquisitionChannel { get; set; }
+
+        [StringLength(200)]
+        public string? AcquisitionSource { get; set; }
+
+        [StringLength(100)]
+        public string? AcquisitionMedium { get; set; }
+
+        [StringLength(200)]
+        public string? AcquisitionCampaign { get; set; }
+
+        // CONVERTING-session attribution — "what channel drove the visit where THIS order was placed."
+        // Parallel to the first-touch Acquisition* fields above but re-evaluated each session (not
+        // write-once), so for a repeat visitor it can differ from first touch. Captured live from the
+        // session cookie at booking (self-service only; null for admin/phone orders) and backfilled
+        // from GA4's session* dimensions. Null on legacy/unknown orders (shown as "same as first
+        // touch" / omitted in the UI).
+        [StringLength(50)]
+        public string? ConvertingChannel { get; set; }
+
+        [StringLength(200)]
+        public string? ConvertingSource { get; set; }
+
+        [StringLength(100)]
+        public string? ConvertingMedium { get; set; }
+
+        [StringLength(200)]
+        public string? ConvertingCampaign { get; set; }
     }
 }

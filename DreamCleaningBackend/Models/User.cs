@@ -59,6 +59,25 @@ namespace DreamCleaningBackend.Models
         [StringLength(255)]
         public string? AppleUserId { get; set; }
 
+        // ─── Card on file ───
+        // One saved card per user, used ONLY for explicit customer/admin-triggered charges —
+        // there is no automatic billing. Brand/last4 are display-only copies so the UI never
+        // needs a Stripe round-trip ("Visa ending 4242").
+
+        /// <summary>Stripe Customer id (cus_...), created lazily the first time this user saves a card.</summary>
+        [StringLength(100)]
+        public string? StripeCustomerId { get; set; }
+
+        /// <summary>The saved card (Stripe PaymentMethod id, pm_...). Null = no card on file.</summary>
+        [StringLength(100)]
+        public string? DefaultPaymentMethodId { get; set; }
+
+        [StringLength(20)]
+        public string? SavedCardBrand { get; set; }
+
+        [StringLength(4)]
+        public string? SavedCardLast4 { get; set; }
+
         // Subscription
         public int? SubscriptionId { get; set; }
         public virtual Subscription? Subscription { get; set; }
@@ -79,6 +98,16 @@ namespace DreamCleaningBackend.Models
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
         public bool IsActive { get; set; } = true;
+
+        // ── Admin-only "problem customer" flag (single source of truth) ──
+        // Flagging an order sets this on the order's owner; every order of a flagged user
+        // renders the tint derived from here. None = no flag. Internal only — never surfaced
+        // to the customer.
+        public CustomerFlagLevel Flag { get; set; } = CustomerFlagLevel.None;
+        [StringLength(500)]
+        public string? FlagReason { get; set; }
+        public DateTime? FlaggedAt { get; set; }
+        public int? FlaggedByUserId { get; set; }
 
         /// <summary>
         /// True for admin-created customers who have no email address at all (e.g. elderly

@@ -37,6 +37,8 @@ namespace DreamCleaningBackend.Controllers
         private readonly IBubblePointsService _bubblePointsService;
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
         private readonly IOrderTransferService _orderTransferService;
+        private readonly IStripeService _stripeService;
+        private readonly ISubscriptionService _subscriptionService;
         private readonly ILogger<AdminOrdersController> _logger;
 
         public AdminOrdersController(ApplicationDbContext context,
@@ -50,6 +52,8 @@ namespace DreamCleaningBackend.Controllers
             IBubblePointsService bubblePointsService,
             ILoyaltyDiscountService loyaltyDiscountService,
             IOrderTransferService orderTransferService,
+            IStripeService stripeService,
+            ISubscriptionService subscriptionService,
             ILogger<AdminOrdersController> logger)
         {
             _logger = logger;
@@ -64,6 +68,8 @@ namespace DreamCleaningBackend.Controllers
             _bubblePointsService = bubblePointsService;
             _loyaltyDiscountService = loyaltyDiscountService;
             _orderTransferService = orderTransferService;
+            _stripeService = stripeService;
+            _subscriptionService = subscriptionService;
         }
 
         /// <summary>SuperAdmin-only: export orders to an .xlsx file (same pattern as the users-tab
@@ -376,6 +382,7 @@ namespace DreamCleaningBackend.Controllers
                     .Include(o => o.OrderExtraServices)
                         .ThenInclude(oes => oes.ExtraService)
                     .Include(o => o.AssignedAdmin)
+                    .Include(o => o.User)
                     .FirstOrDefaultAsync(o => o.Id == orderId);
 
                 if (order == null)
@@ -1445,6 +1452,214 @@ namespace DreamCleaningBackend.Controllers
                 statusReactivated,
                 status = order?.Status
             });
+        }
+
+        /// <summary>Whether the order's owner has a card on file, for the Charge button.
+        /// Display info only — the pm id itself never leaves the server on this endpoint.</summary>
+        [HttpGet("orders/{orderId}/saved-card-info")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> GetOrderSavedCardInfo(int orderId)
+        {
+            var info = await _context.Orders
+                .AsNoTracking()
+                .Where(o => o.Id == orderId)
+                .Select(o => new
+                {
+                    o.User.SavedCardBrand,
+                    o.User.SavedCardLast4,
+                    HasCard = o.User.DefaultPaymentMethodId != null && o.User.StripeCustomerId != null
+                })
+                .FirstOrDefaultAsync();
+
+            if (info == null) return NotFound(new { message = "Order not found" });
+
+            return Ok(new
+            {
+                hasCard = info.HasCard,
+                brand = info.HasCard ? info.SavedCardBrand : null,
+                last4 = info.HasCard ? info.SavedCardLast4 : null
+            });
+        }
+
+        /// <summary>
+        /// Explicitly charges the order owner's card on file for this unpaid order (phone
+        /// bookings / reorders where the customer asked us to charge their saved card). The
+        /// customer is not present, so the charge is confirmed server-side; a bank asking for
+        /// extra verification (3DS) cannot be completed here — the order simply stays unpaid
+        /// with a clear message, and a payment link is the fallback. Completion mirrors the
+        /// webhook's HandleBookingPayment (which also fires later and no-ops — idempotent).
+        /// </summary>
+        [HttpPost("orders/{orderId}/charge-saved-card")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> ChargeSavedCard(int orderId)
+        {
+            var order = await _context.Orders
+                .Include(o => o.User)
+                .Include(o => o.ServiceType)
+                .Include(o => o.OrderExtraServices).ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null) return NotFound(new { message = "Order not found" });
+            if (order.IsPaid)
+                return BadRequest(new { message = "This order is already paid." });
+            if (order.PaymentMethod != PaymentMethod.Normal)
+                return BadRequest(new { message = "This order was recorded as paid outside the site — nothing to charge." });
+            if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = "This order is cancelled — nothing to charge." });
+            if (order.User == null || string.IsNullOrEmpty(order.User.StripeCustomerId) ||
+                string.IsNullOrEmpty(order.User.DefaultPaymentMethodId))
+                return BadRequest(new { message = "This customer has no saved card on file." });
+            if (order.Total < 0.50m)
+                return BadRequest(new { message = "The amount due is below the card minimum — record it as a manual payment instead." });
+
+            // Same metadata shape as a normal booking payment, so the existing Stripe webhook
+            // recognizes it and (idempotently) completes the order as a safety net.
+            var chargeResult = await _stripeService.CreateOffSessionPaymentIntentAsync(
+                order.Total,
+                order.User.StripeCustomerId,
+                order.User.DefaultPaymentMethodId,
+                new Dictionary<string, string>
+                {
+                    { "type", "booking" },
+                    { "orderId", order.Id.ToString() },
+                    { "userId", order.UserId.ToString() },
+                    { "chargedByAdminId", GetCurrentUserId().ToString() }
+                },
+                // Minute-window key: double-clicks dedupe to one charge; a deliberate retry
+                // after a decline gets a fresh key. IsPaid re-check above guards the rest.
+                idempotencyKey: $"order-charge:{order.Id}:{DateTime.UtcNow:yyyyMMddHHmm}",
+                receiptEmail: order.User.IsNoEmailUser ? null : order.ContactEmail);
+
+            if (chargeResult.RequiresAction)
+            {
+                _logger.LogWarning("Admin {AdminId} charge for order {OrderId}: bank requires customer verification", GetCurrentUserId(), orderId);
+                return Ok(new
+                {
+                    charged = false,
+                    message = "The bank is asking the customer to verify this charge, which can't happen without them present. The order stays unpaid — send them a payment link instead."
+                });
+            }
+
+            if (!chargeResult.Success)
+            {
+                _logger.LogWarning("Admin {AdminId} charge for order {OrderId} declined: {Reason}", GetCurrentUserId(), orderId, chargeResult.FailureReason);
+                return Ok(new
+                {
+                    charged = false,
+                    message = $"The card was declined ({chargeResult.FailureReason}). The order stays unpaid."
+                });
+            }
+
+            // Mark paid — same fields as the webhook's HandleBookingPayment; the webhook's own
+            // later delivery sees IsPaid and no-ops.
+            order.IsPaid = true;
+            order.PaidAt = DateTime.UtcNow;
+            order.Status = "Active";
+            order.PaymentIntentId = chargeResult.PaymentIntentId;
+            if (order.InitialSubTotal == 0 && order.InitialTax == 0 && order.InitialTotal == 0)
+            {
+                order.InitialSubTotal = order.SubTotal;
+                order.InitialTax = order.Tax;
+                order.InitialTips = order.Tips;
+                order.InitialCompanyDevelopmentTips = order.CompanyDevelopmentTips;
+                order.InitialTotal = order.Total;
+            }
+
+            // Post-payment bookkeeping, mirroring confirm-payment's tail: loyalty consumption,
+            // subscription activation/renewal, first-time flag. Each is non-fatal.
+            if (order.LoyaltyDiscountAmount > 0m && order.LoyaltyDiscountPercentage > 0m)
+            {
+                try { await _loyaltyDiscountService.ApplyToOrderAsync(order.Id); }
+                catch (Exception ex) { _logger.LogError(ex, "Loyalty apply failed for admin-charged order {OrderId}", orderId); }
+            }
+
+            try
+            {
+                var subscription = await _context.Subscriptions.FindAsync(order.SubscriptionId);
+                if (subscription != null && subscription.SubscriptionDays > 0)
+                {
+                    var hasActiveSubscription = await _subscriptionService.CheckAndUpdateSubscriptionStatus(order.UserId);
+                    if (!hasActiveSubscription)
+                        await _subscriptionService.ActivateSubscription(order.UserId, subscription.Id, order.ServiceDate);
+                    else
+                        await _subscriptionService.RenewSubscription(order.UserId, order.ServiceDate);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Subscription activation failed for admin-charged order {OrderId}", orderId);
+            }
+
+            if (order.User.FirstTimeOrder)
+            {
+                order.User.FirstTimeOrder = false;
+                order.User.UpdatedAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+            _logger.LogInformation("Admin {AdminId} charged saved card for order {OrderId}: {Amount}", GetCurrentUserId(), orderId, order.Total);
+
+            // Same confirmation templates the normal payment flow sends.
+            await SendChargeConfirmationNotificationsAsync(order);
+
+            return Ok(new
+            {
+                charged = true,
+                message = $"Charged ${order.Total:F2} to the customer's card ending {order.User.SavedCardLast4 ?? "----"}. The order is now paid.",
+                paymentIntentId = chargeResult.PaymentIntentId
+            });
+        }
+
+        /// <summary>Customer booking-confirmation email + SMS after an admin saved-card charge —
+        /// the same templates confirm-payment uses, honoring the account's contact opt-outs.</summary>
+        private async Task SendChargeConfirmationNotificationsAsync(Order order)
+        {
+            var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
+                .Select(x => x.ExtraService?.Name ?? "")
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Select(n => n.ToLowerInvariant())
+                .ToList();
+            var hasCleaningSupplies = extraNames.Any(n => n.Contains("cleaning supplies"));
+            var isDeepCleaning = extraNames.Any(n => n.Contains("super deep cleaning")) ||
+                                 extraNames.Any(n => n.Contains("deep cleaning") && !n.Contains("super"));
+            var isCustom = order.ServiceType?.IsCustom == true;
+            var customerName = string.IsNullOrWhiteSpace(order.ContactFirstName)
+                ? "there"
+                : char.ToUpperInvariant(order.ContactFirstName.Trim()[0]) + order.ContactFirstName.Trim()[1..];
+            var addressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
+            var serviceTimeStr = order.ServiceTime.ToString();
+
+            var canEmail = order.User != null && order.User.CanReceiveEmails && !order.User.IsNoEmailUser &&
+                           !string.IsNullOrWhiteSpace(order.ContactEmail) &&
+                           !order.ContactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+            if (canEmail)
+            {
+                try
+                {
+                    await _emailService.SendCustomerBookingConfirmationAsync(
+                        order.ContactEmail, customerName, order.ServiceDate, serviceTimeStr,
+                        order.GetDisplayServiceTypeName(), addressDisplay, order.Id,
+                        hasCleaningSupplies, isDeepCleaning, isCustom, order.FloorTypes, order.FloorTypeOther);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Confirmation email failed for admin-charged order {OrderId}", order.Id);
+                }
+            }
+
+            if (order.User != null && order.User.CanReceiveMessages && !string.IsNullOrWhiteSpace(order.ContactPhone))
+            {
+                try
+                {
+                    await _smsService.SendBookingConfirmationSmsAsync(
+                        order.ContactPhone, customerName, order.ServiceDate, serviceTimeStr,
+                        hasCleaningSupplies, isDeepCleaning, isCustom);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Confirmation SMS failed for admin-charged order {OrderId}", order.Id);
+                }
+            }
         }
 
         /// <summary>Send a gentle reminder (email + SMS) to the customer about their unpaid additional payment. Requires View or Update.</summary>

@@ -389,6 +389,9 @@ namespace DreamCleaningBackend.Controllers
                     return NotFound(new { message = "Order not found" });
                 if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, guestToken))
                     return NotFound(new { message = "Order not found" });
+                // Card on file is owner-only: a payment-link guest must never be able to use
+                // the owner's saved card, so the Customer is attached only for the owner.
+                var callerIsOwner = order.UserId == userId;
                 userId = order.UserId;
 
                 if (order.Status == "Cancelled" || order.Status == "Done")
@@ -436,7 +439,21 @@ namespace DreamCleaningBackend.Controllers
                 var receiptEmail = string.IsNullOrWhiteSpace(order.ContactEmail) || NoEmailHelper.IsPlaceholder(order.ContactEmail)
                     ? null
                     : order.ContactEmail;
-                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amountToCharge, metadata, receiptEmail);
+
+                // Owner-caller only: lets the frontend offer "Pay with your saved card" for the
+                // additional amount. Attachment alone never charges anything.
+                string ownerStripeCustomerId = null;
+                if (callerIsOwner)
+                {
+                    ownerStripeCustomerId = await _context.Users
+                        .AsNoTracking()
+                        .Where(u => u.Id == order.UserId)
+                        .Select(u => u.StripeCustomerId)
+                        .FirstOrDefaultAsync();
+                }
+
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amountToCharge, metadata, receiptEmail,
+                    customerId: ownerStripeCustomerId);
 
                 // Attach the payment intent id to all unpaid histories so we can mark them paid when they pay this amount
                 foreach (var h in unpaidHistories)

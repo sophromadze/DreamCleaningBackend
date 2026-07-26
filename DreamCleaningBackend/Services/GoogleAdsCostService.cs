@@ -74,7 +74,9 @@ namespace DreamCleaningBackend.Services
                 return new GoogleAdsSyncResult();
 
             var metrics = await QueryDailyMetricsAsync(start.Date, yesterday, ct);
-            return await UpsertAsync(metrics, ct);
+            var result = await UpsertAsync(metrics, ct);
+            await SyncSearchTermsAsync(start.Date, yesterday, ct);
+            return result;
         }
 
         public async Task<GoogleAdsSyncResult> SyncRecentAsync(CancellationToken ct = default)
@@ -87,7 +89,9 @@ namespace DreamCleaningBackend.Services
             var from = today.AddDays(-7);
 
             var metrics = await QueryDailyMetricsAsync(from, today, ct);
-            return await UpsertAsync(metrics, ct);
+            var result = await UpsertAsync(metrics, ct);
+            await SyncSearchTermsAsync(from, today, ct);
+            return result;
         }
 
         // ── Google Ads query ────────────────────────────────────────────────────────────
@@ -99,14 +103,22 @@ namespace DreamCleaningBackend.Services
         private async Task<Dictionary<DateTime, DailyMetrics>> QueryDailyMetricsAsync(
             DateTime from, DateTime to, CancellationToken ct)
         {
-            var accessToken = await GetAccessTokenAsync(ct);
-            if (string.IsNullOrEmpty(accessToken))
-                throw new InvalidOperationException("Could not obtain a Google Ads access token.");
-
             var gaql =
                 "SELECT segments.date, metrics.cost_micros, metrics.clicks, metrics.conversions " +
                 "FROM customer " +
                 $"WHERE segments.date BETWEEN '{from:yyyy-MM-dd}' AND '{to:yyyy-MM-dd}'";
+            var body = await PostSearchStreamAsync(gaql, ct);
+            return ParseDailyMetrics(body);
+        }
+
+        // Shared searchStream POST: access token + required headers + error handling. Returns the raw
+        // JSON body (a stream array of { results: [...] } chunks). Used by the cost/metrics query and
+        // the search-term (keyword) query alike.
+        private async Task<string> PostSearchStreamAsync(string gaql, CancellationToken ct)
+        {
+            var accessToken = await GetAccessTokenAsync(ct);
+            if (string.IsNullOrEmpty(accessToken))
+                throw new InvalidOperationException("Could not obtain a Google Ads access token.");
 
             var customerId = DigitsOnly(_options.CustomerId);
             var loginCustomerId = DigitsOnly(_options.LoginCustomerId);
@@ -131,7 +143,141 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException($"Google Ads searchStream returned {(int)response.StatusCode}.");
             }
 
-            return ParseDailyMetrics(body);
+            return body;
+        }
+
+        // ── Search-term (keyword) query ──────────────────────────────────────────────────
+        // The ACTUAL queries users typed that triggered our ads (search_term_view), aggregated per
+        // (day, term). Kept separate from the account-level cost/metrics so a keyword-query hiccup
+        // never blocks the spend sync (SyncSearchTermsAsync swallows + logs its own errors).
+
+        private readonly record struct SearchTermRow(
+            DateTime Date, string Term, int Clicks, int Impressions, decimal CostUsd, decimal Conversions);
+
+        private async Task SyncSearchTermsAsync(DateTime from, DateTime to, CancellationToken ct)
+        {
+            try
+            {
+                var terms = await QueryDailySearchTermsAsync(from, to, ct);
+                await UpsertKeywordsAsync(terms, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Google Ads search-term (keyword) sync failed; spend sync unaffected.");
+            }
+        }
+
+        private async Task<List<SearchTermRow>> QueryDailySearchTermsAsync(
+            DateTime from, DateTime to, CancellationToken ct)
+        {
+            var gaql =
+                "SELECT segments.date, search_term_view.search_term, metrics.clicks, " +
+                "metrics.impressions, metrics.cost_micros, metrics.conversions " +
+                "FROM search_term_view " +
+                $"WHERE segments.date BETWEEN '{from:yyyy-MM-dd}' AND '{to:yyyy-MM-dd}'";
+            var body = await PostSearchStreamAsync(gaql, ct);
+            return ParseSearchTerms(body);
+        }
+
+        // search_term_view yields one row per (search term, ad group, date), so the SAME (date, term)
+        // can appear across ad groups — aggregate them into one row per (date, term).
+        private static List<SearchTermRow> ParseSearchTerms(string body)
+        {
+            var agg = new Dictionary<(DateTime, string), SearchTermRow>();
+
+            var root = JToken.Parse(body);
+            var chunks = root as JArray ?? new JArray(root);
+
+            foreach (var chunk in chunks)
+            {
+                if (chunk["results"] is not JArray rows) continue;
+
+                foreach (var row in rows)
+                {
+                    var dateStr = row["segments"]?["date"]?.Value<string>();
+                    if (string.IsNullOrEmpty(dateStr) ||
+                        !DateTime.TryParseExact(dateStr, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                            DateTimeStyles.None, out var date))
+                        continue;
+
+                    var term = row["searchTermView"]?["searchTerm"]?.Value<string>()?.Trim();
+                    if (string.IsNullOrEmpty(term)) continue;
+                    if (term.Length > 300) term = term.Substring(0, 300);
+
+                    var metrics = row["metrics"];
+                    long.TryParse(metrics?["costMicros"]?.Value<string>(), NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out var micros);
+                    long.TryParse(metrics?["clicks"]?.Value<string>(), NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out var clicks);
+                    long.TryParse(metrics?["impressions"]?.Value<string>(), NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out var impressions);
+                    var conversions = metrics?["conversions"]?.Value<decimal>() ?? 0m;
+                    var costUsd = Math.Round(micros / 1_000_000m, 2, MidpointRounding.AwayFromZero);
+
+                    var key = (date.Date, term);
+                    var acc = agg.TryGetValue(key, out var e) ? e : new SearchTermRow(date.Date, term, 0, 0, 0m, 0m);
+                    agg[key] = new SearchTermRow(
+                        date.Date, term,
+                        acc.Clicks + (int)clicks,
+                        acc.Impressions + (int)impressions,
+                        acc.CostUsd + costUsd,
+                        acc.Conversions + conversions);
+                }
+            }
+
+            return agg.Values.ToList();
+        }
+
+        private async Task UpsertKeywordsAsync(List<SearchTermRow> rows, CancellationToken ct)
+        {
+            if (rows.Count == 0) return;
+
+            var from = rows.Min(r => r.Date);
+            var to = rows.Max(r => r.Date);
+
+            // Load the window once; upsert in memory (avoids a query per term).
+            var existing = await _context.GoogleAdsKeywordDailyStats
+                .Where(s => s.Date >= from && s.Date <= to)
+                .ToListAsync(ct);
+
+            var byKey = new Dictionary<(DateTime, string), Models.GoogleAdsKeywordDailyStat>();
+            foreach (var e in existing)
+                byKey[(e.Date.Date, e.SearchTerm)] = e;
+
+            var now = DateTime.UtcNow;
+            foreach (var r in rows)
+            {
+                var key = (r.Date, r.Term);
+                if (byKey.TryGetValue(key, out var stat))
+                {
+                    if (stat.Clicks != r.Clicks || stat.Impressions != r.Impressions
+                        || stat.CostUsd != r.CostUsd || stat.Conversions != r.Conversions)
+                    {
+                        stat.Clicks = r.Clicks;
+                        stat.Impressions = r.Impressions;
+                        stat.CostUsd = r.CostUsd;
+                        stat.Conversions = r.Conversions;
+                        stat.UpdatedAt = now;
+                    }
+                }
+                else
+                {
+                    var created = new Models.GoogleAdsKeywordDailyStat
+                    {
+                        Date = r.Date,
+                        SearchTerm = r.Term,
+                        Clicks = r.Clicks,
+                        Impressions = r.Impressions,
+                        CostUsd = r.CostUsd,
+                        Conversions = r.Conversions,
+                        UpdatedAt = now
+                    };
+                    _context.GoogleAdsKeywordDailyStats.Add(created);
+                    byKey[key] = created;
+                }
+            }
+
+            await _context.SaveChangesAsync(ct);
         }
 
         // searchStream returns a JSON array of stream chunks, each { "results": [ { segments.date,

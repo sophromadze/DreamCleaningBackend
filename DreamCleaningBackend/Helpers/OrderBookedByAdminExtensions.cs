@@ -15,9 +15,22 @@ namespace DreamCleaningBackend.Helpers
     public static class OrderBookedByAdminExtensions
     {
         public static bool IsBookedByAdmin(this Order order) =>
-            order.BookedByAdminUserId != null ||
-            (order.ManualPaymentRecordedByUserId != null &&
-             order.ManualPaymentRecordedAt != null &&
-             order.ManualPaymentRecordedAt <= order.OrderDate.AddMinutes(5));
+            IsBookedByAdmin(
+                order.BookedByAdminUserId,
+                order.ManualPaymentRecordedByUserId,
+                order.ManualPaymentRecordedAt,
+                order.OrderDate);
+
+        /// <summary>Same rule against the raw fields — for callers that project just these columns
+        /// (e.g. the CRM Ads breakdown) instead of materializing full Order instances.</summary>
+        public static bool IsBookedByAdmin(
+            int? bookedByAdminUserId,
+            int? manualPaymentRecordedByUserId,
+            DateTime? manualPaymentRecordedAt,
+            DateTime orderDate) =>
+            bookedByAdminUserId != null ||
+            (manualPaymentRecordedByUserId != null &&
+             manualPaymentRecordedAt != null &&
+             manualPaymentRecordedAt <= orderDate.AddMinutes(5));
     }
 }

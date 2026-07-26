@@ -1,4 +1,7 @@
+using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Services.Interfaces;
+using Microsoft.EntityFrameworkCore;
 using RingCentral;
 
 namespace DreamCleaningBackend.Services
@@ -7,11 +10,13 @@ namespace DreamCleaningBackend.Services
     {
         private readonly IConfiguration _configuration;
         private readonly ILogger<SmsService> _logger;
+        private readonly ApplicationDbContext _context;
 
-        public SmsService(IConfiguration configuration, ILogger<SmsService> logger)
+        public SmsService(IConfiguration configuration, ILogger<SmsService> logger, ApplicationDbContext context)
         {
             _configuration = configuration;
             _logger = logger;
+            _context = context;
         }
 
         public bool IsSmsEnabled()
@@ -60,6 +65,12 @@ namespace DreamCleaningBackend.Services
                 return;
             }
 
+            if (await IsBlockedUserPhoneAsync(toNumber))
+            {
+                _logger.LogWarning("Suppressing SMS to blocked user phone {To}", toNumber);
+                return;
+            }
+
             // SMS max 160 chars for single segment; RingCentral may concatenate. Truncate to avoid huge costs.
             var text = message?.Length > 1600 ? message[..1600] + "..." : (message ?? "");
 
@@ -100,6 +111,40 @@ namespace DreamCleaningBackend.Services
                 {
                     try { await rc.Revoke(); } catch (Exception ex) { _logger.LogDebug(ex, "Revoke after SMS"); }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Blocked (deactivated) users must receive no SMS from us at all until an admin unblocks
+        /// them. User.Phone is stored in assorted formats, so both sides are normalized to bare
+        /// digits before comparing. The blocked set is tiny, so pulling it into memory is cheap.
+        /// </summary>
+        private async Task<bool> IsBlockedUserPhoneAsync(string toNumber)
+        {
+            var target = PhoneHelper.NormalizeToDigits(toNumber);
+            if (target == null) return false;
+            try
+            {
+                var blockedPhones = await _context.Users
+                    .Where(u => !u.IsActive && !u.IsDeleted && u.Phone != null && u.Phone != "")
+                    .Select(u => u.Phone)
+                    .ToListAsync();
+                // Also cover the contact phone on blocked users' orders — reminder flows
+                // address the order contact, which can differ from the profile phone.
+                var blockedOrderPhones = await _context.Orders
+                    .Where(o => !o.User.IsActive && !o.User.IsDeleted
+                        && o.ContactPhone != null && o.ContactPhone != "")
+                    .Select(o => o.ContactPhone)
+                    .Distinct()
+                    .ToListAsync();
+                return blockedPhones.Concat(blockedOrderPhones)
+                    .Any(p => PhoneHelper.NormalizeToDigits(p) == target);
+            }
+            catch (Exception ex)
+            {
+                // A lookup failure must not take the SMS pipeline down with it.
+                _logger.LogError(ex, "Blocked-user phone check failed for {Phone}; allowing send", toNumber);
+                return false;
             }
         }
 

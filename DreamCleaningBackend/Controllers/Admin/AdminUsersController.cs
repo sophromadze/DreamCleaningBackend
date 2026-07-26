@@ -37,6 +37,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
         private readonly IBubbleRewardsSettingsService _bubbleRewardsSettingsService;
         private readonly IPageAccessService _pageAccessService;
+        private readonly ITwoFactorService _twoFactorService;
         private readonly ILogger<AdminUsersController> _logger;
 
         public AdminUsersController(ApplicationDbContext context,
@@ -50,6 +51,7 @@ namespace DreamCleaningBackend.Controllers
             ILoyaltyDiscountService loyaltyDiscountService,
             IBubbleRewardsSettingsService bubbleRewardsSettingsService,
             IPageAccessService pageAccessService,
+            ITwoFactorService twoFactorService,
             ILogger<AdminUsersController> logger)
         {
             _logger = logger;
@@ -64,6 +66,7 @@ namespace DreamCleaningBackend.Controllers
             _loyaltyDiscountService = loyaltyDiscountService;
             _bubbleRewardsSettingsService = bubbleRewardsSettingsService;
             _pageAccessService = pageAccessService;
+            _twoFactorService = twoFactorService;
         }
 
         // Users Management
@@ -92,6 +95,8 @@ namespace DreamCleaningBackend.Controllers
                     CanReceiveCommunications = u.CanReceiveCommunications,
                     CanReceiveEmails = u.CanReceiveEmails,
                     CanReceiveMessages = u.CanReceiveMessages,
+                    Flag = u.Flag.ToString(),
+                    FlagReason = u.FlagReason,
                     AdminNotes = null
                 })
                 .ToListAsync();
@@ -742,6 +747,70 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = $"User {(dto.IsActive ? "activated" : "deactivated")} successfully" });
         }
 
+        /// <summary>
+        /// Set/clear a customer's admin-only "problem flag" (None/Yellow/Red). This is the single
+        /// source of truth for flagging — flagging an order (see OrdersController) resolves the
+        /// order's owner and calls this same path, and every one of the user's orders derives its
+        /// tint from User.Flag. Gated the same as block/unblock (Permission.Update). Internal only —
+        /// never surfaced to the customer, so no notification is sent.
+        /// </summary>
+        [HttpPut("users/{id}/flag")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> SetUserFlag(int id, [FromBody] SetCustomerFlagDto dto)
+        {
+            if (!Enum.TryParse<CustomerFlagLevel>(dto.Level, ignoreCase: true, out var level))
+                return BadRequest(new { message = "Level must be None, Yellow, or Red" });
+
+            var targetUser = await _context.Users.FindAsync(id);
+            if (targetUser == null)
+                return NotFound();
+
+            // Full scalar snapshot BEFORE mutating, so the audit diff lists only the flag fields
+            // (GetChangedFields reflects over every scalar property).
+            var originalUser = new User();
+            foreach (var p in typeof(User).GetProperties().Where(p => p.CanRead && p.CanWrite))
+            {
+                if (p.GetGetMethod()?.IsVirtual == true) continue; // skip navigation properties
+                try { p.SetValue(originalUser, p.GetValue(targetUser)); } catch { /* skip */ }
+            }
+
+            var currentUserId = int.Parse(User.FindFirst("UserId")?.Value ?? "0");
+
+            if (level == CustomerFlagLevel.None)
+            {
+                targetUser.Flag = CustomerFlagLevel.None;
+                targetUser.FlagReason = null;
+                targetUser.FlaggedAt = null;
+                targetUser.FlaggedByUserId = null;
+            }
+            else
+            {
+                targetUser.Flag = level;
+                targetUser.FlagReason = string.IsNullOrWhiteSpace(dto.Reason) ? null : dto.Reason.Trim();
+                targetUser.FlaggedAt = DateTime.UtcNow;
+                targetUser.FlaggedByUserId = currentUserId;
+            }
+            targetUser.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _auditService.LogUpdateAsync(originalUser, targetUser);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Audit logging failed for user flag change");
+            }
+
+            return Ok(new
+            {
+                message = level == CustomerFlagLevel.None ? "Flag cleared" : $"User flagged {level}",
+                flag = targetUser.Flag.ToString(),
+                flagReason = targetUser.FlagReason
+            });
+        }
+
         /// <summary>Admin/SuperAdmin: edit user fields. Admins cannot modify SuperAdmin users or assign the SuperAdmin role. All changes are audit-logged.</summary>
         [HttpPut("users/{id}/superadmin-full-update")]
         [Authorize(Roles = "Admin,SuperAdmin")]
@@ -855,6 +924,61 @@ namespace DreamCleaningBackend.Controllers
             catch { /* ignore */ }
 
             return Ok(new { message = "User updated successfully" });
+        }
+
+        /// <summary>SuperAdmin-only: reset a staff member's 2FA PIN and clear any lockout.
+        /// Wipes the PIN, resets the failed-attempt lock, and revokes every trusted device, so
+        /// the user is forced to set a brand-new PIN on their next login (no locked account left).
+        /// Recovers a coworker who is locked out of, or has forgotten, their PIN.</summary>
+        [HttpPost("users/{id}/reset-2fa-pin")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> ResetStaffTwoFactorPin(int id)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return Forbid();
+
+            var targetUser = await _context.Users.FindAsync(id);
+            if (targetUser == null)
+                return NotFound();
+
+            // Only staff roles (Admin/SuperAdmin/Moderator) use the 2FA PIN — nothing to reset otherwise.
+            if (!_twoFactorService.RequiresTwoFactor(targetUser))
+                return BadRequest(new { message = "This account is not a staff account and has no 2FA PIN to reset." });
+
+            var wasLocked = targetUser.TwoFactorPinLockedUntil.HasValue
+                && targetUser.TwoFactorPinLockedUntil.Value > DateTime.UtcNow;
+
+            // Snapshot the 2FA fields before the wipe so the audit diff records the reset.
+            var originalUser = new User
+            {
+                Id = targetUser.Id,
+                FirstName = targetUser.FirstName,
+                LastName = targetUser.LastName,
+                Email = targetUser.Email,
+                Role = targetUser.Role,
+                TwoFactorPinHash = targetUser.TwoFactorPinHash,
+                TwoFactorPinSetAt = targetUser.TwoFactorPinSetAt,
+                TwoFactorPinFailedAttempts = targetUser.TwoFactorPinFailedAttempts,
+                TwoFactorPinLockedUntil = targetUser.TwoFactorPinLockedUntil
+            };
+
+            await _twoFactorService.ResetPinAsync(id);
+
+            try
+            {
+                await _context.Entry(targetUser).ReloadAsync();
+                await _auditService.LogUpdateAsync(originalUser, targetUser);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Audit logging failed for 2FA PIN reset of user {UserId}", id);
+            }
+
+            return Ok(new
+            {
+                message = $"PIN reset for {targetUser.FirstName} {targetUser.LastName}. They'll set a new PIN on their next login.",
+                wasLocked
+            });
         }
 
         /// <summary>SuperAdmin-only: permanently delete a user and all related data from the database.</summary>

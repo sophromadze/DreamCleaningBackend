@@ -53,10 +53,15 @@ namespace DreamCleaningBackend.Controllers
         private const string DeviceTokenHeader = "X-Device-Token";
 
         // Pulls request metadata used by the 2FA service (UA + IP).
+        // Behind Cloudflare + Apache the socket address is the proxy, not the client —
+        // prefer CF-Connecting-IP, then the first X-Forwarded-For hop, then the socket.
         private (string UserAgent, string IpAddress) GetClientContext()
         {
             var ua = Request.Headers.UserAgent.ToString();
-            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
+            var ip = Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+                ?? Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
+                ?? HttpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "";
             return (ua, ip);
         }
 
@@ -161,8 +166,10 @@ namespace DreamCleaningBackend.Controllers
                 if (_useCookieAuth)
                 {
                     SetAuthCookies(response.Token, response.RefreshToken);
-                    // Don't send tokens in response for cookie auth
-                    return Ok(new { user = response.User });
+                    // Don't send tokens in response for cookie auth. requiresPinSetup MUST be
+                    // forwarded here — dropping it meant production (cookie mode) staff were
+                    // never sent to PIN setup, so the 2FA gate never engaged for them at all.
+                    return Ok(new { user = response.User, requiresPinSetup = response.RequiresPinSetup });
                 }
 
                 return Ok(response);
@@ -276,16 +283,12 @@ namespace DreamCleaningBackend.Controllers
             var devices = await _twoFactorService.ListTrustedDevicesAsync(userId);
 
             // Mark the device making this request, so the UI can warn before revoking it.
-            var currentTokenHash = HashCurrentDeviceToken();
-            if (!string.IsNullOrEmpty(currentTokenHash))
+            // The header may carry several tokens (one per staff user of this browser).
+            var currentTokenHashes = HashCurrentDeviceTokens();
+            if (currentTokenHashes.Count > 0)
             {
-                foreach (var d in devices)
-                {
-                    // We can't expose the hash here, so we rely on a join-by-id approach:
-                    // re-query the row's hash via a lightweight lookup.
-                }
                 var match = await _dbContext.TrustedDevices
-                    .Where(d => d.UserId == userId && d.TokenHash == currentTokenHash && d.RevokedAt == null)
+                    .Where(d => d.UserId == userId && currentTokenHashes.Contains(d.TokenHash) && d.RevokedAt == null)
                     .Select(d => d.Id)
                     .FirstOrDefaultAsync();
                 if (match != 0)
@@ -309,10 +312,19 @@ namespace DreamCleaningBackend.Controllers
             return NoContent();
         }
 
-        private string? HashCurrentDeviceToken()
+        private List<string> HashCurrentDeviceTokens()
         {
             var raw = GetDeviceTokenFromRequest();
-            if (string.IsNullOrWhiteSpace(raw)) return null;
+            if (string.IsNullOrWhiteSpace(raw)) return new List<string>();
+            return raw
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Take(20)
+                .Select(HashRawToken)
+                .ToList();
+        }
+
+        private static string HashRawToken(string raw)
+        {
             using var sha = System.Security.Cryptography.SHA256.Create();
             var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(raw));
             var sb = new System.Text.StringBuilder(bytes.Length * 2);
@@ -334,8 +346,8 @@ namespace DreamCleaningBackend.Controllers
                 if (_useCookieAuth)
                 {
                     SetAuthCookies(response.Token, response.RefreshToken);
-                    // Don't send tokens in response for cookie auth
-                    return Ok(new { user = response.User });
+                    // Don't send tokens in response for cookie auth (keep requiresPinSetup — see Login).
+                    return Ok(new { user = response.User, requiresPinSetup = response.RequiresPinSetup });
                 }
 
                 return Ok(response);
@@ -435,7 +447,7 @@ namespace DreamCleaningBackend.Controllers
                 if (_useCookieAuth)
                 {
                     SetAuthCookies(response.Token, response.RefreshToken);
-                    return Ok(new { user = response.User, requiresRealEmail = response.RequiresRealEmail });
+                    return Ok(new { user = response.User, requiresRealEmail = response.RequiresRealEmail, requiresPinSetup = response.RequiresPinSetup });
                 }
 
                 return Ok(response);

@@ -110,6 +110,22 @@ namespace DreamCleaningBackend.DTOs
 
         [StringLength(100)]
         public string? FloorTypeOther { get; set; }
+
+        /// <summary>First-touch marketing attribution captured client-side (self-service flow only).
+        /// Ignored for admin create-for-user, which is stamped "Phone/Unknown" server-side. Survives
+        /// the prepare→confirm payment gap because the whole DTO is stored via BookingDataService.</summary>
+        public AttributionDto? Attribution { get; set; }
+
+        /// <summary>Converting-session attribution — the channel of the session in which this booking
+        /// was placed (may differ from first-touch Attribution for a returning visitor). Same trust
+        /// model: normalized/clamped server-side, self-service only.</summary>
+        public AttributionDto? ConvertingAttribution { get; set; }
+
+        /// <summary>Card-on-file opt-in ("save this card for faster checkout"). prepare-payment
+        /// saves the card used for this payment via setup_future_usage; confirm-payment persists
+        /// it on the User after the booking's own payment succeeds. Saving is all this does —
+        /// every future charge still requires an explicit customer/admin action.</summary>
+        public bool SaveCardForFutureUse { get; set; } = false;
     }
 
     public class CreateBookingForUserDto

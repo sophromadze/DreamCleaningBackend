@@ -61,6 +61,9 @@ namespace DreamCleaningBackend.Data
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<GoogleAdsDailyStat> GoogleAdsDailyStats { get; set; }
+        public DbSet<GoogleAdsKeywordDailyStat> GoogleAdsKeywordDailyStats { get; set; }
+        public DbSet<SearchConsoleDailyStat> SearchConsoleDailyStats { get; set; }
+        public DbSet<SessionDailyStat> SessionDailyStats { get; set; }
         public DbSet<MonthlyFinancialSnapshot> MonthlyFinancialSnapshots { get; set; }
         public DbSet<TrustedDevice> TrustedDevices { get; set; }
         public DbSet<TwoFactorSession> TwoFactorSessions { get; set; }
@@ -1279,6 +1282,33 @@ namespace DreamCleaningBackend.Data
             {
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.Date).IsUnique().HasDatabaseName("IX_GoogleAdsDailyStats_Date");
+            });
+
+            // GoogleAdsKeywordDailyStat — one row per (day, search term) from search_term_view. Upsert
+            // is by query on (Date, SearchTerm), so a plain lookup index on Date (fast per-day scan),
+            // not a unique index (free-text term + length).
+            modelBuilder.Entity<GoogleAdsKeywordDailyStat>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Date).HasDatabaseName("IX_GoogleAdsKeywordDailyStats_Date");
+            });
+
+            // SearchConsoleDailyStat — one row per (day, organic query) from Search Console. Upsert by
+            // query on (Date, Query); plain lookup index on Date.
+            modelBuilder.Entity<SearchConsoleDailyStat>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Date).HasDatabaseName("IX_SearchConsoleDailyStats_Date");
+            });
+
+            // SessionDailyStat — aggregated first-party session counts (Ads-tab funnel). Upsert is
+            // done by query on (Date, Channel, Source, Medium, Campaign) so the nullable free-text
+            // columns match correctly (MySQL treats NULLs as distinct in a unique index, which would
+            // defeat the dedupe) — hence a plain lookup index on (Date, Channel), not a unique one.
+            modelBuilder.Entity<SessionDailyStat>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.Date, e.Channel }).HasDatabaseName("IX_SessionDailyStats_Date_Channel");
             });
 
             // TrustedDevice configuration — remembered post-2FA devices for staff users.

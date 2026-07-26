@@ -183,8 +183,11 @@ builder.Services.AddHostedService<CleanerNotificationService>();
 builder.Services.AddHostedService<CustomerNotificationService>();
 builder.Services.AddSingleton<IBookingDataService, BookingDataService>();
 builder.Services.AddScoped<IStripeService, StripeService>();
+// Card on file: one saved card per user, charged only by explicit customer/admin action.
+builder.Services.AddScoped<ICardOnFileService, CardOnFileService>();
 builder.Services.AddScoped<IMaintenanceModeService, MaintenanceModeService>();
 builder.Services.AddHostedService<AuditLogCleanupService>();
+builder.Services.AddHostedService<SessionStatCleanupService>();
 builder.Services.AddHostedService<ScheduledMailService>();
 builder.Services.AddHostedService<ScheduledSmsService>();
 
@@ -253,6 +256,67 @@ builder.Services.AddHttpClient(GoogleAdsCostService.HttpClientName)
     });
 builder.Services.AddScoped<IGoogleAdsCostService, GoogleAdsCostService>();
 builder.Services.AddHostedService<GoogleAdsSyncBackgroundService>();
+
+// GA4 → Orders attribution backfill (ONE-TIME, SuperAdmin-triggered; NOT a background service).
+// Reads the "Ga4" section and calls the Analytics Data API over a named IPv4 client, same IPv6
+// workaround as Google Ads. Safe to remove once the historical backfill has been run.
+builder.Services.Configure<DreamCleaningBackend.Configuration.Ga4Options>(
+    builder.Configuration.GetSection(DreamCleaningBackend.Configuration.Ga4Options.SectionName));
+var ga4ForceIpv4 = builder.Configuration.GetValue<bool>(
+    $"{DreamCleaningBackend.Configuration.Ga4Options.SectionName}:ForceIpv4", true);
+builder.Services.AddHttpClient(Ga4AttributionBackfillService.HttpClientName)
+    .ConfigurePrimaryHttpMessageHandler(() =>
+    {
+        var handler = new SocketsHttpHandler();
+        if (ga4ForceIpv4)
+        {
+            handler.ConnectCallback = async (context, cancellationToken) =>
+            {
+                var socket = new System.Net.Sockets.Socket(
+                    System.Net.Sockets.AddressFamily.InterNetwork, // Force IPv4
+                    System.Net.Sockets.SocketType.Stream,
+                    System.Net.Sockets.ProtocolType.Tcp);
+                await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+                return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+            };
+        }
+        return handler;
+    });
+builder.Services.AddScoped<IGa4AttributionBackfillService, Ga4AttributionBackfillService>();
+
+// GA4 → SessionDailyStat reconciliation (ONGOING). Reuses the Ga4 section + the Ga4Ipv4 client
+// registered just above (no new config/client). One-time historical backfill via the SuperAdmin
+// endpoint; nightly trailing-window reconcile via the hosted service.
+builder.Services.AddScoped<IGa4SessionSyncService, Ga4SessionSyncService>();
+builder.Services.AddHostedService<Ga4SessionSyncBackgroundService>();
+
+// Search Console → organic keyword stats. Reads the "SearchConsole" section and calls the Search
+// Analytics API over a named IPv4 client (same IPv6 workaround as Google Ads / GA4). Daily sync via
+// a hosted service; manual backfill/sync-recent via the SuperAdmin AdminSearchConsoleController.
+builder.Services.Configure<DreamCleaningBackend.Configuration.SearchConsoleOptions>(
+    builder.Configuration.GetSection(DreamCleaningBackend.Configuration.SearchConsoleOptions.SectionName));
+var searchConsoleForceIpv4 = builder.Configuration.GetValue<bool>(
+    $"{DreamCleaningBackend.Configuration.SearchConsoleOptions.SectionName}:ForceIpv4", true);
+builder.Services.AddHttpClient(SearchConsoleSyncService.HttpClientName)
+    .ConfigurePrimaryHttpMessageHandler(() =>
+    {
+        var handler = new SocketsHttpHandler();
+        if (searchConsoleForceIpv4)
+        {
+            handler.ConnectCallback = async (context, cancellationToken) =>
+            {
+                var socket = new System.Net.Sockets.Socket(
+                    System.Net.Sockets.AddressFamily.InterNetwork, // Force IPv4
+                    System.Net.Sockets.SocketType.Stream,
+                    System.Net.Sockets.ProtocolType.Tcp);
+                await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+                return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+            };
+        }
+        return handler;
+    });
+builder.Services.AddScoped<ISearchConsoleSyncService, SearchConsoleSyncService>();
+builder.Services.AddHostedService<SearchConsoleSyncBackgroundService>();
 
 // Per-month locked FX (GEL→USD) + bonus-rate snapshots for the statistics page.
 builder.Services.AddScoped<IFinancialRateService, FinancialRateService>();
@@ -344,6 +408,23 @@ builder.Services.AddRateLimiter(options =>
         return RateLimitPartition.GetFixedWindowLimiter(clientIp, _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        });
+    });
+
+    // Public session-log endpoint (SessionAttributionController): a real visitor starts far fewer
+    // than 30 new sessions/min, so this only trims spam. Same CF-aware IP partitioning as above.
+    options.AddPolicy(SessionAttributionController.RateLimitPolicy, httpContext =>
+    {
+        var clientIp = httpContext.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+            ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
+        if (string.IsNullOrEmpty(clientIp))
+            clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter(clientIp, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 30,
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         });

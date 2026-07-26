@@ -46,8 +46,9 @@ namespace DreamCleaningBackend.Controllers.Crm
             [FromQuery] string? dateField)
         {
             // The board shows only active (non-archived) leads; archived leads live in the drawer.
-            var query = BuildFilteredQuery(search, source, type, assignedToAdminId, stage: null,
-                period, dateField, archived: false);
+            var query = await ExcludeBlockedUserLeadsAsync(
+                BuildFilteredQuery(search, source, type, assignedToAdminId, stage: null,
+                    period, dateField, archived: false));
 
             var leads = await query
                 .Include(l => l.AssignedToAdmin)
@@ -67,6 +68,7 @@ namespace DreamCleaningBackend.Controllers.Crm
                 };
             }).ToList();
 
+            await ApplyClientFlagsAsync(columns.SelectMany(c => c.Leads).ToList());
             return Ok(columns);
         }
 
@@ -76,8 +78,8 @@ namespace DreamCleaningBackend.Controllers.Crm
         {
             var now = DateTime.UtcNow;
             // Stats describe the active pipeline — archived leads are parked, not counted.
-            var leads = await _context.Leads
-                .Where(l => !l.IsArchived)
+            var statsQuery = await ExcludeBlockedUserLeadsAsync(_context.Leads.Where(l => !l.IsArchived));
+            var leads = await statsQuery
                 .Select(l => new { l.Stage, l.EstimatedValue, l.NextFollowUpDate })
                 .ToListAsync();
 
@@ -121,13 +123,18 @@ namespace DreamCleaningBackend.Controllers.Crm
             [FromQuery] string? dateField,
             [FromQuery] bool? archived)
         {
-            var leads = await BuildFilteredQuery(search, source, type, assignedToAdminId, stage,
-                    period, dateField, archived)
+            var query = await ExcludeBlockedUserLeadsAsync(
+                BuildFilteredQuery(search, source, type, assignedToAdminId, stage,
+                    period, dateField, archived));
+
+            var leads = await query
                 .Include(l => l.AssignedToAdmin)
                 .OrderByDescending(l => l.LastActivityAt)
                 .ToListAsync();
 
-            return Ok(leads.Select(MapToDto).ToList());
+            var dtos = leads.Select(MapToDto).ToList();
+            await ApplyClientFlagsAsync(dtos);
+            return Ok(dtos);
         }
 
         /// <summary>
@@ -144,13 +151,18 @@ namespace DreamCleaningBackend.Controllers.Crm
             [FromQuery] string? period,
             [FromQuery] string? dateField)
         {
-            var leads = await BuildFilteredQuery(search, source, type, assignedToAdminId, stage: null,
-                    period, dateField, archived: true)
+            var query = await ExcludeBlockedUserLeadsAsync(
+                BuildFilteredQuery(search, source, type, assignedToAdminId, stage: null,
+                    period, dateField, archived: true));
+
+            var leads = await query
                 .Include(l => l.AssignedToAdmin)
                 .OrderByDescending(l => l.ArchivedAt ?? l.LastActivityAt)
                 .ToListAsync();
 
-            return Ok(leads.Select(MapToDto).ToList());
+            var dtos = leads.Select(MapToDto).ToList();
+            await ApplyClientFlagsAsync(dtos);
+            return Ok(dtos);
         }
 
         [HttpGet("{id}")]
@@ -164,7 +176,12 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             if (lead == null) return NotFound(new { message = "Lead not found" });
 
+            // Hidden the same way the pipeline/list hide it when it belongs to a blocked user.
+            var visibleQuery = await ExcludeBlockedUserLeadsAsync(_context.Leads.Where(l => l.Id == id));
+            if (!await visibleQuery.AnyAsync()) return NotFound(new { message = "Lead not found" });
+
             var dto = MapToDetailDto(lead);
+            await ApplyClientFlagsAsync(new[] { dto });
             return Ok(dto);
         }
 
@@ -463,6 +480,91 @@ namespace DreamCleaningBackend.Controllers.Crm
         //  Helpers
         // ─────────────────────────────────────────────────────────
 
+        /// <summary>
+        /// Leads that belong to a blocked (deactivated) user — linked via ClientId or carrying
+        /// the blocked user's email/phone — are hidden from every CRM read until the user is
+        /// unblocked. Blocked users must stay visible only in the admin Users tab.
+        /// </summary>
+        private async Task<IQueryable<Lead>> ExcludeBlockedUserLeadsAsync(IQueryable<Lead> query)
+        {
+            var blocked = await _context.Users
+                .Where(u => !u.IsActive && !u.IsDeleted)
+                .Select(u => new { u.Id, u.Email, u.Phone })
+                .ToListAsync();
+            if (blocked.Count == 0) return query;
+
+            var ids = blocked.Select(b => b.Id).ToList();
+            var emails = blocked
+                .Where(b => !string.IsNullOrWhiteSpace(b.Email) && !NoEmailHelper.IsPlaceholder(b.Email))
+                .Select(b => b.Email.ToLowerInvariant())
+                .ToList();
+            // Lead.Phone is stored digits-normalized, so normalize the user side the same way.
+            var phones = blocked
+                .Select(b => PhoneHelper.NormalizeToDigits(b.Phone))
+                .Where(p => p != null)
+                .Select(p => p!)
+                .ToList();
+
+            query = query.Where(l => l.ClientId == null || !ids.Contains(l.ClientId.Value));
+            if (emails.Count > 0)
+                query = query.Where(l => l.Email == null || !emails.Contains(l.Email));
+            if (phones.Count > 0)
+                query = query.Where(l => l.Phone == null || !phones.Contains(l.Phone));
+            return query;
+        }
+
+        /// <summary>
+        /// Stamp each lead DTO with the problem flag of the registered customer it matches —
+        /// by ClientId first, then email, then phone — mirroring the lead↔user matching used
+        /// to hide blocked users. The flag lives on User.Flag (single source of truth); the
+        /// lead itself is never flagged. Only non-None flags are applied.
+        /// </summary>
+        private async Task ApplyClientFlagsAsync(IReadOnlyCollection<LeadDto> dtos)
+        {
+            if (dtos == null || dtos.Count == 0) return;
+
+            var flagged = await _context.Users
+                .Where(u => u.Flag != CustomerFlagLevel.None && !u.IsDeleted)
+                .Select(u => new { u.Id, u.Email, u.Phone, u.Flag, u.FlagReason })
+                .ToListAsync();
+            if (flagged.Count == 0) return;
+
+            var byId = flagged.ToDictionary(f => f.Id, f => (f.Flag, f.FlagReason));
+            var byEmail = new Dictionary<string, (CustomerFlagLevel Flag, string? Reason)>();
+            var byPhone = new Dictionary<string, (CustomerFlagLevel Flag, string? Reason)>();
+            foreach (var f in flagged)
+            {
+                if (!string.IsNullOrWhiteSpace(f.Email) && !NoEmailHelper.IsPlaceholder(f.Email))
+                    byEmail[f.Email!.ToLowerInvariant()] = (f.Flag, f.FlagReason);
+                var p = PhoneHelper.NormalizeToDigits(f.Phone);
+                if (!string.IsNullOrWhiteSpace(p))
+                    byPhone[p!] = (f.Flag, f.FlagReason);
+            }
+
+            foreach (var dto in dtos)
+            {
+                (CustomerFlagLevel Flag, string? Reason)? match = null;
+
+                if (dto.ClientId.HasValue && byId.TryGetValue(dto.ClientId.Value, out var byIdMatch))
+                    match = byIdMatch;
+                else if (!string.IsNullOrWhiteSpace(dto.Email)
+                         && byEmail.TryGetValue(dto.Email!.ToLowerInvariant(), out var em))
+                    match = em;
+                else
+                {
+                    var p = PhoneHelper.NormalizeToDigits(dto.Phone);
+                    if (!string.IsNullOrWhiteSpace(p) && byPhone.TryGetValue(p!, out var ph))
+                        match = ph;
+                }
+
+                if (match.HasValue && match.Value.Flag != CustomerFlagLevel.None)
+                {
+                    dto.Flag = match.Value.Flag.ToString();
+                    dto.FlagReason = match.Value.Reason;
+                }
+            }
+        }
+
         private IQueryable<Lead> BuildFilteredQuery(string? search, string? source, string? type,
             int? assignedToAdminId, string? stage, string? period = null, string? dateField = null, bool? archived = null)
         {
@@ -611,6 +713,8 @@ namespace DreamCleaningBackend.Controllers.Crm
                 LastActivityAt = baseDto.LastActivityAt,
                 IsArchived = baseDto.IsArchived,
                 ArchivedAt = baseDto.ArchivedAt,
+                Flag = baseDto.Flag,
+                FlagReason = baseDto.FlagReason,
                 Activities = (l.Activities ?? new List<LeadActivity>())
                     .OrderByDescending(a => a.CreatedAt)
                     .Select(MapActivityToDto)

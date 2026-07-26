@@ -1,7 +1,8 @@
 using ClosedXML.Excel;
+using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Helpers;
-using Microsoft.AspNetCore.Authorization;
+using DreamCleaningBackend.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
@@ -10,17 +11,25 @@ namespace DreamCleaningBackend.Controllers.Crm
 {
     /// <summary>
     /// CRM "Ads" tab: per-day Google Ads performance next to real booked orders, so the owner can
-    /// see how ad clicks turn into actual jobs. Reads three existing sources and merges them by day
-    /// (no new aggregation logic): ad spend from Expenses ("googleads:" SourceKey), clicks +
-    /// Google-reported conversions from GoogleAdsDailyStats, and booked orders from the Orders table.
+    /// see how ad clicks turn into actual jobs. Ad-only by design (2026-07 redesign) — no session
+    /// traffic, no channel breakdown, no chart. Reads three existing sources and merges them by day:
+    /// ad spend from Expenses ("googleads:" SourceKey), clicks + Google-reported conversions from
+    /// GoogleAdsDailyStats, and booked orders from the Orders table. For each day the booked cell also
+    /// carries the times of orders that came straight from an ad (first-touch channel "Paid Search").
     /// </summary>
+    // Ads is a pageView-gated Company tab (2026-07): SuperAdmin always; a regular Admin only when
+    // granted the "ads" page. Both endpoints are GET, which is all RequirePageView permits for
+    // granted Admins. Moderators no longer have access (grants are Admin-only).
     [Route("api/crm/ads")]
     [ApiController]
-    [Authorize(Roles = "Admin,SuperAdmin,Moderator")]
+    [RequirePageView(AdminViewablePages.Ads)]
     public class CrmAdsController : ControllerBase
     {
-        private const int DefaultPageSize = 20;
+        private const int DefaultPageSize = 10;
         private const int MaxPageSize = 200;
+
+        // The first-touch acquisition channel that means "came straight from a Google Ads click".
+        private const string PaidSearchChannel = "Paid Search";
 
         private readonly ApplicationDbContext _context;
 
@@ -37,7 +46,8 @@ namespace DreamCleaningBackend.Controllers.Crm
             [FromQuery] int page = 1, [FromQuery] int pageSize = DefaultPageSize)
         {
             var (fromDate, toDate) = await ResolveRangeAsync(period, from, to);
-            var (items, totals) = await BuildDailyAsync(fromDate, toDate);
+            var bookedRows = await FetchBookedOrdersAsync(fromDate, toDate);
+            var (items, totals) = await BuildDailyAsync(fromDate, toDate, bookedRows);
 
             if (pageSize < 1) pageSize = DefaultPageSize;
             if (pageSize > MaxPageSize) pageSize = MaxPageSize;
@@ -68,7 +78,8 @@ namespace DreamCleaningBackend.Controllers.Crm
             [FromQuery] string? period, [FromQuery] string? from, [FromQuery] string? to)
         {
             var (fromDate, toDate) = await ResolveRangeAsync(period, from, to);
-            var (items, totals) = await BuildDailyAsync(fromDate, toDate);
+            var bookedRows = await FetchBookedOrdersAsync(fromDate, toDate);
+            var (items, totals) = await BuildDailyAsync(fromDate, toDate, bookedRows);
 
             using var workbook = new XLWorkbook();
             BuildDailySheet(workbook, items);
@@ -128,7 +139,7 @@ namespace DreamCleaningBackend.Controllers.Crm
         // ── Merge (spend + clicks/conversions + booked orders) ──────────────────────────
 
         private async Task<(List<CrmAdsDailyDto> items, CrmAdsTotalsDto totals)> BuildDailyAsync(
-            DateTime fromDate, DateTime toDate)
+            DateTime fromDate, DateTime toDate, List<BookedOrderRow> bookedRows)
         {
             // Ad spend per day (single source of truth: Expenses, keyed by SourceKey).
             var spendByDate = (await _context.Expenses
@@ -145,17 +156,11 @@ namespace DreamCleaningBackend.Controllers.Crm
                     .ToListAsync())
                 .ToDictionary(s => s.Date.Date, s => s);
 
-            // Real booked orders per day. Order.CreatedAt is UTC; bucket it into NY calendar days
-            // so it lines up with the Eastern ad dates. Cancelled orders don't count as booked.
-            var fromUtc = NyTimeHelper.ToUtc(fromDate);
-            var toUtcExclusive = NyTimeHelper.ToUtc(toDate.AddDays(1));
-            var bookedByDate = (await _context.Orders
-                    .Where(o => o.CreatedAt >= fromUtc && o.CreatedAt < toUtcExclusive
-                                && o.Status.ToLower() != "cancelled")
-                    .Select(o => o.CreatedAt)
-                    .ToListAsync())
-                .GroupBy(createdUtc => NyTimeHelper.ToNy(createdUtc).Date)
-                .ToDictionary(g => g.Key, g => g.Count());
+            // Real booked orders bucketed into NY calendar days (already fetched + NY-bucketed in
+            // FetchBookedOrdersAsync so per-day + totals share one query and one definition).
+            var bookedByDate = bookedRows
+                .GroupBy(r => r.NyDay)
+                .ToDictionary(g => g.Key, g => g.ToList());
 
             // Union of every day that has any signal, newest first.
             var days = spendByDate.Keys
@@ -171,7 +176,15 @@ namespace DreamCleaningBackend.Controllers.Crm
                 var spend = spendByDate.TryGetValue(day, out var sp) ? sp : 0m;
                 var clicks = statByDate.TryGetValue(day, out var st) ? st.Clicks : 0;
                 var googleConv = st != null ? st.Conversions : 0m;
-                var booked = bookedByDate.TryGetValue(day, out var bk) ? bk : 0;
+                var dayRows = bookedByDate.TryGetValue(day, out var lst) ? lst : new List<BookedOrderRow>();
+                var booked = dayRows.Count;
+
+                // Times (NY, "h:mm tt") of the orders that came straight from an ad click, ascending.
+                var adBookedTimes = dayRows
+                    .Where(r => string.Equals(r.Channel, PaidSearchChannel, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(r => r.NyCreatedAt)
+                    .Select(r => r.NyCreatedAt.ToString("h:mm tt", CultureInfo.InvariantCulture))
+                    .ToList();
 
                 items.Add(new CrmAdsDailyDto
                 {
@@ -180,9 +193,9 @@ namespace DreamCleaningBackend.Controllers.Crm
                     Clicks = clicks,
                     GoogleConversions = googleConv,
                     BookedOrders = booked,
+                    AdBookedTimes = adBookedTimes,
                     // Conversion rate = conversions ÷ clicks, as a percent (0 clicks ⇒ 0).
-                    GoogleConversionRate = clicks > 0 ? Math.Round(googleConv / clicks * 100m, 1) : 0m,
-                    BookedConversionRate = clicks > 0 ? Math.Round((decimal)booked / clicks * 100m, 1) : 0m
+                    GoogleConversionRate = clicks > 0 ? Math.Round(googleConv / clicks * 100m, 1) : 0m
                 });
             }
 
@@ -191,14 +204,38 @@ namespace DreamCleaningBackend.Controllers.Crm
                 AdSpend = items.Sum(i => i.AdSpend),
                 Clicks = items.Sum(i => i.Clicks),
                 GoogleConversions = items.Sum(i => i.GoogleConversions),
-                BookedOrders = items.Sum(i => i.BookedOrders)
+                BookedOrders = items.Sum(i => i.BookedOrders),
+                AdBookedOrders = items.Sum(i => i.AdBookedTimes.Count)
             };
             totals.GoogleConversionRate = totals.Clicks > 0
                 ? Math.Round(totals.GoogleConversions / totals.Clicks * 100m, 1) : 0m;
-            totals.BookedConversionRate = totals.Clicks > 0
-                ? Math.Round((decimal)totals.BookedOrders / totals.Clicks * 100m, 1) : 0m;
 
             return (items, totals);
+        }
+
+        // ── Booked-order fetch ──────────────────────────────────────────────────────────
+
+        // One booked order reduced to just what the Ads tab needs: its NY calendar day, the exact NY
+        // booking time, and its first-touch channel (used only to pick out the "Paid Search" ad leads).
+        private record BookedOrderRow(DateTime NyDay, DateTime NyCreatedAt, string Channel);
+
+        // The SINGLE booked-order query for this tab: CreatedAt in the NY-day range, non-cancelled.
+        private async Task<List<BookedOrderRow>> FetchBookedOrdersAsync(DateTime fromDate, DateTime toDate)
+        {
+            var fromUtc = NyTimeHelper.ToUtc(fromDate);
+            var toUtcExclusive = NyTimeHelper.ToUtc(toDate.AddDays(1));
+
+            var raw = await _context.Orders
+                .Where(o => o.CreatedAt >= fromUtc && o.CreatedAt < toUtcExclusive
+                            && o.Status.ToLower() != "cancelled")
+                .Select(o => new { o.CreatedAt, o.AcquisitionChannel })
+                .ToListAsync();
+
+            return raw.Select(o =>
+            {
+                var ny = NyTimeHelper.ToNy(o.CreatedAt);
+                return new BookedOrderRow(ny.Date, ny, (o.AcquisitionChannel ?? string.Empty).Trim());
+            }).ToList();
         }
 
         // ── Excel ───────────────────────────────────────────────────────────────────────
@@ -208,8 +245,8 @@ namespace DreamCleaningBackend.Controllers.Crm
             var ws = workbook.AddWorksheet("Daily");
             string[] headers =
             {
-                "Date", "Ad spend", "Clicks", "Google conversions",
-                "Google conv rate (%)", "Booked orders", "Booked conv rate (%)"
+                "Date", "Ad spend", "Clicks", "Conversions", "Conv rate (%)",
+                "Booked orders", "Booked from ad", "Ad booking times"
             };
             for (var i = 0; i < headers.Length; i++)
                 ws.Cell(1, i + 1).Value = headers[i];
@@ -228,7 +265,8 @@ namespace DreamCleaningBackend.Controllers.Crm
                 ws.Cell(row, 4).Value = (double)it.GoogleConversions;
                 ws.Cell(row, 5).Value = (double)it.GoogleConversionRate;
                 ws.Cell(row, 6).Value = it.BookedOrders;
-                ws.Cell(row, 7).Value = (double)it.BookedConversionRate;
+                ws.Cell(row, 7).Value = it.AdBookedTimes.Count;
+                ws.Cell(row, 8).Value = string.Join(", ", it.AdBookedTimes);
                 row++;
             }
 
@@ -248,20 +286,22 @@ namespace DreamCleaningBackend.Controllers.Crm
             header.Style.Fill.BackgroundColor = XLColor.FromHtml("#2563EB");
             header.Style.Font.FontColor = XLColor.White;
 
-            var costPerBooked = totals.BookedOrders > 0 ? totals.AdSpend / totals.BookedOrders : 0m;
             var costPerClick = totals.Clicks > 0 ? totals.AdSpend / totals.Clicks : 0m;
+            var costPerConversion = totals.GoogleConversions > 0 ? totals.AdSpend / totals.GoogleConversions : 0m;
+            var costPerBooked = totals.BookedOrders > 0 ? totals.AdSpend / totals.BookedOrders : 0m;
 
-            var rows = new (string Label, object Value)[]
+            var rows = new List<(string Label, object Value)>
             {
                 ("Date range", $"{fromDate:yyyy-MM-dd} → {toDate:yyyy-MM-dd}"),
                 ("Total ad spend", (double)totals.AdSpend),
                 ("Total clicks", totals.Clicks),
-                ("Total Google conversions", (double)totals.GoogleConversions),
+                ("Total conversions", (double)totals.GoogleConversions),
+                ("Conversion rate (%)", (double)totals.GoogleConversionRate),
                 ("Total booked orders", totals.BookedOrders),
-                ("Google conversion rate (%)", (double)totals.GoogleConversionRate),
-                ("Booked conversion rate (%)", (double)totals.BookedConversionRate),
-                ("Cost per booked order", (double)Math.Round(costPerBooked, 2, MidpointRounding.AwayFromZero)),
-                ("Cost per click", (double)Math.Round(costPerClick, 2, MidpointRounding.AwayFromZero))
+                ("Booked orders from ad", totals.AdBookedOrders),
+                ("Cost per click", (double)Math.Round(costPerClick, 2, MidpointRounding.AwayFromZero)),
+                ("Cost per conversion", (double)Math.Round(costPerConversion, 2, MidpointRounding.AwayFromZero)),
+                ("Cost per booked order", (double)Math.Round(costPerBooked, 2, MidpointRounding.AwayFromZero))
             };
 
             var row = 2;
@@ -311,8 +351,9 @@ namespace DreamCleaningBackend.Controllers.Crm
         public int Clicks { get; set; }
         public decimal GoogleConversions { get; set; }
         public int BookedOrders { get; set; }
+        // NY booking times ("h:mm tt") of the orders that came straight from an ad (Paid Search).
+        public List<string> AdBookedTimes { get; set; } = new();
         public decimal GoogleConversionRate { get; set; }
-        public decimal BookedConversionRate { get; set; }
     }
 
     public class CrmAdsTotalsDto
@@ -321,7 +362,8 @@ namespace DreamCleaningBackend.Controllers.Crm
         public int Clicks { get; set; }
         public decimal GoogleConversions { get; set; }
         public int BookedOrders { get; set; }
+        // How many of the booked orders in the range came straight from an ad (Paid Search).
+        public int AdBookedOrders { get; set; }
         public decimal GoogleConversionRate { get; set; }
-        public decimal BookedConversionRate { get; set; }
     }
 }

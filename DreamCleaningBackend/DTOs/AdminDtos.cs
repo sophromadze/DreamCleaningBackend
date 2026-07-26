@@ -416,6 +416,18 @@ namespace DreamCleaningBackend.DTOs
         public int? LastBathrooms { get; set; }
         /// <summary>Total number of non-cancelled orders this user has placed.</summary>
         public int TotalOrdersCount { get; set; }
+
+        /// <summary>Admin-only problem-customer flag: "None" | "Yellow" | "Red".</summary>
+        public string Flag { get; set; } = "None";
+        /// <summary>Optional admin note on why this customer is flagged.</summary>
+        public string? FlagReason { get; set; }
+    }
+
+    /// <summary>Admin sets/clears a customer's problem flag. Level is "None" | "Yellow" | "Red".</summary>
+    public class SetCustomerFlagDto
+    {
+        public string Level { get; set; } = "None";
+        public string? Reason { get; set; }
     }
 
     // ── Customer-care notes (multi-row) ──

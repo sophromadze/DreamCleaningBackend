@@ -321,6 +321,17 @@ namespace DreamCleaningBackend.Services
                 BathroomsQuantity = dto.BathroomsQuantity
             };
 
+            // First-touch + converting-session acquisition attribution. Admin-created orders
+            // (create-for-user, booked after a phone call) are always "Phone/Unknown" for first touch
+            // and null for converting — the client attribution objects are meaningless there.
+            // Self-service orders take the client-captured values, but the raw strings are never
+            // trusted: the channel is normalized to a known set and every field is length-clamped. A
+            // self-service order with no attribution leaves the fields null (the CRM Ads breakdown
+            // buckets first-touch nulls as "Unattributed").
+            var isAdminBooked = options.BookedByAdminUserId != null;
+            ApplyAcquisitionAttribution(order, dto.Attribution, isAdminBooked);
+            ApplyConvertingAttribution(order, dto.ConvertingAttribution, isAdminBooked);
+
             // Persist per-line costs/durations from the shared calculator.
             OrderPricingCalculator.AddOrderLinesFromQuote(order, quote);
 
@@ -460,6 +471,45 @@ namespace DreamCleaningBackend.Services
                 order.PromoCode = $"SPECIAL_OFFER:{specialOfferDetails.SpecialOffer.Name}";
                 await _context.SaveChangesAsync();
             }
+        }
+
+        // Sets the four Acquisition* fields on the order. For admin bookings there is nothing to
+        // trust from the client, so the whole thing collapses to a single "Phone/Unknown" channel.
+        // Channel normalization + clamping is shared with session logging (AcquisitionChannels).
+        private static void ApplyAcquisitionAttribution(Order order, AttributionDto? attr, bool isAdminBooked)
+        {
+            if (isAdminBooked)
+            {
+                order.AcquisitionChannel = AcquisitionChannels.AdminManual;
+                order.AcquisitionSource = null;
+                order.AcquisitionMedium = null;
+                order.AcquisitionCampaign = null;
+                return;
+            }
+
+            order.AcquisitionChannel = AcquisitionChannels.Normalize(attr?.Channel);
+            order.AcquisitionSource = AcquisitionChannels.Clamp(attr?.Source, 200);
+            order.AcquisitionMedium = AcquisitionChannels.Clamp(attr?.Medium, 100);
+            order.AcquisitionCampaign = AcquisitionChannels.Clamp(attr?.Campaign, 200);
+        }
+
+        // Converting-session attribution. Unlike first touch there is no "Phone/Unknown" sentinel:
+        // an admin/phone order simply has no converting session, so all four fields stay null.
+        private static void ApplyConvertingAttribution(Order order, AttributionDto? attr, bool isAdminBooked)
+        {
+            if (isAdminBooked)
+            {
+                order.ConvertingChannel = null;
+                order.ConvertingSource = null;
+                order.ConvertingMedium = null;
+                order.ConvertingCampaign = null;
+                return;
+            }
+
+            order.ConvertingChannel = AcquisitionChannels.Normalize(attr?.Channel);
+            order.ConvertingSource = AcquisitionChannels.Clamp(attr?.Source, 200);
+            order.ConvertingMedium = AcquisitionChannels.Clamp(attr?.Medium, 100);
+            order.ConvertingCampaign = AcquisitionChannels.Clamp(attr?.Campaign, 200);
         }
 
         // Draws the gift card against the pre-gift-card total and reconciles the order

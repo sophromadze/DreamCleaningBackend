@@ -92,7 +92,9 @@ namespace DreamCleaningBackend.Services
                 AssignedAdminDisplayName = o.AssignedAdmin != null
                     ? AdminBonusService.FormatDisplayName(o.AssignedAdmin.FirstName, o.AssignedAdmin.LastName)
                     : null,
-                BookedByAdmin = o.IsBookedByAdmin()
+                BookedByAdmin = o.IsBookedByAdmin(),
+                Flag = (o.User?.Flag ?? CustomerFlagLevel.None).ToString(),
+                FlagReason = o.User?.FlagReason
             }).ToList();
         }
 
@@ -542,7 +544,16 @@ namespace DreamCleaningBackend.Services
         { "additionalAmount", additionalAmount.ToString("F2") }
     };
 
-            var paymentIntent = await _stripeService.CreatePaymentIntentAsync(additionalAmount, metadata);
+            // This endpoint is owner-only (checked above), so the owner's Stripe Customer can
+            // always ride along — lets the order-edit payment step offer their saved card.
+            var ownerStripeCustomerId = await _context.Users
+                .AsNoTracking()
+                .Where(u => u.Id == order.UserId)
+                .Select(u => u.StripeCustomerId)
+                .FirstOrDefaultAsync();
+
+            var paymentIntent = await _stripeService.CreatePaymentIntentAsync(additionalAmount, metadata,
+                customerId: ownerStripeCustomerId);
 
             return new OrderUpdatePaymentDto
             {

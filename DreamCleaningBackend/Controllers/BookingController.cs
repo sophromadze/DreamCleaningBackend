@@ -40,6 +40,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
         private readonly IBookingCreationService _bookingCreationService;
         private readonly IAdminBonusService _adminBonusService;
+        private readonly ICardOnFileService _cardOnFileService;
 
         // Stripe rejects any charge below $0.50 USD. When the payable total falls under this
         // (a gift card / credits fully cover the order), we skip Stripe entirely and treat the
@@ -61,7 +62,8 @@ namespace DreamCleaningBackend.Controllers
             IUserCleaningPhotoService userCleaningPhotoService,
             ILoyaltyDiscountService loyaltyDiscountService,
             IBookingCreationService bookingCreationService,
-            IAdminBonusService adminBonusService)
+            IAdminBonusService adminBonusService,
+            ICardOnFileService cardOnFileService)
         {
             _context = context;
             _configuration = configuration;
@@ -79,6 +81,7 @@ namespace DreamCleaningBackend.Controllers
             _loyaltyDiscountService = loyaltyDiscountService;
             _bookingCreationService = bookingCreationService;
             _adminBonusService = adminBonusService;
+            _cardOnFileService = cardOnFileService;
         }
 
         // Mirrors AuthController.SetAuthCookies — used by the guest auto-registration path in
@@ -1013,7 +1016,32 @@ namespace DreamCleaningBackend.Controllers
                         { "type", "booking" }
                     };
 
-                    paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata);
+                    // Card on file: attach the Stripe Customer whenever we can identify one, so
+                    // the frontend MAY confirm this intent with an already-saved card ("Pay with
+                    // card ending ####"). When the customer also ticked "save this card",
+                    // setup_future_usage stores the card they type for later explicit charges —
+                    // nothing is ever charged without a person clicking Pay/Charge. Best-effort:
+                    // if the customer profile can't be set up, the booking proceeds normally.
+                    string stripeCustomerId = null;
+                    var saveCard = dto.SaveCardForFutureUse;
+                    if (saveCard || !string.IsNullOrEmpty(user.StripeCustomerId))
+                    {
+                        try
+                        {
+                            stripeCustomerId = await _stripeService.CreateOrGetCustomerAsync(user);
+                            await _context.SaveChangesAsync(); // persist a freshly created StripeCustomerId
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Card on file: could not create Stripe customer for user {UserId}; booking proceeds without card saving", userId);
+                            saveCard = false;
+                            stripeCustomerId = null;
+                        }
+                    }
+
+                    paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata,
+                        customerId: stripeCustomerId,
+                        saveCardForOffSession: saveCard && stripeCustomerId != null);
                 }
 
                 // Guest auto-registration: in cookie-auth mode (production) the frontend
@@ -1066,6 +1094,9 @@ namespace DreamCleaningBackend.Controllers
                     return NotFound(new { message = "Order not found" });
                 if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, guestToken))
                     return NotFound(new { message = "Order not found" });
+                // Card on file is owner-only: a payment-link guest (often a relative paying on
+                // the owner's behalf) must never be able to use the owner's saved card.
+                var callerIsOwner = order.UserId == userId;
                 userId = order.UserId;
 
                 if (order.IsPaid)
@@ -1099,8 +1130,21 @@ namespace DreamCleaningBackend.Controllers
                     { "type", "booking" }
                 };
 
+                // Attach the owner's Stripe Customer (when they're the caller and have one) so
+                // the frontend MAY confirm this intent with their saved card. Attachment alone
+                // never charges anything — paying still takes an explicit click.
+                string ownerStripeCustomerId = null;
+                if (callerIsOwner)
+                {
+                    ownerStripeCustomerId = await _context.Users
+                        .AsNoTracking()
+                        .Where(u => u.Id == order.UserId)
+                        .Select(u => u.StripeCustomerId)
+                        .FirstOrDefaultAsync();
+                }
+
                 var paymentIntent = await _stripeService.CreatePaymentIntentAsync(order.Total, metadata,
-                    receiptEmail: OrderReceiptEmail(order));
+                    receiptEmail: OrderReceiptEmail(order), customerId: ownerStripeCustomerId);
 
                 // Update order with payment intent ID
                 order.PaymentIntentId = paymentIntent.Id;
@@ -1668,6 +1712,17 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 await _context.SaveChangesAsync();
+
+                // Card on file (opt-in checkbox at booking): the card that just paid THIS
+                // booking becomes the customer's saved card, only after the payment actually
+                // succeeded and only when a real charge was taken (a gift-card-fully-covered
+                // booking saved no card). TrySave never throws — a card-save problem must
+                // never break the paid booking.
+                if (bookingDataDto != null && bookingDataDto.SaveCardForFutureUse &&
+                    chargedNewBookingPaymentIntentId != null)
+                {
+                    await _cardOnFileService.TrySaveCardFromPaymentIntentAsync(userId, chargedNewBookingPaymentIntentId);
+                }
 
                 // Bubble Rewards: safety net — welcome bonus is granted at registration; this covers legacy accounts created before that
                 if (wasFirstTimeOrder && userId > 0)
