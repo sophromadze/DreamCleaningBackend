@@ -185,6 +185,40 @@ namespace DreamCleaningBackend.Models
         public string Status { get; set; } = "Pending";
 
         /// <summary>
+        /// The status this order held immediately before a refund overwrote it with "Refunded".
+        /// Exists because reporting must distinguish a job that was COMPLETED and then refunded —
+        /// the cleaner was paid, so that salary is a real cost that has to keep counting — from one
+        /// refunded before anyone cleaned, which has no cost at all. Without this, adding
+        /// "Refunded" to the statistics filter would invent cleaner wages for work never done.
+        /// Null on every order that has never been fully refunded.
+        /// </summary>
+        [StringLength(50)]
+        public string? StatusBeforeRefund { get; set; }
+
+        /// <summary>
+        /// Running total refunded on this order, maintained by OrderRefundService so revenue
+        /// queries don't have to join OrderRefunds. This is a CACHE for reporting, not the
+        /// refundable ceiling — that is always read live from Stripe (see OrderRefund), because
+        /// refunds issued from the Stripe Dashboard never pass through our code and so are not
+        /// counted here. GetRefundSummaryAsync reconciles the value opportunistically.
+        /// </summary>
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal TotalRefundedAmount { get; set; } = 0;
+
+        /// <summary>
+        /// Soft-hide for the admin orders list only. Hiding changes NO order data and no status —
+        /// it just drops the row out of the default list view, and is fully reversible.
+        /// </summary>
+        public bool IsHidden { get; set; } = false;
+
+        public DateTime? HiddenAt { get; set; }
+
+        public int? HiddenByUserId { get; set; }
+
+        [ForeignKey("HiddenByUserId")]
+        public virtual User? HiddenByUser { get; set; }
+
+        /// <summary>
         /// Secret token embedded in emailed/SMSed payment links (/order/{id}/pay?t=...). Lets the
         /// recipient open the order's payment page WITHOUT logging in — but only while something
         /// is unpaid (initial payment or a pending additional payment); guest access dies once
@@ -251,6 +285,10 @@ namespace DreamCleaningBackend.Models
 
         // Navigation property for update history
         public virtual ICollection<OrderUpdateHistory> UpdateHistory { get; set; } = new List<OrderUpdateHistory>();
+
+        // Admin-initiated refunds. Audit log only — see OrderRefund; the refundable ceiling is
+        // read live from Stripe, never summed from here.
+        public virtual ICollection<OrderRefund> Refunds { get; set; } = new List<OrderRefund>();
 
         // The admin (User with Admin or SuperAdmin role) currently responsible for this
         // order. Determines bonus credit. History of changes lives in

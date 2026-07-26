@@ -140,9 +140,15 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             // Source of truth is the Orders table — see BuildComputedCustomers. The denormalized
             // User fields are only a fallback when the customer has no non-cancelled orders.
-            var nonCancelled = orders.Where(o => o.Status != "cancelled").ToList();
+            // Refunded orders are excluded alongside cancelled ones, and refunded money is netted
+            // out of the rest — lifetime value must reflect what the customer actually kept paying.
+            var nonCancelled = orders
+                .Where(o => !OrderStatuses.IsCancelled(o.Status) && !OrderStatuses.IsRefunded(o.Status))
+                .ToList();
             var orderCount = nonCancelled.Count;
-            var ltv = nonCancelled.Count > 0 ? nonCancelled.Sum(o => o.Total) : user.TotalSpentAmount;
+            var ltv = nonCancelled.Count > 0
+                ? nonCancelled.Sum(o => o.Total - o.TotalRefundedAmount)
+                : user.TotalSpentAmount;
             var lastOrder = nonCancelled.Count > 0 ? nonCancelled.Max(o => (DateTime?)o.ServiceDate) : user.LastOrderDate;
             var firstOrder = nonCancelled.Count > 0 ? nonCancelled.Min(o => (DateTime?)o.ServiceDate) : null;
             var isSubscribed = IsSubscribed(user);
@@ -285,15 +291,18 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             var ids = users.Select(u => u.Id).ToList();
 
-            // Order aggregates (exclude cancelled) grouped by user.
+            // Order aggregates (exclude cancelled and fully-refunded) grouped by user. Refunded
+            // money is netted out of the remaining orders so LTV tracks what the customer kept paying.
             var aggregates = await _context.Orders
-                .Where(o => ids.Contains(o.UserId) && o.Status != "cancelled")
+                .Where(o => ids.Contains(o.UserId)
+                    && o.Status != OrderStatuses.Cancelled
+                    && o.Status != OrderStatuses.Refunded)
                 .GroupBy(o => o.UserId)
                 .Select(g => new
                 {
                     UserId = g.Key,
                     Count = g.Count(),
-                    Sum = g.Sum(o => o.Total),
+                    Sum = g.Sum(o => o.Total - o.TotalRefundedAmount),
                     MaxDate = g.Max(o => o.ServiceDate)
                 })
                 .ToListAsync();

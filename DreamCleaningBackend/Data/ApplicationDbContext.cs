@@ -41,6 +41,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<PollSubmission> PollSubmissions { get; set; }
         public DbSet<PollAnswer> PollAnswers { get; set; }
         public DbSet<OrderUpdateHistory> OrderUpdateHistories { get; set; }
+        public DbSet<OrderRefund> OrderRefunds { get; set; }
         public DbSet<MaintenanceMode> MaintenanceModes { get; set; }
         public DbSet<WebhookEvent> WebhookEvents { get; set; }
         public DbSet<GoogleReview> GoogleReviews { get; set; }
@@ -447,6 +448,34 @@ namespace DreamCleaningBackend.Data
             modelBuilder.Entity<OrderUpdateHistory>()
                 .Property(ouh => ouh.IsPaid)
                 .HasDefaultValue(false);
+
+            // Soft-hide bookkeeping. Restrict on the hiding admin so a user who has hidden orders
+            // can't be hard-deleted out from under the record of who hid them.
+            modelBuilder.Entity<Order>()
+                .HasOne(o => o.HiddenByUser)
+                .WithMany()
+                .HasForeignKey(o => o.HiddenByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // The default list view filters on IsHidden on every load.
+            modelBuilder.Entity<Order>()
+                .HasIndex(o => o.IsHidden)
+                .HasDatabaseName("IX_Orders_IsHidden");
+
+            // OrderRefund configuration — Restrict on the admin so a user who has issued refunds
+            // can't be hard-deleted out from under the money trail (same rule as OrderTransfer).
+            modelBuilder.Entity<OrderRefund>(entity =>
+            {
+                entity.HasIndex(e => e.OrderId).HasDatabaseName("IX_OrderRefunds_OrderId");
+                entity.HasOne(e => e.Order)
+                      .WithMany(o => o.Refunds)
+                      .HasForeignKey(e => e.OrderId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.RefundedByUser)
+                      .WithMany()
+                      .HasForeignKey(e => e.RefundedByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
 
             // PendingOrderEdit configuration (Admin-submitted order edits awaiting SuperAdmin approval)
             modelBuilder.Entity<PendingOrderEdit>()

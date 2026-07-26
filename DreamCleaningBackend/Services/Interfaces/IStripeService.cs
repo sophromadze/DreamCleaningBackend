@@ -20,6 +20,24 @@ namespace DreamCleaningBackend.Services.Interfaces
         public string? FailureReason { get; set; }
     }
 
+    /// <summary>
+    /// Live refund state of ONE Stripe charge, in dollars. Read straight from Stripe rather than
+    /// derived from our OrderRefunds table, because refunds issued from the Stripe Dashboard leave
+    /// no row on our side — trusting our own table would let the same money be refunded twice.
+    /// </summary>
+    public class ChargeRefundState
+    {
+        /// <summary>True when the intent actually settled money we could give back.</summary>
+        public bool IsRefundable { get; set; }
+        /// <summary>Amount Stripe actually captured on this intent.</summary>
+        public decimal AmountReceived { get; set; }
+        /// <summary>Already refunded against this intent, by us OR from the Stripe Dashboard.</summary>
+        public decimal AmountRefunded { get; set; }
+        public decimal RemainingRefundable => Math.Max(0m, AmountReceived - AmountRefunded);
+        /// <summary>Why it isn't refundable (never settled, lookup failed, …). Admin-facing.</summary>
+        public string? UnavailableReason { get; set; }
+    }
+
     public interface IStripeService
     {
         /// <param name="customerId">Stripe Customer to attach the intent to. Required when
@@ -31,7 +49,18 @@ namespace DreamCleaningBackend.Services.Interfaces
             string receiptEmail = null, string customerId = null, bool saveCardForOffSession = false);
         Task<PaymentIntent> ConfirmPaymentIntentAsync(string paymentIntentId);
         Task<PaymentIntent> GetPaymentIntentAsync(string paymentIntentId);
-        Task<Refund> CreateRefundAsync(string paymentIntentId, decimal? amount = null);
+        /// <param name="idempotencyKey">Pass one for any admin-triggered refund so a double-click
+        /// or retry can never refund twice. Callers use the OrderRefund row's PK, which is unique
+        /// per intended refund and stable across retries of that same row.</param>
+        /// <param name="metadata">Traceability only (orderId, adminUserId). The internal admin
+        /// reason must NOT go here — Stripe's own `reason` field takes only its fixed enum.</param>
+        Task<Refund> CreateRefundAsync(string paymentIntentId, decimal? amount = null,
+            string idempotencyKey = null, Dictionary<string, string> metadata = null);
+
+        /// <summary>How much of this charge is still refundable, read live from Stripe.
+        /// Never throws — a lookup failure comes back as IsRefundable=false with a reason, so a
+        /// Stripe outage disables the refund button instead of breaking the order panel.</summary>
+        Task<ChargeRefundState> GetChargeRefundStateAsync(string paymentIntentId);
 
         /// <summary>Returns the user's Stripe Customer id, creating the Customer (and setting
         /// user.StripeCustomerId on the tracked entity — the CALLER SaveChanges) if missing or

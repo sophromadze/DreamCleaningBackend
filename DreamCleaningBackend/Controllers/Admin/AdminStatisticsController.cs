@@ -57,8 +57,18 @@ namespace DreamCleaningBackend.Controllers
         {
             // Counts both Stripe-paid orders (IsPaid=true, PaymentMethod=Normal) and manual-paid
             // orders (PaymentMethod != Normal, IsPaid=false) — see Order.PaymentMethod docs.
+            //
+            // Fully-refunded orders carry Status="Refunded", so they are pulled back in via
+            // StatusBeforeRefund: the cleaning still happened and the cleaner was still paid, so
+            // that salary is a real cost that has to keep counting. Their revenue is cancelled out
+            // by the TotalRefundedAmount subtraction below instead of by dropping the row — which
+            // is what keeps a retained cancellation fee counting as income. Orders refunded BEFORE
+            // service never had StatusBeforeRefund="Done" and stay excluded, so no cleaner wage is
+            // invented for work nobody did.
             var query = _context.Orders
-                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal) && o.Status == "Done");
+                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
+                    && (o.Status == OrderStatuses.Done
+                        || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done)));
 
             if (from.HasValue)
                 query = query.Where(o => o.ServiceDate >= from.Value.Date);
@@ -68,12 +78,17 @@ namespace DreamCleaningBackend.Controllers
 
             var stats = await query.GroupBy(_ => 1).Select(g => new OrderStatisticsDto
             {
-                TotalOrders = g.Count(),
-                TotalAmount = g.Sum(o => o.SubTotal),
+                // A fully-refunded order earned nothing, so it doesn't count as an order sold.
+                // It stays in the money math above purely to carry its cleaner cost.
+                TotalOrders = g.Count(o => o.Status != OrderStatuses.Refunded),
+                TotalAmount = g.Sum(o => o.SubTotal) - g.Sum(o => o.TotalRefundedAmount),
+                // Tax and tips are left untouched per the agreed rule — only the revenue buckets
+                // move. See the note on the finances page if these need to net down too.
                 TotalTaxes = g.Sum(o => o.Tax),
                 TotalTips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
                 TotalCleanersSalary = g.Sum(o => o.CleanerTotalSalary),
-                TotalCompanyRevenueGross = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary)
+                TotalCompanyRevenueGross = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax)
+                    - g.Sum(o => o.CleanerTotalSalary) - g.Sum(o => o.TotalRefundedAmount)
             }).FirstOrDefaultAsync() ?? new OrderStatisticsDto();
 
             // Expenses use the same window. Match the inclusive `to` convention used above.
@@ -83,7 +98,12 @@ namespace DreamCleaningBackend.Controllers
 
             // Re-apply the same date window conditionally (never push DateTime.MinValue into SQL —
             // it's out of MariaDB's DATETIME range; the main query above bounds the same way).
-            IQueryable<Order> windowed = _context.Orders.Where(o => o.Status == "Done");
+            // Same performed-order set as `query` above: a refunded order's Stripe processing fee is
+            // still a real cost — Stripe keeps its fee when you refund a charge — so the order has
+            // to stay in the fee base rather than vanish with its status change.
+            IQueryable<Order> windowed = _context.Orders
+                .Where(o => o.Status == OrderStatuses.Done
+                    || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done));
             if (from.HasValue)
                 windowed = windowed.Where(o => o.ServiceDate >= from.Value.Date);
             if (to.HasValue)
@@ -114,8 +134,11 @@ namespace DreamCleaningBackend.Controllers
 
             // Admin bonuses (GEL), converted to USD per-month at each month's locked FX rate.
             // Eligible = assigned + Done + (paid or manual), matching AdminBonusService.
+            // Fully-refunded orders are excluded: the order brought in no income, so it earns no
+            // bonus. A PARTIALLY refunded order keeps its bonus — the company kept some of the money.
             var bonusByMonth = await windowed
-                .Where(o => o.AssignedAdminId != null && (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal))
+                .Where(o => o.AssignedAdminId != null && (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
+                    && o.Status != OrderStatuses.Refunded)
                 .GroupBy(o => new { o.ServiceDate.Year, o.ServiceDate.Month })
                 .Select(g => new { g.Key.Year, g.Key.Month, Count = g.Count() })
                 .ToListAsync();
@@ -146,9 +169,12 @@ namespace DreamCleaningBackend.Controllers
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)
         {
-            // Same filter as /statistics — include manual-paid orders alongside Stripe-paid.
+            // Same filter as /statistics — include manual-paid orders alongside Stripe-paid, and
+            // keep fully-refunded orders that were performed so their cleaner cost still counts.
             var query = _context.Orders
-                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal) && o.Status == "Done");
+                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
+                    && (o.Status == OrderStatuses.Done
+                        || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done)));
 
             if (from.HasValue)
                 query = query.Where(o => o.ServiceDate >= from.Value.Date);
@@ -169,7 +195,9 @@ namespace DreamCleaningBackend.Controllers
                     o.Total,
                     o.IsPaid,
                     o.PaymentMethod,
-                    o.AssignedAdminId
+                    o.AssignedAdminId,
+                    o.Status,
+                    o.TotalRefundedAmount
                 })
                 .ToListAsync();
 
@@ -216,14 +244,18 @@ namespace DreamCleaningBackend.Controllers
                     var stripeFees = g.Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal)
                                       .Sum(o => StripeFeeFor(o.Total
                                           - (manualAdditionalsByOrder.TryGetValue(o.Id, out var mAdd) ? mAdd : 0m)));
-                    var adminBonuses = g.Where(o => o.AssignedAdminId != null)
+                    // Mirrors /statistics: a fully-refunded order earns no bonus, but a partially
+                    // refunded one does — the company kept part of the money.
+                    var adminBonuses = g.Where(o => o.AssignedAdminId != null
+                                                 && !OrderStatuses.IsRefunded(o.Status))
                                         .Sum(o => BonusUsdFor(o.ServiceDate.Year, o.ServiceDate.Month));
                     var computed = stripeFees + adminBonuses;
+                    var refunded = g.Sum(o => o.TotalRefundedAmount);
                     return new DailyStatisticsDto
                     {
                         Date = g.Key.ToString("yyyy-MM-dd"),
-                        Orders = g.Count(),
-                        Amount = g.Sum(o => o.SubTotal),
+                        Orders = g.Count(o => !OrderStatuses.IsRefunded(o.Status)),
+                        Amount = g.Sum(o => o.SubTotal) - refunded,
                         Taxes = g.Sum(o => o.Tax),
                         Tips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
                         CleanersSalary = g.Sum(o => o.CleanerTotalSalary),
@@ -231,7 +263,8 @@ namespace DreamCleaningBackend.Controllers
                         AdminBonuses = adminBonuses,
                         // Expenses starts with the computed fees/bonuses; table expenses are folded in below.
                         Expenses = computed,
-                        CompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax) - g.Sum(o => o.CleanerTotalSalary) - computed
+                        CompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax)
+                            - g.Sum(o => o.CleanerTotalSalary) - computed - refunded
                     };
                 });
 

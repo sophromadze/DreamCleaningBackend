@@ -39,6 +39,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IOrderTransferService _orderTransferService;
         private readonly IStripeService _stripeService;
         private readonly ISubscriptionService _subscriptionService;
+        private readonly IOrderRefundService _orderRefundService;
         private readonly ILogger<AdminOrdersController> _logger;
 
         public AdminOrdersController(ApplicationDbContext context,
@@ -54,6 +55,7 @@ namespace DreamCleaningBackend.Controllers
             IOrderTransferService orderTransferService,
             IStripeService stripeService,
             ISubscriptionService subscriptionService,
+            IOrderRefundService orderRefundService,
             ILogger<AdminOrdersController> logger)
         {
             _logger = logger;
@@ -70,6 +72,52 @@ namespace DreamCleaningBackend.Controllers
             _orderTransferService = orderTransferService;
             _stripeService = stripeService;
             _subscriptionService = subscriptionService;
+            _orderRefundService = orderRefundService;
+        }
+
+        /// <summary>
+        /// Refund history + the live remaining-refundable ceiling for one order. Kept on its own
+        /// admin-only endpoint rather than folded into OrderDto: OrderDtoMapper.ToOrderDto is the
+        /// SHARED shape behind the customer's own order-details page, so putting refunds there
+        /// would expose admin names and internal reason notes to customers.
+        /// </summary>
+        [HttpGet("orders/{orderId}/refunds")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<OrderRefundSummaryDto>> GetOrderRefunds(int orderId)
+        {
+            try
+            {
+                return Ok(await _orderRefundService.GetRefundSummaryAsync(orderId));
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound();
+            }
+        }
+
+        /// <summary>
+        /// SuperAdmin-only: refund money to the customer's card. Amount null = everything still
+        /// refundable. Refunds are ONLY ever issued here, by an explicit admin action — nothing in
+        /// the system refunds automatically.
+        /// </summary>
+        [HttpPost("orders/{orderId}/refund")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<RefundResultDto>> RefundOrder(int orderId, [FromBody] IssueRefundDto dto)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var adminUserId = GetCurrentUserId();
+            if (adminUserId == 0)
+                return Unauthorized();
+
+            var result = await _orderRefundService.IssueRefundAsync(
+                orderId, dto.Amount, dto.Reason, adminUserId, dto.SendEmail);
+
+            // A partial refund reports Success=false but still carries the amount that DID go
+            // through, so 200 is correct — the client must render the outcome, not treat it as a
+            // failed request that can be blindly retried in full.
+            return Ok(result);
         }
 
         /// <summary>SuperAdmin-only: export orders to an .xlsx file (same pattern as the users-tab
@@ -352,19 +400,108 @@ namespace DreamCleaningBackend.Controllers
         }
 
         // Orders Management
+        /// <param name="includeHidden">Ticking "Show hidden orders" in the admin table. Available to
+        /// EVERY admin role — anyone can view hidden orders; only SuperAdmin can hide/unhide them.</param>
         [HttpGet("orders")]
         [RequirePermission(Permission.View)]
-        public async Task<ActionResult<List<OrderListDto>>> GetAllOrders()
+        public async Task<ActionResult<List<OrderListDto>>> GetAllOrders([FromQuery] bool includeHidden = false)
         {
             try
             {
-                var orders = await _orderService.GetAllOrdersForAdmin();
+                var orders = await _orderService.GetAllOrdersForAdmin(includeHidden);
                 return Ok(orders);
             }
             catch (Exception ex)
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// SuperAdmin-only: soft-hide an order from the default admin list. This is a VIEW filter
+        /// and nothing more — status, payment state, revenue totals and every stats query are
+        /// untouched, and it is fully reversible via /unhide. Distinct from DELETE, which is
+        /// permanent. Hidden orders remain visible to all roles via "Show hidden orders".
+        ///
+        /// Only CANCELLED or FULLY REFUNDED orders may be hidden — see OrderStatuses.CanBeHidden.
+        /// Live and completed orders are rejected so real work can't be tidied out of sight.
+        /// </summary>
+        [HttpPost("orders/{orderId}/hide")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> HideOrder(int orderId)
+        {
+            return await SetOrderHiddenAsync(orderId, hidden: true);
+        }
+
+        /// <summary>SuperAdmin-only: restore a soft-hidden order to the default list view.</summary>
+        [HttpPost("orders/{orderId}/unhide")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> UnhideOrder(int orderId)
+        {
+            return await SetOrderHiddenAsync(orderId, hidden: false);
+        }
+
+        private async Task<ActionResult> SetOrderHiddenAsync(int orderId, bool hidden)
+        {
+            var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null)
+                return NotFound();
+
+            // Enforced server-side, not just by hiding the button: only dead orders can be hidden.
+            // Unhide is intentionally exempt — an order reactivated while hidden still has to be
+            // restorable, and restoring one to the list can never lose anything.
+            if (hidden && !OrderStatuses.CanBeHidden(order.Status))
+            {
+                return BadRequest(new
+                {
+                    message = "Only cancelled or fully refunded orders can be hidden. "
+                            + "Cancel or refund this order first."
+                });
+            }
+
+            if (order.IsHidden == hidden)
+            {
+                return Ok(new
+                {
+                    message = hidden ? "Order is already hidden." : "Order is already visible.",
+                    isHidden = order.IsHidden
+                });
+            }
+
+            var originalOrder = new Order
+            {
+                Id = order.Id,
+                UserId = order.UserId,
+                Status = order.Status,
+                IsHidden = order.IsHidden,
+                HiddenAt = order.HiddenAt,
+                HiddenByUserId = order.HiddenByUserId
+            };
+
+            order.IsHidden = hidden;
+            // Cleared on unhide so a re-hidden order doesn't carry a misleading earlier timestamp.
+            order.HiddenAt = hidden ? DateTime.UtcNow : null;
+            order.HiddenByUserId = hidden ? GetCurrentUserId() : null;
+
+            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _auditService.LogUpdateAsync(originalOrder, order);
+            }
+            catch (Exception ex)
+            {
+                // Audit failure must not undo a completed hide/unhide.
+                _logger.LogError(ex, "Could not audit hide/unhide of order {OrderId}", orderId);
+            }
+
+            return Ok(new
+            {
+                message = hidden
+                    ? "Order hidden from the list."
+                    : "Order restored to the list.",
+                isHidden = order.IsHidden
+            });
         }
 
         [HttpGet("orders/{orderId}")]

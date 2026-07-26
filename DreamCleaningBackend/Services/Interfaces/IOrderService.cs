@@ -7,7 +7,7 @@ namespace DreamCleaningBackend.Services.Interfaces
     public interface IOrderService
     {
         Task<List<OrderListDto>> GetUserOrders(int userId);
-        Task<List<OrderListDto>> GetAllOrdersForAdmin();
+        Task<List<OrderListDto>> GetAllOrdersForAdmin(bool includeHidden = false);
         Task<OrderDto> GetOrderById(int orderId, int userId);
         Task<OrderDto> UpdateOrder(int orderId, int userId, UpdateOrderDto updateOrderDto);
         Task<bool> CancelOrder(int orderId, int userId, CancelOrderDto cancelOrderDto);

@@ -282,11 +282,12 @@ namespace DreamCleaningBackend.Controllers
                 .Select(os => new { os.OrderId, os.Quantity })
                 .ToDictionaryAsync(x => x.OrderId, x => x.Quantity);
 
-            // Total $ spent per user, across all non-cancelled orders.
+            // Total $ spent per user, across all non-cancelled, non-refunded orders, with refunded
+            // money netted out of the rest so the export matches what the customer actually paid.
             var totalSpentByUser = await _context.Orders
-                .Where(o => o.Status != "Cancelled")
+                .Where(o => o.Status != OrderStatuses.Cancelled && o.Status != OrderStatuses.Refunded)
                 .GroupBy(o => o.UserId)
-                .Select(g => new { UserId = g.Key, Total = g.Sum(o => o.Total) })
+                .Select(g => new { UserId = g.Key, Total = g.Sum(o => o.Total - o.TotalRefundedAmount) })
                 .ToDictionaryAsync(g => g.UserId, g => g.Total);
 
             using var workbook = new ClosedXML.Excel.XLWorkbook();

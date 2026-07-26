@@ -479,6 +479,9 @@ namespace DreamCleaningBackend.Services
             "AuditLog", "BubblePointsAdjustment", "CleanerAssignment", "OrderServicesUpdate",
             // Payment + external side effects.
             "PaymentHistory", "WebhookEvent",
+            // Refunds are real money already returned to the customer. Deleting the row would
+            // hide the payout and make the order look fully refundable again.
+            "OrderRefund",
             // Notification + scheduling logs.
             "NotificationLog", "ScheduledMail", "ScheduledSms",
             // Order-update history rows track money owed; reverting these breaks payment accounting.

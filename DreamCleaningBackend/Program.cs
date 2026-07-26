@@ -183,6 +183,8 @@ builder.Services.AddHostedService<CleanerNotificationService>();
 builder.Services.AddHostedService<CustomerNotificationService>();
 builder.Services.AddSingleton<IBookingDataService, BookingDataService>();
 builder.Services.AddScoped<IStripeService, StripeService>();
+// Admin-initiated refunds. Only ever runs from the orders panel — nothing refunds automatically.
+builder.Services.AddScoped<IOrderRefundService, OrderRefundService>();
 // Card on file: one saved card per user, charged only by explicit customer/admin action.
 builder.Services.AddScoped<ICardOnFileService, CardOnFileService>();
 builder.Services.AddScoped<IMaintenanceModeService, MaintenanceModeService>();

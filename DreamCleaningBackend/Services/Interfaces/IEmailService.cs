@@ -47,6 +47,12 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendOrderUpdateNotificationAsync(int orderId, string customerEmail, decimal additionalAmount);
         Task SendCompanyAdditionalPaymentReceivedAsync(int orderId, string customerEmail, string customerName, decimal amountPaid);
         Task SendPaymentReminderEmailAsync(string email, string customerName, decimal amount, int orderId, string orderLink);
+
+        /// <summary>Customer-facing refund confirmation, sent from our own SMTP (Stripe's built-in
+        /// refund emails stay off). Deliberately free of payment-processor vocabulary — no
+        /// "payment intent", "charge" or "processor" reaches the customer.</summary>
+        Task SendRefundConfirmationEmailAsync(string email, string firstName, int orderId,
+            decimal refundAmount, bool isFullRefund, DateTime serviceDate, string serviceAddress);
         /// <summary>Notify customer that their order was updated and an additional payment is required. Includes payment link.</summary>
         Task SendAdditionalPaymentRequiredEmailAsync(string email, string customerName, decimal additionalAmount, int orderId, string paymentLink);
         /// <summary>Gentle reminder that the customer has an unpaid additional amount. Same styling as required email.</summary>

@@ -35,13 +35,21 @@ namespace DreamCleaningBackend.Services
             _loyaltyDiscountService = loyaltyDiscountService;
         }
 
-        public async Task<List<OrderListDto>> GetAllOrdersForAdmin()
+        /// <param name="includeHidden">When false (the default list view), soft-hidden orders are
+        /// left out. Hiding is a VIEW filter only — it changes no order data and no status.</param>
+        public async Task<List<OrderListDto>> GetAllOrdersForAdmin(bool includeHidden = false)
         {
             // Get ALL orders from the database without filtering by userId
-            var orders = await _context.Orders
+            var query = _context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
                 .Include(o => o.AssignedAdmin)
+                .AsQueryable();
+
+            if (!includeHidden)
+                query = query.Where(o => !o.IsHidden);
+
+            var orders = await query
                 .OrderByDescending(o => o.OrderDate)
                 .ToListAsync();
 
@@ -94,7 +102,9 @@ namespace DreamCleaningBackend.Services
                     : null,
                 BookedByAdmin = o.IsBookedByAdmin(),
                 Flag = (o.User?.Flag ?? CustomerFlagLevel.None).ToString(),
-                FlagReason = o.User?.FlagReason
+                FlagReason = o.User?.FlagReason,
+                TotalRefundedAmount = o.TotalRefundedAmount,
+                IsHidden = o.IsHidden
             }).ToList();
         }
 

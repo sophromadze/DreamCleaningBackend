@@ -1991,6 +1991,74 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        public async Task SendRefundConfirmationEmailAsync(string email, string firstName, int orderId,
+            decimal refundAmount, bool isFullRefund, DateTime serviceDate, string serviceAddress)
+        {
+            var subject = $"Your Refund Has Been Issued - Order #{orderId}";
+            var amountFormatted = refundAmount.ToString("C");
+            var refundTypeLabel = isFullRefund ? "Full refund" : "Partial refund";
+            var supportEmail = _configuration["Email:FromAddress"];
+
+            // Wording rule: nothing here may name the payment processor or its concepts. The
+            // customer sees "your card" and "your bank", never "charge"/"payment intent"/"Stripe".
+            var body = $@"
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                    .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid #4CAF50; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: #4CAF50; }}
+                    .details {{ background-color: #fff; border-radius: 5px; padding: 20px; margin: 20px 0; }}
+                    .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
+                </style>
+            </head>
+            <body>
+                <div class='container'>
+                    <div class='header'>
+                        <h1 style='margin: 0;'>Your Refund Is On Its Way</h1>
+                    </div>
+                    <div class='content'>
+                        <h2>Hi {firstName},</h2>
+                        <p>We've issued a refund for your cleaning order. Here are the details:</p>
+
+                        <div class='amount-box'>
+                            <div style='color: #666; font-size: 14px; margin-bottom: 5px;'>{refundTypeLabel}</div>
+                            <div class='amount'>{amountFormatted}</div>
+                        </div>
+
+                        <div class='details'>
+                            <p style='margin: 0 0 10px 0;'><strong>Order Number:</strong> #{orderId}</p>
+                            <p style='margin: 0 0 10px 0;'><strong>Service Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
+                            <p style='margin: 0;'><strong>Service Address:</strong> {serviceAddress}</p>
+                        </div>
+
+                        <p><strong>When will I see the money?</strong><br/>
+                        The refund goes back to the card you originally paid with. It usually takes
+                        <strong>5&ndash;10 business days</strong> to appear on your statement, depending on your bank.</p>
+
+                        <p style='color: #666; font-size: 14px; margin-top: 30px;'>
+                            If you have any questions about this refund, just reply to this email or
+                            contact us at {supportEmail} or call (929) 930-1525 &mdash; we're happy to help.
+                        </p>
+                    </div>
+                    <div class='footer'>
+                        <p>Thank you for choosing Dream Cleaning!</p>
+                        <p>&copy; {DateTime.UtcNow.Year} Dream Cleaning. All rights reserved.</p>
+                    </div>
+                </div>
+            </body>
+            </html>";
+
+            // Throws on SMTP failure by design — OrderRefundService catches it, logs, and leaves
+            // EmailSent = false. A refund that already moved money must never be reported as failed
+            // just because the email bounced.
+            await SendEmailAsync(email, subject, body);
+            _logger.LogInformation("Refund confirmation email sent to {Email} for Order #{OrderId}", email, orderId);
+        }
+
         public async Task SendPaymentReminderEmailAsync(string email, string customerName, decimal amount, int orderId, string orderLink)
         {
             try

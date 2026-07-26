@@ -75,27 +75,89 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        public async Task<Refund> CreateRefundAsync(string paymentIntentId, decimal? amount = null)
+        public async Task<Refund> CreateRefundAsync(string paymentIntentId, decimal? amount = null,
+            string idempotencyKey = null, Dictionary<string, string> metadata = null)
         {
             try
             {
                 var options = new RefundCreateOptions
                 {
-                    PaymentIntent = paymentIntentId
+                    PaymentIntent = paymentIntentId,
+                    Metadata = metadata
                 };
 
                 if (amount.HasValue)
                 {
-                    options.Amount = (long)(amount.Value * 100); // Partial refund
+                    // Round before scaling: (long)(x * 100) truncates, so a decimal that lands a
+                    // hair under a cent boundary would silently refund a penny short.
+                    options.Amount = (long)Math.Round(amount.Value * 100, MidpointRounding.AwayFromZero);
                 }
 
-                var service = new RefundService();
-                return await service.CreateAsync(options);
+                var service = new Stripe.RefundService();
+                var requestOptions = string.IsNullOrWhiteSpace(idempotencyKey)
+                    ? null
+                    : new RequestOptions { IdempotencyKey = idempotencyKey };
+
+                return await service.CreateAsync(options, requestOptions);
             }
             catch (StripeException ex)
             {
                 _logger.LogError(ex, "Error creating refund");
                 throw new ApplicationException($"Refund processing error: {ex.Message}");
+            }
+        }
+
+        public async Task<ChargeRefundState> GetChargeRefundStateAsync(string paymentIntentId)
+        {
+            // Synthetic references (gift-card-covered orders) never touched Stripe.
+            if (string.IsNullOrWhiteSpace(paymentIntentId) || !paymentIntentId.StartsWith("pi_"))
+            {
+                return new ChargeRefundState
+                {
+                    IsRefundable = false,
+                    UnavailableReason = "This order was not paid by card."
+                };
+            }
+
+            try
+            {
+                var service = new PaymentIntentService();
+                // latest_charge carries amount_refunded — the only place Dashboard-issued refunds
+                // show up. Without the expand it comes back as a bare id and reads as 0 refunded.
+                var intent = await service.GetAsync(paymentIntentId, new PaymentIntentGetOptions
+                {
+                    Expand = new List<string> { "latest_charge" }
+                });
+
+                if (intent.Status != "succeeded" || intent.AmountReceived <= 0)
+                {
+                    return new ChargeRefundState
+                    {
+                        IsRefundable = false,
+                        UnavailableReason = "This payment never completed, so there is nothing to refund."
+                    };
+                }
+
+                var alreadyRefunded = intent.LatestCharge?.AmountRefunded ?? 0L;
+
+                return new ChargeRefundState
+                {
+                    IsRefundable = true,
+                    AmountReceived = intent.AmountReceived / 100m,
+                    AmountRefunded = alreadyRefunded / 100m
+                };
+            }
+            catch (StripeException ex)
+            {
+                // Deliberately swallowed: the order panel must still render if Stripe is down or
+                // the intent belongs to a different (e.g. rotated) account. Refunding is disabled
+                // rather than guessed at — guessing here means double-refunding real money.
+                _logger.LogError(ex, "Could not read refund state for payment intent {PaymentIntentId}", paymentIntentId);
+                return new ChargeRefundState
+                {
+                    IsRefundable = false,
+                    UnavailableReason = "Could not reach the payment provider to check this charge."
+                };
             }
         }
 

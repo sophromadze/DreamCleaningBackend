@@ -292,6 +292,14 @@ namespace DreamCleaningBackend.DTOs
         // Drives the row tint in the admin orders table. Reason shown in the row tooltip.
         public string Flag { get; set; } = "None";
         public string? FlagReason { get; set; }
+
+        // Money already refunded on this order. The admin table's header cards subtract it from
+        // their revenue totals, so a retained cancellation fee still shows as income.
+        public decimal TotalRefundedAmount { get; set; }
+
+        // Soft-hidden from the default list view. Rows only appear when "Show hidden orders" is
+        // ticked, and are dimmed with a HIDDEN badge so they can't be mistaken for live orders.
+        public bool IsHidden { get; set; }
     }
 
     public class CancelOrderDto

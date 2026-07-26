@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260726091459_AddOrderRefunds")]
+    partial class AddOrderRefunds
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2863,12 +2866,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(14)
                         .HasColumnType("varchar(14)");
 
-                    b.Property<DateTime?>("HiddenAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int?>("HiddenByUserId")
-                        .HasColumnType("int");
-
                     b.Property<decimal>("InitialCompanyDevelopmentTips")
                         .HasColumnType("decimal(18,2)");
 
@@ -2885,9 +2882,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<bool>("IsAutoCancelExempt")
-                        .HasColumnType("tinyint(1)");
-
-                    b.Property<bool>("IsHidden")
                         .HasColumnType("tinyint(1)");
 
                     b.Property<bool>("IsLateCancellation")
@@ -2981,10 +2975,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)");
 
-                    b.Property<string>("StatusBeforeRefund")
-                        .HasMaxLength(50)
-                        .HasColumnType("varchar(50)");
-
                     b.Property<decimal>("SubTotal")
                         .HasColumnType("decimal(18,2)");
 
@@ -3005,9 +2995,6 @@ namespace DreamCleaningBackend.Migrations
 
                     b.Property<decimal>("TotalDuration")
                         .HasColumnType("decimal(65,30)");
-
-                    b.Property<decimal>("TotalRefundedAmount")
-                        .HasColumnType("decimal(18,2)");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime(6)");
@@ -3032,11 +3019,6 @@ namespace DreamCleaningBackend.Migrations
 
                     b.HasIndex("BookedByAdminUserId")
                         .HasDatabaseName("IX_Orders_BookedByAdminUserId");
-
-                    b.HasIndex("HiddenByUserId");
-
-                    b.HasIndex("IsHidden")
-                        .HasDatabaseName("IX_Orders_IsHidden");
 
                     b.HasIndex("ServiceTypeId");
 
@@ -5556,11 +5538,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasForeignKey("BookedByAdminUserId")
                         .OnDelete(DeleteBehavior.SetNull);
 
-                    b.HasOne("DreamCleaningBackend.Models.User", "HiddenByUser")
-                        .WithMany()
-                        .HasForeignKey("HiddenByUserId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("DreamCleaningBackend.Models.ServiceType", "ServiceType")
                         .WithMany("Orders")
                         .HasForeignKey("ServiceTypeId")
@@ -5583,8 +5560,6 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("AssignedAdmin");
 
                     b.Navigation("BookedByAdmin");
-
-                    b.Navigation("HiddenByUser");
 
                     b.Navigation("ServiceType");
 
