@@ -632,7 +632,11 @@ namespace DreamCleaningBackend.DTOs
         public int? BathroomsQuantity { get; set; }
         public string? EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
+        // Capped to match the Order columns (300 / 100) so an admin edit can't
+        // fail the UPDATE.
+        [StringLength(300)]
         public string? FloorTypes { get; set; }
+        [StringLength(100)]
         public string? FloorTypeOther { get; set; }
         public decimal? Tips { get; set; }
         public decimal? CompanyDevelopmentTips { get; set; }

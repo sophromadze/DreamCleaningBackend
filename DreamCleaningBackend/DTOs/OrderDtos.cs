@@ -144,7 +144,12 @@ namespace DreamCleaningBackend.DTOs
         [StringLength(500)]
         public string EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
+        // Same reason — Order.FloorTypes is varchar(300), Order.FloorTypeOther is
+        // varchar(100). An overflow here fails the UPDATE after the additional-amount
+        // payment intent has already charged the card.
+        [StringLength(300)]
         public string? FloorTypes { get; set; }
+        [StringLength(100)]
         public string? FloorTypeOther { get; set; }
         public string ContactFirstName { get; set; }
         public string ContactLastName { get; set; }
