@@ -471,9 +471,13 @@ namespace DreamCleaningBackend.Data
                       .WithMany(o => o.Refunds)
                       .HasForeignKey(e => e.OrderId)
                       .OnDelete(DeleteBehavior.Cascade);
+                // Optional: Stripe-sourced rows have no CRM admin. Restrict still applies to the
+                // rows that DO name an admin, so that user can't be hard-deleted out from under
+                // the money trail.
                 entity.HasOne(e => e.RefundedByUser)
                       .WithMany()
                       .HasForeignKey(e => e.RefundedByUserId)
+                      .IsRequired(false)
                       .OnDelete(DeleteBehavior.Restrict);
             });
 

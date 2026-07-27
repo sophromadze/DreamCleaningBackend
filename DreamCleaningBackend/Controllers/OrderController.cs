@@ -23,9 +23,10 @@ namespace DreamCleaningBackend.Controllers
         private readonly IStripeService _stripeService;
         private readonly IEmailService _emailService;
         private readonly IAdminBonusService _adminBonusService;
+        private readonly IOrderPaymentStatusReconciler _reconciler;
         private readonly ILogger<OrderController> _logger;
 
-        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService, IAdminBonusService adminBonusService, ILogger<OrderController> logger)
+        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService, IAdminBonusService adminBonusService, IOrderPaymentStatusReconciler reconciler, ILogger<OrderController> logger)
         {
             _logger = logger;
             _orderService = orderService;
@@ -34,6 +35,7 @@ namespace DreamCleaningBackend.Controllers
             _stripeService = stripeService;
             _emailService = emailService;
             _adminBonusService = adminBonusService;
+            _reconciler = reconciler;
         }
 
         // PATCH /api/order/{id}/assigned-admin — set, change, or clear the admin assigned
@@ -493,6 +495,10 @@ namespace DreamCleaningBackend.Controllers
                     return NotFound(new { message = "Order not found" });
                 if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, guestToken))
                     return NotFound(new { message = "Order not found" });
+                // Token holders act on the owner's behalf (mirrors create-pending-update-payment-intent).
+                // Without this a payment-link guest is userId 0, and the owner-scoped order lookup at the
+                // end of this method throws — reporting a successful payment as a failure.
+                userId = order.UserId;
 
                 // Verify payment with Stripe
                 var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
@@ -501,36 +507,27 @@ namespace DreamCleaningBackend.Controllers
                     return BadRequest(new { message = "Payment not completed" });
                 }
 
-                var historiesToMarkPaid = await _context.OrderUpdateHistories
-                    .Where(h => h.OrderId == orderId && !h.IsPaid && h.PaymentIntentId == dto.PaymentIntentId)
-                    .ToListAsync();
+                // The intent must actually belong to this order. Normally its metadata says so; the
+                // history fallback covers intents created before that metadata was stamped.
+                var intentMatchesOrder =
+                    (paymentIntent.Metadata != null &&
+                     paymentIntent.Metadata.TryGetValue("orderId", out var intentOrderIdStr) &&
+                     int.TryParse(intentOrderIdStr, out var intentOrderId) &&
+                     intentOrderId == orderId) ||
+                    await _context.OrderUpdateHistories.AnyAsync(h =>
+                        h.OrderId == orderId && h.PaymentIntentId == dto.PaymentIntentId);
 
-                if (!historiesToMarkPaid.Any())
-                {
-                    // Fallback: mark the latest unpaid history if (for any reason) the PaymentIntentId wasn't stored yet.
-                    var latest = await _context.OrderUpdateHistories
-                        .Where(h => h.OrderId == orderId && !h.IsPaid && h.AdditionalAmount > 0.01m)
-                        .OrderByDescending(h => h.UpdatedAt)
-                        .FirstOrDefaultAsync();
+                if (!intentMatchesOrder)
+                    return BadRequest(new { message = "This payment does not belong to this order" });
 
-                    if (latest == null)
-                        return BadRequest(new { message = "No pending additional payment found for this order" });
+                // Settle the rows and reconcile the status. Deliberately NOT an error when nothing is
+                // left unpaid: the Stripe webhook races this call and often wins, and the customer
+                // must not be shown a failure for a payment that went through.
+                var result = await _reconciler.ApplyStripeAdditionalPaymentAsync(orderId, dto.PaymentIntentId);
+                var amountPaid = result.AmountNewlyPaid;
 
-                    latest.PaymentIntentId = dto.PaymentIntentId;
-                    historiesToMarkPaid.Add(latest);
-                }
-
-                var amountPaid = historiesToMarkPaid.Sum(h => h.AdditionalAmount);
-
-                foreach (var h in historiesToMarkPaid)
-                {
-                    h.IsPaid = true;
-                    h.PaidAt = DateTime.UtcNow;
-                }
-
-                await _context.SaveChangesAsync();
-
-                // Notify company that customer paid the additional amount
+                // Notify company that customer paid the additional amount. Driven by what THIS call
+                // settled, so the webhook winning the race can't produce a duplicate email.
                 if (amountPaid > 0.01m)
                 {
                     _ = Task.Run(async () =>
@@ -546,21 +543,6 @@ namespace DreamCleaningBackend.Controllers
                         }
                         catch { /* best-effort */ }
                     });
-                }
-
-                // If there are no more unpaid update-payments, switch status Pending -> Active.
-                // (Don't touch Done/Cancelled.)
-                var hasRemainingUnpaid = await _context.OrderUpdateHistories.AnyAsync(h =>
-                    h.OrderId == orderId &&
-                    !h.IsPaid &&
-                    h.AdditionalAmount > 0.01m);
-
-                if (!hasRemainingUnpaid &&
-                    order.IsPaid &&
-                    string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
-                {
-                    order.Status = "Active";
-                    await _context.SaveChangesAsync();
                 }
 
                 // Return refreshed order details (pending amount should now be 0)

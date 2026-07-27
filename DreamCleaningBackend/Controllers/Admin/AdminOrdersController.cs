@@ -40,6 +40,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IStripeService _stripeService;
         private readonly ISubscriptionService _subscriptionService;
         private readonly IOrderRefundService _orderRefundService;
+        private readonly IOrderPaymentStatusReconciler _reconciler;
         private readonly ILogger<AdminOrdersController> _logger;
 
         public AdminOrdersController(ApplicationDbContext context,
@@ -56,6 +57,7 @@ namespace DreamCleaningBackend.Controllers
             IStripeService stripeService,
             ISubscriptionService subscriptionService,
             IOrderRefundService orderRefundService,
+            IOrderPaymentStatusReconciler reconciler,
             ILogger<AdminOrdersController> logger)
         {
             _logger = logger;
@@ -73,6 +75,7 @@ namespace DreamCleaningBackend.Controllers
             _stripeService = stripeService;
             _subscriptionService = subscriptionService;
             _orderRefundService = orderRefundService;
+            _reconciler = reconciler;
         }
 
         /// <summary>
@@ -93,6 +96,45 @@ namespace DreamCleaningBackend.Controllers
             {
                 return NotFound();
             }
+        }
+
+        /// <summary>
+        /// SuperAdmin-only: reconcile ONE order against Stripe, importing refunds that were issued
+        /// outside the CRM (Stripe Dashboard, or before the CRM refund flow existed). Idempotent
+        /// and manual by design — there is deliberately NO webhook; reconciliation happens only
+        /// when an admin asks for it. Sends no customer email.
+        /// </summary>
+        [HttpPost("orders/{orderId}/sync-refunds")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<RefundSyncResultDto>> SyncOrderRefunds(int orderId)
+        {
+            return Ok(await _orderRefundService.SyncRefundsFromStripeAsync(orderId));
+        }
+
+        /// <summary>
+        /// SuperAdmin-only one-time sweep: runs the Stripe reconciliation across a page of orders
+        /// that hold a real card charge. Paged (each charge is a Stripe round trip, so an unbounded
+        /// run would time out) — keep calling with the returned LastOrderId while HasMore is true.
+        /// Safe to re-run: the per-order sync imports nothing the second time.
+        /// </summary>
+        [HttpPost("orders/sync-refunds/backfill")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<RefundBackfillResultDto>> BackfillOrderRefunds(
+            [FromQuery] int limit = 200, [FromQuery] int? afterOrderId = null)
+        {
+            return Ok(await _orderRefundService.BackfillRefundsFromStripeAsync(limit, afterOrderId));
+        }
+
+        /// <summary>
+        /// SuperAdmin-only: send the customer's refund confirmation for one recorded refund.
+        /// Manual because Stripe-imported refunds never mail automatically — that money moved
+        /// before the CRM knew about it, and the customer may already have been told.
+        /// </summary>
+        [HttpPost("orders/{orderId}/refunds/{refundId}/send-email")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<RefundResultDto>> SendRefundEmail(int orderId, int refundId)
+        {
+            return Ok(await _orderRefundService.SendRefundEmailAsync(orderId, refundId));
         }
 
         /// <summary>
@@ -1557,28 +1599,11 @@ namespace DreamCleaningBackend.Controllers
 
             await _context.SaveChangesAsync();
 
-            // Mirror the Stripe additional-payment confirmation (OrderController): once there are
-            // no more unpaid additional amounts, flip the order Pending -> Active. The edit that
-            // created the additional amount moved it to Pending ("awaiting payment"); collecting
-            // the top-up (here, manually) completes it. Don't touch Done/Cancelled.
+            // Same reconciliation the Stripe paths use: once no unpaid additional amounts remain,
+            // flip the order Pending -> Active. The edit that created the additional amount moved it
+            // to Pending ("awaiting payment"); collecting the top-up (here, manually) completes it.
+            var statusReactivated = await _reconciler.ReconcileStatusAfterAdditionalPaymentAsync(orderId);
             var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
-            bool statusReactivated = false;
-            if (order != null)
-            {
-                var hasRemainingUnpaid = await _context.OrderUpdateHistories.AnyAsync(h =>
-                    h.OrderId == orderId &&
-                    !h.IsPaid &&
-                    h.AdditionalAmount > 0.01m);
-
-                if (!hasRemainingUnpaid &&
-                    order.IsPaid &&
-                    string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
-                {
-                    order.Status = "Active";
-                    await _context.SaveChangesAsync();
-                    statusReactivated = true;
-                }
-            }
 
             return Ok(new
             {

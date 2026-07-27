@@ -24,6 +24,8 @@ namespace DreamCleaningBackend.DTOs
         public string Status { get; set; } = string.Empty;
         public string? Reason { get; set; }
         public string? FailureReason { get; set; }
+        /// <summary>"Crm" (issued here) or "Stripe" (found by reconciling against Stripe).</summary>
+        public string Source { get; set; } = "Crm";
         public string RefundedByName { get; set; } = string.Empty;
         public DateTime CreatedAt { get; set; }
         public bool EmailSent { get; set; }
@@ -54,7 +56,42 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>Why refunding is unavailable, in plain language for the admin.</summary>
         public string? UnavailableReason { get; set; }
 
+        /// <summary>A chargeback exists on one of this order's charges. Disputes are NOT refunds
+        /// and never appear in the refunded totals — this drives a warning, not an amount.</summary>
+        public bool HasDispute { get; set; }
+
+        /// <summary>Refunded at Stripe but with no matching record here — i.e. issued in the Stripe
+        /// Dashboard rather than the CRM. Non-zero is what prompts "Sync from Stripe".</summary>
+        public decimal UnrecordedRefundAmount { get; set; }
+
         public List<OrderRefundDto> Refunds { get; set; } = new();
+    }
+
+    /// <summary>Result of reconciling one order against Stripe.</summary>
+    public class RefundSyncResultDto
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public int RefundsImported { get; set; }
+        public decimal AmountImported { get; set; }
+        public bool HasDispute { get; set; }
+        public OrderRefundSummaryDto? Summary { get; set; }
+    }
+
+    /// <summary>Result of the one-time backfill sweep across many orders.</summary>
+    public class RefundBackfillResultDto
+    {
+        public int OrdersScanned { get; set; }
+        public int OrdersWithImports { get; set; }
+        public int RefundsImported { get; set; }
+        public decimal AmountImported { get; set; }
+        public int Failures { get; set; }
+        public int DisputesFound { get; set; }
+        /// <summary>Highest order id processed — pass back as afterOrderId to continue paging.</summary>
+        public int? LastOrderId { get; set; }
+        /// <summary>True when more orders remain beyond this page.</summary>
+        public bool HasMore { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 
     /// <summary>Result of a refund attempt. Never carries raw Stripe error text.</summary>

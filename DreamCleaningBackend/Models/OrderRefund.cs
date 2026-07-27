@@ -48,10 +48,16 @@ namespace DreamCleaningBackend.Models
         [StringLength(500)]
         public string? FailureReason { get; set; }
 
-        public int RefundedByUserId { get; set; }
+        /// <summary>Where this refund came from. Stored as int so existing rows land on Crm (0)
+        /// via the column default — no backfill statement needed.</summary>
+        public RefundSource Source { get; set; } = RefundSource.Crm;
+
+        /// <summary>The admin who issued it. NULL for Source = Stripe: a refund made in the Stripe
+        /// Dashboard has no CRM admin behind it, and inventing one would falsify the audit trail.</summary>
+        public int? RefundedByUserId { get; set; }
 
         [ForeignKey("RefundedByUserId")]
-        public virtual User RefundedByUser { get; set; }
+        public virtual User? RefundedByUser { get; set; }
 
         public DateTime CreatedAt { get; set; }
 

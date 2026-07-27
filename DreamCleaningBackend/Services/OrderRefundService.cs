@@ -51,6 +51,9 @@ namespace DreamCleaningBackend.Services
             public decimal AmountReceived { get; set; }
             public decimal AmountRefunded { get; set; }
             public decimal Remaining { get; set; }
+            /// <summary>Chargeback against this charge. NOT included in AmountRefunded — see
+            /// ChargeRefundState.HasDispute. Surfaced as a warning, never imported as a refund.</summary>
+            public bool HasDispute { get; set; }
         }
 
         /// <summary>
@@ -88,7 +91,8 @@ namespace DreamCleaningBackend.Services
                     PaymentIntentId = intentId,
                     AmountReceived = state.AmountReceived,
                     AmountRefunded = state.AmountRefunded,
-                    Remaining = state.RemainingRefundable
+                    Remaining = state.RemainingRefundable,
+                    HasDispute = state.HasDispute
                 });
             }
 
@@ -128,9 +132,12 @@ namespace DreamCleaningBackend.Services
                     Status = r.Status,
                     Reason = r.Reason,
                     FailureReason = r.FailureReason,
-                    RefundedByName = r.RefundedByUser == null
-                        ? "Unknown"
-                        : ((r.RefundedByUser.FirstName ?? "") + " " + (r.RefundedByUser.LastName ?? "")).Trim(),
+                    Source = r.Source.ToString(),
+                    RefundedByName = r.Source == RefundSource.Stripe
+                        ? "Stripe"
+                        : (r.RefundedByUser == null
+                            ? "Unknown"
+                            : ((r.RefundedByUser.FirstName ?? "") + " " + (r.RefundedByUser.LastName ?? "")).Trim()),
                     CreatedAt = r.CreatedAt,
                     EmailSent = r.EmailSent
                 })
@@ -142,6 +149,11 @@ namespace DreamCleaningBackend.Services
                 TotalCharged = charges.Sum(c => c.AmountReceived),
                 TotalRefunded = charges.Sum(c => c.AmountRefunded),
                 RemainingRefundable = charges.Sum(c => c.Remaining),
+                HasDispute = charges.Any(c => c.HasDispute),
+                // A gap here means money was refunded outside the CRM (Stripe Dashboard) and has
+                // no OrderRefund row yet — the "Sync from Stripe" prompt keys off this.
+                UnrecordedRefundAmount = Math.Max(0m,
+                    charges.Sum(c => c.AmountRefunded) - await GetRecordedRefundTotalAsync(order.Id)),
                 Refunds = refunds
             };
 
@@ -169,6 +181,133 @@ namespace DreamCleaningBackend.Services
             }
 
             return summary;
+        }
+
+        /// <summary>
+        /// Amount already recorded as refunded on this order, counting only rows whose money
+        /// actually moved. "Failed" rows are excluded deliberately — a failed attempt must not
+        /// make the sync think a Dashboard refund is already accounted for.
+        /// </summary>
+        private async Task<decimal> GetRecordedRefundTotalAsync(int orderId, string? paymentIntentId = null)
+        {
+            var q = _context.OrderRefunds.AsNoTracking().Where(r => r.OrderId == orderId);
+            if (paymentIntentId != null)
+                q = q.Where(r => r.PaymentIntentId == paymentIntentId);
+
+            return await q
+                .Where(r => r.Status == "succeeded" || r.Status == "pending")
+                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+        }
+
+        public async Task<RefundSyncResultDto> SyncRefundsFromStripeAsync(int orderId)
+        {
+            var order = await _context.Orders
+                .Include(o => o.UpdateHistory)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null)
+                return new RefundSyncResultDto { Success = false, Message = "Order not found." };
+
+            List<RefundableCharge> charges;
+            try
+            {
+                charges = await GetChargesAsync(order);
+            }
+            catch (Exception ex)
+            {
+                // GetChargeRefundStateAsync already swallows Stripe errors per charge, so this is
+                // belt-and-braces: the sync must never surface a raw provider failure.
+                _logger.LogError(ex, "Refund sync could not read charges for order {OrderId}", orderId);
+                return new RefundSyncResultDto
+                {
+                    Success = false,
+                    Message = "Could not reach the payment provider. Please try again."
+                };
+            }
+
+            if (charges.Count == 0)
+            {
+                return new RefundSyncResultDto
+                {
+                    Success = true,
+                    Message = "This order has no card payment to reconcile.",
+                    Summary = await BuildSummaryAsync(order)
+                };
+            }
+
+            decimal imported = 0m;
+            var importedRows = 0;
+
+            foreach (var charge in charges)
+            {
+                // Per-CHARGE comparison, not per-order: an order can hold several intents, and a
+                // Dashboard refund against one of them must not be masked by CRM refunds recorded
+                // against another.
+                var recorded = await GetRecordedRefundTotalAsync(order.Id, charge.PaymentIntentId);
+                var gap = charge.AmountRefunded - recorded;
+
+                // Sub-cent gaps are rounding noise, not a real refund.
+                if (gap < 0.01m) continue;
+
+                _context.OrderRefunds.Add(new OrderRefund
+                {
+                    OrderId = order.Id,
+                    Amount = gap,
+                    PaymentIntentId = charge.PaymentIntentId,
+                    // Stripe already settled it; there is no pending state to resolve.
+                    Status = "succeeded",
+                    Source = RefundSource.Stripe,
+                    RefundedByUserId = null,
+                    Reason = "Imported from Stripe — refund issued outside the CRM.",
+                    CreatedAt = DateTime.UtcNow,
+                    // No automatic customer email: this refund already happened and the customer
+                    // may have been told elsewhere. An admin can send it manually from the history.
+                    EmailSent = false
+                });
+
+                imported += gap;
+                importedRows++;
+            }
+
+            ApplyRefundTotals(order, charges.Sum(c => c.AmountReceived), charges.Sum(c => c.AmountRefunded));
+
+            // Loyalty spend moves only for money newly discovered here, and only when this order's
+            // spend is actually counted — see ApplyLoyaltySpendAdjustmentAsync. Re-running the sync
+            // imports nothing, so it cannot subtract twice.
+            await ApplyLoyaltySpendAdjustmentAsync(order, imported);
+
+            await _context.SaveChangesAsync();
+
+            if (importedRows > 0)
+            {
+                _logger.LogInformation("Refund sync imported {Count} refund(s) totalling {Amount} for order {OrderId}",
+                    importedRows, imported, order.Id);
+            }
+
+            var summary = await BuildSummaryAsync(order);
+            var disputed = charges.Any(c => c.HasDispute);
+
+            var message = importedRows == 0
+                ? "Already up to date — nothing new found in Stripe."
+                : $"Imported {importedRows} refund(s) totalling {imported:C} from Stripe.";
+
+            if (disputed)
+            {
+                // Stated explicitly because amount_refunded stays at zero for a chargeback, so
+                // "nothing new found" would otherwise read as "this order is settled".
+                message += " ⚠ This order has a disputed charge (chargeback). Disputes are NOT refunds "
+                         + "and were not imported — review it in the Stripe Dashboard.";
+            }
+
+            return new RefundSyncResultDto
+            {
+                Success = true,
+                Message = message,
+                RefundsImported = importedRows,
+                AmountImported = imported,
+                HasDispute = disputed,
+                Summary = summary
+            };
         }
 
         public async Task<RefundResultDto> IssueRefundAsync(
@@ -230,6 +369,7 @@ namespace DreamCleaningBackend.Services
                     PaymentIntentId = charge.PaymentIntentId,
                     Status = "Pending",
                     Reason = reason,
+                    Source = RefundSource.Crm,
                     RefundedByUserId = adminUserId,
                     CreatedAt = DateTime.UtcNow,
                     EmailSent = false
@@ -347,30 +487,203 @@ namespace DreamCleaningBackend.Services
         /// </summary>
         private async Task ApplyRefundToReportingAsync(Order order, decimal refundedNow, List<RefundableCharge> chargesBefore)
         {
-            order.TotalRefundedAmount += refundedNow;
-
             var totalCharged = chargesBefore.Sum(c => c.AmountReceived);
-            var refundedBefore = chargesBefore.Sum(c => c.AmountRefunded);
-            var fullyRefunded = totalCharged > 0m && (refundedBefore + refundedNow) >= totalCharged;
+            var refundedTotal = chargesBefore.Sum(c => c.AmountRefunded) + refundedNow;
+
+            ApplyRefundTotals(order, totalCharged, refundedTotal);
+            await ApplyLoyaltySpendAdjustmentAsync(order, refundedNow);
+
+            await _context.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// Sets the cached refund total and flips the status when nothing is left to refund.
+        /// Shared by the CRM refund path and the Stripe sync so the two can never drift.
+        ///
+        /// <paramref name="refundedTotal"/> is the ABSOLUTE amount refunded across the order's
+        /// charges, not a delta — assigning rather than accumulating is what makes re-running the
+        /// sync idempotent. Guarded with Max so a partial charge read (one intent unreachable
+        /// because Stripe was down) can never erase refunds already recorded.
+        /// </summary>
+        private static void ApplyRefundTotals(Order order, decimal totalCharged, decimal refundedTotal)
+        {
+            order.TotalRefundedAmount = Math.Max(order.TotalRefundedAmount, refundedTotal);
+
+            var fullyRefunded = totalCharged > 0m && refundedTotal >= totalCharged;
 
             if (fullyRefunded && !OrderStatuses.IsRefunded(order.Status))
             {
                 // Preserved so reporting can still tell "cleaned, then refunded" (cleaner was paid)
                 // from "refunded before service" (no cost). Never overwritten on a second refund.
+                // Refunded deliberately outranks Cancelled: a cancelled order that was then fully
+                // refunded reads as Refunded, and StatusBeforeRefund keeps "Cancelled" so it stays
+                // out of revenue and cleaner-cost reporting exactly as before.
                 order.StatusBeforeRefund ??= order.Status;
                 order.Status = OrderStatuses.Refunded;
             }
+        }
 
-            // Lifetime spend feeds loyalty tiers and CRM lifetime value, so refunded money must
-            // come back out of it. Floored at zero — a legacy order refunded for more than the
-            // account ever accumulated must not push the balance negative.
+        /// <summary>
+        /// Takes refunded money back out of the customer's lifetime spend, which drives loyalty
+        /// tiers and CRM lifetime value.
+        ///
+        /// CRITICAL: TotalSpentAmount is tied to the DONE status, not to payment — BubblePointsService
+        /// adds it in ProcessOrderCompletion when an order is marked Done and reverses it in
+        /// ReverseOrderCompletion when the order leaves Done. So for an order that was never Done,
+        /// or that was cancelled (already reversed), this order's money is NOT currently in the
+        /// balance and subtracting again would corrupt that customer's tier. WasPerformed is the
+        /// test for "is this order's spend currently counted".
+        /// </summary>
+        private async Task ApplyLoyaltySpendAdjustmentAsync(Order order, decimal refundedNow)
+        {
+            if (refundedNow <= 0m) return;
+
+            if (!OrderStatuses.WasPerformed(order.Status, order.StatusBeforeRefund))
+            {
+                _logger.LogInformation(
+                    "Order {OrderId} refunded {Amount} but its spend is not currently counted (status {Status}) — leaving TotalSpentAmount alone",
+                    order.Id, refundedNow, order.Status);
+                return;
+            }
+
             var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == order.UserId);
             if (user != null)
             {
+                // Floored at zero — a legacy order refunded for more than the account ever
+                // accumulated must not push the balance negative.
                 user.TotalSpentAmount = Math.Max(0m, user.TotalSpentAmount - refundedNow);
             }
+        }
 
-            await _context.SaveChangesAsync();
+        /// <summary>
+        /// Backfill sweep: reconciles a page of orders that hold a real Stripe charge. Paged rather
+        /// than "all orders" because every charge costs a Stripe round trip, and an unbounded sweep
+        /// would time out the HTTP request long before it finished. Safe to re-run — the per-order
+        /// sync is idempotent, so a repeat pass imports nothing.
+        /// </summary>
+        public async Task<RefundBackfillResultDto> BackfillRefundsFromStripeAsync(int limit, int? afterOrderId)
+        {
+            if (limit <= 0) limit = 200;
+            if (limit > 500) limit = 500;   // hard ceiling: keeps one request inside a sane runtime
+
+            // Only orders that actually settled money through Stripe. Manual/cash orders, unpaid
+            // orders and gift-card-covered orders (synthetic giftcard_full_ reference) have nothing
+            // at Stripe to reconcile, and skipping them is most of the speed-up.
+            var query = _context.Orders
+                .Where(o => o.PaymentIntentId != null && o.PaymentIntentId.StartsWith("pi_"));
+
+            if (afterOrderId.HasValue)
+                query = query.Where(o => o.Id > afterOrderId.Value);
+
+            var orderIds = await query
+                .OrderBy(o => o.Id)
+                .Select(o => o.Id)
+                .Take(limit + 1)          // one extra row purely to detect "there is another page"
+                .ToListAsync();
+
+            var hasMore = orderIds.Count > limit;
+            if (hasMore) orderIds = orderIds.Take(limit).ToList();
+
+            var result = new RefundBackfillResultDto { HasMore = hasMore };
+
+            foreach (var id in orderIds)
+            {
+                try
+                {
+                    var sync = await SyncRefundsFromStripeAsync(id);
+                    result.OrdersScanned++;
+
+                    if (!sync.Success) { result.Failures++; continue; }
+                    if (sync.RefundsImported > 0)
+                    {
+                        result.OrdersWithImports++;
+                        result.RefundsImported += sync.RefundsImported;
+                        result.AmountImported += sync.AmountImported;
+                    }
+                    if (sync.HasDispute) result.DisputesFound++;
+                }
+                catch (Exception ex)
+                {
+                    // One bad order must not abort the sweep — record it and keep going.
+                    _logger.LogError(ex, "Refund backfill failed on order {OrderId}", id);
+                    result.Failures++;
+                }
+
+                result.LastOrderId = id;
+
+                // Gentle pacing so a long sweep stays well under Stripe's read rate limit.
+                await Task.Delay(60);
+            }
+
+            result.Message = $"Scanned {result.OrdersScanned} order(s); imported {result.RefundsImported} refund(s) "
+                           + $"totalling {result.AmountImported:C} across {result.OrdersWithImports} order(s)."
+                           + (result.DisputesFound > 0 ? $" {result.DisputesFound} order(s) have a disputed charge — review those in Stripe." : "")
+                           + (result.Failures > 0 ? $" {result.Failures} order(s) could not be checked." : "")
+                           + (hasMore ? " More orders remain — run again to continue." : "");
+
+            return result;
+        }
+
+        /// <summary>
+        /// Sends (or re-sends) the customer's refund confirmation for one recorded refund, on
+        /// explicit admin request. Exists because Stripe-sourced rows never mail automatically —
+        /// the refund already happened and the customer may have been told elsewhere — and because
+        /// a CRM refund whose email failed needs a retry.
+        /// </summary>
+        public async Task<RefundResultDto> SendRefundEmailAsync(int orderId, int refundId)
+        {
+            var refund = await _context.OrderRefunds
+                .FirstOrDefaultAsync(r => r.Id == refundId && r.OrderId == orderId);
+
+            if (refund == null)
+                return Fail("Refund record not found.");
+
+            if (refund.Status is not ("succeeded" or "pending"))
+                return Fail("This refund did not go through, so there is nothing to confirm.");
+
+            var order = await _context.Orders
+                .Include(o => o.UpdateHistory)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null)
+                return Fail("Order not found.");
+
+            var charges = await GetChargesAsync(order);
+
+            // "Full refund" is judged on the order's CURRENT state, not this row alone: the
+            // customer cares whether they got everything back, not which row paid it out.
+            var totalCharged = charges.Sum(c => c.AmountReceived);
+            var totalRefunded = charges.Sum(c => c.AmountRefunded);
+            var isFullRefund = totalCharged > 0m && totalRefunded >= totalCharged;
+
+            try
+            {
+                await _emailService.SendRefundConfirmationEmailAsync(
+                    order.ContactEmail,
+                    order.ContactFirstName,
+                    order.Id,
+                    refund.Amount,
+                    isFullRefund,
+                    order.ServiceDate,
+                    BuildServiceAddress(order));
+
+                refund.EmailSent = true;
+                await _context.SaveChangesAsync();
+
+                return new RefundResultDto
+                {
+                    Success = true,
+                    Message = $"Confirmation email sent to {order.ContactEmail}.",
+                    AmountRefunded = refund.Amount,
+                    EmailSent = true,
+                    Summary = await BuildSummaryAsync(order)
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Manual refund email failed for refund {RefundId} on order {OrderId}", refundId, orderId);
+                return Fail("The email could not be sent. Please try again.", await BuildSummaryAsync(order));
+            }
         }
 
         /// <summary>

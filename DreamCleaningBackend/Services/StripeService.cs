@@ -144,7 +144,10 @@ namespace DreamCleaningBackend.Services
                 {
                     IsRefundable = true,
                     AmountReceived = intent.AmountReceived / 100m,
-                    AmountRefunded = alreadyRefunded / 100m
+                    AmountRefunded = alreadyRefunded / 100m,
+                    // Deliberately separate from AmountRefunded — Stripe never folds disputed
+                    // amounts into it. See ChargeRefundState.HasDispute.
+                    HasDispute = intent.LatestCharge?.Disputed ?? false
                 };
             }
             catch (StripeException ex)

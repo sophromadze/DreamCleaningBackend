@@ -36,6 +36,16 @@ namespace DreamCleaningBackend.Services.Interfaces
         public decimal RemainingRefundable => Math.Max(0m, AmountReceived - AmountRefunded);
         /// <summary>Why it isn't refundable (never settled, lookup failed, …). Admin-facing.</summary>
         public string? UnavailableReason { get; set; }
+
+        /// <summary>
+        /// This charge has a dispute (chargeback) against it. IMPORTANT: a dispute is NOT a refund
+        /// and does NOT appear in AmountRefunded — Stripe withdraws disputed funds through a
+        /// separate Dispute object and leaves amount_refunded at zero. So a charged-back order
+        /// would otherwise reconcile to "$0 refunded, nothing to do" and look settled. The sync
+        /// surfaces this as a warning for a human rather than importing an amount: a chargeback
+        /// has different fees from a refund, and a won dispute reverses the withdrawal again.
+        /// </summary>
+        public bool HasDispute { get; set; }
     }
 
     public interface IStripeService

@@ -170,6 +170,9 @@ builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<IGiftCardService, GiftCardService>();
 builder.Services.AddScoped<IBookingCreationService, BookingCreationService>();
+// Scoped so it shares the caller's ApplicationDbContext — it persists what the caller staged
+// before checking for remaining unpaid amounts (see IOrderPaymentStatusReconciler).
+builder.Services.AddScoped<IOrderPaymentStatusReconciler, OrderPaymentStatusReconciler>();
 builder.Services.AddScoped<ILeadCaptureService, LeadCaptureService>();
 builder.Services.AddScoped<IAutomationEvaluationService, AutomationEvaluationService>();
 builder.Services.AddHttpContextAccessor();

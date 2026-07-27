@@ -7,6 +7,7 @@ using System.Security.Claims;
 using DreamCleaningBackend.DTOs;
 using System.Text.Json;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services.Interfaces;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -16,15 +17,18 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly IConfiguration _configuration;
         private readonly ApplicationDbContext _context;
+        private readonly IOrderPaymentStatusReconciler _reconciler;
         private readonly ILogger<StripeWebhookController> _logger;
 
         public StripeWebhookController(
             IConfiguration configuration,
             ApplicationDbContext context,
+            IOrderPaymentStatusReconciler reconciler,
             ILogger<StripeWebhookController> logger)
         {
             _configuration = configuration;
             _context = context;
+            _reconciler = reconciler;
             _logger = logger;
         }
 
@@ -267,79 +271,24 @@ namespace DreamCleaningBackend.Controllers
                 metadata.TryGetValue("additionalAmount", out var additionalAmountStr) &&
                 decimal.TryParse(additionalAmountStr, out var additionalAmount))
             {
-                var order = await _context.Orders.FindAsync(updateOrderId, cancellationToken);
-                if (order != null)
-                {
-                    // Log the additional payment
-                    _logger.LogInformation("Additional payment of ${AdditionalAmount} received for order {OrderId}", additionalAmount, updateOrderId);
+                _logger.LogInformation("Additional payment of ${AdditionalAmount} received for order {OrderId}", additionalAmount, updateOrderId);
 
-                    // Mark the latest update history as paid
-                    // Prefer histories explicitly linked to this payment intent; otherwise fall back to latest unpaid.
-                    var linkedHistories = await _context.OrderUpdateHistories
-                        .Where(h => h.OrderId == updateOrderId && !h.IsPaid && h.PaymentIntentId == paymentIntent.Id)
-                        .ToListAsync(cancellationToken);
+                // Settling the rows and the Pending -> Active flip both live in the reconciler, which
+                // saves before it checks for remaining unpaid amounts. Doing that inline here was the
+                // bug: the check ran against unsaved data, always looked unpaid, and the flip never
+                // fired — so an order the customer had paid in full stayed "Pending" forever.
+                // Idempotent, so it is safe when the browser's confirm call already handled this.
+                var result = await _reconciler.ApplyStripeAdditionalPaymentAsync(
+                    updateOrderId, paymentIntent.Id, cancellationToken);
 
-                    if (linkedHistories.Any())
-                    {
-                        foreach (var h in linkedHistories)
-                        {
-                            h.IsPaid = true;
-                            h.PaidAt = DateTime.UtcNow;
-                        }
-
-                        // If this clears all pending update payments, switch status Pending -> Active.
-                        var hasRemainingUnpaid = await _context.OrderUpdateHistories.AnyAsync(
-                            h => h.OrderId == updateOrderId && !h.IsPaid && h.AdditionalAmount > 0.01m,
-                            cancellationToken);
-
-                        if (!hasRemainingUnpaid &&
-                            order.IsPaid &&
-                            string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
-                        {
-                            order.Status = "Active";
-                        }
-
-                        await _context.SaveChangesAsync(cancellationToken);
-                        _logger.LogInformation("Marked {Count} OrderUpdateHistory rows as paid for PaymentIntent {PaymentIntentId}", linkedHistories.Count, paymentIntent.Id);
-                    }
-                    else
-                    {
-                        var updateHistory = await _context.OrderUpdateHistories
-                            .Where(h => h.OrderId == updateOrderId && !h.IsPaid)
-                            .OrderByDescending(h => h.UpdatedAt)
-                            .FirstOrDefaultAsync(cancellationToken);
-
-                        if (updateHistory != null)
-                        {
-                            updateHistory.PaymentIntentId = paymentIntent.Id;
-                            updateHistory.IsPaid = true;
-                            updateHistory.PaidAt = DateTime.UtcNow;
-
-                            // If this clears all pending update payments, switch status Pending -> Active.
-                            var hasRemainingUnpaid = await _context.OrderUpdateHistories.AnyAsync(
-                                h => h.OrderId == updateOrderId && !h.IsPaid && h.AdditionalAmount > 0.01m,
-                                cancellationToken);
-
-                            if (!hasRemainingUnpaid &&
-                                order.IsPaid &&
-                                string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
-                            {
-                                order.Status = "Active";
-                            }
-
-                            await _context.SaveChangesAsync(cancellationToken);
-
-                            _logger.LogInformation("Marked OrderUpdateHistory {UpdateHistoryId} as paid", updateHistory.Id);
-                        }
-                        else
-                        {
-                            _logger.LogWarning("No unpaid update history found for order {OrderId}", updateOrderId);
-                        }
-                    }
-                }
-                else
+                if (!result.OrderFound)
                 {
                     _logger.LogWarning("Order {OrderId} not found for update payment", updateOrderId);
+                }
+                else if (result.StatusReactivated)
+                {
+                    _logger.LogInformation("Order {OrderId} moved Pending -> Active after additional payment {PaymentIntentId}",
+                        updateOrderId, paymentIntent.Id);
                 }
             }
             else
