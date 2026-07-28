@@ -750,6 +750,15 @@ namespace DreamCleaningBackend.DTOs
         public decimal AdminBonusesUsd { get; set; }
         // The same bonuses in raw GEL, for reference in the breakdown panel.
         public decimal AdminBonusesGel { get; set; }
+
+        // ── Not-yet-performed orders ───────────────────────────────────────────────────
+        // Booked orders inside the window that still have to happen (Active/Pending).
+        // ALWAYS reported, whatever includeUpcoming was, so the finances page can label its
+        // "include unfinished cleanings" toggle before the user turns it on.
+        public int UpcomingOrders { get; set; }
+        // True when the figures above are a PROJECTION: the caller passed includeUpcoming=true,
+        // so the UpcomingOrders above are folded into every total on this DTO.
+        public bool IncludesUpcoming { get; set; }
     }
 
     /// <summary>

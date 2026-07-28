@@ -1346,13 +1346,13 @@ namespace DreamCleaningBackend.Controllers
                         }
 
                         var status = paymentIntent.Status ?? "";
-                        var paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase) || status.Equals("requires_capture", StringComparison.OrdinalIgnoreCase);
+                        var paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase);
                         if (!paid)
                         {
                             await Task.Delay(2000);
                             paymentIntent = await _stripeService.GetPaymentIntentAsync(effectivePaymentIntentId);
                             status = paymentIntent.Status ?? "";
-                            paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase) || status.Equals("requires_capture", StringComparison.OrdinalIgnoreCase);
+                            paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase) || status.Equals("processing", StringComparison.OrdinalIgnoreCase);
                             if (!paid)
                                 return BadRequest(new { message = "Payment not completed. Status: " + status });
                         }

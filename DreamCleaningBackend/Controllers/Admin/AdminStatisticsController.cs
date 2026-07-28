@@ -53,7 +53,8 @@ namespace DreamCleaningBackend.Controllers
         [RequirePageView(AdminViewablePages.Statistics, AdminViewablePages.Finances)]
         public async Task<ActionResult<OrderStatisticsDto>> GetOrderStatistics(
             [FromQuery] DateTime? from,
-            [FromQuery] DateTime? to)
+            [FromQuery] DateTime? to,
+            [FromQuery] bool includeUpcoming = false)
         {
             // Counts both Stripe-paid orders (IsPaid=true, PaymentMethod=Normal) and manual-paid
             // orders (PaymentMethod != Normal, IsPaid=false) — see Order.PaymentMethod docs.
@@ -65,10 +66,17 @@ namespace DreamCleaningBackend.Controllers
             // is what keeps a retained cancellation fee counting as income. Orders refunded BEFORE
             // service never had StatusBeforeRefund="Done" and stay excluded, so no cleaner wage is
             // invented for work nobody did.
+            //
+            // includeUpcoming turns the whole report into a PROJECTION: the window's still-to-happen
+            // orders (Active/Pending) join in, answering "what will this period look like once
+            // everything already on the books is done". Cancelled orders never join either way. Note
+            // an upcoming order's CleanerTotalSalary is whatever is on it today — an unstaffed order
+            // contributes 0 salary, so a projection is optimistic on the cost side by design.
             var query = _context.Orders
                 .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
                     && (o.Status == OrderStatuses.Done
-                        || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done)));
+                        || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done)
+                        || (includeUpcoming && (o.Status == OrderStatuses.Active || o.Status == OrderStatuses.Pending))));
 
             if (from.HasValue)
                 query = query.Where(o => o.ServiceDate >= from.Value.Date);
@@ -139,11 +147,25 @@ namespace DreamCleaningBackend.Controllers
             // to stay in the fee base rather than vanish with its status change.
             IQueryable<Order> windowed = _context.Orders
                 .Where(o => o.Status == OrderStatuses.Done
-                    || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done));
+                    || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done)
+                    || (includeUpcoming && (o.Status == OrderStatuses.Active || o.Status == OrderStatuses.Pending)));
             if (from.HasValue)
                 windowed = windowed.Where(o => o.ServiceDate >= from.Value.Date);
             if (to.HasValue)
                 windowed = windowed.Where(o => o.ServiceDate < to.Value.Date.AddDays(1));
+
+            // How many booked-but-unfinished orders this window holds. Reported ALWAYS (not only
+            // when includeUpcoming is on) so the finances page can label its projection toggle
+            // — "include 12 unfinished cleanings" — before anything is folded in.
+            IQueryable<Order> upcoming = _context.Orders
+                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
+                    && (o.Status == OrderStatuses.Active || o.Status == OrderStatuses.Pending));
+            if (from.HasValue)
+                upcoming = upcoming.Where(o => o.ServiceDate >= from.Value.Date);
+            if (to.HasValue)
+                upcoming = upcoming.Where(o => o.ServiceDate < to.Value.Date.AddDays(1));
+            stats.UpcomingOrders = await upcoming.CountAsync();
+            stats.IncludesUpcoming = includeUpcoming;
 
             // Stripe processing fees — statistics-only. Only real card charges qualify
             // (IsPaid && PaymentMethod==Normal); manual/cash orders are never charged by Stripe.
