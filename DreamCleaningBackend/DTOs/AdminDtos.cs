@@ -712,17 +712,29 @@ namespace DreamCleaningBackend.DTOs
 
     /// <summary>Response DTO for order statistics (SuperAdmin only).</summary>
     /// <remarks>
+    /// UI vocabulary (the property names predate it and were left alone to avoid a rename
+    /// across the API): TotalAmount is shown as "Company Revenue", TotalCompanyRevenue as
+    /// "Net Income".
+    ///
     /// TotalCompanyRevenue is NET — it already subtracts TotalExpenses. The frontend's
     /// breakdown panel rebuilds the formula from these labelled components:
-    ///   Subtotal − Taxes − Cleaner Salaries − Expenses = Company Revenue (net)
+    ///   Company Revenue − Cleaner Salaries − Expenses = Net Income
     /// TotalCompanyRevenueGross is the pre-expense figure for reference.
+    ///
+    /// Sales tax is deliberately NOT part of that formula. It is charged on top of the price,
+    /// so it never sat inside TotalAmount — it is collected for the state and reported on its
+    /// own. Every money figure here comes from OrderRevenueMath.Split, which means
+    /// TotalTaxes is always exactly OrderPricingCalculator.SalesTaxRate × TotalAmount.
     /// </remarks>
     public class OrderStatisticsDto
     {
         public int TotalOrders { get; set; }
+        /// <summary>Taxable cleaning revenue: subtotals after discounts, before tax, without tips, net of refunds.</summary>
         public decimal TotalAmount { get; set; }
         public decimal TotalTaxes { get; set; }
         public decimal TotalTips { get; set; }
+        /// <summary>Promo/first-time + subscription + loyalty discounts granted. Informational only.</summary>
+        public decimal TotalDiscounts { get; set; }
         public decimal TotalCleanersSalary { get; set; }
         // TotalExpenses is the GRAND total: table expenses + Stripe fees + admin bonuses (USD).
         public decimal TotalExpenses { get; set; }
@@ -740,11 +752,15 @@ namespace DreamCleaningBackend.DTOs
         public decimal AdminBonusesGel { get; set; }
     }
 
-    /// <summary>Daily data point for statistics chart. CompanyRevenue is NET.</summary>
+    /// <summary>
+    /// Daily data point for statistics chart. CompanyRevenue is NET. Amount/Taxes/Tips come from
+    /// OrderRevenueMath.Split, so summing days reconciles with the OrderStatisticsDto totals.
+    /// </summary>
     public class DailyStatisticsDto
     {
         public string Date { get; set; } = "";
         public int Orders { get; set; }
+        /// <summary>Taxable cleaning revenue: after discounts, before tax, without tips, net of refunds.</summary>
         public decimal Amount { get; set; }
         public decimal Taxes { get; set; }
         public decimal Tips { get; set; }

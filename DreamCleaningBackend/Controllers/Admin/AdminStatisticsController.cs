@@ -76,20 +76,56 @@ namespace DreamCleaningBackend.Controllers
             if (to.HasValue)
                 query = query.Where(o => o.ServiceDate < to.Value.Date.AddDays(1));
 
-            var stats = await query.GroupBy(_ => 1).Select(g => new OrderStatisticsDto
+            // Aggregated in memory rather than in SQL because the refund allocation is a
+            // per-order ratio (see OrderRevenueMath.Split) — it cannot be expressed as a sum
+            // of columns. /statistics/daily below already materialises the same rows.
+            var rows = await query
+                .Select(o => new
+                {
+                    o.Status,
+                    o.SubTotal,
+                    o.DiscountAmount,
+                    o.SubscriptionDiscountAmount,
+                    o.LoyaltyDiscountAmount,
+                    o.Tax,
+                    o.Tips,
+                    o.CompanyDevelopmentTips,
+                    o.CleanerTotalSalary,
+                    o.TotalRefundedAmount
+                })
+                .ToListAsync();
+
+            var money = rows
+                .Select(o => new
+                {
+                    o.Status,
+                    o.CleanerTotalSalary,
+                    Split = OrderRevenueMath.Split(
+                        o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount,
+                        o.LoyaltyDiscountAmount, o.Tax, o.Tips, o.CompanyDevelopmentTips,
+                        o.TotalRefundedAmount)
+                })
+                .ToList();
+
+            var totalRevenue = money.Sum(o => o.Split.Revenue);
+            var totalSalary = money.Sum(o => o.CleanerTotalSalary);
+
+            var stats = new OrderStatisticsDto
             {
                 // A fully-refunded order earned nothing, so it doesn't count as an order sold.
                 // It stays in the money math above purely to carry its cleaner cost.
-                TotalOrders = g.Count(o => o.Status != OrderStatuses.Refunded),
-                TotalAmount = g.Sum(o => o.SubTotal) - g.Sum(o => o.TotalRefundedAmount),
-                // Tax and tips are left untouched per the agreed rule — only the revenue buckets
-                // move. See the note on the finances page if these need to net down too.
-                TotalTaxes = g.Sum(o => o.Tax),
-                TotalTips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
-                TotalCleanersSalary = g.Sum(o => o.CleanerTotalSalary),
-                TotalCompanyRevenueGross = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax)
-                    - g.Sum(o => o.CleanerTotalSalary) - g.Sum(o => o.TotalRefundedAmount)
-            }).FirstOrDefaultAsync() ?? new OrderStatisticsDto();
+                // IsRefunded (not ==): this comparison now runs in memory, where string equality
+                // is case-sensitive — unlike the SQL collation the old GroupBy relied on.
+                TotalOrders = money.Count(o => !OrderStatuses.IsRefunded(o.Status)),
+                TotalAmount = totalRevenue,
+                TotalTaxes = money.Sum(o => o.Split.Tax),
+                TotalTips = money.Sum(o => o.Split.Tips),
+                TotalDiscounts = money.Sum(o => o.Split.Discounts),
+                TotalCleanersSalary = totalSalary,
+                // Tax is NOT subtracted: it is charged on top of the price, so it was never part
+                // of TotalAmount in the first place. Subtracting it here used to double-count it.
+                TotalCompanyRevenueGross = totalRevenue - totalSalary
+            };
 
             // Expenses use the same window. Match the inclusive `to` convention used above.
             var expenseFrom = from?.Date ?? DateTime.MinValue;
@@ -188,6 +224,9 @@ namespace DreamCleaningBackend.Controllers
                     o.Id,
                     o.ServiceDate,
                     o.SubTotal,
+                    o.DiscountAmount,
+                    o.SubscriptionDiscountAmount,
+                    o.LoyaltyDiscountAmount,
                     o.Tax,
                     o.Tips,
                     o.CompanyDevelopmentTips,
@@ -200,6 +239,12 @@ namespace DreamCleaningBackend.Controllers
                     o.TotalRefundedAmount
                 })
                 .ToListAsync();
+
+            // Same buckets the /statistics totals use, so a summed chart matches the cards.
+            var moneyByOrder = orders.ToDictionary(o => o.Id, o => OrderRevenueMath.Split(
+                o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount,
+                o.LoyaltyDiscountAmount, o.Tax, o.Tips, o.CompanyDevelopmentTips,
+                o.TotalRefundedAmount));
 
             // Per-order sum of additional amounts that were paid OUTSIDE Stripe (mirrors the
             // mixed-payment correction in /statistics). Subtracted from each order's Stripe-fee
@@ -250,21 +295,23 @@ namespace DreamCleaningBackend.Controllers
                                                  && !OrderStatuses.IsRefunded(o.Status))
                                         .Sum(o => BonusUsdFor(o.ServiceDate.Year, o.ServiceDate.Month));
                     var computed = stripeFees + adminBonuses;
-                    var refunded = g.Sum(o => o.TotalRefundedAmount);
+                    var revenue = g.Sum(o => moneyByOrder[o.Id].Revenue);
+                    var salary = g.Sum(o => o.CleanerTotalSalary);
                     return new DailyStatisticsDto
                     {
                         Date = g.Key.ToString("yyyy-MM-dd"),
                         Orders = g.Count(o => !OrderStatuses.IsRefunded(o.Status)),
-                        Amount = g.Sum(o => o.SubTotal) - refunded,
-                        Taxes = g.Sum(o => o.Tax),
-                        Tips = g.Sum(o => o.Tips) + g.Sum(o => o.CompanyDevelopmentTips),
-                        CleanersSalary = g.Sum(o => o.CleanerTotalSalary),
+                        Amount = revenue,
+                        Taxes = g.Sum(o => moneyByOrder[o.Id].Tax),
+                        Tips = g.Sum(o => moneyByOrder[o.Id].Tips),
+                        CleanersSalary = salary,
                         StripeFees = stripeFees,
                         AdminBonuses = adminBonuses,
                         // Expenses starts with the computed fees/bonuses; table expenses are folded in below.
                         Expenses = computed,
-                        CompanyRevenue = g.Sum(o => o.SubTotal) - g.Sum(o => o.Tax)
-                            - g.Sum(o => o.CleanerTotalSalary) - computed - refunded
+                        // Tax is a pass-through charged on top of Amount, never inside it — see
+                        // OrderRevenueMath. Subtracting it here would double-count it.
+                        CompanyRevenue = revenue - salary - computed
                     };
                 });
 
