@@ -29,7 +29,9 @@ namespace DreamCleaningBackend.Services
 
         private const string TokenEndpoint = "https://oauth2.googleapis.com/token";
         private const string ApiHost = "https://googleads.googleapis.com";
-        private const string CategoryName = "Google Ads";
+        /// <summary>Expense category every synced day of ad spend is filed under. Public because
+        /// reporting (the finances projection) has to find those rows by category.</summary>
+        public const string CategoryName = "Google Ads";
 
         private readonly ApplicationDbContext _context;
         private readonly IHttpClientFactory _httpClientFactory;

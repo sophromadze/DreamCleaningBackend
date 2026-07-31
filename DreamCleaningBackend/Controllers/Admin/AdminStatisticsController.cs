@@ -13,6 +13,7 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.Processing;
 using DreamCleaningBackend.Services;
+using DreamCleaningBackend.Helpers;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
 
@@ -54,7 +55,8 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<OrderStatisticsDto>> GetOrderStatistics(
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to,
-            [FromQuery] bool includeUpcoming = false)
+            [FromQuery] bool includeUpcoming = false,
+            [FromQuery] DateTime? upcomingTo = null)
         {
             // Counts both Stripe-paid orders (IsPaid=true, PaymentMethod=Normal) and manual-paid
             // orders (PaymentMethod != Normal, IsPaid=false) — see Order.PaymentMethod docs.
@@ -157,13 +159,20 @@ namespace DreamCleaningBackend.Controllers
             // How many booked-but-unfinished orders this window holds. Reported ALWAYS (not only
             // when includeUpcoming is on) so the finances page can label its projection toggle
             // — "include 12 unfinished cleanings" — before anything is folded in.
+            //
+            // upcomingTo exists because the money window and this count want different end dates.
+            // A running filter like "This Month" reports money only up to TODAY (counting revenue
+            // against days that haven't happened is meaningless), but every unfinished cleaning is
+            // by definition in the future — bounding this count at `to` would report 2 of the
+            // month's 5 remaining jobs. Callers pass the real period end here; it defaults to `to`.
+            var upcomingEnd = upcomingTo ?? to;
             IQueryable<Order> upcoming = _context.Orders
                 .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
                     && (o.Status == OrderStatuses.Active || o.Status == OrderStatuses.Pending));
             if (from.HasValue)
                 upcoming = upcoming.Where(o => o.ServiceDate >= from.Value.Date);
-            if (to.HasValue)
-                upcoming = upcoming.Where(o => o.ServiceDate < to.Value.Date.AddDays(1));
+            if (upcomingEnd.HasValue)
+                upcoming = upcoming.Where(o => o.ServiceDate < upcomingEnd.Value.Date.AddDays(1));
             stats.UpcomingOrders = await upcoming.CountAsync();
             stats.IncludesUpcoming = includeUpcoming;
 
@@ -211,6 +220,70 @@ namespace DreamCleaningBackend.Controllers
             }
             stats.AdminBonusesGel = adminBonusGel;
             stats.AdminBonusesUsd = adminBonusUsd;
+
+            // ── Google Ads daily run-rate + forecast for the rest of the period ───────────
+            // Ad spend is the one expense written one row per day (GoogleAdsCostService upserts
+            // SourceKey "googleads:yyyy-MM-dd"), so it has a real per-day rate — and the days of a
+            // still-running period that haven't been synced yet can be filled in from it.
+            //
+            // Denominator is ELAPSED CALENDAR DAYS, not the number of rows: a day with no spend is
+            // still a day that cost nothing, and only writing rows for cost > 0 would otherwise
+            // inflate the average. Today counts as elapsed even though its sync is partial — the
+            // alternative (treating today as a forecast day) would double-count the partial row
+            // already in the window.
+            //
+            // Everything here is in the ads account's timezone (NY), the same zone the sync writes
+            // its dates in, so the day boundaries line up.
+            var adsCategory = breakdown.ByCategory
+                .FirstOrDefault(c => c.CategoryName == GoogleAdsCostService.CategoryName);
+            stats.GoogleAdsSpend = adsCategory?.Total ?? 0m;
+
+            var todayNy = NyTimeHelper.NowNy.Date;
+            // All-time (no `from`) has no meaningful start, so the run-rate window opens at the
+            // first day that actually carries ad spend rather than at DateTime.MinValue.
+            var adsStart = from?.Date
+                ?? (adsCategory != null && adsCategory.Items.Count > 0
+                    ? adsCategory.Items.Min(i => i.Date.Date)
+                    : todayNy);
+            var adsEnd = to?.Date ?? todayNy;
+
+            var coveredEnd = adsEnd < todayNy ? adsEnd : todayNy;
+            stats.GoogleAdsCoveredDays = coveredEnd >= adsStart
+                ? (int)(coveredEnd - adsStart).TotalDays + 1
+                : 0;
+            stats.GoogleAdsDailyAverage = stats.GoogleAdsCoveredDays > 0
+                ? decimal.Round(stats.GoogleAdsSpend / stats.GoogleAdsCoveredDays, 2)
+                : 0m;
+            stats.GoogleAdsProjectedDays = adsEnd > todayNy
+                ? (int)(adsEnd - todayNy).TotalDays
+                : 0;
+
+            // Only a projection run forecasts the remaining days, and only when there is a rate to
+            // forecast from. The amount is folded straight into the Google Ads category so it flows
+            // through operating expenses into the bottom line exactly like real synced spend.
+            if (includeUpcoming && adsCategory != null
+                && stats.GoogleAdsProjectedDays > 0 && stats.GoogleAdsDailyAverage > 0)
+            {
+                stats.GoogleAdsProjectedSpend =
+                    decimal.Round(stats.GoogleAdsDailyAverage * stats.GoogleAdsProjectedDays, 2);
+
+                adsCategory.Total += stats.GoogleAdsProjectedSpend;
+                breakdown.Total += stats.GoogleAdsProjectedSpend;
+                // Shown when the category row is expanded, so the forecast is never a silent
+                // addition the owner can't account for.
+                adsCategory.Items.Insert(0, new ExpenseOccurrenceDto
+                {
+                    ExpenseId = 0,
+                    Name = $"Projected ad spend ({stats.GoogleAdsProjectedDays} day"
+                        + $"{(stats.GoogleAdsProjectedDays == 1 ? "" : "s")} × "
+                        + $"{stats.GoogleAdsDailyAverage:C} average)",
+                    CategoryId = adsCategory.CategoryId,
+                    CategoryName = adsCategory.CategoryName,
+                    Date = adsEnd,
+                    Amount = stats.GoogleAdsProjectedSpend,
+                    IsRecurring = false
+                });
+            }
 
             // Grand total expenses = table expenses + Stripe fees + admin bonuses (USD).
             var totalExpenses = breakdown.Total + stats.StripeFees + stats.AdminBonusesUsd;

@@ -45,6 +45,13 @@ namespace DreamCleaningBackend.Services
         /// </summary>
         public static readonly bool AutoAddCleanersByDuration = false;
 
+        /// <summary>
+        /// Scheduling/billing granularity for durations, in minutes. Durations shown to
+        /// customers/admins and the per-cleaner duration used for salary are rounded to this.
+        /// Mirrored by DURATION_ROUNDING_MINUTES in order-pricing.calculator.ts / duration.utils.ts.
+        /// </summary>
+        public const decimal DurationRoundingMinutes = 30m;
+
         /// <summary>Per-maid minimum duration in minutes.</summary>
         public const decimal PerMaidMinimumMinutes = 60m;
 
@@ -538,7 +545,7 @@ namespace DreamCleaningBackend.Services
             deepCleaningFee > 0m ? DeepCleaningCleanerHourlyRate : RegularCleanerHourlyRate;
 
         /// <summary>
-        /// Per-cleaner duration rounded to 15 minutes, then perCleaner/60 × maids × rate.
+        /// Per-cleaner duration rounded to DurationRoundingMinutes, then perCleaner/60 × maids × rate.
         /// Only cleaner-hours service types store TotalDuration as per-cleaner; everything
         /// else (including Custom Pricing) stores it as TOTAL across all maids and we divide.
         /// </summary>
@@ -549,7 +556,7 @@ namespace DreamCleaningBackend.Services
             var perCleanerDuration = hasCleanerService
                 ? totalDuration
                 : (maids > 1 ? totalDuration / maids : totalDuration);
-            var roundedPerCleaner = Math.Round(perCleanerDuration / 15m, MidpointRounding.AwayFromZero) * 15m;
+            var roundedPerCleaner = Math.Round(perCleanerDuration / DurationRoundingMinutes, MidpointRounding.AwayFromZero) * DurationRoundingMinutes;
             return Round2(roundedPerCleaner / 60m * maids * hourlyRate);
         }
     }

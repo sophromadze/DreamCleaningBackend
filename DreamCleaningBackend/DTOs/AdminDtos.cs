@@ -759,6 +759,25 @@ namespace DreamCleaningBackend.DTOs
         // True when the figures above are a PROJECTION: the caller passed includeUpcoming=true,
         // so the UpcomingOrders above are folded into every total on this DTO.
         public bool IncludesUpcoming { get; set; }
+
+        // ── Google Ads daily run-rate ──────────────────────────────────────────────────
+        // Ad spend is synced one Expense row per day, so unlike every other expense it has a
+        // meaningful per-day rate — and the remaining days of a running period can be forecast
+        // from it. See AdminStatisticsController for how these are derived.
+
+        // Ad spend ACTUALLY recorded inside the window (never includes the projection below).
+        public decimal GoogleAdsSpend { get; set; }
+        // Days of the window that have already happened — the average's denominator. Days with
+        // no spend count too: a $0 day is a real day that simply cost nothing.
+        public int GoogleAdsCoveredDays { get; set; }
+        // GoogleAdsSpend / GoogleAdsCoveredDays (0 when the window has no elapsed days).
+        public decimal GoogleAdsDailyAverage { get; set; }
+        // Days of the window still to come. Non-zero only for a period running past today.
+        public int GoogleAdsProjectedDays { get; set; }
+        // DailyAverage × ProjectedDays, and 0 unless includeUpcoming was set. When non-zero it is
+        // ALREADY folded into the Google Ads category, ExpensesBreakdown.Total, TotalExpenses and
+        // TotalCompanyRevenue — so callers must not add it again.
+        public decimal GoogleAdsProjectedSpend { get; set; }
     }
 
     /// <summary>

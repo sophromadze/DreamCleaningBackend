@@ -161,13 +161,14 @@ namespace DreamCleaningBackend.Services
                 SubTotal = quote.SubTotal,
                 EstimatedTax = totals.Tax,
                 EstimatedTotal = totals.Total,
-                // Chat-display only: round UP to the 15-minute billing/scheduling
-                // granularity (189 → 195) so the model can only ever quote an
+                // Chat-display only: round UP to the shared billing/scheduling
+                // granularity (189 → 210) so the model can only ever quote an
                 // already-rounded figure. Deliberately does NOT touch the shared
                 // OrderPricingCalculator — booking-flow math stays untouched, and
-                // ceiling (vs the calculator's internal nearest-15 salary rounding)
+                // ceiling (vs the calculator's internal nearest-increment salary rounding)
                 // errs toward over-quoting time to the customer, never under.
-                DisplayDurationMinutes = Math.Ceiling(quote.DisplayDuration / 15m) * 15m,
+                DisplayDurationMinutes = Math.Ceiling(quote.DisplayDuration / OrderPricingCalculator.DurationRoundingMinutes)
+                                         * OrderPricingCalculator.DurationRoundingMinutes,
                 DeepCleaningFee = quote.DeepCleaningFee,
                 Note = EstimateNote
             }, null);

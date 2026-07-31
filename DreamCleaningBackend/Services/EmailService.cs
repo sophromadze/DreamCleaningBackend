@@ -1137,7 +1137,8 @@ namespace DreamCleaningBackend.Services
 
         private string FormatDurationLocalized(int minutes, string language)
         {
-            var roundedMinutes = (int)Math.Round(minutes / 15.0) * 15;
+            var increment = (int)OrderPricingCalculator.DurationRoundingMinutes;
+            var roundedMinutes = (int)Math.Round(minutes / (double)increment) * increment;
             var hours = roundedMinutes / 60;
             var mins = roundedMinutes % 60;
 
@@ -1345,8 +1346,9 @@ namespace DreamCleaningBackend.Services
 
         private string FormatDurationRounded(int minutes)
         {
-            // Round to nearest 15 minutes (same as frontend)
-            var roundedMinutes = (int)Math.Round(minutes / 15.0) * 15;
+            // Round to the shared scheduling increment (same as frontend)
+            var increment = (int)OrderPricingCalculator.DurationRoundingMinutes;
+            var roundedMinutes = (int)Math.Round(minutes / (double)increment) * increment;
             var hours = roundedMinutes / 60;
             var mins = roundedMinutes % 60;
 
