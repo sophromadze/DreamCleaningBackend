@@ -28,14 +28,17 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly IAuditService _auditService;
         private readonly ILogger<AdminCatalogController> _logger;
+        private readonly IPricingConfigurationService _pricingConfigurationService;
 
         public AdminCatalogController(ApplicationDbContext context,
             IAuditService auditService,
-            ILogger<AdminCatalogController> logger)
+            ILogger<AdminCatalogController> logger,
+            IPricingConfigurationService pricingConfigurationService)
         {
             _context = context;
             _auditService = auditService;
             _logger = logger;
+            _pricingConfigurationService = pricingConfigurationService;
         }
 
         // Service Types Management
@@ -44,7 +47,9 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<List<ServiceTypeDto>>> GetServiceTypes()
         {
             var serviceTypes = await _context.ServiceTypes
-                .Include(st => st.Services)
+                .Include(st => st.Services).ThenInclude(s => s.Thresholds).ThenInclude(t => t.SourceService)
+                .Include(st => st.Services).ThenInclude(s => s.RateTiers)
+                .AsSplitQuery()
                 .OrderBy(st => st.DisplayOrder)
                 .ToListAsync();
 
@@ -64,39 +69,9 @@ namespace DreamCleaningBackend.Controllers
                     .OrderBy(es => es.DisplayOrder)
                     .ToListAsync();
 
-                var serviceTypeDto = new ServiceTypeDto
-                {
-                    Id = st.Id,
-                    Name = st.Name,
-                    BasePrice = st.BasePrice,
-                    Description = st.Description,
-                    IsActive = st.IsActive,
-                    DisplayOrder = st.DisplayOrder,
-                    HasPoll = st.HasPoll,
-                    IsCustom = st.IsCustom,
-                    TimeDuration = st.TimeDuration,
-                    Services = st.Services
-                        .OrderBy(s => s.DisplayOrder)
-                        .Select(s => new ServiceDto
-                        {
-                            Id = s.Id,
-                            Name = s.Name,
-                            ServiceKey = s.ServiceKey,
-                            Cost = s.Cost,
-                            TimeDuration = s.TimeDuration,
-                            ServiceTypeId = s.ServiceTypeId,
-                            InputType = s.InputType,
-                            MinValue = s.MinValue,
-                            MaxValue = s.MaxValue,
-                            StepValue = s.StepValue,
-                            IsRangeInput = s.IsRangeInput,
-                            Unit = s.Unit,
-                            ServiceRelationType = s.ServiceRelationType,
-                            IsActive = s.IsActive,
-                            DisplayOrder = s.DisplayOrder
-                        }).ToList(),
-                    ExtraServices = new List<ExtraServiceDto>()
-                };
+                // Admin view deliberately shows inactive services too, unlike the public endpoint.
+                var serviceTypeDto = CatalogDtoMapper.ToServiceTypeDto(st, st.Services);
+                serviceTypeDto.ExtraServices = new List<ExtraServiceDto>();
 
                 // Add specific extra services first
                 serviceTypeDto.ExtraServices.AddRange(specificExtraServices.Select(es => new ExtraServiceDto
@@ -187,6 +162,7 @@ namespace DreamCleaningBackend.Controllers
                         IsCustom = dto.IsCustom,
                         IsActive = true,
                         TimeDuration = dto.TimeDuration,
+                        MinimumPrice = dto.MinimumPrice,
                         CreatedAt = DateTime.UtcNow
                     };
                     _context.ServiceTypes.Add(serviceType);
@@ -196,18 +172,7 @@ namespace DreamCleaningBackend.Controllers
                     // LOG THE CREATION (after save to get the ID)
                     await _auditService.LogCreateAsync(serviceType);
 
-                    return Ok(new ServiceTypeDto
-                    {
-                        Id = serviceType.Id,
-                        Name = serviceType.Name,
-                        BasePrice = serviceType.BasePrice,
-                        Description = serviceType.Description,
-                        DisplayOrder = serviceType.DisplayOrder,
-                        HasPoll = serviceType.HasPoll,
-                        IsCustom = serviceType.IsCustom,
-                        IsActive = serviceType.IsActive,
-                        TimeDuration = serviceType.TimeDuration
-                    });
+                    return Ok(CatalogDtoMapper.ToServiceTypeDto(serviceType));
                 }
                 catch (Exception ex)
                 {
@@ -236,7 +201,8 @@ namespace DreamCleaningBackend.Controllers
                 HasPoll = serviceType.HasPoll,
                 IsCustom = serviceType.IsCustom,
                 IsActive = serviceType.IsActive,
-                TimeDuration = serviceType.TimeDuration
+                TimeDuration = serviceType.TimeDuration,
+                MinimumPrice = serviceType.MinimumPrice
             };
 
             // Check if display order is changing
@@ -282,6 +248,7 @@ namespace DreamCleaningBackend.Controllers
                     serviceType.HasPoll = dto.HasPoll;
                     serviceType.IsCustom = dto.IsCustom;
                     serviceType.TimeDuration = dto.TimeDuration;
+                    serviceType.MinimumPrice = dto.MinimumPrice;
                     serviceType.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
@@ -290,18 +257,7 @@ namespace DreamCleaningBackend.Controllers
                     // LOG THE UPDATE
                     await _auditService.LogUpdateAsync(originalServiceType, serviceType);
 
-                    return Ok(new ServiceTypeDto
-                    {
-                        Id = serviceType.Id,
-                        Name = serviceType.Name,
-                        BasePrice = serviceType.BasePrice,
-                        Description = serviceType.Description,
-                        DisplayOrder = serviceType.DisplayOrder,
-                        HasPoll = serviceType.HasPoll,
-                        IsCustom = serviceType.IsCustom,
-                        IsActive = serviceType.IsActive,
-                        TimeDuration = serviceType.TimeDuration
-                    });
+                    return Ok(CatalogDtoMapper.ToServiceTypeDto(serviceType));
                 }
                 catch (Exception ex)
                 {
@@ -404,34 +360,72 @@ namespace DreamCleaningBackend.Controllers
             return Ok();
         }
 
+        // ===== Pricing configuration export / import =====
+        // Moves a validated pricing setup between environments. Everything resolves by
+        // (ServiceType.Name, Service.ServiceKey) — never by Id, because production and local
+        // have diverged on surrogate keys.
+
+        /// <summary>Snapshot of pricing configuration. Omit serviceTypeId to export everything.</summary>
+        [HttpGet("pricing-configuration/export")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<PricingConfigurationDto>> ExportPricingConfiguration(
+            [FromQuery] int? serviceTypeId = null)
+        {
+            var config = await _pricingConfigurationService.ExportAsync(serviceTypeId);
+            config.SourceNote = $"Exported from {Request.Host.Value} on {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC";
+            return Ok(config);
+        }
+
+        /// <summary>
+        /// What an import WOULD change. Writes nothing. SuperAdmin-only like the apply step, so
+        /// the two can't drift apart in who is allowed to use them.
+        /// </summary>
+        [HttpPost("pricing-configuration/preview")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<PricingConfigurationDiffDto>> PreviewPricingConfiguration(
+            [FromBody] PricingConfigurationDto payload)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return StatusCode(403, new { message = "Only a SuperAdmin can import pricing configuration." });
+
+            return Ok(await _pricingConfigurationService.BuildDiffAsync(payload));
+        }
+
+        /// <summary>
+        /// Applies a configuration in one transaction. Re-runs validation internally, so calling
+        /// this without previewing first is safe — it just skips showing the admin the diff.
+        /// </summary>
+        [HttpPost("pricing-configuration/apply")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<ApplyPricingConfigurationResultDto>> ApplyPricingConfiguration(
+            [FromBody] PricingConfigurationDto payload)
+        {
+            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+                return StatusCode(403, new { message = "Only a SuperAdmin can import pricing configuration." });
+
+            var result = await _pricingConfigurationService.ApplyAsync(payload, GetCurrentUserId());
+            if (!result.Success)
+                return BadRequest(result);
+
+            return Ok(result);
+        }
+
         // Services Management
         [HttpGet("services")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<ServiceDto>>> GetServices()
         {
+            // Materialise first: CatalogDtoMapper works on entities, not IQueryable, and the
+            // thresholds/tiers it maps need their navigations loaded.
             var services = await _context.Services
+                .Include(s => s.Thresholds).ThenInclude(t => t.SourceService)
+                .Include(s => s.RateTiers)
+                .AsSplitQuery()
                 .OrderBy(s => s.ServiceTypeId)
                 .ThenBy(s => s.DisplayOrder)
-                .Select(s => new ServiceDto
-                {
-                    Id = s.Id,
-                    Name = s.Name,
-                    ServiceKey = s.ServiceKey,
-                    Cost = s.Cost,
-                    TimeDuration = s.TimeDuration,
-                    ServiceTypeId = s.ServiceTypeId,
-                    InputType = s.InputType,
-                    MinValue = s.MinValue,
-                    MaxValue = s.MaxValue,
-                    StepValue = s.StepValue,
-                    IsRangeInput = s.IsRangeInput,
-                    Unit = s.Unit,
-                    IsActive = s.IsActive,
-                    DisplayOrder = s.DisplayOrder
-                })
                 .ToListAsync();
 
-            return Ok(services);
+            return Ok(services.Select(CatalogDtoMapper.ToServiceDto).ToList());
         }
 
         [HttpPost("services")]
@@ -480,6 +474,9 @@ namespace DreamCleaningBackend.Controllers
                         ServiceRelationType = dto.ServiceRelationType, // ADD THIS
                         DisplayOrder = dto.DisplayOrder,
                         IsActive = true,
+                        ChargeAboveThreshold = dto.ChargeAboveThreshold,
+                        ZeroQuantityCost = dto.ZeroQuantityCost,
+                        ZeroQuantityDuration = dto.ZeroQuantityDuration,
                         CreatedAt = DateTime.UtcNow
                     };
                     _context.Services.Add(service);
@@ -488,24 +485,7 @@ namespace DreamCleaningBackend.Controllers
 
                     await _auditService.LogCreateAsync(service);
 
-                    return Ok(new ServiceDto
-                    {
-                        Id = service.Id,
-                        Name = service.Name,
-                        ServiceKey = service.ServiceKey,
-                        Cost = service.Cost,
-                        TimeDuration = service.TimeDuration,
-                        ServiceTypeId = service.ServiceTypeId,
-                        InputType = service.InputType,
-                        MinValue = service.MinValue,
-                        MaxValue = service.MaxValue,
-                        StepValue = service.StepValue,
-                        IsRangeInput = service.IsRangeInput,
-                        Unit = service.Unit,
-                        ServiceRelationType = service.ServiceRelationType, // ADD THIS
-                        DisplayOrder = service.DisplayOrder,
-                        IsActive = service.IsActive
-                    });
+                    return Ok(CatalogDtoMapper.ToServiceDto(service));
                 }
                 catch (Exception ex)
                 {
@@ -519,9 +499,18 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceDto>> CopyService(CopyServiceDto dto)
         {
-            var sourceService = await _context.Services.FindAsync(dto.SourceServiceId);
+            // Thresholds and tiers must come along: a copied Sq.ft service without its tiers
+            // silently falls back to flat Cost x quantity, which on a large home is a
+            // multi-hundred-dollar overcharge.
+            var sourceService = await _context.Services
+                .Include(s => s.Thresholds).ThenInclude(t => t.SourceService)
+                .Include(s => s.RateTiers)
+                .FirstOrDefaultAsync(s => s.Id == dto.SourceServiceId);
+
             if (sourceService == null)
                 return NotFound("Source service not found");
+
+            var now = DateTime.UtcNow;
 
             var newService = new Service
             {
@@ -539,36 +528,47 @@ namespace DreamCleaningBackend.Controllers
                 ServiceRelationType = sourceService.ServiceRelationType, // ADD THIS
                 DisplayOrder = sourceService.DisplayOrder,
                 IsActive = true,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = now
             };
+
+            // Threshold sources are remapped by ServiceKey within the TARGET service type, so a
+            // copy into a different type points at that type's own bedrooms rather than reaching
+            // back into the original's. Sources with no counterpart there are skipped.
+            var targetTypeServices = await _context.Services
+                .Where(s => s.ServiceTypeId == dto.TargetServiceTypeId)
+                .ToListAsync();
+
+            CatalogDtoMapper.CopyConfiguration(sourceService, newService, targetTypeServices, now);
 
             _context.Services.Add(newService);
             await _context.SaveChangesAsync();
 
-            return Ok(new ServiceDto
+            var skipped = (sourceService.Thresholds?.Count ?? 0) - newService.Thresholds.Count;
+            if (skipped > 0)
             {
-                Id = newService.Id,
-                Name = newService.Name,
-                ServiceKey = newService.ServiceKey,
-                Cost = newService.Cost,
-                TimeDuration = newService.TimeDuration,
-                ServiceTypeId = newService.ServiceTypeId,
-                InputType = newService.InputType,
-                MinValue = newService.MinValue,
-                MaxValue = newService.MaxValue,
-                StepValue = newService.StepValue,
-                IsRangeInput = newService.IsRangeInput,
-                Unit = newService.Unit,
-                ServiceRelationType = newService.ServiceRelationType, // ADD THIS
-                IsActive = newService.IsActive
-            });
+                _logger.LogWarning(
+                    "CopyService: {Skipped} included-amount row(s) were dropped copying service {SourceId} " +
+                    "into service type {TargetTypeId} — no matching source service key there.",
+                    skipped, dto.SourceServiceId, dto.TargetServiceTypeId);
+            }
+
+            return Ok(CatalogDtoMapper.ToServiceDto(newService));
         }
 
         [HttpPut("services/{id}")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<ServiceDto>> UpdateService(int id, UpdateServiceDto dto)
         {
-            var service = await _context.Services.FindAsync(id);
+            // Thresholds and tiers must be loaded even though this endpoint doesn't modify them:
+            // lazy loading is NOT enabled on this context, so without the Includes the mapped
+            // response would report them as empty and the admin panel would render the service's
+            // configuration as wiped immediately after a save.
+            var service = await _context.Services
+                .Include(s => s.Thresholds).ThenInclude(t => t.SourceService)
+                .Include(s => s.RateTiers)
+                .AsSplitQuery()
+                .FirstOrDefaultAsync(s => s.Id == id);
+
             if (service == null)
                 return NotFound();
 
@@ -642,6 +642,9 @@ namespace DreamCleaningBackend.Controllers
                     service.Unit = dto.Unit;
                     service.ServiceRelationType = dto.ServiceRelationType;
                     service.DisplayOrder = dto.DisplayOrder;
+                    service.ChargeAboveThreshold = dto.ChargeAboveThreshold;
+                    service.ZeroQuantityCost = dto.ZeroQuantityCost;
+                    service.ZeroQuantityDuration = dto.ZeroQuantityDuration;
                     service.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
@@ -650,24 +653,7 @@ namespace DreamCleaningBackend.Controllers
                     // LOG THE UPDATE
                     await _auditService.LogUpdateAsync(originalService, service);
 
-                    return Ok(new ServiceDto
-                    {
-                        Id = service.Id,
-                        Name = service.Name,
-                        ServiceKey = service.ServiceKey,
-                        Cost = service.Cost,
-                        TimeDuration = service.TimeDuration,
-                        ServiceTypeId = service.ServiceTypeId,
-                        InputType = service.InputType,
-                        MinValue = service.MinValue,
-                        MaxValue = service.MaxValue,
-                        StepValue = service.StepValue,
-                        IsRangeInput = service.IsRangeInput,
-                        Unit = service.Unit,
-                        ServiceRelationType = service.ServiceRelationType, // ADD THIS
-                        DisplayOrder = service.DisplayOrder,
-                        IsActive = service.IsActive
-                    });
+                    return Ok(CatalogDtoMapper.ToServiceDto(service));
                 }
                 catch (Exception ex)
                 {
@@ -837,12 +823,294 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "Cannot delete service with existing orders. Please deactivate instead." });
             }
 
+            // This service may be the included-amount SOURCE for another service (e.g. Bedrooms
+            // is the source for Square Feet). That FK is Restrict on purpose: silently removing
+            // the source would leave the dependent service billing from zero — a large, silent
+            // overcharge. Check up front so we can name the dependency instead of surfacing a
+            // raw DbUpdateException. Its own thresholds/tiers cascade and need no check.
+            var dependentServiceNames = await _context.ServiceThresholds
+                .Where(t => t.SourceServiceId == id)
+                .Select(t => t.Service.Name)
+                .Distinct()
+                .ToListAsync();
+
+            if (dependentServiceNames.Any())
+            {
+                var dependents = string.Join(", ", dependentServiceNames);
+                return BadRequest(new
+                {
+                    message = $"Cannot delete {service.Name} — it is used as the included-amount " +
+                              $"source for {dependents}. Remove those included amounts first."
+                });
+            }
+
             await _auditService.LogDeleteAsync(service);
 
             _context.Services.Remove(service);
+
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex)
+            {
+                // Backstop: a dependency created between the check above and the save, or any
+                // future restricted FK we haven't special-cased. Never leak the provider error.
+                _logger.LogWarning(ex, "Delete blocked by a database constraint for service {ServiceId}", id);
+                return BadRequest(new
+                {
+                    message = $"Cannot delete {service.Name} — another part of the pricing " +
+                              "configuration still depends on it."
+                });
+            }
+
+            return Ok();
+        }
+
+        // ===== Included amounts (ServiceThreshold) =====
+        // Rows are validated against the SAME triple the unique index enforces —
+        // (ServiceId, SourceServiceId, SourceQuantity) — so a clash is reported as a clear
+        // message rather than surfacing as a 1062 duplicate-key 500.
+
+        [HttpGet("services/{serviceId}/thresholds")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<ServiceThresholdDto>>> GetServiceThresholds(int serviceId)
+        {
+            if (!await _context.Services.AnyAsync(s => s.Id == serviceId))
+                return NotFound(new { message = "Service not found." });
+
+            var rows = await _context.ServiceThresholds
+                .Include(t => t.SourceService)
+                .Where(t => t.ServiceId == serviceId)
+                .OrderBy(t => t.SourceQuantity)
+                .ToListAsync();
+
+            return Ok(rows.Select(CatalogDtoMapper.ToThresholdDto).ToList());
+        }
+
+        [HttpPost("services/{serviceId}/thresholds")]
+        [RequirePermission(Permission.Create)]
+        public async Task<ActionResult<ServiceThresholdDto>> CreateServiceThreshold(
+            int serviceId, SaveServiceThresholdDto dto)
+        {
+            var error = await ValidateThresholdAsync(serviceId, dto, excludeId: null);
+            if (error != null) return BadRequest(new { message = error });
+
+            var threshold = new ServiceThreshold
+            {
+                ServiceId = serviceId,
+                SourceServiceId = dto.SourceServiceId,
+                SourceQuantity = dto.SourceQuantity,
+                IncludedQuantity = dto.IncludedQuantity,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.ServiceThresholds.Add(threshold);
+            await _context.SaveChangesAsync();
+            await _auditService.LogCreateAsync(threshold);
+
+            await _context.Entry(threshold).Reference(t => t.SourceService).LoadAsync();
+            return Ok(CatalogDtoMapper.ToThresholdDto(threshold));
+        }
+
+        [HttpPut("services/{serviceId}/thresholds/{id}")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<ServiceThresholdDto>> UpdateServiceThreshold(
+            int serviceId, int id, SaveServiceThresholdDto dto)
+        {
+            var threshold = await _context.ServiceThresholds
+                .FirstOrDefaultAsync(t => t.Id == id && t.ServiceId == serviceId);
+            if (threshold == null) return NotFound();
+
+            var error = await ValidateThresholdAsync(serviceId, dto, excludeId: id);
+            if (error != null) return BadRequest(new { message = error });
+
+            threshold.SourceServiceId = dto.SourceServiceId;
+            threshold.SourceQuantity = dto.SourceQuantity;
+            threshold.IncludedQuantity = dto.IncludedQuantity;
+            threshold.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            await _context.Entry(threshold).Reference(t => t.SourceService).LoadAsync();
+            return Ok(CatalogDtoMapper.ToThresholdDto(threshold));
+        }
+
+        [HttpDelete("services/{serviceId}/thresholds/{id}")]
+        [RequirePermission(Permission.Delete)]
+        public async Task<ActionResult> DeleteServiceThreshold(int serviceId, int id)
+        {
+            var threshold = await _context.ServiceThresholds
+                .FirstOrDefaultAsync(t => t.Id == id && t.ServiceId == serviceId);
+            if (threshold == null) return NotFound();
+
+            await _auditService.LogDeleteAsync(threshold);
+            _context.ServiceThresholds.Remove(threshold);
             await _context.SaveChangesAsync();
 
             return Ok();
+        }
+
+        /// <summary>Returns an error message, or null when the row is valid.</summary>
+        private async Task<string?> ValidateThresholdAsync(int serviceId, SaveServiceThresholdDto dto, int? excludeId)
+        {
+            var service = await _context.Services.FirstOrDefaultAsync(s => s.Id == serviceId);
+            if (service == null) return "Service not found.";
+
+            if (dto.SourceQuantity < 0) return "The source quantity cannot be negative.";
+            if (dto.IncludedQuantity < 0) return "The included amount cannot be negative.";
+
+            var source = await _context.Services.FirstOrDefaultAsync(s => s.Id == dto.SourceServiceId);
+            if (source == null) return "The selected source service does not exist.";
+
+            // Cross-service-type references would let one service type's configuration silently
+            // depend on another's.
+            if (source.ServiceTypeId != service.ServiceTypeId)
+                return $"'{source.Name}' belongs to a different service type and cannot be used as a source here.";
+
+            var clash = await _context.ServiceThresholds.AnyAsync(t =>
+                t.ServiceId == serviceId &&
+                t.SourceServiceId == dto.SourceServiceId &&
+                t.SourceQuantity == dto.SourceQuantity &&
+                (excludeId == null || t.Id != excludeId));
+
+            if (clash)
+                return $"An included amount for '{source.Name}' = {dto.SourceQuantity} already exists.";
+
+            return null;
+        }
+
+        // ===== Rate tiers (ServiceRateTier) =====
+
+        [HttpGet("services/{serviceId}/rate-tiers")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<ServiceRateTierDto>>> GetServiceRateTiers(int serviceId)
+        {
+            if (!await _context.Services.AnyAsync(s => s.Id == serviceId))
+                return NotFound(new { message = "Service not found." });
+
+            var rows = await _context.ServiceRateTiers
+                .Where(t => t.ServiceId == serviceId)
+                .OrderBy(t => t.FromQuantity)
+                .ToListAsync();
+
+            return Ok(rows.Select(CatalogDtoMapper.ToRateTierDto).ToList());
+        }
+
+        [HttpPost("services/{serviceId}/rate-tiers")]
+        [RequirePermission(Permission.Create)]
+        public async Task<ActionResult<ServiceRateTierDto>> CreateServiceRateTier(
+            int serviceId, SaveServiceRateTierDto dto)
+        {
+            var error = await ValidateRateTierAsync(serviceId, dto, excludeId: null);
+            if (error != null) return BadRequest(new { message = error });
+
+            var tier = new ServiceRateTier
+            {
+                ServiceId = serviceId,
+                FromQuantity = dto.FromQuantity,
+                Cost = dto.Cost,
+                TimeDuration = dto.TimeDuration,
+                DisplayOrder = dto.DisplayOrder,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.ServiceRateTiers.Add(tier);
+            await _context.SaveChangesAsync();
+            await _auditService.LogCreateAsync(tier);
+
+            return Ok(CatalogDtoMapper.ToRateTierDto(tier));
+        }
+
+        [HttpPut("services/{serviceId}/rate-tiers/{id}")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<ServiceRateTierDto>> UpdateServiceRateTier(
+            int serviceId, int id, SaveServiceRateTierDto dto)
+        {
+            var tier = await _context.ServiceRateTiers
+                .FirstOrDefaultAsync(t => t.Id == id && t.ServiceId == serviceId);
+            if (tier == null) return NotFound();
+
+            var error = await ValidateRateTierAsync(serviceId, dto, excludeId: id);
+            if (error != null) return BadRequest(new { message = error });
+
+            tier.FromQuantity = dto.FromQuantity;
+            tier.Cost = dto.Cost;
+            tier.TimeDuration = dto.TimeDuration;
+            tier.DisplayOrder = dto.DisplayOrder;
+            tier.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+            return Ok(CatalogDtoMapper.ToRateTierDto(tier));
+        }
+
+        [HttpDelete("services/{serviceId}/rate-tiers/{id}")]
+        [RequirePermission(Permission.Delete)]
+        public async Task<ActionResult> DeleteServiceRateTier(int serviceId, int id)
+        {
+            var tier = await _context.ServiceRateTiers
+                .FirstOrDefaultAsync(t => t.Id == id && t.ServiceId == serviceId);
+            if (tier == null) return NotFound();
+
+            // Removing the 0 band while others remain would leave the first slice of every
+            // billable quantity unpriced — a silent undercharge.
+            if (tier.FromQuantity == 0m)
+            {
+                var othersRemain = await _context.ServiceRateTiers
+                    .AnyAsync(t => t.ServiceId == serviceId && t.Id != id);
+                if (othersRemain)
+                    return BadRequest(new
+                    {
+                        message = "The tier starting at 0 cannot be removed while other tiers exist. " +
+                                  "Delete the higher tiers first."
+                    });
+            }
+
+            await _auditService.LogDeleteAsync(tier);
+            _context.ServiceRateTiers.Remove(tier);
+            await _context.SaveChangesAsync();
+
+            return Ok();
+        }
+
+        /// <summary>Returns an error message, or null when the tier is valid.</summary>
+        private async Task<string?> ValidateRateTierAsync(
+            int serviceId, SaveServiceRateTierDto dto, int? excludeId)
+        {
+            if (!await _context.Services.AnyAsync(s => s.Id == serviceId))
+                return "Service not found.";
+
+            if (dto.FromQuantity < 0m) return "The tier start cannot be negative.";
+            if (dto.Cost < 0m) return "The cost per unit cannot be negative.";
+            if (dto.TimeDuration < 0m) return "The minutes per unit cannot be negative.";
+
+            var clash = await _context.ServiceRateTiers.AnyAsync(t =>
+                t.ServiceId == serviceId &&
+                t.FromQuantity == dto.FromQuantity &&
+                (excludeId == null || t.Id != excludeId));
+
+            if (clash) return $"A rate tier starting at {dto.FromQuantity:0.##} already exists.";
+
+            // The lowest tier must anchor at 0, otherwise the slice below it is never priced.
+            //
+            // Enforced on the RESULTING set, which is what makes this cover EDITS as well as
+            // creates: excludeId removes the row being edited from the "is there a 0 band?"
+            // check, so moving the only 0 tier up to 400 is rejected exactly like deleting it.
+            // Editing a 0 tier's cost or minutes is unaffected — FromQuantity stays 0 and the
+            // first clause short-circuits.
+            var otherTierHasZero = await _context.ServiceRateTiers.AnyAsync(t =>
+                t.ServiceId == serviceId &&
+                t.FromQuantity == 0m &&
+                (excludeId == null || t.Id != excludeId));
+
+            if (dto.FromQuantity != 0m && !otherTierHasZero)
+                return excludeId == null
+                    ? "The first rate tier must start at 0. Add that one before adding higher tiers."
+                    : "This is the only tier starting at 0, so it cannot be moved to " +
+                      $"{dto.FromQuantity:0.##} — everything below that would be unpriced. " +
+                      "Add a replacement tier starting at 0 first.";
+
+            return null;
         }
 
         [HttpGet("extra-services")]

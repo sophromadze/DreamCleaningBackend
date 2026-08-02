@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Services
 {
@@ -165,10 +166,13 @@ namespace DreamCleaningBackend.Services
                 // granularity (189 → 210) so the model can only ever quote an
                 // already-rounded figure. Deliberately does NOT touch the shared
                 // OrderPricingCalculator — booking-flow math stays untouched, and
-                // ceiling (vs the calculator's internal nearest-increment salary rounding)
+                // ceiling (vs the Nearest mode used for emails and cleaner salary)
                 // errs toward over-quoting time to the customer, never under.
-                DisplayDurationMinutes = Math.Ceiling(quote.DisplayDuration / OrderPricingCalculator.DurationRoundingMinutes)
-                                         * OrderPricingCalculator.DurationRoundingMinutes,
+                // The mode is explicit here precisely because it differs from everywhere else.
+                DisplayDurationMinutes = DurationUtils.RoundToIncrement(
+                    quote.DisplayDuration,
+                    OrderPricingCalculator.DurationRoundingMinutes,
+                    DurationRounding.Up),
                 DeepCleaningFee = quote.DeepCleaningFee,
                 Note = EstimateNote
             }, null);

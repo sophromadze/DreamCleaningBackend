@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Services
@@ -26,10 +27,20 @@ namespace DreamCleaningBackend.Services
         /// <summary>NYC sales tax. The only place this rate may be defined on the backend.</summary>
         public const decimal SalesTaxRate = 0.08875m;
 
-        /// <summary>Flat price for a studio (bedrooms quantity = 0), before the cleaning-type multiplier.</summary>
+        /// <summary>
+        /// LEGACY fallback only. Studio pricing is now admin-editable per service via
+        /// Service.ZeroQuantityCost / Service.ZeroQuantityDuration; this constant is used
+        /// solely when BOTH of those columns are null, so a missing seed can't zero out a
+        /// studio booking. Do not reference it in new code.
+        /// </summary>
+        [Obsolete("Use Service.ZeroQuantityCost (ServiceLineInput.ZeroQuantityCost). Kept only as a null-seed fallback.")]
         public const decimal StudioPrice = 10m;
 
-        /// <summary>Base duration in minutes for a studio, before the cleaning-type multiplier.</summary>
+        /// <summary>
+        /// LEGACY fallback only — see <see cref="StudioPrice"/>. Superseded by
+        /// Service.ZeroQuantityDuration.
+        /// </summary>
+        [Obsolete("Use Service.ZeroQuantityDuration (ServiceLineInput.ZeroQuantityDuration). Kept only as a null-seed fallback.")]
         public const decimal StudioDuration = 20m;
 
         /// <summary>A single maid can work at most this many hours; above it we add maids.</summary>
@@ -74,6 +85,29 @@ namespace DreamCleaningBackend.Services
 
         // ===== Inputs =====
 
+        /// <summary>
+        /// One marginal rate band over the BILLABLE quantity (i.e. after the included
+        /// allowance has been subtracted), NOT over the raw selected quantity.
+        /// </summary>
+        public class RateTierInput
+        {
+            /// <summary>Billable quantity at which this band starts. The lowest band must be 0.</summary>
+            public decimal FromQuantity { get; set; }
+            public decimal Cost { get; set; }
+            public decimal TimeDuration { get; set; }
+        }
+
+        /// <summary>
+        /// Maps a source service's selected quantity to units of THIS service that are
+        /// included at no charge (e.g. bedrooms = 2 → 850 sqft included).
+        /// </summary>
+        public class ThresholdInput
+        {
+            public int SourceServiceId { get; set; }
+            public int SourceQuantity { get; set; }
+            public decimal IncludedQuantity { get; set; }
+        }
+
         /// <summary>One selected service (bedrooms, bathrooms, cleaners, hours, sqft, ...).</summary>
         public class ServiceLineInput
         {
@@ -83,6 +117,21 @@ namespace DreamCleaningBackend.Services
             public string? ServiceRelationType { get; set; }
             public string? ServiceKey { get; set; }
             public int Quantity { get; set; }
+
+            /// <summary>When true, the included allowance is subtracted before billing.</summary>
+            public bool ChargeAboveThreshold { get; set; }
+
+            /// <summary>Cost when the selected quantity is 0 (e.g. Studio). Null = not applicable.</summary>
+            public decimal? ZeroQuantityCost { get; set; }
+
+            /// <summary>Minutes when the selected quantity is 0 (e.g. Studio). Null = not applicable.</summary>
+            public decimal? ZeroQuantityDuration { get; set; }
+
+            /// <summary>Empty = flat <see cref="Cost"/>/<see cref="TimeDuration"/> across the whole billable quantity.</summary>
+            public List<RateTierInput> RateTiers { get; set; } = new();
+
+            /// <summary>Empty = no allowance, i.e. bill from zero.</summary>
+            public List<ThresholdInput> Thresholds { get; set; } = new();
         }
 
         /// <summary>One selected extra service.</summary>
@@ -110,6 +159,12 @@ namespace DreamCleaningBackend.Services
             public decimal BaseDuration { get; set; }
             public List<ServiceLineInput> Services { get; set; } = new();
             public List<ExtraServiceLineInput> ExtraServices { get; set; } = new();
+
+            /// <summary>
+            /// Floor for the base-price + services portion of the subtotal (ServiceType.MinimumPrice).
+            /// Extras and the deep-cleaning fee stack ON TOP of the floor. 0 = no floor.
+            /// </summary>
+            public decimal MinimumPrice { get; set; }
 
             // Custom pricing (admin-entered amount/cleaners/duration) bypasses the
             // service math entirely; discounts/tax/total still apply normally.
@@ -160,6 +215,16 @@ namespace DreamCleaningBackend.Services
 
             public int MaidsCount { get; set; }
             public bool HasCleanerService { get; set; }
+
+            /// <summary>True when <see cref="QuoteInput.MinimumPrice"/> actually raised the subtotal.</summary>
+            public bool MinimumPriceApplied { get; set; }
+
+            /// <summary>
+            /// Non-fatal pricing anomalies for the caller to log — currently only the
+            /// missing-threshold-source fallback, which should never fire in normal operation.
+            /// Never surfaced to customers.
+            /// </summary>
+            public List<string> Warnings { get; set; } = new();
 
             public List<ServiceLineResult> ServiceLines { get; set; } = new();
             public List<ExtraServiceLineResult> ExtraServiceLines { get; set; } = new();
@@ -248,11 +313,22 @@ namespace DreamCleaningBackend.Services
                         subTotal += line.Cost;
                     }
                 }
-                else if (service.ServiceKey == "bedrooms" && service.Quantity == 0)
+                else if (service.ServiceRelationType == "hours")
                 {
-                    // Studio: flat price and duration, both scaled by cleaning type.
-                    line.Cost = StudioPrice * priceMultiplier;
-                    line.Duration = Math.Round(StudioDuration * priceMultiplier, MidpointRounding.AwayFromZero);
+                    // Folded into the cleaner line above; never priced on its own.
+                    // Checked before the zero-quantity branches so an hours line can never
+                    // be hijacked by them.
+                    line.ShouldAddToOrder = false;
+                }
+                else if (service.Quantity == 0 &&
+                         (service.ZeroQuantityCost.HasValue || service.ZeroQuantityDuration.HasValue))
+                {
+                    // Generic zero-quantity rule (Studio is just bedrooms = 0). Cost takes the
+                    // cleaning-type multiplier; duration does NOT — no duration anywhere in the
+                    // quote is multiplier-scaled, and Deep Cleaning contributes its own minutes
+                    // through its ExtraService row.
+                    line.Cost = (service.ZeroQuantityCost ?? 0m) * priceMultiplier;
+                    line.Duration = service.ZeroQuantityDuration ?? 0m;
                     subTotal += line.Cost;
                     if (!useExplicitHours)
                     {
@@ -260,15 +336,27 @@ namespace DreamCleaningBackend.Services
                         actualTotalDuration += line.Duration;
                     }
                 }
-                else if (service.ServiceRelationType == "hours")
+                else if (service.ServiceKey == "bedrooms" && service.Quantity == 0)
                 {
-                    // Folded into the cleaner line above; never priced on its own.
-                    line.ShouldAddToOrder = false;
+                    // Legacy studio fallback — only reachable when BOTH zero-quantity columns
+                    // are null, so a missing seed can't silently price a studio at $0.
+#pragma warning disable CS0618 // intentional fallback to the obsolete constants
+                    line.Cost = StudioPrice * priceMultiplier;
+                    line.Duration = StudioDuration;
+#pragma warning restore CS0618
+                    subTotal += line.Cost;
+                    if (!useExplicitHours)
+                    {
+                        totalDuration += line.Duration;
+                        actualTotalDuration += line.Duration;
+                    }
                 }
                 else
                 {
-                    line.Cost = service.Cost * service.Quantity * priceMultiplier;
-                    line.Duration = service.TimeDuration * service.Quantity;
+                    var (lineCost, lineDuration) =
+                        CalculateTieredLine(service, input.Services, priceMultiplier, result.Warnings);
+                    line.Cost = lineCost;
+                    line.Duration = lineDuration;
                     subTotal += line.Cost;
                     if (!useExplicitHours)
                     {
@@ -278,6 +366,14 @@ namespace DreamCleaningBackend.Services
                 }
 
                 result.ServiceLines.Add(line);
+            }
+
+            // Minimum price floor. Applies to base price + services ONLY, so extras and the
+            // deep-cleaning fee stack on top of the floor rather than being absorbed by it.
+            if (input.MinimumPrice > 0m && subTotal < input.MinimumPrice)
+            {
+                subTotal = input.MinimumPrice;
+                result.MinimumPriceApplied = true;
             }
 
             // Extra services
@@ -395,6 +491,103 @@ namespace DreamCleaningBackend.Services
             result.MaidsCount = maidsCount;
 
             return result;
+        }
+
+        /// <summary>
+        /// Resolves how many units of <paramref name="service"/> are included at no charge,
+        /// based on the quantities of its configured source services.
+        ///
+        /// Lookup is a FLOOR match: the highest configured row whose SourceQuantity is &lt;= the
+        /// selected source quantity. A source quantity below every row uses the lowest row; above
+        /// every row uses the highest. That subsumes exact-match and handles gaps in the config.
+        ///
+        /// When several source services are configured, the MAXIMUM included value wins — never
+        /// the sum. Summing would let two sources grant more free area than the home has.
+        /// </summary>
+        private static decimal ResolveIncludedQuantity(
+            ServiceLineInput service,
+            IReadOnlyList<ServiceLineInput> allServices,
+            List<string> warnings)
+        {
+            if (!service.ChargeAboveThreshold) return 0m;
+            if (service.Thresholds == null || service.Thresholds.Count == 0) return 0m;
+
+            decimal included = 0m;
+
+            foreach (var group in service.Thresholds.GroupBy(t => t.SourceServiceId))
+            {
+                var rows = group.OrderBy(t => t.SourceQuantity).ToList();
+                if (rows.Count == 0) continue;
+
+                var source = allServices.FirstOrDefault(s => s.ServiceId == group.Key);
+                if (source == null)
+                {
+                    // Fail toward the customer: treat a missing source as quantity 0, which
+                    // resolves to the smallest configured allowance rather than to "no allowance".
+                    // Billing a large home from zero would be a severe overcharge.
+                    warnings.Add(
+                        $"Threshold source service {group.Key} was not present in the selection for " +
+                        $"service {service.ServiceId} ('{service.ServiceKey}'); treated its quantity as 0.");
+                }
+
+                var sourceQuantity = source?.Quantity ?? 0;
+                var match = rows.LastOrDefault(r => r.SourceQuantity <= sourceQuantity) ?? rows[0];
+                included = Math.Max(included, match.IncludedQuantity);
+            }
+
+            return included;
+        }
+
+        /// <summary>
+        /// Prices one ordinary service line: subtract the included allowance, then apply the
+        /// rate tiers MARGINALLY over what remains (each tier bills only the slice of the
+        /// billable quantity that falls inside its own band — never the top tier applied to
+        /// everything).
+        ///
+        /// No tiers configured → flat <see cref="ServiceLineInput.Cost"/> /
+        /// <see cref="ServiceLineInput.TimeDuration"/> across the whole billable quantity, which
+        /// is exactly the pre-refactor behaviour every other service still relies on.
+        ///
+        /// Cost takes the cleaning-type multiplier; duration does not.
+        /// </summary>
+        private static (decimal Cost, decimal Duration) CalculateTieredLine(
+            ServiceLineInput service,
+            IReadOnlyList<ServiceLineInput> allServices,
+            decimal priceMultiplier,
+            List<string> warnings)
+        {
+            var included = ResolveIncludedQuantity(service, allServices, warnings);
+            var billable = Math.Max(0m, service.Quantity - included);
+
+            decimal cost = 0m;
+            decimal duration = 0m;
+
+            if (service.RateTiers == null || service.RateTiers.Count == 0)
+            {
+                cost = service.Cost * billable;
+                duration = service.TimeDuration * billable;
+            }
+            else
+            {
+                var tiers = service.RateTiers.OrderBy(t => t.FromQuantity).ToList();
+                for (var i = 0; i < tiers.Count; i++)
+                {
+                    var from = tiers[i].FromQuantity;
+                    if (billable <= from) break;
+
+                    var upperBound = i + 1 < tiers.Count
+                        ? Math.Min(billable, tiers[i + 1].FromQuantity)
+                        : billable;
+
+                    var width = upperBound - from;
+                    if (width <= 0m) continue;
+
+                    cost += width * tiers[i].Cost;
+                    duration += width * tiers[i].TimeDuration;
+                }
+            }
+
+            return (cost * priceMultiplier, duration);
         }
 
         /// <summary>
@@ -556,7 +749,8 @@ namespace DreamCleaningBackend.Services
             var perCleanerDuration = hasCleanerService
                 ? totalDuration
                 : (maids > 1 ? totalDuration / maids : totalDuration);
-            var roundedPerCleaner = Math.Round(perCleanerDuration / DurationRoundingMinutes, MidpointRounding.AwayFromZero) * DurationRoundingMinutes;
+            var roundedPerCleaner = DurationUtils.RoundToIncrement(
+                perCleanerDuration, DurationRoundingMinutes, DurationRounding.Nearest);
             return Round2(roundedPerCleaner / 60m * maids * hourlyRate);
         }
     }

@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260731120805_FixServiceTypeTimeDurationPrecision")]
+    partial class FixServiceTypeTimeDurationPrecision
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -4120,9 +4123,6 @@ namespace DreamCleaningBackend.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<bool>("ChargeAboveThreshold")
-                        .HasColumnType("tinyint(1)");
-
                     b.Property<decimal>("Cost")
                         .HasColumnType("decimal(18,2)");
 
@@ -4179,12 +4179,6 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime(6)");
 
-                    b.Property<decimal?>("ZeroQuantityCost")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("ZeroQuantityDuration")
-                        .HasColumnType("decimal(18,2)");
-
                     b.HasKey("Id");
 
                     b.HasIndex("ServiceKey");
@@ -4197,7 +4191,6 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 1,
-                            ChargeAboveThreshold = false,
                             Cost = 25m,
                             CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 1,
@@ -4215,7 +4208,6 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 2,
-                            ChargeAboveThreshold = false,
                             Cost = 35m,
                             CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 2,
@@ -4233,7 +4225,6 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 3,
-                            ChargeAboveThreshold = false,
                             Cost = 0.10m,
                             CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 3,
@@ -4252,7 +4243,6 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 4,
-                            ChargeAboveThreshold = false,
                             Cost = 40m,
                             CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 1,
@@ -4272,7 +4262,6 @@ namespace DreamCleaningBackend.Migrations
                         new
                         {
                             Id = 5,
-                            ChargeAboveThreshold = false,
                             Cost = 0m,
                             CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 2,
@@ -4288,81 +4277,6 @@ namespace DreamCleaningBackend.Migrations
                             StepValue = 1,
                             TimeDuration = 60m
                         });
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.ServiceRateTier", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<decimal>("Cost")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int>("DisplayOrder")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("FromQuantity")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<int>("ServiceId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("TimeDuration")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<DateTime?>("UpdatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ServiceId", "FromQuantity")
-                        .IsUnique()
-                        .HasDatabaseName("IX_ServiceRateTiers_Service_FromQuantity");
-
-                    b.ToTable("ServiceRateTiers");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.ServiceThreshold", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<decimal>("IncludedQuantity")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<int>("ServiceId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("SourceQuantity")
-                        .HasColumnType("int");
-
-                    b.Property<int>("SourceServiceId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("UpdatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SourceServiceId");
-
-                    b.HasIndex("ServiceId", "SourceServiceId", "SourceQuantity")
-                        .IsUnique()
-                        .HasDatabaseName("IX_ServiceThresholds_Service_Source_Quantity");
-
-                    b.ToTable("ServiceThresholds");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.ServiceType", b =>
@@ -4395,9 +4309,6 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<bool>("IsCustom")
                         .HasColumnType("tinyint(1)");
 
-                    b.Property<decimal>("MinimumPrice")
-                        .HasColumnType("decimal(18,2)");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -4424,7 +4335,6 @@ namespace DreamCleaningBackend.Migrations
                             HasPoll = false,
                             IsActive = true,
                             IsCustom = false,
-                            MinimumPrice = 0m,
                             Name = "Residential Cleaning",
                             TimeDuration = 90m
                         },
@@ -4438,7 +4348,6 @@ namespace DreamCleaningBackend.Migrations
                             HasPoll = false,
                             IsActive = true,
                             IsCustom = false,
-                            MinimumPrice = 0m,
                             Name = "Office Cleaning",
                             TimeDuration = 120m
                         });
@@ -6038,36 +5947,6 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("ServiceType");
                 });
 
-            modelBuilder.Entity("DreamCleaningBackend.Models.ServiceRateTier", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.Service", "Service")
-                        .WithMany("RateTiers")
-                        .HasForeignKey("ServiceId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Service");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.ServiceThreshold", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.Service", "Service")
-                        .WithMany("Thresholds")
-                        .HasForeignKey("ServiceId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("DreamCleaningBackend.Models.Service", "SourceService")
-                        .WithMany()
-                        .HasForeignKey("SourceServiceId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Service");
-
-                    b.Navigation("SourceService");
-                });
-
             modelBuilder.Entity("DreamCleaningBackend.Models.TaskActivityLog", b =>
                 {
                     b.HasOne("DreamCleaningBackend.Models.User", "Admin")
@@ -6251,10 +6130,6 @@ namespace DreamCleaningBackend.Migrations
             modelBuilder.Entity("DreamCleaningBackend.Models.Service", b =>
                 {
                     b.Navigation("OrderServices");
-
-                    b.Navigation("RateTiers");
-
-                    b.Navigation("Thresholds");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.ServiceType", b =>

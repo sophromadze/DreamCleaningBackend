@@ -116,8 +116,15 @@ namespace DreamCleaningBackend.Controllers
         [HttpGet("service-types")]
         public async Task<ActionResult<List<ServiceTypeDto>>> GetServiceTypes()
         {
+            // Public endpoint hides inactive services (the admin one deliberately shows them).
+            // Thresholds and tiers are eager-loaded so the frontend calculator can mirror the
+            // backend's threshold/tier math exactly.
             var serviceTypes = await _context.ServiceTypes
                 .Include(st => st.Services.Where(s => s.IsActive))
+                    .ThenInclude(s => s.Thresholds).ThenInclude(t => t.SourceService)
+                .Include(st => st.Services.Where(s => s.IsActive))
+                    .ThenInclude(s => s.RateTiers)
+                .AsSplitQuery()
                 .Where(st => st.IsActive)
                 .OrderBy(st => st.DisplayOrder)
                 .ToListAsync();
@@ -141,39 +148,11 @@ namespace DreamCleaningBackend.Controllers
                     .OrderBy(es => es.DisplayOrder)
                     .ToListAsync();
 
-                var serviceTypeDto = new ServiceTypeDto
-                {
-                    Id = st.Id,
-                    Name = st.Name,
-                    BasePrice = st.BasePrice,
-                    Description = st.Description,
-                    IsActive = st.IsActive,
-                    DisplayOrder = st.DisplayOrder,
-                    HasPoll = st.HasPoll,
-                    IsCustom = st.IsCustom,
-                    TimeDuration = st.TimeDuration,
-                    Services = st.Services
-                        .OrderBy(s => s.DisplayOrder)
-                        .Select(s => new ServiceDto
-                        {
-                            Id = s.Id,
-                            Name = s.Name,
-                            ServiceKey = s.ServiceKey,
-                            Cost = s.Cost,
-                            TimeDuration = s.TimeDuration,
-                            ServiceTypeId = s.ServiceTypeId,
-                            InputType = s.InputType,
-                            MinValue = s.MinValue,
-                            MaxValue = s.MaxValue,
-                            StepValue = s.StepValue,
-                            IsRangeInput = s.IsRangeInput,
-                            Unit = s.Unit,
-                            ServiceRelationType = s.ServiceRelationType,
-                            IsActive = s.IsActive,
-                            DisplayOrder = s.DisplayOrder
-                        }).ToList(),
-                    ExtraServices = new List<ExtraServiceDto>()
-                };
+                // Same mapper the admin endpoints use, so MinimumPrice, the zero-quantity fields,
+                // thresholds and rate tiers all reach the booking page — the frontend calculator
+                // needs them to mirror the backend.
+                var serviceTypeDto = CatalogDtoMapper.ToServiceTypeDto(st, st.Services);
+                serviceTypeDto.ExtraServices = new List<ExtraServiceDto>();
 
                 // Add specific extra services first
                 serviceTypeDto.ExtraServices.AddRange(specificExtraServices.Select(es => new ExtraServiceDto

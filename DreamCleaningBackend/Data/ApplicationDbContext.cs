@@ -25,6 +25,8 @@ namespace DreamCleaningBackend.Data
         public DbSet<Order> Orders { get; set; }
         public DbSet<ServiceType> ServiceTypes { get; set; }
         public DbSet<Service> Services { get; set; }
+        public DbSet<ServiceThreshold> ServiceThresholds { get; set; }
+        public DbSet<ServiceRateTier> ServiceRateTiers { get; set; }
         public DbSet<ExtraService> ExtraServices { get; set; }
         public DbSet<OrderService> OrderServices { get; set; }
         public DbSet<OrderExtraService> OrderExtraServices { get; set; }
@@ -593,6 +595,47 @@ namespace DreamCleaningBackend.Data
             modelBuilder.Entity<PromoCode>()
                 .HasIndex(p => p.Code)
                 .IsUnique();
+
+            // ServiceThreshold — included allowances (e.g. sqft included per bedroom count).
+            modelBuilder.Entity<ServiceThreshold>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+
+                // One allowance per (owning service, source service, source quantity).
+                entity.HasIndex(e => new { e.ServiceId, e.SourceServiceId, e.SourceQuantity })
+                    .IsUnique()
+                    .HasDatabaseName("IX_ServiceThresholds_Service_Source_Quantity");
+
+                // Deleting the OWNING service takes its allowances with it.
+                entity.HasOne(e => e.Service)
+                    .WithMany(s => s.Thresholds)
+                    .HasForeignKey(e => e.ServiceId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // Deleting a SOURCE service is RESTRICTED — removing it out from under a
+                // threshold would leave the dependent service billing from zero, which is a
+                // severe silent overcharge. No inverse navigation: a service is a source only
+                // incidentally, and a collection on Service would invite confusion with Thresholds.
+                entity.HasOne(e => e.SourceService)
+                    .WithMany()
+                    .HasForeignKey(e => e.SourceServiceId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ServiceRateTier — marginal rate bands over the billable (post-allowance) quantity.
+            modelBuilder.Entity<ServiceRateTier>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+
+                entity.HasIndex(e => new { e.ServiceId, e.FromQuantity })
+                    .IsUnique()
+                    .HasDatabaseName("IX_ServiceRateTiers_Service_FromQuantity");
+
+                entity.HasOne(e => e.Service)
+                    .WithMany(s => s.RateTiers)
+                    .HasForeignKey(e => e.ServiceId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
 
             // Seed initial subscriptions
             // NOTE: all seeded rows use the fixed SeedCreatedAt constant. Never use

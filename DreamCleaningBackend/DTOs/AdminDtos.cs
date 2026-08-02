@@ -14,6 +14,10 @@ namespace DreamCleaningBackend.DTOs
         public bool HasPoll { get; set; }
         public bool IsCustom { get; set; }
         public decimal TimeDuration { get; set; }
+
+        /// <summary>Floor for base price + services. 0 = no floor.</summary>
+        public decimal MinimumPrice { get; set; }
+
         public List<ServiceDto> Services { get; set; } = new List<ServiceDto>();
         public List<ExtraServiceDto> ExtraServices { get; set; } = new List<ExtraServiceDto>();
     }
@@ -34,6 +38,63 @@ namespace DreamCleaningBackend.DTOs
         public string? Unit { get; set; }
         public string? ServiceRelationType { get; set; }
         public bool IsActive { get; set; }
+        public int DisplayOrder { get; set; }
+
+        // Threshold / tier billing. All optional — a service with none of these configured
+        // prices exactly as it always did.
+        public bool ChargeAboveThreshold { get; set; }
+        public decimal? ZeroQuantityCost { get; set; }
+        public decimal? ZeroQuantityDuration { get; set; }
+
+        /// <summary>Included allowances granted to this service. Also sent to the booking page
+        /// so the frontend calculator mirrors the backend exactly.</summary>
+        public List<ServiceThresholdDto> Thresholds { get; set; } = new();
+
+        /// <summary>Marginal rate bands. Empty = flat Cost/TimeDuration.</summary>
+        public List<ServiceRateTierDto> RateTiers { get; set; } = new();
+    }
+
+    public class ServiceThresholdDto
+    {
+        public int Id { get; set; }
+        public int ServiceId { get; set; }
+        public int SourceServiceId { get; set; }
+
+        /// <summary>Convenience for the UI and the frontend calculator; never a resolution key here.</summary>
+        public string? SourceServiceKey { get; set; }
+        public string? SourceServiceName { get; set; }
+
+        public int SourceQuantity { get; set; }
+        public decimal IncludedQuantity { get; set; }
+    }
+
+    public class ServiceRateTierDto
+    {
+        public int Id { get; set; }
+        public int ServiceId { get; set; }
+
+        /// <summary>Measured ABOVE the included allowance, not in absolute units.</summary>
+        public decimal FromQuantity { get; set; }
+        public decimal Cost { get; set; }
+        public decimal TimeDuration { get; set; }
+        public int DisplayOrder { get; set; }
+    }
+
+    /// <summary>Create/update payload for one included-amount row.</summary>
+    public class SaveServiceThresholdDto
+    {
+        [Required]
+        public int SourceServiceId { get; set; }
+        public int SourceQuantity { get; set; }
+        public decimal IncludedQuantity { get; set; }
+    }
+
+    /// <summary>Create/update payload for one rate tier.</summary>
+    public class SaveServiceRateTierDto
+    {
+        public decimal FromQuantity { get; set; }
+        public decimal Cost { get; set; }
+        public decimal TimeDuration { get; set; }
         public int DisplayOrder { get; set; }
     }
 
@@ -67,6 +128,9 @@ namespace DreamCleaningBackend.DTOs
         public bool IsCustom { get; set; }
         [Required]
         public decimal TimeDuration { get; set; } = 90;
+
+        /// <summary>Floor for base price + services. 0 = no floor.</summary>
+        public decimal MinimumPrice { get; set; } = 0m;
     }
 
     public class UpdateServiceTypeDto
@@ -81,6 +145,9 @@ namespace DreamCleaningBackend.DTOs
         public int DisplayOrder { get; set; }
         [Required]
         public decimal TimeDuration { get; set; }
+
+        /// <summary>Floor for base price + services. 0 = no floor.</summary>
+        public decimal MinimumPrice { get; set; } = 0m;
     }
 
     // Service DTOs
@@ -103,8 +170,13 @@ namespace DreamCleaningBackend.DTOs
         public int? StepValue { get; set; }
         public bool IsRangeInput { get; set; } = false;
         public string? Unit { get; set; }
-        public string? ServiceRelationType { get; set; } 
+        public string? ServiceRelationType { get; set; }
         public int DisplayOrder { get; set; }
+
+        // Threshold / tier billing. Defaults preserve the original bill-from-zero behaviour.
+        public bool ChargeAboveThreshold { get; set; } = false;
+        public decimal? ZeroQuantityCost { get; set; }
+        public decimal? ZeroQuantityDuration { get; set; }
     }
 
     public class UpdateServiceDto
@@ -126,8 +198,14 @@ namespace DreamCleaningBackend.DTOs
         public int? StepValue { get; set; }
         public bool IsRangeInput { get; set; }
         public string? Unit { get; set; }
-        public string? ServiceRelationType { get; set; } 
+        public string? ServiceRelationType { get; set; }
         public int DisplayOrder { get; set; }
+
+        // Threshold / tier billing. Nested threshold and tier rows are managed through their
+        // own CRUD endpoints, not through this payload.
+        public bool ChargeAboveThreshold { get; set; }
+        public decimal? ZeroQuantityCost { get; set; }
+        public decimal? ZeroQuantityDuration { get; set; }
     }
 
 
