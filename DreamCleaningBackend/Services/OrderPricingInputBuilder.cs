@@ -1,6 +1,7 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace DreamCleaningBackend.Services
 {
@@ -21,6 +22,7 @@ namespace DreamCleaningBackend.Services
             {
                 BasePrice = serviceType.BasePrice,
                 BaseDuration = serviceType.TimeDuration,
+                MinimumPrice = serviceType.MinimumPrice,
                 IsCustomPricing = dto.IsCustomPricing,
                 CustomAmount = dto.CustomAmount,
                 CustomCleaners = dto.CustomCleaners ?? (dto.MaidsCount > 0 ? dto.MaidsCount : (int?)null),
@@ -43,10 +45,18 @@ namespace DreamCleaningBackend.Services
         public static async Task<OrderPricingCalculator.QuoteInput> FromUpdateDtoAsync(
             ApplicationDbContext context, Order order, UpdateOrderDto dto)
         {
+            // The ServiceType navigation is not guaranteed to be loaded on every call path, and
+            // MinimumPrice must not silently fall back to 0 — that would drop the price floor on
+            // every order edit while the booking page still applies it.
+            var serviceType = order.ServiceType;
+            if (serviceType == null && order.ServiceTypeId > 0)
+                serviceType = await context.ServiceTypes.FindAsync(order.ServiceTypeId);
+
             var input = new OrderPricingCalculator.QuoteInput
             {
-                BasePrice = order.ServiceType?.BasePrice ?? 0,
-                BaseDuration = order.ServiceType?.TimeDuration ?? 0
+                BasePrice = serviceType?.BasePrice ?? 0,
+                BaseDuration = serviceType?.TimeDuration ?? 0,
+                MinimumPrice = serviceType?.MinimumPrice ?? 0
             };
 
             await AddServiceLinesAsync(context, input, dto.Services);
@@ -99,16 +109,40 @@ namespace DreamCleaningBackend.Services
         }
 
         // Raises the sqft service quantity to the bedroom-count minimum, exactly like the
-        // booking / order-edit pages do client-side.
+        // booking / order-edit pages do client-side. Reads the CONFIGURED thresholds so the
+        // clamp and the free allowance are the same data — a hardcoded clamp against
+        // admin-configured allowances would let a customer sit below their included amount.
         private static void ClampSquareFeetToBedrooms(OrderPricingCalculator.QuoteInput input)
         {
             var bedrooms = input.Services.FirstOrDefault(s => s.ServiceKey == "bedrooms");
             var sqft = input.Services.FirstOrDefault(s => s.ServiceKey == "sqft");
             if (bedrooms == null || sqft == null) return;
 
-            var minSqft = GetSquareFeetForBedrooms(bedrooms.Quantity);
+            var minSqft = ResolveMinimumSquareFeet(sqft, bedrooms);
             if (sqft.Quantity < minSqft)
-                sqft.Quantity = minSqft;
+                sqft.Quantity = (int)Math.Ceiling(minSqft);
+        }
+
+        /// <summary>
+        /// Included quantity for the current bedroom count, using the same FLOOR lookup the
+        /// calculator uses (highest row with SourceQuantity &lt;= selected; below all rows, the
+        /// lowest). Mirrors getSquareFeetForBedrooms on the frontend. Falls back to the legacy
+        /// hardcoded table only when no thresholds are configured for this pair.
+        /// </summary>
+        private static decimal ResolveMinimumSquareFeet(
+            OrderPricingCalculator.ServiceLineInput sqft,
+            OrderPricingCalculator.ServiceLineInput bedrooms)
+        {
+            var rows = sqft.Thresholds
+                .Where(t => t.SourceServiceId == bedrooms.ServiceId)
+                .OrderBy(t => t.SourceQuantity)
+                .ToList();
+
+            if (rows.Count == 0)
+                return GetSquareFeetForBedrooms(bedrooms.Quantity);
+
+            var match = rows.LastOrDefault(r => r.SourceQuantity <= bedrooms.Quantity) ?? rows[0];
+            return match.IncludedQuantity;
         }
 
         private static async Task AddServiceLinesAsync(
@@ -116,10 +150,28 @@ namespace DreamCleaningBackend.Services
             OrderPricingCalculator.QuoteInput input,
             IEnumerable<BookingServiceDto> services)
         {
-            foreach (var serviceDto in services)
+            var serviceDtos = services?.ToList() ?? new List<BookingServiceDto>();
+            if (serviceDtos.Count == 0) return;
+
+            // MUST eager-load Thresholds and RateTiers. Lazy loading is NOT enabled on this
+            // context (Program.cs registers the DbContext with UseMySql only), so the previous
+            // FindAsync left both collections EMPTY — which the calculator reads as "no
+            // allowance, no tiers" and silently prices every service under the old flat model.
+            // One batched query rather than N FindAsync round-trips; AsSplitQuery avoids the
+            // cartesian product of two collection includes.
+            var ids = serviceDtos.Select(s => s.ServiceId).Distinct().ToList();
+            var catalog = await context.Services
+                .Include(s => s.Thresholds)
+                .Include(s => s.RateTiers)
+                .AsSplitQuery()
+                .Where(s => ids.Contains(s.Id))
+                .ToListAsync();
+
+            foreach (var serviceDto in serviceDtos)
             {
-                var service = await context.Services.FindAsync(serviceDto.ServiceId);
+                var service = catalog.FirstOrDefault(s => s.Id == serviceDto.ServiceId);
                 if (service == null) continue;
+
                 input.Services.Add(new OrderPricingCalculator.ServiceLineInput
                 {
                     ServiceId = service.Id,
@@ -127,7 +179,26 @@ namespace DreamCleaningBackend.Services
                     TimeDuration = service.TimeDuration,
                     ServiceRelationType = service.ServiceRelationType,
                     ServiceKey = service.ServiceKey,
-                    Quantity = serviceDto.Quantity
+                    Quantity = serviceDto.Quantity,
+                    ChargeAboveThreshold = service.ChargeAboveThreshold,
+                    ZeroQuantityCost = service.ZeroQuantityCost,
+                    ZeroQuantityDuration = service.ZeroQuantityDuration,
+                    RateTiers = (service.RateTiers ?? new List<ServiceRateTier>())
+                        .OrderBy(t => t.FromQuantity)
+                        .Select(t => new OrderPricingCalculator.RateTierInput
+                        {
+                            FromQuantity = t.FromQuantity,
+                            Cost = t.Cost,
+                            TimeDuration = t.TimeDuration
+                        }).ToList(),
+                    Thresholds = (service.Thresholds ?? new List<ServiceThreshold>())
+                        .OrderBy(t => t.SourceQuantity)
+                        .Select(t => new OrderPricingCalculator.ThresholdInput
+                        {
+                            SourceServiceId = t.SourceServiceId,
+                            SourceQuantity = t.SourceQuantity,
+                            IncludedQuantity = t.IncludedQuantity
+                        }).ToList()
                 });
             }
         }

@@ -5,6 +5,8 @@ VisualStudioVersion = 17.13.35931.197 d17.13
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DreamCleaningBackend", "DreamCleaningBackend\DreamCleaningBackend.csproj", "{ED0BF275-D7B5-4557-9228-120AC5DF2494}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DreamCleaningBackend.Tests", "DreamCleaningBackend.Tests\DreamCleaningBackend.Tests.csproj", "{56A8A819-76FB-451E-AA32-52E836109CD6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{ED0BF275-D7B5-4557-9228-120AC5DF2494}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{ED0BF275-D7B5-4557-9228-120AC5DF2494}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{ED0BF275-D7B5-4557-9228-120AC5DF2494}.Release|Any CPU.Build.0 = Release|Any CPU
+		{56A8A819-76FB-451E-AA32-52E836109CD6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{56A8A819-76FB-451E-AA32-52E836109CD6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{56A8A819-76FB-451E-AA32-52E836109CD6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{56A8A819-76FB-451E-AA32-52E836109CD6}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

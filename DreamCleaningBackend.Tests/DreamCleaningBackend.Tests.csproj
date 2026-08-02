@@ -11,10 +11,20 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <!-- Lets the input-builder tests run against a real ApplicationDbContext without MariaDB.
+         Version must match the EF Core version the API project uses (8.0.x). -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.16" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\DreamCleaningBackend\DreamCleaningBackend.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Generated from the frontend calculator; the cross-surface test reads it at runtime. -->
+    <Content Include="pricing-fixtures.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

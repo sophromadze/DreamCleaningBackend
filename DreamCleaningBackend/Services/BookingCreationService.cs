@@ -239,8 +239,13 @@ namespace DreamCleaningBackend.Services
             options ??= new BookingCreationOptions();
             var manualPayment = options.PaymentMethod != PaymentMethod.Normal;
 
+            // Thresholds and rate tiers are eager-loaded here too: lazy loading is not enabled,
+            // so anything downstream reading these navigations off serviceType.Services would
+            // otherwise see empty collections and fall back to flat pricing.
             var serviceType = await _context.ServiceTypes
-                .Include(st => st.Services)
+                .Include(st => st.Services).ThenInclude(s => s.Thresholds)
+                .Include(st => st.Services).ThenInclude(s => s.RateTiers)
+                .AsSplitQuery()
                 .FirstOrDefaultAsync(st => st.Id == dto.ServiceTypeId)
                 ?? throw new InvalidOperationException("Invalid service type");
 
