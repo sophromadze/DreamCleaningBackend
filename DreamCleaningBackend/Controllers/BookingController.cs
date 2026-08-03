@@ -384,6 +384,7 @@ namespace DreamCleaningBackend.Controllers
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
             {
                 SubTotal = quote.SubTotal,
+                TaxOverride = quote.TaxOverride,
                 DiscountAmount = dto.DiscountAmount,
                 SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = dto.LoyaltyDiscountAmount,
@@ -925,6 +926,7 @@ namespace DreamCleaningBackend.Controllers
                 var preTotals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
                 {
                     SubTotal = calculatedSubTotal,
+                    TaxOverride = quote.TaxOverride,
                     DiscountAmount = dto.DiscountAmount,
                     SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
                     LoyaltyDiscountAmount = loyaltyAmount,
@@ -963,6 +965,7 @@ namespace DreamCleaningBackend.Controllers
                 var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
                 {
                     SubTotal = calculatedSubTotal,
+                    TaxOverride = quote.TaxOverride,
                     DiscountAmount = dto.DiscountAmount,
                     SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
                     LoyaltyDiscountAmount = loyaltyAmount,
@@ -1516,9 +1519,18 @@ namespace DreamCleaningBackend.Controllers
                 // unchanged. NOTE: the customer was already charged the correct amount at
                 // prepare-payment; this only fixes what we persist/display.
                 {
+                    // Custom Pricing orders must keep the tax that was split out of the admin-entered
+                    // tax-inclusive amount; re-deriving it from the subtotal would move the stored
+                    // Total a cent off what the customer was quoted and charged.
+                    decimal? customTaxOverride =
+                        bookingDataDto != null && bookingDataDto.IsCustomPricing && bookingDataDto.CustomAmount > 0
+                            ? OrderPricingCalculator.SplitTaxInclusiveAmount(bookingDataDto.CustomAmount.Value).tax
+                            : null;
+
                     var recomputedTotals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
                     {
                         SubTotal = order.SubTotal,
+                        TaxOverride = customTaxOverride,
                         DiscountAmount = order.DiscountAmount,
                         SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                         LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,

@@ -348,6 +348,9 @@ namespace DreamCleaningBackend.Services
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
             {
                 SubTotal = order.SubTotal,
+                // Custom Pricing: keeps the charged total equal to the tax-inclusive amount the
+                // admin typed (null for every other quote).
+                TaxOverride = quote.TaxOverride,
                 DiscountAmount = order.DiscountAmount,
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
@@ -358,8 +361,14 @@ namespace DreamCleaningBackend.Services
             order.Tax = totals.Tax;
             order.Total = totals.Total;
 
-            // Cleaner salary defaults from the shared calculator.
-            order.CleanerHourlyRate = OrderPricingCalculator.GetDefaultCleanerHourlyRate(quote.DeepCleaningFee);
+            // Cleaner salary defaults from the shared calculator. The rate depends on the
+            // EFFECTIVE service-type name (custom orders match on their per-order label, the
+            // same string humans see) as well as the deep-cleaning extra.
+            var rateServiceTypeName = string.IsNullOrWhiteSpace(order.CustomServiceDisplayName)
+                ? serviceType.Name
+                : order.CustomServiceDisplayName;
+            order.CleanerHourlyRate = OrderPricingCalculator.GetDefaultCleanerHourlyRate(
+                quote.DeepCleaningFee, rateServiceTypeName);
             order.CleanerTotalSalary = OrderPricingCalculator.CalculateCleanerTotalSalary(
                 order.TotalDuration, order.MaidsCount, quote.HasCleanerService, order.CleanerHourlyRate);
 

@@ -69,9 +69,14 @@ namespace DreamCleaningBackend.Services
         /// <summary>Per-maid minimum when the Extra Cleaners extra is selected (2h30m floor).</summary>
         public const decimal ExtraCleanersPerMaidMinimumMinutes = 150m;
 
-        /// <summary>Default cleaner hourly rates: regular vs deep/super-deep orders.</summary>
+        /// <summary>
+        /// Default cleaner hourly rates. Regular residential is the base; deep/super-deep and
+        /// move in/out pay the mid rate; heavy-condition and post-construction pay the top rate.
+        /// Mirrored by *_CLEANER_HOURLY_RATE in order-pricing.calculator.ts.
+        /// </summary>
         public const decimal RegularCleanerHourlyRate = 20m;
         public const decimal DeepCleaningCleanerHourlyRate = 21m;
+        public const decimal HeavyDutyCleanerHourlyRate = 25m;
 
         /// <summary>The extra service that adds cleaners is identified by name, like the booking page does.</summary>
         public const string ExtraCleanersName = "Extra Cleaners";
@@ -82,6 +87,30 @@ namespace DreamCleaningBackend.Services
         /// </summary>
         public static decimal Round2(decimal value) =>
             Math.Round(value, 2, MidpointRounding.AwayFromZero);
+
+        /// <summary>
+        /// Splits a TAX-INCLUSIVE amount into its pre-tax subtotal and the sales tax inside it,
+        /// such that <c>subTotal + tax == amount</c> EXACTLY, for every amount.
+        ///
+        /// Used by Custom Pricing: the admin types what the customer should pay in total, so both
+        /// halves are derived from it instead of the tax being added on top.
+        ///
+        /// The returned tax must be carried through as <see cref="TotalsInput.TaxOverride"/> —
+        /// re-deriving it as <c>Round2(subTotal × SalesTaxRate)</c> reintroduces a cent of drift on
+        /// roughly one amount in twenty, because no cent-valued subtotal exists for those amounts
+        /// (nothing satisfies <c>S + Round2(S × 8.875%) == 300.00</c>; 275.55 gives 300.01 and
+        /// 275.54 gives 299.99). Deriving the tax from the entered amount instead makes the split
+        /// exact — the trade is that the tax is up to half a cent off the literal 8.875% of the
+        /// subtotal, which is the normal and expected behaviour of tax-inclusive pricing.
+        /// </summary>
+        public static (decimal subTotal, decimal tax) SplitTaxInclusiveAmount(decimal amountWithTax)
+        {
+            var amount = Round2(amountWithTax);
+            if (amount <= 0) return (0m, 0m);
+
+            var tax = Round2(amount * SalesTaxRate / (1m + SalesTaxRate));
+            return (Round2(amount - tax), tax);
+        }
 
         // ===== Inputs =====
 
@@ -169,6 +198,7 @@ namespace DreamCleaningBackend.Services
             // Custom pricing (admin-entered amount/cleaners/duration) bypasses the
             // service math entirely; discounts/tax/total still apply normally.
             public bool IsCustomPricing { get; set; }
+            /// <summary>TAX-INCLUSIVE total the admin typed; the subtotal is derived from it.</summary>
             public decimal? CustomAmount { get; set; }
             public int? CustomCleaners { get; set; }
             public decimal? CustomDuration { get; set; } // per-cleaner minutes
@@ -220,6 +250,14 @@ namespace DreamCleaningBackend.Services
             public bool MinimumPriceApplied { get; set; }
 
             /// <summary>
+            /// Custom Pricing only: the exact sales tax contained in the admin-entered tax-inclusive
+            /// amount. Pass it to <see cref="CalculateTotals"/> as <see cref="TotalsInput.TaxOverride"/>
+            /// so the charged total matches what was typed to the cent. null for every ordinary quote
+            /// (tax is derived from the subtotal).
+            /// </summary>
+            public decimal? TaxOverride { get; set; }
+
+            /// <summary>
             /// Non-fatal pricing anomalies for the caller to log — currently only the
             /// missing-threshold-source fallback, which should never fire in normal operation.
             /// Never surfaced to customers.
@@ -262,7 +300,11 @@ namespace DreamCleaningBackend.Services
             {
                 var perCleaner = input.CustomDuration ?? input.BaseDuration;
                 result.MaidsCount = Math.Max(1, input.CustomCleaners ?? 1);
-                result.SubTotal = Round2(input.CustomAmount ?? input.BasePrice);
+                // The admin-entered amount is the TAX-INCLUSIVE total: the subtotal and the tax are
+                // both split out of it (they add back to it exactly) rather than the tax landing on top.
+                var (customSubTotal, customTax) = SplitTaxInclusiveAmount(input.CustomAmount ?? input.BasePrice);
+                result.SubTotal = customSubTotal;
+                result.TaxOverride = customTax;
                 result.DisplayDuration = perCleaner;
                 // Stored TotalDuration uses the TOTAL convention: per-cleaner × cleaners, min 1h.
                 result.TotalDuration = Math.Max(perCleaner * result.MaidsCount, PerMaidMinimumMinutes);
@@ -685,6 +727,17 @@ namespace DreamCleaningBackend.Services
             public decimal GiftCardAmountUsed { get; set; }
             public decimal PointsRedeemedDiscount { get; set; }
             public decimal RewardBalanceUsed { get; set; }
+
+            /// <summary>
+            /// Custom Pricing only (see <see cref="SplitTaxInclusiveAmount"/>): the exact tax contained
+            /// in the tax-inclusive amount the admin typed, used verbatim so the total matches it to
+            /// the cent.
+            ///
+            /// Honoured ONLY while no discount has reduced the subtotal. Once one does, the entered
+            /// total no longer describes what is owed, so tax reverts to the normal
+            /// <c>Round2(discountedSubTotal × SalesTaxRate)</c>.
+            /// </summary>
+            public decimal? TaxOverride { get; set; }
         }
 
         public class TotalsResult
@@ -709,7 +762,11 @@ namespace DreamCleaningBackend.Services
                 - input.LoyaltyDiscountAmount;
             if (discountedSubTotal < 0m) discountedSubTotal = 0m;
 
-            var tax = Round2(discountedSubTotal * SalesTaxRate);
+            // The override is only meaningful against the subtotal it was split out of, so any
+            // discount hands the tax back to the standard rate math.
+            var useOverride = input.TaxOverride.HasValue && discountedSubTotal == Round2(input.SubTotal);
+
+            var tax = useOverride ? Round2(input.TaxOverride!.Value) : Round2(discountedSubTotal * SalesTaxRate);
             var totalBeforeGiftCard = discountedSubTotal + tax + input.Tips + input.CompanyDevelopmentTips;
 
             var total = totalBeforeGiftCard
@@ -733,9 +790,37 @@ namespace DreamCleaningBackend.Services
 
         // ===== Step 5: cleaner salary =====
 
-        /// <summary>Deep/super-deep orders pay cleaners the higher rate.</summary>
-        public static decimal GetDefaultCleanerHourlyRate(decimal deepCleaningFee) =>
-            deepCleaningFee > 0m ? DeepCleaningCleanerHourlyRate : RegularCleanerHourlyRate;
+        /// <summary>
+        /// Default cleaner hourly rate for an order, matched on the EFFECTIVE service-type name
+        /// (i.e. the custom "Pre-Arranged" label when there is one — see GetDisplayServiceTypeName)
+        /// and, for residential, on whether the deep-cleaning extra was picked:
+        ///   heavy condition / post construction → 25, move in/out → 21,
+        ///   residential deep / super-deep → 21, everything else → 20.
+        /// The rate is only a DEFAULT — admins can override it per order in the orders panel, and
+        /// order edits never reset an overridden value.
+        /// Mirrored by getDefaultCleanerHourlyRate in order-pricing.calculator.ts.
+        /// </summary>
+        public static decimal GetDefaultCleanerHourlyRate(decimal deepCleaningFee, string? serviceTypeName = null)
+        {
+            var name = NormalizeServiceTypeName(serviceTypeName);
+
+            if (name.Contains("heavy") || name.Contains("post construction"))
+                return HeavyDutyCleanerHourlyRate;
+
+            if (name.Contains("move"))
+                return DeepCleaningCleanerHourlyRate;
+
+            return deepCleaningFee > 0m ? DeepCleaningCleanerHourlyRate : RegularCleanerHourlyRate;
+        }
+
+        /// <summary>Lowercased, hyphen/underscore-flattened service-type name for keyword matching.</summary>
+        private static string NormalizeServiceTypeName(string? serviceTypeName)
+        {
+            if (string.IsNullOrWhiteSpace(serviceTypeName)) return string.Empty;
+
+            var flattened = serviceTypeName.Trim().ToLowerInvariant().Replace('-', ' ').Replace('_', ' ');
+            return string.Join(" ", flattened.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        }
 
         /// <summary>
         /// Per-cleaner duration rounded to DurationRoundingMinutes, then perCleaner/60 × maids × rate.
