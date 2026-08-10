@@ -1762,7 +1762,7 @@ namespace DreamCleaningBackend.Controllers
             _logger.LogInformation("Admin {AdminId} charged saved card for order {OrderId}: {Amount}", GetCurrentUserId(), orderId, order.Total);
 
             // Same confirmation templates the normal payment flow sends.
-            await SendChargeConfirmationNotificationsAsync(order);
+            await SendOrderConfirmationNotificationsAsync(order);
 
             return Ok(new
             {
@@ -1772,10 +1772,23 @@ namespace DreamCleaningBackend.Controllers
             });
         }
 
-        /// <summary>Customer booking-confirmation email + SMS after an admin saved-card charge —
-        /// the same templates confirm-payment uses, honoring the account's contact opt-outs.</summary>
-        private async Task SendChargeConfirmationNotificationsAsync(Order order)
+        /// <summary>Outcome of one confirmation send, so the resend endpoint can tell the admin
+        /// what actually went out instead of always claiming success.</summary>
+        private sealed class ConfirmationSendResult
         {
+            public bool EmailSent { get; set; }
+            public bool SmsSent { get; set; }
+            public string? EmailSkipReason { get; set; }
+            public string? SmsSkipReason { get; set; }
+        }
+
+        /// <summary>Customer booking-confirmation email + SMS for an order — the same templates
+        /// confirm-payment uses, honoring the account's contact opt-outs. Used both after an admin
+        /// saved-card charge (isUpdate: false) and when an admin resends an updated confirmation
+        /// after changing the order's date/time/address (isUpdate: true).</summary>
+        private async Task<ConfirmationSendResult> SendOrderConfirmationNotificationsAsync(Order order, bool isUpdate = false)
+        {
+            var result = new ConfirmationSendResult();
             var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
                 .Select(x => x.ExtraService?.Name ?? "")
                 .Where(n => !string.IsNullOrWhiteSpace(n))
@@ -1801,27 +1814,107 @@ namespace DreamCleaningBackend.Controllers
                     await _emailService.SendCustomerBookingConfirmationAsync(
                         order.ContactEmail, customerName, order.ServiceDate, serviceTimeStr,
                         order.GetDisplayServiceTypeName(), addressDisplay, order.Id,
-                        hasCleaningSupplies, isDeepCleaning, isCustom, order.FloorTypes, order.FloorTypeOther);
+                        hasCleaningSupplies, isDeepCleaning, isCustom, order.FloorTypes, order.FloorTypeOther,
+                        paymentAlreadyProcessed: order.IsPaid, isUpdate: isUpdate);
+                    result.EmailSent = true;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Confirmation email failed for admin-charged order {OrderId}", order.Id);
+                    _logger.LogError(ex, "Confirmation email failed for order {OrderId}", order.Id);
+                    result.EmailSkipReason = "sending failed";
                 }
+            }
+            else
+            {
+                result.EmailSkipReason = string.IsNullOrWhiteSpace(order.ContactEmail)
+                    ? "no email address on file"
+                    : "the customer has email notifications turned off";
             }
 
             if (order.User != null && order.User.CanReceiveMessages && !string.IsNullOrWhiteSpace(order.ContactPhone))
             {
-                try
+                if (_smsService.IsSmsEnabled())
                 {
-                    await _smsService.SendBookingConfirmationSmsAsync(
-                        order.ContactPhone, customerName, order.ServiceDate, serviceTimeStr,
-                        hasCleaningSupplies, isDeepCleaning, isCustom);
+                    try
+                    {
+                        await _smsService.SendBookingConfirmationSmsAsync(
+                            order.ContactPhone, customerName, order.ServiceDate, serviceTimeStr,
+                            hasCleaningSupplies, isDeepCleaning, isCustom, isUpdate: isUpdate);
+                        result.SmsSent = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Confirmation SMS failed for order {OrderId}", order.Id);
+                        result.SmsSkipReason = "sending failed";
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    _logger.LogError(ex, "Confirmation SMS failed for admin-charged order {OrderId}", order.Id);
+                    result.SmsSkipReason = "SMS is disabled";
                 }
             }
+            else
+            {
+                result.SmsSkipReason = string.IsNullOrWhiteSpace(order.ContactPhone)
+                    ? "no phone number on file"
+                    : "the customer has text messages turned off";
+            }
+
+            return result;
+        }
+
+        /// <summary>Re-send the booking confirmation (email + SMS) with the order's CURRENT details.
+        /// The templates read live order values, so after an admin moves the date/time or changes the
+        /// address this is the customer's corrected confirmation. Manual on purpose — admins also edit
+        /// orders for internal reasons that shouldn't generate customer mail.</summary>
+        [HttpPost("orders/{orderId}/resend-confirmation")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> ResendConfirmation(int orderId)
+        {
+            var order = await _context.Orders
+                .Include(o => o.User)
+                .Include(o => o.ServiceType)
+                .Include(o => o.OrderExtraServices)
+                    .ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            if (order.Status == "Cancelled")
+                return BadRequest(new { message = "This order is cancelled — sending a confirmation would contradict the cancellation notice." });
+
+            var result = await SendOrderConfirmationNotificationsAsync(order, isUpdate: true);
+
+            if (!result.EmailSent && !result.SmsSent)
+            {
+                return BadRequest(new
+                {
+                    message = $"Nothing was sent — email: {result.EmailSkipReason}; SMS: {result.SmsSkipReason}."
+                });
+            }
+
+            var channels = new List<string>();
+            if (result.EmailSent) channels.Add($"email ({order.ContactEmail})");
+            if (result.SmsSent) channels.Add($"SMS ({order.ContactPhone})");
+
+            await _auditService.LogOrderNotificationAsync(
+                order.Id,
+                "ConfirmationResent",
+                $"Updated confirmation sent via {string.Join(" and ", channels)} for {order.ServiceDate:yyyy-MM-dd} {order.ServiceTime}",
+                GetCurrentUserId());
+
+            var skipped = new List<string>();
+            if (!result.EmailSent && result.EmailSkipReason != null) skipped.Add($"email skipped ({result.EmailSkipReason})");
+            if (!result.SmsSent && result.SmsSkipReason != null) skipped.Add($"SMS skipped ({result.SmsSkipReason})");
+
+            return Ok(new
+            {
+                emailSent = result.EmailSent,
+                smsSent = result.SmsSent,
+                message = $"Updated confirmation sent via {string.Join(" and ", channels)}" +
+                          (skipped.Count > 0 ? $" — {string.Join(", ", skipped)}." : ".")
+            });
         }
 
         /// <summary>Send a gentle reminder (email + SMS) to the customer about their unpaid additional payment. Requires View or Update.</summary>

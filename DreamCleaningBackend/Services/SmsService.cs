@@ -162,7 +162,7 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task SendBookingConfirmationSmsAsync(string phoneNumber, string customerName, DateTime serviceDate, string serviceTime,
-            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType)
+            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType, bool isUpdate = false)
         {
             var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
 
@@ -193,8 +193,14 @@ namespace DreamCleaningBackend.Services
                 items.Add("Cleaning cloths, Sponge and Mop");
             }
 
+            // isUpdate: re-send after an admin changed the order. Same body, but the lead line
+            // says "updated" so it doesn't read as a duplicate of the original confirmation.
+            var leadLine = isUpdate
+                ? $"Hi {firstName}! Your Dream Cleaning appointment has been updated and is now confirmed for {serviceDate:MMM dd} at {serviceTime}."
+                : $"Hi {firstName}! Your Dream Cleaning appointment is confirmed for {serviceDate:MMM dd} at {serviceTime}.";
+
             var msg =
-                $"Hi {firstName}! Your Dream Cleaning appointment is confirmed for {serviceDate:MMM dd} at {serviceTime}." +
+                leadLine +
                 $"\nPlease provide the following items:" +
                 $"\n- {string.Join("\n- ", items)}" +
                 $"\nAll changes, requests, and concerns must go through Dream Cleaning. Do not make any arrangements directly with your cleaner." +

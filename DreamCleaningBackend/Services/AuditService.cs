@@ -477,6 +477,7 @@ namespace DreamCleaningBackend.Services
         {
             // Audit/event logs — undoing these would lie about history.
             "AuditLog", "BubblePointsAdjustment", "CleanerAssignment", "OrderServicesUpdate",
+            "OrderNotification",
             // Payment + external side effects.
             "PaymentHistory", "WebhookEvent",
             // Refunds are real money already returned to the customer. Deleting the row would
@@ -749,6 +750,37 @@ namespace DreamCleaningBackend.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Cleaner assignment audit logging failed");
+            }
+        }
+
+        public async Task LogOrderNotificationAsync(int orderId, string action, string details, int adminId)
+        {
+            try
+            {
+                var auditLog = new AuditLog
+                {
+                    EntityType = "OrderNotification",
+                    EntityId = orderId,
+                    Action = action, // e.g. "ConfirmationResent"
+                    OldValues = null,
+                    NewValues = JsonConvert.SerializeObject(new
+                    {
+                        OrderId = orderId,
+                        Details = details
+                    }, _jsonSettings),
+                    ChangedFields = JsonConvert.SerializeObject(new[] { "Details" }, _jsonSettings),
+                    UserId = adminId,
+                    IpAddress = GetIpAddress(),
+                    UserAgent = GetUserAgent(),
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.AuditLogs.Add(auditLog);
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Order notification audit logging failed");
             }
         }
 

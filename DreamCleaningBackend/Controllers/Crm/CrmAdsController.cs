@@ -219,15 +219,23 @@ namespace DreamCleaningBackend.Controllers.Crm
         // booking time, and its first-touch channel (used only to pick out the "Paid Search" ad leads).
         private record BookedOrderRow(DateTime NyDay, DateTime NyCreatedAt, string Channel);
 
-        // The SINGLE booked-order query for this tab: CreatedAt in the NY-day range, non-cancelled.
+        // The SINGLE booked-order query for this tab: CreatedAt in the NY-day range, and a real
+        // booking per OrderBookedFilter.IsRealBooking — which drops cancelled, fully-refunded
+        // (including cancelled-then-refunded, whose Status reads "Refunded", not "Cancelled") and
+        // never-paid abandoned checkouts. The old filter only excluded Status == "Cancelled", so all
+        // three of those counted as booked orders and the tab reported more jobs than were ever done.
+        //
+        // CreatedAt is deliberate: this tab lines bookings up against the day's ad spend, so an order
+        // belongs to the day it was BOOKED, not the day it is cleaned. That is why this count does not
+        // have to equal the Statistics/Finances order count, which buckets by ServiceDate.
         private async Task<List<BookedOrderRow>> FetchBookedOrdersAsync(DateTime fromDate, DateTime toDate)
         {
             var fromUtc = NyTimeHelper.ToUtc(fromDate);
             var toUtcExclusive = NyTimeHelper.ToUtc(toDate.AddDays(1));
 
             var raw = await _context.Orders
-                .Where(o => o.CreatedAt >= fromUtc && o.CreatedAt < toUtcExclusive
-                            && o.Status.ToLower() != "cancelled")
+                .Where(OrderBookedFilter.IsRealBooking)
+                .Where(o => o.CreatedAt >= fromUtc && o.CreatedAt < toUtcExclusive)
                 .Select(o => new { o.CreatedAt, o.AcquisitionChannel })
                 .ToListAsync();
 

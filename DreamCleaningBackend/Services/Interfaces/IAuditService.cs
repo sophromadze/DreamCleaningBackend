@@ -9,6 +9,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task LogDeleteAsync<T>(T entity) where T : class;
         Task<List<AuditLog>> GetEntityHistoryAsync(string entityType, long entityId);
         Task LogCleanerAssignmentAsync(int orderId, string cleanerEmail, string action, int adminId);
+
+        // Customer-facing notification sent for an order (e.g. a resent confirmation). Audit-only:
+        // the mail has already left, so these rows are undo-blocked like the other side-effect logs.
+        Task LogOrderNotificationAsync(int orderId, string action, string details, int adminId);
         Task LogBubblePointsAdjustmentAsync(int targetUserId, string targetUserName, int points, string? reason, int adminId, string adminName);
 
         // Loyalty Discount change audit. EntityType is the virtual "UserLoyaltyDiscount" so the

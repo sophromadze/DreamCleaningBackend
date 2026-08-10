@@ -1639,9 +1639,15 @@ namespace DreamCleaningBackend.Services
             // Phase 1 manual payment: when false, drop the "and payment processed successfully"
             // phrasing because the customer will pay the cleaners on arrival (Cash/Zelle/Check/
             // Other admin booking). Default true preserves the existing Stripe-paid behavior.
-            bool paymentAlreadyProcessed = true)
+            bool paymentAlreadyProcessed = true,
+            // Re-send after an admin changed the order (date/time/address). Same details block —
+            // it already renders live order values — but the subject and opening line say
+            // "updated" so the customer can tell this apart from the original confirmation.
+            bool isUpdate = false)
         {
-            var subject = "Booking Confirmed - Dream Cleaning Service Scheduled";
+            var subject = isUpdate
+                ? $"Updated Confirmation - Dream Cleaning Order #{orderId}"
+                : "Booking Confirmed - Dream Cleaning Service Scheduled";
 
             var itemsHtml = BuildCustomerSupplyChecklistHtml(hasCleaningSupplies, isDeepCleaning, isCustomServiceType);
             var communicationPolicyHtml = @"
@@ -1664,19 +1670,22 @@ namespace DreamCleaningBackend.Services
             </p>
         </div>";
 
-            // Open the email with one of two phrasings — see paymentAlreadyProcessed comment
-            // on the method signature. Only this single line differs between the two paths;
-            // everything below (supply checklist, policy block, etc.) is identical.
-            var greetingLine = paymentAlreadyProcessed
-                ? "Thank you for choosing Dream Cleaning! Your booking has been confirmed and payment processed successfully."
-                : "Thank you for choosing Dream Cleaning! Your booking has been confirmed.";
+            // Open the email with one of three phrasings — see the paymentAlreadyProcessed and
+            // isUpdate comments on the method signature. Only this single line differs between
+            // the paths; everything below (supply checklist, policy block, etc.) is identical.
+            var greetingLine = isUpdate
+                ? "Your booking has been updated. Below are the current details for your cleaning — please review them and let us know right away if anything looks wrong."
+                : paymentAlreadyProcessed
+                    ? "Thank you for choosing Dream Cleaning! Your booking has been confirmed and payment processed successfully."
+                    : "Thank you for choosing Dream Cleaning! Your booking has been confirmed.";
+            var detailsHeading = isUpdate ? "Updated Booking Details:" : "Booking Details:";
 
             var body = $@"
         <h2>Hi {customerName},</h2>
         <p>{greetingLine}</p>
         
         <div style='background: #e3f2fd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2196f3;'>
-            <h3>Booking Details:</h3>
+            <h3>{detailsHeading}</h3>
             <p><strong>Order Number:</strong> #{orderId}</p>
             <p><strong>Service Type:</strong> {serviceTypeName}</p>
             <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
