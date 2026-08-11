@@ -162,17 +162,23 @@ namespace DreamCleaningBackend.Services
                 SubTotal = quote.SubTotal,
                 EstimatedTax = totals.Tax,
                 EstimatedTotal = totals.Total,
-                // Chat-display only: round UP to the shared billing/scheduling
-                // granularity (189 → 210) so the model can only ever quote an
-                // already-rounded figure. Deliberately does NOT touch the shared
-                // OrderPricingCalculator — booking-flow math stays untouched, and
-                // ceiling (vs the Nearest mode used for emails and cleaner salary)
-                // errs toward over-quoting time to the customer, never under.
-                // The mode is explicit here precisely because it differs from everywhere else.
+                // Chat-display only: snap to the shared billing/scheduling granularity so the
+                // model can only ever quote an already-rounded figure. Deliberately does NOT
+                // touch the shared OrderPricingCalculator — booking-flow math stays untouched.
+                //
+                // MUST be Nearest, matching DurationUtils.formatDurationRounded on the booking
+                // page (booking.component.ts formatDuration). This was Ceiling until 2026-08-11,
+                // on the reasoning that over-quoting time is safer than under-quoting — but both
+                // surfaces round the SAME quote.DisplayDuration, so the two modes disagreed
+                // whenever the raw value fell in the upper half of an increment: a 370-minute
+                // Deep Clean was quoted "about 6 hours 30 minutes" in chat and then displayed as
+                // "6h" on the booking page. A customer catching us contradicting ourselves costs
+                // more trust than a 15-minute under-quote, and the booking page is canonical.
+                // Change this only together with the booking page.
                 DisplayDurationMinutes = DurationUtils.RoundToIncrement(
                     quote.DisplayDuration,
                     OrderPricingCalculator.DurationRoundingMinutes,
-                    DurationRounding.Up),
+                    DurationRounding.Nearest),
                 DeepCleaningFee = quote.DeepCleaningFee,
                 Note = EstimateNote
             }, null);

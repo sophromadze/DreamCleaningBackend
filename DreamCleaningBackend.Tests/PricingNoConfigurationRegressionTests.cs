@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Services;
 using Xunit;
 
@@ -234,6 +235,75 @@ namespace DreamCleaningBackend.Tests
             // Half-way case: 75 min / 30 = 2.5 -> AwayFromZero -> 3 -> 90 min -> 1.5h x $20 = $30.00
             // (Banker's rounding would give 2 -> 60 min -> $20.00. That was the EmailService bug.)
             Assert.Equal(30.00m, OrderPricingCalculator.CalculateCleanerTotalSalary(75m, 1, false, 20m));
+        }
+
+        [Fact]
+        public void RaisingMaidsCount_NeverRaisesCleanerSalary()
+        {
+            // The reported bug: a 456-minute order at $21/h paid $157.50 with 1 cleaner but
+            // $168.00 with 2, because the per-cleaner share (228 min) was rounded to the NEAREST
+            // increment (240) and then multiplied back by the cleaner count. Identical work,
+            // +$10.50 for typing a 2 into the Maids field.
+            Assert.Equal(157.50m, OrderPricingCalculator.CalculateCleanerTotalSalary(456m, 1, false, 21m));
+            Assert.Equal(147.00m, OrderPricingCalculator.CalculateCleanerTotalSalary(456m, 2, false, 21m));
+
+            // The label admins see is driven by the same function, so "3h 30m per cleaner"
+            // (210 min) is exactly what the $147.00 is 2 x 3.5h of — no floored/nearest drift
+            // between the number shown and the number paid.
+            Assert.Equal(210m, OrderPricingCalculator.CalculatePerCleanerBillableMinutes(456m, 2, false));
+
+            // The general guarantee, over the whole grid: for any total duration, raising the
+            // cleaner count can only ever hold the payout flat or lower it. Skips the single
+            // documented exception — a share below one increment is paid one increment rather
+            // than $0, which is the only way the payout can go up.
+            for (var total = 60m; total <= 1200m; total += 1m)
+            {
+                var atOne = OrderPricingCalculator.CalculateCleanerTotalSalary(total, 1, false, 21m);
+                for (var maids = 2; maids <= 6; maids++)
+                {
+                    if (total / maids < OrderPricingCalculator.DurationRoundingMinutes) continue;
+
+                    Assert.True(
+                        OrderPricingCalculator.CalculateCleanerTotalSalary(total, maids, false, 21m) <= atOne,
+                        $"{total} min across {maids} cleaners paid more than across 1");
+                }
+            }
+
+            // The zero-pay guard itself: 6 cleaners on a 1h job is 10 min each, which floors to
+            // nothing. One increment each is paid instead.
+            Assert.Equal(30m, OrderPricingCalculator.CalculatePerCleanerBillableMinutes(60m, 6, false));
+        }
+
+        [Fact]
+        public void ChatQuotedDuration_MatchesTheBookingPage()
+        {
+            // The chat agent and the booking page round the SAME quote.DisplayDuration. The chat
+            // used Ceiling until 2026-08-11, so any raw value in the upper half of an increment
+            // was quoted one increment higher than the page the customer then books on: a real
+            // 2bd/1ba/1000sqft Deep Clean was quoted "about 6 hours 30 minutes" in chat and
+            // rendered "6h" on /booking.
+            //
+            // Nearest is the booking page's mode (DurationUtils.formatDurationRounded ->
+            // Math.round), so asserting Nearest here is asserting the two surfaces agree.
+            Assert.Equal(360m, DurationUtils.RoundToIncrement(
+                370m, OrderPricingCalculator.DurationRoundingMinutes, DurationRounding.Nearest));
+
+            // Across the whole reported window (raw 361-374 all displayed as 6h on the page),
+            // the chat must never quote 6h30m.
+            for (var raw = 361m; raw <= 374m; raw += 1m)
+            {
+                Assert.Equal(360m, DurationUtils.RoundToIncrement(
+                    raw, OrderPricingCalculator.DurationRoundingMinutes, DurationRounding.Nearest));
+            }
+
+            // Halves still go away from zero, matching JS Math.round on the page (375 -> 390).
+            Assert.Equal(390m, DurationUtils.RoundToIncrement(
+                375m, OrderPricingCalculator.DurationRoundingMinutes, DurationRounding.Nearest));
+
+            // Cleaner-hours service types are untouched: TotalDuration is already per-cleaner
+            // there (the customer picked cleaners x hours), so it still rounds to nearest and
+            // scales with the count.
+            Assert.Equal(126.00m, OrderPricingCalculator.CalculateCleanerTotalSalary(180m, 2, true, 21m));
         }
 
         // ── Proving each new knob is inert on its own ────────────────────────────────────

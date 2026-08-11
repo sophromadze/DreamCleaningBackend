@@ -897,9 +897,10 @@ namespace DreamCleaningBackend.Services
             bool hasCleanersService = order.OrderServices.Any(os =>
                 os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
 
-            decimal durationPerCleaner = hasCleanersService
-                ? order.TotalDuration
-                : (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
+            // Same per-cleaner minutes the salary is computed from, so the hours a cleaner is
+            // told they'll work always match the hours they're paid for.
+            decimal durationPerCleaner = OrderPricingCalculator.CalculatePerCleanerBillableMinutes(
+                order.TotalDuration, order.MaidsCount, hasCleanersService);
 
             var formattedDuration = FormatDurationLocalized((int)durationPerCleaner, cleanerLanguage);
 
@@ -1085,9 +1086,10 @@ namespace DreamCleaningBackend.Services
 
             bool hasCleanersService = order.OrderServices.Any(os =>
                 os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
-            decimal durationPerCleaner = hasCleanersService
-                ? order.TotalDuration
-                : (decimal)order.TotalDuration / (order.MaidsCount > 0 ? order.MaidsCount : 1);
+            // Same per-cleaner minutes the salary is computed from, so the hours a cleaner is
+            // told they'll work always match the hours they're paid for.
+            decimal durationPerCleaner = OrderPricingCalculator.CalculatePerCleanerBillableMinutes(
+                order.TotalDuration, order.MaidsCount, hasCleanersService);
             var formattedDuration = FormatDurationLocalized((int)durationPerCleaner, language);
 
             var hasCleaningSupplies = order.OrderExtraServices

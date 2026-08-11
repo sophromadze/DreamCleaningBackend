@@ -823,20 +823,52 @@ namespace DreamCleaningBackend.Services
         }
 
         /// <summary>
-        /// Per-cleaner duration rounded to DurationRoundingMinutes, then perCleaner/60 × maids × rate.
+        /// Billable minutes ONE cleaner is paid for, snapped to DurationRoundingMinutes.
+        /// SINGLE source for both the payroll figure and the "· X per cleaner" label admins
+        /// see — they must never disagree. Mirrored by calculatePerCleanerBillableMinutes
+        /// in order-pricing.calculator.ts.
+        ///
         /// Only cleaner-hours service types store TotalDuration as per-cleaner; everything
         /// else (including Custom Pricing) stores it as TOTAL across all maids and we divide.
+        ///
+        /// The split rounds DOWN, and that is the whole point. Rounding each share to the
+        /// NEAREST increment and then multiplying back by the cleaner count inflated payroll
+        /// purely because an admin raised the count: a 456-minute job paid 450 min (7h30) at
+        /// 1 cleaner but 2 × 240 min (2 × 4h) at 2 cleaners, +$10.50 for identical work.
+        /// Flooring makes the paid total a multiple of the increment that is always ≤ the
+        /// raw total, so raising MaidsCount can never increase what we pay out.
+        /// </summary>
+        public static decimal CalculatePerCleanerBillableMinutes(
+            decimal totalDuration, int maidsCount, bool hasCleanerService)
+        {
+            var maids = Math.Max(1, maidsCount);
+
+            // Already per-cleaner (cleaner-hours types), or nothing to split: keep the
+            // historical Nearest behaviour so single-cleaner orders are untouched.
+            if (hasCleanerService || maids == 1)
+                return DurationUtils.RoundToIncrement(
+                    totalDuration, DurationRoundingMinutes, DurationRounding.Nearest);
+
+            var floored = DurationUtils.RoundToIncrement(
+                totalDuration / maids, DurationRoundingMinutes, DurationRounding.Down);
+
+            // Never floor a real job down to zero pay: with more cleaners than there are
+            // half-hours of work (6 cleaners on a 1h job) the share floors to 0. Pay one
+            // increment instead. This is the ONE case where the never-raises guarantee can
+            // be exceeded, and $0 payroll is the worse failure.
+            return totalDuration > 0m && floored <= 0m ? DurationRoundingMinutes : floored;
+        }
+
+        /// <summary>
+        /// Per-cleaner billable minutes / 60 × maids × rate. See
+        /// CalculatePerCleanerBillableMinutes for why the split rounds down.
         /// </summary>
         public static decimal CalculateCleanerTotalSalary(
             decimal totalDuration, int maidsCount, bool hasCleanerService, decimal hourlyRate)
         {
             var maids = Math.Max(1, maidsCount);
-            var perCleanerDuration = hasCleanerService
-                ? totalDuration
-                : (maids > 1 ? totalDuration / maids : totalDuration);
-            var roundedPerCleaner = DurationUtils.RoundToIncrement(
-                perCleanerDuration, DurationRoundingMinutes, DurationRounding.Nearest);
-            return Round2(roundedPerCleaner / 60m * maids * hourlyRate);
+            var perCleaner = CalculatePerCleanerBillableMinutes(totalDuration, maidsCount, hasCleanerService);
+            return Round2(perCleaner / 60m * maids * hourlyRate);
         }
     }
 }
