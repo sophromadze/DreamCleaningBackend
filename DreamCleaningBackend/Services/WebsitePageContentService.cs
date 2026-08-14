@@ -5,6 +5,7 @@ using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Services
@@ -262,14 +263,10 @@ namespace DreamCleaningBackend.Services
                     .OrderBy(o => o.DisplayOrder)
                     .ToListAsync(cancellationToken);
 
-                // Same first-time detection the pricing page uses.
-                var firstTime = offers.FirstOrDefault(o =>
-                    o.RequiresFirstTimeCustomer ||
-                    o.Type == OfferType.FirstTime ||
-                    (o.Name != null && (o.Name.Contains("first time", StringComparison.OrdinalIgnoreCase) ||
-                                        o.Name.Contains("first-time", StringComparison.OrdinalIgnoreCase))));
+                // Same first-time detection the pricing page and the reminder emails use.
+                var firstTime = FirstTimeOfferHelper.Find(offers);
                 var seasonal = offers
-                    .Where(o => o != firstTime && !o.RequiresFirstTimeCustomer && o.Type != OfferType.FirstTime)
+                    .Where(o => o != firstTime && !FirstTimeOfferHelper.IsFirstTimeOffer(o))
                     .ToList();
 
                 var plans = await db.Subscriptions
@@ -320,8 +317,7 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        private static string OfferLabel(SpecialOffer offer) =>
-            offer.IsPercentage ? $"{offer.DiscountValue:0.##}%" : $"${offer.DiscountValue:0.##}";
+        private static string OfferLabel(SpecialOffer offer) => FirstTimeOfferHelper.OfferLabel(offer);
 
         // ===== Extraction =====
 

@@ -85,6 +85,7 @@ namespace DreamCleaningBackend.Controllers
                     LastName = u.LastName,
                     Email = u.IsNoEmailUser ? "" : u.Email,
                     IsNoEmailUser = u.IsNoEmailUser,
+                    ProfilePictureUrl = u.ProfilePictureUrl,
                     Phone = u.Phone,
                     Role = u.Role.ToString(),
                     AuthProvider = u.AuthProvider,
@@ -1548,14 +1549,14 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "This user can't receive reminders — no usable email or phone, or their communication preferences are turned off." });
 
             // Never-ordered users get "book your first cleaning" copy instead of "we miss you".
-            // The first-time discount % is read from the DB (SpecialOffers) — never hardcoded —
-            // and only mentioned while the user still qualifies (FirstTimeOrder flag).
+            // The first-time discount is read from the DB (SpecialOffers) — never hardcoded —
+            // and only mentioned while the user still qualifies (FirstTimeOrder flag). A null
+            // label means no first-time offer is active, and the copy drops the discount line.
             var hasOrders = await _context.Orders.AnyAsync(o => o.UserId == user.Id && o.Status != "cancelled");
-            decimal? firstTimePct = null;
+            string? firstTimeLabel = null;
             if (!hasOrders && user.FirstTimeOrder)
             {
-                var pct = await _specialOfferService.GetFirstTimeDiscountPercentage();
-                if (pct > 0) firstTimePct = pct;
+                firstTimeLabel = await _specialOfferService.GetFirstTimeDiscountLabel();
             }
 
             // Log BEFORE sending (same pattern as LoyaltyReengagementService): the row is what
@@ -1577,7 +1578,7 @@ namespace DreamCleaningBackend.Controllers
                 if (hasOrders)
                     await _emailService.SendLoyaltyReminder30Async(user.Email, user.FirstName);
                 else
-                    await _emailService.SendFirstBookingReminderAsync(user.Email, user.FirstName, firstTimePct);
+                    await _emailService.SendFirstBookingReminderAsync(user.Email, user.FirstName, firstTimeLabel);
                 emailSent = true;
             }
 
@@ -1588,7 +1589,7 @@ namespace DreamCleaningBackend.Controllers
                     if (hasOrders)
                         await _smsService.SendLoyaltyReminder30SmsAsync(normalizedPhone!, user.FirstName);
                     else
-                        await _smsService.SendFirstBookingReminderSmsAsync(normalizedPhone!, user.FirstName, firstTimePct);
+                        await _smsService.SendFirstBookingReminderSmsAsync(normalizedPhone!, user.FirstName, firstTimeLabel);
                     smsSent = true;
                 }
                 catch (InvalidPhoneNumberException)

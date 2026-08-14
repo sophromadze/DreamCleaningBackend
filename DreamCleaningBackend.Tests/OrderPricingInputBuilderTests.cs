@@ -134,7 +134,7 @@ namespace DreamCleaningBackend.Tests
         {
             var serviceType = await _context.ServiceTypes.FirstAsync(st => st.Id == ServiceTypeId);
             return await OrderPricingInputBuilder.FromBookingDtoAsync(
-                _context, serviceType, BookingDto(bedrooms, bathrooms, sqft));
+                _context, serviceType, BookingDto(bedrooms, bathrooms, sqft), allowCustomPricing: false);
         }
 
         // ── The five fields + the floor ──────────────────────────────────────────────────

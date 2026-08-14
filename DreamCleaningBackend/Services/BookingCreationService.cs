@@ -30,7 +30,16 @@ namespace DreamCleaningBackend.Services
         /// application, all inside one transaction. Flow-specific follow-ups
         /// (subscription activation, notifications, payment intents) stay at call sites.
         /// </summary>
-        Task<Order> CreateOrderAsync(CreateBookingDto dto, int orderUserId, BookingCreationOptions? options = null);
+        /// <param name="allowCustomPricing">
+        /// Half (b) of the custom-pricing gate — see
+        /// <see cref="OrderPricingInputBuilder.ShouldHonourCustomPricing"/>. This method re-prices
+        /// the DTO independently of whatever quote the caller already showed or charged, so it
+        /// needs the decision in its own right. Deliberately has NO default and is NOT folded into
+        /// <see cref="BookingCreationOptions"/>: an order-persisting path must never inherit an
+        /// implicit "allowed".
+        /// </param>
+        Task<Order> CreateOrderAsync(CreateBookingDto dto, int orderUserId, bool allowCustomPricing,
+            BookingCreationOptions? options = null);
 
         /// <summary>
         /// A promo code matching the XXXX-XXXX-XXXX gift card format is treated as a gift
@@ -234,7 +243,8 @@ namespace DreamCleaningBackend.Services
             return (discountAmount, subscriptionDiscountAmount);
         }
 
-        public async Task<Order> CreateOrderAsync(CreateBookingDto dto, int orderUserId, BookingCreationOptions? options = null)
+        public async Task<Order> CreateOrderAsync(CreateBookingDto dto, int orderUserId, bool allowCustomPricing,
+            BookingCreationOptions? options = null)
         {
             options ??= new BookingCreationOptions();
             var manualPayment = options.PaymentMethod != PaymentMethod.Normal;
@@ -251,8 +261,11 @@ namespace DreamCleaningBackend.Services
 
             var (promoCode, giftCardCode, giftCardAmountUsed) = ResolveGiftCardAndPromo(dto);
 
-            // Price through the shared calculator (single source of truth).
-            var quoteInput = await OrderPricingInputBuilder.FromBookingDtoAsync(_context, serviceType, dto);
+            // Price through the shared calculator (single source of truth). Custom ("Pre-Arranged")
+            // pricing is honoured only when the caller's decision AND the service type both allow
+            // it — see OrderPricingInputBuilder.ShouldHonourCustomPricing.
+            var quoteInput = await OrderPricingInputBuilder.FromBookingDtoAsync(
+                _context, serviceType, dto, allowCustomPricing);
             var quote = OrderPricingCalculator.CalculateQuote(quoteInput);
 
             if (Math.Abs(dto.TotalDuration - quote.TotalDuration) > 5)
@@ -296,7 +309,8 @@ namespace DreamCleaningBackend.Services
                 GiftCardCode = giftCardCode,
                 GiftCardAmountUsed = 0,
                 Tips = dto.Tips,
-                CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
+                // CompanyDevelopmentTips is retired: never sent by any client, always 0 on a
+                // new order. Left at its default rather than set from a DTO field.
                 Status = options.InitialStatus,
                 // Secret for tokenized payment links — lets the emailed/SMSed link open the
                 // payment page without login while the order still has something unpaid.

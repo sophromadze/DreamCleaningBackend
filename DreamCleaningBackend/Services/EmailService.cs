@@ -1636,7 +1636,7 @@ namespace DreamCleaningBackend.Services
 
         public async Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
-            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType,
+            bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType,
             string? floorTypes = null, string? floorTypeOther = null,
             // Phase 1 manual payment: when false, drop the "and payment processed successfully"
             // phrasing because the customer will pay the cleaners on arrival (Cash/Zelle/Check/
@@ -1651,7 +1651,7 @@ namespace DreamCleaningBackend.Services
                 ? $"Updated Confirmation - Dream Cleaning Order #{orderId}"
                 : "Booking Confirmed - Dream Cleaning Service Scheduled";
 
-            var itemsHtml = BuildCustomerSupplyChecklistHtml(hasCleaningSupplies, isDeepCleaning, isCustomServiceType);
+            var itemsHtml = BuildCustomerSupplyChecklistHtml(hasCleaningSupplies, requiresOvenCleaner, isCustomServiceType);
             var communicationPolicyHtml = @"
         <div style='background: #fff5f5; padding: 18px; border-radius: 8px; margin: 20px 0; border: 2px solid #dc3545;'>
             <h3 style='margin: 0 0 10px 0; color: #b42318; font-size: 18px;'>&#9888; Important Policy</h3>
@@ -1724,34 +1724,9 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(email, subject, body);
         }
 
-        private static string BuildCustomerSupplyChecklistHtml(bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType)
+        private static string BuildCustomerSupplyChecklistHtml(bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType)
         {
-            // Custom service types don't use the regular cleaning-supplies workflow.
-            // Force the "customer provides only essentials" view (no Zep/Windex/cloths).
-            if (isCustomServiceType) {
-                hasCleaningSupplies = true;
-            }
-
-            // Always required items (always included, even if cleaning supplies selected)
-            var items = new List<string>
-            {
-                "Paper towels",
-                "Garbage bags",
-                "Broom or vacuum cleaner",
-                "Toilet brush"
-            };
-
-            // If cleaning supplies were NOT selected, customer must also have these items ready.
-            if (!hasCleaningSupplies)
-            {
-                var zep = isDeepCleaning
-                    ? "Zep liquids: Green, Floor (or similar), Oven Cleaner (or similar)"
-                    : "Zep liquids: Green, Floor (or similar)";
-
-                items.Add(zep);
-                items.Add("Windex liquid (or similar)");
-                items.Add("Cleaning cloths, Sponge and Mop");
-            }
+            var items = CustomerSupplyChecklist.BuildItems(hasCleaningSupplies, requiresOvenCleaner, isCustomServiceType);
 
             return $@"
         <div style='background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid rgba(133, 100, 4, 0.25);'>
@@ -2513,12 +2488,16 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        public async Task SendFirstBookingReminderAsync(string toEmail, string firstName, decimal? firstTimeDiscountPercentage)
+        /// <param name="firstTimeDiscountLabel">Live label from the DB ("10%" / "$25"), built by
+        /// FirstTimeOfferHelper. Null means no first-time offer is active — the sentence is then
+        /// dropped entirely. Never substitute a default here; the number must match the discount
+        /// the customer will actually receive at checkout.</param>
+        public async Task SendFirstBookingReminderAsync(string toEmail, string firstName, string? firstTimeDiscountLabel)
         {
             try
             {
-                var discountLine = firstTimeDiscountPercentage is > 0
-                    ? $"<p>As a welcome from us, first-time customers get <strong>{firstTimeDiscountPercentage.Value:0.##}% off</strong> their first cleaning.</p>"
+                var discountLine = !string.IsNullOrWhiteSpace(firstTimeDiscountLabel)
+                    ? $"<p>As a welcome from us, first-time customers get <strong>{firstTimeDiscountLabel} off</strong> their first cleaning.</p>"
                     : string.Empty;
 
                 var subject = $"Your home's first sparkle awaits, {firstName} ✨";

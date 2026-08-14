@@ -14,7 +14,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// Booking confirmation SMS template. Optional: use from OrderService when SMS is enabled.
         /// </summary>
         Task SendBookingConfirmationSmsAsync(string phoneNumber, string customerName, DateTime serviceDate, string serviceTime,
-            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType, bool isUpdate = false);
+            bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType, bool isUpdate = false);
 
         /// <summary>
         /// Cleaner assignment SMS template. Optional: use when assigning cleaners.
@@ -47,6 +47,6 @@ namespace DreamCleaningBackend.Services.Interfaces
 
         /// <summary>Manual reminder for registered users who never ordered — "book your first
         /// cleaning" copy. Discount % comes from the DB (SpecialOffers), never hardcoded.</summary>
-        Task SendFirstBookingReminderSmsAsync(string phone, string firstName, decimal? firstTimeDiscountPercentage);
+        Task SendFirstBookingReminderSmsAsync(string phone, string firstName, string? firstTimeDiscountLabel);
     }
 }

@@ -22,8 +22,8 @@ namespace DreamCleaningBackend.Services.Interfaces
         // Check and grant first-time offer
         Task GrantFirstTimeOfferIfEligible(int userId);
 
-        // Get first-time discount percentage
-        Task<decimal> GetFirstTimeDiscountPercentage();
+        // Live first-time discount label ("10%" / "$25"); null when no first-time offer is active
+        Task<string?> GetFirstTimeDiscountLabel();
         Task<bool> EnableSpecialOffer(int id);
         Task<bool> DisableSpecialOffer(int id);
 

@@ -14,19 +14,91 @@ namespace DreamCleaningBackend.Services
     /// </summary>
     public static class OrderPricingInputBuilder
     {
-        /// <summary>Input for a booking-style DTO (create, prepare-payment, calculate).</summary>
-        public static async Task<OrderPricingCalculator.QuoteInput> FromBookingDtoAsync(
-            ApplicationDbContext context, ServiceType serviceType, CreateBookingDto dto)
+        /// <summary>
+        /// THE custom-pricing gate — the only definition of when Custom ("Pre-Arranged") pricing
+        /// is honoured.
+        ///
+        /// Custom pricing bypasses the ENTIRE service catalogue: the calculator's custom branch
+        /// returns before the services loop, the rate tiers and the MinimumPrice floor, so the
+        /// amount the customer is charged is simply the amount the caller typed. That is only
+        /// acceptable for an admin arranging a bespoke job, so it is honoured when BOTH hold:
+        ///
+        ///   a) the selected service type really IS the custom one (serviceType.IsCustom), AND
+        ///   b) the caller is an Admin/SuperAdmin.
+        ///
+        /// (b) arrives as <paramref name="allowCustomPricing"/>, decided by the caller. This class
+        /// deliberately never reads HttpContext — QuoteInput carries no identity, and a pricing
+        /// helper that authenticates its own caller is a helper nobody can reason about.
+        ///
+        /// Before this gate existed, only the raw dto.IsCustomPricing flag was consulted, on every
+        /// booking path including the anonymous one — so any caller could set customAmount and name
+        /// their own price against an ordinary Residential booking.
+        /// </summary>
+        public static bool ShouldHonourCustomPricing(
+            ServiceType serviceType, CreateBookingDto dto, bool allowCustomPricing)
+            => dto.IsCustomPricing && allowCustomPricing && serviceType.IsCustom;
+
+        /// <summary>
+        /// Applies <see cref="ShouldHonourCustomPricing"/> to the DTO ITSELF, clearing the custom
+        /// fields when the gate refuses. Call this ONCE, at the point the decision is made, and
+        /// BEFORE the DTO is either priced or stored in the booking-data session.
+        ///
+        /// Rewriting the DTO — rather than only filtering at pricing time — is what makes the
+        /// charged amount and the persisted amount provably the same decision. prepare-payment
+        /// computes the Stripe charge and then parks the DTO in BookingDataService; confirm-payment
+        /// later reads that same DTO back and builds the real order from it, re-pricing
+        /// independently. If the two re-derived the decision separately they could disagree, and
+        /// the customer would be charged one amount while the order recorded another. Normalising
+        /// once means every downstream reader sees a DTO that already IS the decision. (Same
+        /// pattern PreparePayment already uses for the verified gift-card draw.)
+        ///
+        /// CustomServiceDisplayName is deliberately left alone: it is a label, not money, and it
+        /// is already gated on serviceType.IsCustom where it is consumed.
+        /// </summary>
+        /// <param name="attemptedAmount">
+        /// The refused CustomAmount, for the caller's warning log; null when nothing was refused.
+        /// </param>
+        /// <returns>True when a custom-pricing request was refused — the caller should log it.</returns>
+        public static bool NormalizeCustomPricing(
+            ServiceType serviceType, CreateBookingDto dto, bool allowCustomPricing, out decimal? attemptedAmount)
         {
+            attemptedAmount = null;
+
+            if (!dto.IsCustomPricing) return false;
+            if (ShouldHonourCustomPricing(serviceType, dto, allowCustomPricing)) return false;
+
+            attemptedAmount = dto.CustomAmount;
+            dto.IsCustomPricing = false;
+            dto.CustomAmount = null;
+            dto.CustomCleaners = null;
+            dto.CustomDuration = null;
+            return true;
+        }
+
+        /// <summary>Input for a booking-style DTO (create, prepare-payment, calculate).</summary>
+        /// <param name="allowCustomPricing">
+        /// Half (b) of the custom-pricing gate — see <see cref="ShouldHonourCustomPricing"/>.
+        /// Intentionally has NO default: every call site must state its decision, because a path
+        /// that silently inherited "allowed" is exactly how this became reachable anonymously.
+        /// </param>
+        public static async Task<OrderPricingCalculator.QuoteInput> FromBookingDtoAsync(
+            ApplicationDbContext context, ServiceType serviceType, CreateBookingDto dto, bool allowCustomPricing)
+        {
+            // Re-applied here as well as in NormalizeCustomPricing: this is the last point before
+            // the calculator, so a path that forgets to normalise still cannot mis-price.
+            var honourCustom = ShouldHonourCustomPricing(serviceType, dto, allowCustomPricing);
+
             var input = new OrderPricingCalculator.QuoteInput
             {
                 BasePrice = serviceType.BasePrice,
                 BaseDuration = serviceType.TimeDuration,
                 MinimumPrice = serviceType.MinimumPrice,
-                IsCustomPricing = dto.IsCustomPricing,
-                CustomAmount = dto.CustomAmount,
-                CustomCleaners = dto.CustomCleaners ?? (dto.MaidsCount > 0 ? dto.MaidsCount : (int?)null),
-                CustomDuration = dto.CustomDuration
+                IsCustomPricing = honourCustom,
+                CustomAmount = honourCustom ? dto.CustomAmount : null,
+                CustomCleaners = honourCustom
+                    ? (dto.CustomCleaners ?? (dto.MaidsCount > 0 ? dto.MaidsCount : (int?)null))
+                    : null,
+                CustomDuration = honourCustom ? dto.CustomDuration : null
             };
 
             await AddServiceLinesAsync(context, input, dto.Services);

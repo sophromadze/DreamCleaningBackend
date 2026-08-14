@@ -71,6 +71,13 @@ namespace DreamCleaningBackend.Models
         [Column(TypeName = "decimal(18,2)")]
         public decimal Tips { get; set; }
 
+        /// <summary>
+        /// RETIRED — "Tips for Company Development" is no longer offered. There is no UI, no
+        /// input DTO field, and no code path that writes it from client input, so every order
+        /// created from now on stores 0. The column is kept so orders placed while the feature
+        /// existed still reconcile: their amount is part of the <see cref="Total"/> that was
+        /// charged, and every re-pricing path passes this STORED value through untouched.
+        /// </summary>
         [Column(TypeName = "decimal(18,2)")]
         public decimal CompanyDevelopmentTips { get; set; }
 

@@ -110,8 +110,64 @@ namespace DreamCleaningBackend.Controllers
         // DTO→input mapping lives in OrderPricingInputBuilder; per-line persistence in
         // OrderPricingCalculator.AddOrderLinesFromQuote. ALL pricing flows in this
         // controller must price through these — never inline subtotal/tax/duration math.
-        private Task<OrderPricingCalculator.QuoteInput> BuildQuoteInputAsync(ServiceType serviceType, CreateBookingDto dto)
-            => OrderPricingInputBuilder.FromBookingDtoAsync(_context, serviceType, dto);
+        private Task<OrderPricingCalculator.QuoteInput> BuildQuoteInputAsync(
+            ServiceType serviceType, CreateBookingDto dto, bool allowCustomPricing)
+            => OrderPricingInputBuilder.FromBookingDtoAsync(_context, serviceType, dto, allowCustomPricing);
+
+        // ===== Custom ("Pre-Arranged") pricing gate =====
+        //
+        // Custom pricing lets the caller name the price outright — the calculator's custom branch
+        // skips the catalogue, the rate tiers and the MinimumPrice floor. The rule and its rationale
+        // live in OrderPricingInputBuilder.ShouldHonourCustomPricing; these helpers only supply
+        // half (b), "is the caller an Admin/SuperAdmin".
+
+        /// <summary>
+        /// Roles permitted to price through the custom branch. Moderator is deliberately excluded:
+        /// it is a View-only role in PermissionService, and the booking UI already offers the
+        /// custom service type to Admin/SuperAdmin only, so no working flow is lost.
+        /// </summary>
+        private static bool MayUseCustomPricing(UserRole? role)
+            => role == UserRole.Admin || role == UserRole.SuperAdmin;
+
+        /// <summary>
+        /// Resolves the caller's role from the DATABASE — never the JWT "Role" claim. A token
+        /// issued before a demotion stays valid until it expires, and this decision determines
+        /// what a customer is charged. Returns null for an anonymous caller.
+        ///
+        /// Only used on paths that don't already have the user entity loaded (calculate), and only
+        /// when the request actually asks for custom pricing, so the normal booking flow pays
+        /// nothing for this.
+        /// </summary>
+        private async Task<UserRole?> GetCallerRoleFromDbAsync()
+        {
+            var userId = GetUserId();
+            if (userId == 0) return null;
+
+            return await _context.Users
+                .AsNoTracking()
+                .Where(u => u.Id == userId)
+                .Select(u => (UserRole?)u.Role)
+                .FirstOrDefaultAsync();
+        }
+
+        /// <summary>
+        /// Records a refused custom-pricing attempt. Deliberately detailed enough to tell a probe
+        /// from a bug: a customer's own id showing up repeatedly with round amounts is an attack,
+        /// one admin hitting it once is a UI problem.
+        /// </summary>
+        private void LogCustomPricingRefused(
+            string endpoint, decimal? attemptedAmount, int serviceTypeId, UserRole? role, int userId)
+        {
+            _logger.LogWarning(
+                "Custom pricing REFUSED on {Endpoint}: attemptedCustomAmount={AttemptedAmount}, "
+                + "serviceTypeId={ServiceTypeId}, role={Role}, userId={UserId}. "
+                + "Booking priced normally through the standard catalogue path.",
+                endpoint,
+                attemptedAmount,
+                serviceTypeId,
+                role?.ToString() ?? "anonymous",
+                userId == 0 ? "anonymous" : userId.ToString());
+        }
 
         [HttpGet("service-types")]
         public async Task<ActionResult<List<ServiceTypeDto>>> GetServiceTypes()
@@ -378,7 +434,19 @@ namespace DreamCleaningBackend.Controllers
             if (serviceType == null)
                 return BadRequest(new { message = "Invalid service type" });
 
-            var quoteInput = await BuildQuoteInputAsync(serviceType, dto);
+            // Same gate as create/create-for-user, so a quote can never promise a price the
+            // charging path would refuse to honour. The role lookup is skipped entirely unless
+            // custom pricing was actually requested (this endpoint is anonymous and hot).
+            UserRole? callerRole = dto.IsCustomPricing ? await GetCallerRoleFromDbAsync() : null;
+            var allowCustomPricing = MayUseCustomPricing(callerRole);
+            if (OrderPricingInputBuilder.NormalizeCustomPricing(
+                    serviceType, dto, allowCustomPricing, out var refusedCustomAmount))
+            {
+                LogCustomPricingRefused("POST api/booking/calculate", refusedCustomAmount,
+                    dto.ServiceTypeId, callerRole, GetUserId());
+            }
+
+            var quoteInput = await BuildQuoteInputAsync(serviceType, dto, allowCustomPricing);
             var quote = OrderPricingCalculator.CalculateQuote(quoteInput);
 
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
@@ -389,7 +457,6 @@ namespace DreamCleaningBackend.Controllers
                 SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = dto.LoyaltyDiscountAmount,
                 Tips = dto.Tips,
-                CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                 GiftCardAmountUsed = dto.GiftCardAmountToUse
             });
 
@@ -399,7 +466,6 @@ namespace DreamCleaningBackend.Controllers
                 Tax = totals.Tax,
                 DiscountAmount = dto.DiscountAmount + dto.SubscriptionDiscountAmount + dto.LoyaltyDiscountAmount,
                 Tips = dto.Tips,
-                CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                 Total = totals.Total,
                 TotalDuration = quote.DisplayDuration
             };
@@ -434,10 +500,23 @@ namespace DreamCleaningBackend.Controllers
                 if (serviceType == null)
                     return BadRequest(new { message = "Invalid service type" });
 
+                // Custom-pricing gate. user.Role comes from the row loaded above, so this costs no
+                // extra query and reflects the CURRENT role rather than whatever the token claims.
+                // Normalising the DTO here (not just filtering at pricing time) means the promo
+                // check below, the order persisted by CreateOrderAsync and the PaymentIntent raised
+                // from its Total all derive from one decision.
+                var allowCustomPricing = MayUseCustomPricing(user.Role);
+                if (OrderPricingInputBuilder.NormalizeCustomPricing(
+                        serviceType, dto, allowCustomPricing, out var refusedCustomAmount))
+                {
+                    LogCustomPricingRefused("POST api/booking/create", refusedCustomAmount,
+                        dto.ServiceTypeId, user.Role, userId);
+                }
+
                 // Resolve gift-card-vs-promo via the shared rule, then validate the promo
                 // minimum against the RECOMPUTED subtotal (never the client-sent dto.SubTotal).
                 var (promoCode, _, _) = _bookingCreationService.ResolveGiftCardAndPromo(dto);
-                var createQuoteInput = await BuildQuoteInputAsync(serviceType, dto);
+                var createQuoteInput = await BuildQuoteInputAsync(serviceType, dto, allowCustomPricing);
                 var createQuote = OrderPricingCalculator.CalculateQuote(createQuoteInput);
                 var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, createQuote.SubTotal);
                 if (promoMinError != null)
@@ -448,7 +527,7 @@ namespace DreamCleaningBackend.Controllers
                 // Create + persist the order through the shared creation service: pricing via
                 // the shared calculator, loyalty stacking for the booking user, special-offer
                 // consumption and gift-card application — all in one transaction.
-                var order = await _bookingCreationService.CreateOrderAsync(dto, userId);
+                var order = await _bookingCreationService.CreateOrderAsync(dto, userId, allowCustomPricing);
 
                 // Notify admins about new order
                 await NotifyAdminsNewOrder(order.Id);
@@ -557,10 +636,26 @@ namespace DreamCleaningBackend.Controllers
                 if (serviceType == null)
                     return BadRequest(new { message = "Invalid service type" });
 
+                // Custom-pricing gate. THIS is the endpoint the admin panel's Pre-arranged flow
+                // uses (booking.component -> createBookingForUser), so an Admin/SuperAdmin booking
+                // the custom service type passes both halves and is completely unaffected.
+                // adminUser was already loaded and role-checked above — no extra query.
+                //
+                // Moderator is excluded: it is View-only in PermissionService, and the booking UI
+                // only offers the custom service type to Admin/SuperAdmin, so this removes nothing
+                // a Moderator can do today while closing the API path.
+                var allowCustomPricing = MayUseCustomPricing(adminUser.Role);
+                if (OrderPricingInputBuilder.NormalizeCustomPricing(
+                        serviceType, dto.BookingData, allowCustomPricing, out var refusedCustomAmount))
+                {
+                    LogCustomPricingRefused("POST api/booking/create-for-user", refusedCustomAmount,
+                        dto.BookingData.ServiceTypeId, adminUser.Role, adminUserId);
+                }
+
                 // Resolve gift-card-vs-promo via the shared rule, then validate the promo
                 // minimum against the RECOMPUTED subtotal (never the client-sent SubTotal).
                 var (promoCode, _, _) = _bookingCreationService.ResolveGiftCardAndPromo(dto.BookingData);
-                var forUserQuoteInput = await BuildQuoteInputAsync(serviceType, dto.BookingData);
+                var forUserQuoteInput = await BuildQuoteInputAsync(serviceType, dto.BookingData, allowCustomPricing);
                 var forUserQuote = OrderPricingCalculator.CalculateQuote(forUserQuoteInput);
                 var promoMinError = await ValidatePromoMinimumOrderAmountAsync(promoCode, forUserQuote.SubTotal);
                 if (promoMinError != null)
@@ -569,7 +664,7 @@ namespace DreamCleaningBackend.Controllers
                 // Create + persist the order through the shared creation service. Loyalty
                 // stacking resolves against the TARGET customer (never the logged-in admin);
                 // manual payment methods stamp the tracking fields and start the order Active.
-                var order = await _bookingCreationService.CreateOrderAsync(dto.BookingData, dto.TargetUserId, new BookingCreationOptions
+                var order = await _bookingCreationService.CreateOrderAsync(dto.BookingData, dto.TargetUserId, allowCustomPricing, new BookingCreationOptions
                 {
                     InitialStatus = initialStatus,
                     PaymentMethod = paymentMethod,
@@ -620,11 +715,9 @@ namespace DreamCleaningBackend.Controllers
                     var manualExtraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
                         .Select(x => x.ExtraService?.Name ?? "")
                         .Where(n => !string.IsNullOrWhiteSpace(n))
-                        .Select(n => n.ToLowerInvariant())
                         .ToList();
-                    var manualHasCleaningSupplies = manualExtraNames.Any(n => n.Contains("cleaning supplies"));
-                    var manualIsDeepCleaning = manualExtraNames.Any(n => n.Contains("super deep cleaning")) ||
-                                               manualExtraNames.Any(n => n.Contains("deep cleaning") && !n.Contains("super"));
+                    var manualHasCleaningSupplies = CustomerSupplyChecklist.HasCleaningSuppliesExtra(manualExtraNames);
+                    var manualRequiresOvenCleaner = CustomerSupplyChecklist.RequiresOvenCleaner(manualExtraNames);
                     var manualIsCustomServiceType = order.ServiceType?.IsCustom ?? false;
 
                     // Fire-and-forget email (skip Apple hidden mail). Same isAppleHiddenMail
@@ -640,7 +733,7 @@ namespace DreamCleaningBackend.Controllers
                                 await _emailService.SendCustomerBookingConfirmationAsync(
                                     manualContactEmail, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
                                     order.GetDisplayServiceTypeName(), manualAddressDisplay, order.Id,
-                                    manualHasCleaningSupplies, manualIsDeepCleaning, manualIsCustomServiceType,
+                                    manualHasCleaningSupplies, manualRequiresOvenCleaner, manualIsCustomServiceType,
                                     order.FloorTypes, order.FloorTypeOther,
                                     // Manual payment path: customer pays cleaners on arrival, so drop
                                     // the "payment processed successfully" phrasing from the greeting.
@@ -662,7 +755,7 @@ namespace DreamCleaningBackend.Controllers
                             {
                                 await _smsService.SendBookingConfirmationSmsAsync(
                                     manualContactPhone, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
-                                    manualHasCleaningSupplies, manualIsDeepCleaning, manualIsCustomServiceType);
+                                    manualHasCleaningSupplies, manualRequiresOvenCleaner, manualIsCustomServiceType);
                                 _logger.LogInformation($"Manual-payment booking confirmation SMS sent to {manualContactPhone} for order {order.Id}");
                             }
                             catch (InvalidPhoneNumberException)
@@ -820,6 +913,10 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var userId = GetUserId();
+                // Captured BEFORE the guest auto-create below overwrites userId with a freshly
+                // minted Customer account — otherwise a genuinely anonymous caller would be logged
+                // as that new user rather than as "anonymous".
+                var authenticatedCallerId = userId;
                 AuthResponseDto? guestAuth = null;
 
                 if (userId == 0)
@@ -865,6 +962,37 @@ namespace DreamCleaningBackend.Controllers
                 if (serviceType == null)
                     return BadRequest(new { message = "Invalid service type" });
 
+                // Custom pricing is HARD-DISABLED on this endpoint — not merely role-gated.
+                //
+                // This action is [AllowAnonymous] and, by the time the price is computed, an
+                // anonymous caller has already been turned into a freshly created Customer above,
+                // so there is no admin identity here to trust. It is also the front half of a
+                // two-phase flow: the DTO is parked in BookingDataService and confirm-payment
+                // (also anonymous) later builds the real order from it. Deciding "allowed" here
+                // would have to be re-decided there, and any disagreement charges the customer one
+                // amount while recording another.
+                //
+                // An authenticated Admin/SuperAdmin gets told rather than silently mis-priced:
+                // they reached here by choosing Pre-arranged WITHOUT switching on admin mode, and
+                // silently re-pricing would floor their bespoke amount to MinimumPrice. Customers
+                // and anonymous callers get the silent-ignore path, so a probe learns nothing.
+                if (dto.IsCustomPricing)
+                {
+                    var callerRole = authenticatedCallerId == 0 ? (UserRole?)null : user.Role;
+                    if (MayUseCustomPricing(callerRole))
+                    {
+                        return BadRequest(new
+                        {
+                            message = "Pre-arranged bookings must be created from the admin panel."
+                        });
+                    }
+
+                    OrderPricingInputBuilder.NormalizeCustomPricing(
+                        serviceType, dto, allowCustomPricing: false, out var refusedCustomAmount);
+                    LogCustomPricingRefused("POST api/booking/prepare-payment", refusedCustomAmount,
+                        dto.ServiceTypeId, callerRole, authenticatedCallerId);
+                }
+
                 // Resolve gift-card-vs-promo via the shared rule (single definition in BookingCreationService).
                 var (promoCode, giftCardCode, giftCardAmountUsed) = _bookingCreationService.ResolveGiftCardAndPromo(dto);
 
@@ -883,7 +1011,10 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 // Price through the shared calculator (single source of truth — see OrderPricingCalculator).
-                var quoteInput = await BuildQuoteInputAsync(serviceType, dto);
+                // allowCustomPricing: false always — see the hard-disable note above; confirm-payment
+                // passes the same false when it builds the order from this DTO, so the amount charged
+                // here and the amount persisted there come from one decision.
+                var quoteInput = await BuildQuoteInputAsync(serviceType, dto, allowCustomPricing: false);
                 var quote = OrderPricingCalculator.CalculateQuote(quoteInput);
 
                 // Promo minimum is validated against the RECOMPUTED subtotal — never the
@@ -930,8 +1061,7 @@ namespace DreamCleaningBackend.Controllers
                     DiscountAmount = dto.DiscountAmount,
                     SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
                     LoyaltyDiscountAmount = loyaltyAmount,
-                    Tips = dto.Tips,
-                    CompanyDevelopmentTips = dto.CompanyDevelopmentTips
+                    Tips = dto.Tips
                 });
                 var totalBeforeGiftCard = preTotals.TotalBeforeGiftCard;
 
@@ -970,7 +1100,6 @@ namespace DreamCleaningBackend.Controllers
                     SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount,
                     LoyaltyDiscountAmount = loyaltyAmount,
                     Tips = dto.Tips,
-                    CompanyDevelopmentTips = dto.CompanyDevelopmentTips,
                     GiftCardAmountUsed = giftCardAmountUsed,
                     PointsRedeemedDiscount = pointsCredit,
                     RewardBalanceUsed = creditsApplied
@@ -1522,8 +1651,19 @@ namespace DreamCleaningBackend.Controllers
                     // Custom Pricing orders must keep the tax that was split out of the admin-entered
                     // tax-inclusive amount; re-deriving it from the subtotal would move the stored
                     // Total a cent off what the customer was quoted and charged.
+                    //
+                    // Reading bookingDataDto.IsCustomPricing is safe because the stored DTO was
+                    // NORMALISED by the custom-pricing gate before it was parked in the session —
+                    // for a refused request the flag is already false, so this cannot re-apply an
+                    // override to an order that was priced normally (which would have overwritten a
+                    // correctly-charged Total with the attacker's figure). order.ServiceType.IsCustom
+                    // is re-checked as half (a) of the gate: cheap, and it means an un-normalised DTO
+                    // reaching here from anywhere still cannot move the money.
                     decimal? customTaxOverride =
-                        bookingDataDto != null && bookingDataDto.IsCustomPricing && bookingDataDto.CustomAmount > 0
+                        bookingDataDto != null
+                        && bookingDataDto.IsCustomPricing
+                        && bookingDataDto.CustomAmount > 0
+                        && order.ServiceType?.IsCustom == true
                             ? OrderPricingCalculator.SplitTaxInclusiveAmount(bookingDataDto.CustomAmount.Value).tax
                             : null;
 
@@ -1558,12 +1698,10 @@ namespace DreamCleaningBackend.Controllers
                 var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
                     .Select(x => x.ExtraService?.Name ?? "")
                     .Where(n => !string.IsNullOrWhiteSpace(n))
-                    .Select(n => n.ToLowerInvariant())
                     .ToList();
 
-                var hasCleaningSupplies = extraNames.Any(n => n.Contains("cleaning supplies"));
-                var isDeepCleaning = extraNames.Any(n => n.Contains("super deep cleaning")) ||
-                                    extraNames.Any(n => n.Contains("deep cleaning") && !n.Contains("super"));
+                var hasCleaningSupplies = CustomerSupplyChecklist.HasCleaningSuppliesExtra(extraNames);
+                var requiresOvenCleaner = CustomerSupplyChecklist.RequiresOvenCleaner(extraNames);
                 var isCustomServiceType = order.ServiceType.IsCustom;
 
                 _ = Task.Run(async () =>
@@ -1585,7 +1723,7 @@ namespace DreamCleaningBackend.Controllers
                                 addressDisplay,
                                 order.Id,
                                 hasCleaningSupplies,
-                                isDeepCleaning,
+                                requiresOvenCleaner,
                                 isCustomServiceType,
                                 order.FloorTypes,
                                 order.FloorTypeOther
@@ -1616,7 +1754,7 @@ namespace DreamCleaningBackend.Controllers
                                 order.ServiceDate,
                                 serviceTimeStr,
                                 hasCleaningSupplies,
-                                isDeepCleaning,
+                                requiresOvenCleaner,
                                 isCustomServiceType
                             );
                             _logger.LogInformation($"Booking confirmation SMS sent to {contactPhone} for order {order.Id}");
@@ -1776,7 +1914,13 @@ namespace DreamCleaningBackend.Controllers
             // Create + persist the order through the shared creation service: pricing via
             // the shared calculator, loyalty stacking for the order owner, special-offer
             // consumption and gift-card application — all in one transaction.
-            var order = await _bookingCreationService.CreateOrderAsync(dto, userId);
+            //
+            // allowCustomPricing: false — the only caller is ConfirmPayment, and the DTO it hands
+            // over came from PreparePayment, where custom pricing is hard-disabled and the DTO was
+            // normalised before being stored. Passing false here keeps the persisted order derived
+            // from the SAME decision that produced the Stripe charge; re-deciding it (by role, at
+            // confirm time) could disagree with the amount already captured.
+            var order = await _bookingCreationService.CreateOrderAsync(dto, userId, allowCustomPricing: false);
 
             // Notify admins about new order
             await NotifyAdminsNewOrder(order.Id);

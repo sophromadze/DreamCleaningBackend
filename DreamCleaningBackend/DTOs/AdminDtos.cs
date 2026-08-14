@@ -465,6 +465,8 @@ namespace DreamCleaningBackend.DTOs
         public string Email { get; set; }
         /// <summary>True for admin-created cash customers with no email; Email is blanked in responses.</summary>
         public bool IsNoEmailUser { get; set; }
+        /// <summary>Avatar image (Google/Apple photo from social login, or an uploaded picture). Null = show initials.</summary>
+        public string? ProfilePictureUrl { get; set; }
         public string? Phone { get; set; }
         public string Role { get; set; }
         public string? AuthProvider { get; set; }
@@ -717,7 +719,8 @@ namespace DreamCleaningBackend.DTOs
         [StringLength(100)]
         public string? FloorTypeOther { get; set; }
         public decimal? Tips { get; set; }
-        public decimal? CompanyDevelopmentTips { get; set; }
+        // CompanyDevelopmentTips is deliberately absent: the field is retired and not editable
+        // by anyone. A legacy order's stored value is preserved as-is by the update path.
         public string? Status { get; set; }
         public string? CancellationReason { get; set; }
         public decimal? SubTotal { get; set; }

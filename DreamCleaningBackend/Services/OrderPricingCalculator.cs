@@ -723,6 +723,15 @@ namespace DreamCleaningBackend.Services
             public decimal SubscriptionDiscountAmount { get; set; }
             public decimal LoyaltyDiscountAmount { get; set; }
             public decimal Tips { get; set; }
+
+            /// <summary>
+            /// RETIRED — "Tips for Company Development" is no longer offered anywhere. No form,
+            /// no input DTO, and no caller may set it from user input; new orders are always 0.
+            ///
+            /// It survives here only so a LEGACY order that stored a non-zero amount still
+            /// recomputes to the total its customer actually paid. Pass the order's STORED value
+            /// when re-pricing an existing order, and nothing at all otherwise.
+            /// </summary>
             public decimal CompanyDevelopmentTips { get; set; }
             public decimal GiftCardAmountUsed { get; set; }
             public decimal PointsRedeemedDiscount { get; set; }

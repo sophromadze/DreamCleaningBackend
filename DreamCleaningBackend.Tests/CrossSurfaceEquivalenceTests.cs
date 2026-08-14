@@ -205,7 +205,9 @@ namespace DreamCleaningBackend.Tests
             };
 
             // THE REAL BACKEND PATH — the same builder every controller and service uses.
-            var input = await OrderPricingInputBuilder.FromBookingDtoAsync(_context, serviceType, dto);
+            // allowCustomPricing: false — these fixtures are all catalogue-priced bookings.
+            var input = await OrderPricingInputBuilder.FromBookingDtoAsync(
+                _context, serviceType, dto, allowCustomPricing: false);
             var quote = OrderPricingCalculator.CalculateQuote(input);
 
             var label = $"{fixture.ServiceTypeName} {fixture.Bedrooms}bd/{fixture.Bathrooms}ba/{fixture.Sqft}sqft " +

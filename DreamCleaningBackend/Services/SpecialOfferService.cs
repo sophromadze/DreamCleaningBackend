@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 
@@ -522,12 +523,24 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        public async Task<decimal> GetFirstTimeDiscountPercentage()
+        /// <summary>Customer-facing label for the live first-time discount ("10%" / "$25"),
+        /// or null when no first-time offer is currently active — callers must then say nothing
+        /// about a discount rather than fall back to a hardcoded number.</summary>
+        public async Task<string?> GetFirstTimeDiscountLabel()
         {
-            var firstTimeOffer = await _context.SpecialOffers
-                .FirstOrDefaultAsync(o => o.Type == OfferType.FirstTime && o.IsActive);
+            // Same filter and ordering as GET /api/special-offers/public, so the email quotes the
+            // exact offer row the customer sees advertised on the site.
+            var now = DateTime.UtcNow;
+            var activeOffers = await _context.SpecialOffers
+                .AsNoTracking()
+                .Where(o => o.IsActive
+                    && (o.ValidFrom == null || o.ValidFrom <= now)
+                    && (o.ValidTo == null || o.ValidTo > now))
+                .OrderBy(o => o.DisplayOrder)
+                .ThenBy(o => o.Name)
+                .ToListAsync();
 
-            return firstTimeOffer?.DiscountValue ?? 20m; // Default to 20% if not found
+            return FirstTimeOfferHelper.FormatDiscountLabel(FirstTimeOfferHelper.Find(activeOffers));
         }
     }
 }

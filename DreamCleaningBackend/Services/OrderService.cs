@@ -388,7 +388,9 @@ namespace DreamCleaningBackend.Services
             order.State = updateOrderDto.State;
             order.ZipCode = updateOrderDto.ZipCode;
             order.Tips = updateOrderDto.Tips;
-            order.CompanyDevelopmentTips = updateOrderDto.CompanyDevelopmentTips;
+            // CompanyDevelopmentTips is retired and intentionally NOT assigned: no client sends
+            // it, and a legacy order's stored amount is part of what the customer already paid,
+            // so it must survive every edit untouched.
             if (updateOrderDto.BedroomsQuantity.HasValue)
                 order.BedroomsQuantity = updateOrderDto.BedroomsQuantity.Value;
             if (updateOrderDto.BathroomsQuantity.HasValue)
@@ -761,7 +763,10 @@ namespace DreamCleaningBackend.Services
                 SubscriptionDiscountAmount = subscriptionDiscountAmount,
                 LoyaltyDiscountAmount = loyaltyDiscountAmount,
                 Tips = updateOrderDto.Tips,
-                CompanyDevelopmentTips = updateOrderDto.CompanyDevelopmentTips
+                // Retired field: the STORED amount, never a client-supplied one. Dropping it here
+                // would make an untouched legacy order look cheaper than what was charged and
+                // produce a bogus negative "additional amount".
+                CompanyDevelopmentTips = order.CompanyDevelopmentTips
                 // gift card + points/rewards applied below to mirror UpdateOrder
             });
             var pointsAndRewardCredits = order.PointsRedeemedDiscount + order.RewardBalanceUsed;
@@ -910,7 +915,8 @@ namespace DreamCleaningBackend.Services
             if (dto.FloorTypes != null) order.FloorTypes = dto.FloorTypes;
             if (dto.FloorTypeOther != null) order.FloorTypeOther = dto.FloorTypeOther;
             if (dto.Tips.HasValue) order.Tips = dto.Tips.Value;
-            if (dto.CompanyDevelopmentTips.HasValue) order.CompanyDevelopmentTips = dto.CompanyDevelopmentTips.Value;
+            // CompanyDevelopmentTips is retired: not on the DTO, never assigned here. A legacy
+            // order keeps its stored amount through every admin edit.
             if (dto.Status != null)
             {
                 // When reactivating a cancelled order, exempt it from auto-cancellation

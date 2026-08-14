@@ -1792,11 +1792,9 @@ namespace DreamCleaningBackend.Controllers
             var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
                 .Select(x => x.ExtraService?.Name ?? "")
                 .Where(n => !string.IsNullOrWhiteSpace(n))
-                .Select(n => n.ToLowerInvariant())
                 .ToList();
-            var hasCleaningSupplies = extraNames.Any(n => n.Contains("cleaning supplies"));
-            var isDeepCleaning = extraNames.Any(n => n.Contains("super deep cleaning")) ||
-                                 extraNames.Any(n => n.Contains("deep cleaning") && !n.Contains("super"));
+            var hasCleaningSupplies = CustomerSupplyChecklist.HasCleaningSuppliesExtra(extraNames);
+            var requiresOvenCleaner = CustomerSupplyChecklist.RequiresOvenCleaner(extraNames);
             var isCustom = order.ServiceType?.IsCustom == true;
             var customerName = string.IsNullOrWhiteSpace(order.ContactFirstName)
                 ? "there"
@@ -1814,7 +1812,7 @@ namespace DreamCleaningBackend.Controllers
                     await _emailService.SendCustomerBookingConfirmationAsync(
                         order.ContactEmail, customerName, order.ServiceDate, serviceTimeStr,
                         order.GetDisplayServiceTypeName(), addressDisplay, order.Id,
-                        hasCleaningSupplies, isDeepCleaning, isCustom, order.FloorTypes, order.FloorTypeOther,
+                        hasCleaningSupplies, requiresOvenCleaner, isCustom, order.FloorTypes, order.FloorTypeOther,
                         paymentAlreadyProcessed: order.IsPaid, isUpdate: isUpdate);
                     result.EmailSent = true;
                 }
@@ -1839,7 +1837,7 @@ namespace DreamCleaningBackend.Controllers
                     {
                         await _smsService.SendBookingConfirmationSmsAsync(
                             order.ContactPhone, customerName, order.ServiceDate, serviceTimeStr,
-                            hasCleaningSupplies, isDeepCleaning, isCustom, isUpdate: isUpdate);
+                            hasCleaningSupplies, requiresOvenCleaner, isCustom, isUpdate: isUpdate);
                         result.SmsSent = true;
                     }
                     catch (Exception ex)

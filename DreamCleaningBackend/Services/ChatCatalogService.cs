@@ -148,7 +148,11 @@ namespace DreamCleaningBackend.Services
                 ExtraServices = dto.ExtraServices
             };
 
-            var quoteInput = await OrderPricingInputBuilder.FromBookingDtoAsync(_context, serviceType, bookingShapedDto);
+            // allowCustomPricing: false — the chat agent quotes the public catalogue only. Custom
+            // service types are already excluded upstream, and a chat estimate has no admin
+            // identity behind it, so it can never price through the custom branch.
+            var quoteInput = await OrderPricingInputBuilder.FromBookingDtoAsync(
+                _context, serviceType, bookingShapedDto, allowCustomPricing: false);
             var quote = OrderPricingCalculator.CalculateQuote(quoteInput);
 
             // No discounts/tips/gift cards — tax on the plain subtotal via the shared SalesTaxRate.

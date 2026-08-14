@@ -163,7 +163,8 @@ namespace DreamCleaningBackend.DTOs
         public List<BookingServiceDto> Services { get; set; } = new List<BookingServiceDto>();
         public List<BookingExtraServiceDto> ExtraServices { get; set; } = new List<BookingExtraServiceDto>();
         public decimal Tips { get; set; }
-        public decimal CompanyDevelopmentTips { get; set; }
+        // CompanyDevelopmentTips is deliberately absent: the field is retired and no client may
+        // set it. UpdateOrder leaves whatever a legacy order already stores untouched.
         /// <summary>Recalculated discount when subtotal changes (e.g. order edit). If provided, used instead of existing order discount.</summary>
         public decimal? DiscountAmount { get; set; }
         /// <summary>Recalculated subscription discount when subtotal changes. If provided, used instead of existing.</summary>

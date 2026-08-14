@@ -82,8 +82,8 @@ namespace DreamCleaningBackend.DTOs
         [Range(0, double.MaxValue)]
         public decimal Tips { get; set; }
 
-        [Range(0, double.MaxValue)]
-        public decimal CompanyDevelopmentTips { get; set; }
+        // CompanyDevelopmentTips is deliberately absent: "Tips for Company Development" is
+        // retired and cannot be set by any client. New orders always store 0.
         public int MaidsCount { get; set; }
         public decimal TotalDuration { get; set; }
         public decimal DiscountAmount { get; set; }

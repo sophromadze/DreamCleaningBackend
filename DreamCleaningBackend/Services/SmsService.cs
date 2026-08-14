@@ -162,36 +162,11 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task SendBookingConfirmationSmsAsync(string phoneNumber, string customerName, DateTime serviceDate, string serviceTime,
-            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType, bool isUpdate = false)
+            bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType, bool isUpdate = false)
         {
             var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
 
-            // Custom service types don't use the regular cleaning-supplies workflow.
-            if (isCustomServiceType)
-            {
-                hasCleaningSupplies = true;
-            }
-
-            // Always required items (always included, even if cleaning supplies selected)
-            var items = new List<string>
-            {
-                "Paper towels",
-                "Garbage bags",
-                "Broom or vacuum cleaner",
-                "Toilet brush"
-            };
-
-            // If cleaning supplies were NOT selected, customer must also have these items ready.
-            if (!hasCleaningSupplies)
-            {
-                var zep = isDeepCleaning
-                    ? "Zep liquids: Green, Floor (or similar), Oven Cleaner (or similar)"
-                    : "Zep liquids: Green, Floor (or similar)";
-
-                items.Add(zep);
-                items.Add("Windex liquid (or similar)");
-                items.Add("Cleaning cloths, Sponge and Mop");
-            }
+            var items = CustomerSupplyChecklist.BuildItems(hasCleaningSupplies, requiresOvenCleaner, isCustomServiceType);
 
             // isUpdate: re-send after an admin changed the order. Same body, but the lead line
             // says "updated" so it doesn't read as a duplicate of the original confirmation.
@@ -270,10 +245,12 @@ namespace DreamCleaningBackend.Services
             await SendSmsAsync(phone, msg);
         }
 
-        public async Task SendFirstBookingReminderSmsAsync(string phone, string firstName, decimal? firstTimeDiscountPercentage)
+        /// <param name="firstTimeDiscountLabel">Live label from the DB ("10%" / "$25"); null drops
+        /// the discount clause. Must stay in sync with the email version — never a hardcoded default.</param>
+        public async Task SendFirstBookingReminderSmsAsync(string phone, string firstName, string? firstTimeDiscountLabel)
         {
-            var msg = firstTimeDiscountPercentage is > 0
-                ? $"Hi {firstName}! Your home's first Dream Cleaning sparkle is waiting — first-time customers get {firstTimeDiscountPercentage.Value:0.##}% off. Book today: dreamcleaningnyc.com Reply STOP to opt out."
+            var msg = !string.IsNullOrWhiteSpace(firstTimeDiscountLabel)
+                ? $"Hi {firstName}! Your home's first Dream Cleaning sparkle is waiting — first-time customers get {firstTimeDiscountLabel} off. Book today: dreamcleaningnyc.com Reply STOP to opt out."
                 : $"Hi {firstName}! Your home's first Dream Cleaning sparkle is waiting. Book today: dreamcleaningnyc.com Reply STOP to opt out.";
             await SendSmsAsync(phone, msg);
         }

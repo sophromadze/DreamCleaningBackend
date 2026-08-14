@@ -34,7 +34,7 @@ namespace DreamCleaningBackend.Services.Interfaces
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDaysBefore);
         Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
-            bool hasCleaningSupplies, bool isDeepCleaning, bool isCustomServiceType,
+            bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType,
             string? floorTypes = null, string? floorTypeOther = null,
             bool paymentAlreadyProcessed = true, bool isUpdate = false);
         Task SendRealEmailVerificationCodeAsync(string email, string firstName, string code);
@@ -74,6 +74,6 @@ namespace DreamCleaningBackend.Services.Interfaces
 
         // Manual reminder for registered users who never ordered — "book your first cleaning"
         // copy instead of "we miss you". Discount % comes from the DB (SpecialOffers), never hardcoded.
-        Task SendFirstBookingReminderAsync(string toEmail, string firstName, decimal? firstTimeDiscountPercentage);
+        Task SendFirstBookingReminderAsync(string toEmail, string firstName, string? firstTimeDiscountLabel);
     }
 }
