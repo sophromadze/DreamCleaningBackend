@@ -275,6 +275,32 @@ namespace DreamCleaningBackend.Services
         /// regardless of selection order. The fee is the matching extra's flat price,
         /// added to the subtotal at the END (after service costs).
         /// </summary>
+        /// <summary>
+        /// Custom Pricing only: records the selected extras as $0 / 0-minute lines.
+        ///
+        /// On a custom-priced ("Pre-Arranged") order the admin-entered amount and duration ARE the
+        /// quote, so an extra must never move either number. Extras still get persisted, because
+        /// they are how the admin panel and the cleaner assignment email/SMS learn what work was
+        /// agreed — they are informational, not billable. Quantity and Hours are kept (they
+        /// describe the job: "Windows × 5"); Cost and Duration are hard 0 and must NOT be
+        /// re-derived from the catalog price/duration anywhere downstream.
+        /// </summary>
+        private static void AddInformationalExtraLines(
+            QuoteResult result, IEnumerable<ExtraServiceLineInput> extraServices)
+        {
+            foreach (var extra in extraServices)
+            {
+                result.ExtraServiceLines.Add(new ExtraServiceLineResult
+                {
+                    ExtraServiceId = extra.ExtraServiceId,
+                    Quantity = extra.Quantity,
+                    Hours = extra.Hours,
+                    Cost = 0m,
+                    Duration = 0m
+                });
+            }
+        }
+
         public static (decimal multiplier, decimal deepCleaningFee) ResolvePriceMultiplier(
             IEnumerable<ExtraServiceLineInput> extraServices)
         {
@@ -309,6 +335,7 @@ namespace DreamCleaningBackend.Services
                 // Stored TotalDuration uses the TOTAL convention: per-cleaner × cleaners, min 1h.
                 result.TotalDuration = Math.Max(perCleaner * result.MaidsCount, PerMaidMinimumMinutes);
                 result.PriceMultiplier = 1m;
+                AddInformationalExtraLines(result, input.ExtraServices);
                 return result;
             }
 

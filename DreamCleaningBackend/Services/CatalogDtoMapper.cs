@@ -99,6 +99,89 @@ namespace DreamCleaningBackend.Services
             return dto;
         }
 
+        public static ExtraServiceDto ToExtraServiceDto(ExtraService extraService) => new()
+        {
+            Id = extraService.Id,
+            Name = extraService.Name,
+            Description = extraService.Description,
+            Price = extraService.Price,
+            Duration = extraService.Duration,
+            Icon = extraService.Icon,
+            HasQuantity = extraService.HasQuantity,
+            HasHours = extraService.HasHours,
+            IsDeepCleaning = extraService.IsDeepCleaning,
+            IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
+            IsSameDayService = extraService.IsSameDayService,
+            PriceMultiplier = extraService.PriceMultiplier,
+            IsAvailableForAll = extraService.IsAvailableForAll,
+            IsActive = extraService.IsActive,
+            DisplayOrder = extraService.DisplayOrder
+        };
+
+        /// <summary>
+        /// The extras a service type is CONFIGURED with: its own rows (ServiceTypeId == this type,
+        /// not universal) followed by every universal one — specifics first, then the whole list
+        /// re-sorted by DisplayOrder, which is the ordering the extras table has always had.
+        ///
+        /// This is the catalogue-management view. The admin Booking Services screen lists exactly
+        /// this and offers Edit/Delete on each row, so it must stay the type's real configuration.
+        /// For "what can be selected when booking/editing an order", use
+        /// <see cref="ResolveSelectableExtraServices"/> — the two differ for custom types.
+        /// </summary>
+        /// <param name="allExtraServices">
+        /// The caller's already-filtered catalogue: the public endpoint passes active rows only,
+        /// the admin endpoint deliberately includes inactive ones too.
+        /// </param>
+        public static List<ExtraService> ResolveConfiguredExtraServices(
+            ServiceType serviceType, IEnumerable<ExtraService> allExtraServices)
+        {
+            var catalogue = allExtraServices as IList<ExtraService> ?? allExtraServices.ToList();
+
+            var specific = catalogue
+                .Where(es => es.ServiceTypeId == serviceType.Id && !es.IsAvailableForAll)
+                .OrderBy(es => es.DisplayOrder);
+            var universal = catalogue
+                .Where(es => es.IsAvailableForAll && es.ServiceTypeId == null)
+                .OrderBy(es => es.DisplayOrder);
+
+            // Concat-then-sort, not sort-once: OrderBy is stable, so a specific extra still comes
+            // before a universal one on equal DisplayOrder, exactly as before this was shared.
+            return specific.Concat(universal).OrderBy(es => es.DisplayOrder).ToList();
+        }
+
+        /// <summary>
+        /// The extras that can be SELECTED for an order of this service type — what the booking
+        /// page's grid and the admin order editor's "add extra" list are built from.
+        ///
+        /// Identical to <see cref="ResolveConfiguredExtraServices"/> for every ordinary type. A
+        /// CUSTOM ("Pre-Arranged") type gets the ENTIRE catalogue instead: its extras carry no
+        /// price and no duration (see OrderPricingCalculator.AddInformationalExtraLines) — they
+        /// exist only so admins and cleaners can see what the job involves — so anything must be
+        /// recordable, not just the universal ones.
+        ///
+        /// The catalogue stores per-service-type COPIES of the same extra (the admin "copy to
+        /// service type" action clones a row with IsAvailableForAll = false), so the custom list is
+        /// DE-DUPLICATED by name; without it the grid would show "Oven Cleaning" once per service
+        /// type that owns a copy. The universal row wins the tie, then the lowest Id, so the id
+        /// persisted on the order is the stable one.
+        /// </summary>
+        public static List<ExtraService> ResolveSelectableExtraServices(
+            ServiceType serviceType, IEnumerable<ExtraService> allExtraServices)
+        {
+            if (!serviceType.IsCustom)
+                return ResolveConfiguredExtraServices(serviceType, allExtraServices);
+
+            return allExtraServices
+                .GroupBy(es => (es.Name ?? string.Empty).Trim().ToLowerInvariant())
+                .Select(group => group
+                    .OrderByDescending(es => es.IsAvailableForAll && es.ServiceTypeId == null)
+                    .ThenBy(es => es.Id)
+                    .First())
+                .OrderBy(es => es.DisplayOrder)
+                .ThenBy(es => es.Id)
+                .ToList();
+        }
+
         /// <summary>
         /// Copies the threshold and rate-tier configuration from one service onto another.
         /// Used by CopyService: a copied Sq.ft service without its tiers silently falls back to

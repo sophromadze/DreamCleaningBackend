@@ -234,6 +234,22 @@ namespace DreamCleaningBackend.Models
         [StringLength(64)]
         public string? PaymentAccessToken { get; set; }
 
+        /// <summary>
+        /// When the payer ticked the SMS / cancellation-fee / terms consent boxes on the payment
+        /// page (/order/{id}/pay), UTC. Only admin-created orders ever ask for it — a customer who
+        /// books themselves accepts the identical three consents on /booking before the order even
+        /// exists, so there is nothing to re-collect. Null = never accepted.
+        /// All three consents are required together, so one timestamp records the whole block.
+        /// See Helpers/PaymentConsentPolicy.cs for the "does this order need it?" rule.
+        /// </summary>
+        public DateTime? PaymentConsentAcceptedAt { get; set; }
+
+        /// <summary>Client IP that accepted the consents above (CF-Connecting-IP behind
+        /// Cloudflare). Kept as the record of who agreed — the payer may be the customer or
+        /// anyone else holding the payment link. 45 chars fits an IPv6 address.</summary>
+        [StringLength(45)]
+        public string? PaymentConsentIpAddress { get; set; }
+
         // Payment info
         [StringLength(100)]
         public string? PaymentIntentId { get; set; } // Stripe payment intent

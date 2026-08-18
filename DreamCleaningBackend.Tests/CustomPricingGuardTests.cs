@@ -48,6 +48,10 @@ namespace DreamCleaningBackend.Tests
         // The attack amount from the original report: a dollar for a full cleaning.
         private const decimal AttemptedCustomAmount = 1.00m;
 
+        // Priced extras used to prove they contribute nothing on a custom-priced order.
+        private const int WindowsExtraId = 10;
+        private const int OrganizingExtraId = 11;
+
         private const int CustomerUserId = 100;
         private const int AdminUserId = 200;
         private const int ModeratorUserId = 300;
@@ -95,6 +99,31 @@ namespace DreamCleaningBackend.Tests
             // exactly what a custom-pricing request looks like. That makes the Residential floor
             // (MinimumPrice) the sole thing standing between a refused request and a $1 order,
             // which is precisely what these tests need to prove.
+
+            // Two priced extras, used only by the informational-extras test below.
+            _context.ExtraServices.AddRange(
+                new ExtraService
+                {
+                    Id = WindowsExtraId,
+                    Name = "Windows",
+                    Price = 12m,
+                    Duration = 20m,
+                    PriceMultiplier = 1m,
+                    HasQuantity = true,
+                    IsActive = true,
+                    IsAvailableForAll = true
+                },
+                new ExtraService
+                {
+                    Id = OrganizingExtraId,
+                    Name = "Folding / Organizing",
+                    Price = 30m,
+                    Duration = 60m,
+                    PriceMultiplier = 1m,
+                    HasHours = true,
+                    IsActive = true,
+                    IsAvailableForAll = true
+                });
 
             _context.Users.AddRange(
                 new User
@@ -423,6 +452,64 @@ namespace DreamCleaningBackend.Tests
             Assert.Null(attempted);
 
             await Task.CompletedTask;
+        }
+
+        // ── Informational extras on a custom-priced order ────────────────────────────────────
+
+        /// <summary>
+        /// Extras ARE selectable on a Custom ("Pre-Arranged") service type, but purely as
+        /// information for the admin panel and the cleaner's job email. They must be recorded on
+        /// the order — otherwise the cleaner never learns the fridge is part of the job — while
+        /// contributing exactly $0 and 0 minutes, because the admin-entered amount and duration
+        /// ARE the quote. Both a quantity extra and an hours extra are exercised: the ordinary
+        /// branch prices those as price × quantity and price × hours, so either one leaking
+        /// through would move the total.
+        /// </summary>
+        [Fact]
+        public async Task CustomPricing_Extras_ArePersistedButCostNothingAndAddNoTime()
+        {
+            var serviceType = await LoadTypeAsync(CustomTypeId);
+            var dto = CustomPricingDto(CustomTypeId, 300m);
+            dto.ExtraServices = new List<BookingExtraServiceDto>
+            {
+                new() { ExtraServiceId = WindowsExtraId, Quantity = 5, Hours = 0 },
+                new() { ExtraServiceId = OrganizingExtraId, Quantity = 1, Hours = 2 }
+            };
+
+            var quote = OrderPricingCalculator.CalculateQuote(
+                await BuildAsync(serviceType, dto, allowCustomPricing: true));
+
+            // The typed amount is untouched — no extra leaked into the subtotal or the tax.
+            Assert.Equal(300m, quote.SubTotal + quote.TaxOverride!.Value);
+
+            // Duration is still cleaners × the entered per-cleaner minutes (2 × 240), not
+            // 480 + 5×20 + 2×60.
+            Assert.Equal(480m, quote.TotalDuration);
+            Assert.Equal(240m, quote.DisplayDuration);
+
+            // Both extras are on the quote, at zero, with the quantity/hours that describe the job.
+            Assert.Equal(2, quote.ExtraServiceLines.Count);
+            Assert.All(quote.ExtraServiceLines, line =>
+            {
+                Assert.Equal(0m, line.Cost);
+                Assert.Equal(0m, line.Duration);
+            });
+
+            var windows = quote.ExtraServiceLines.Single(l => l.ExtraServiceId == WindowsExtraId);
+            Assert.Equal(5, windows.Quantity);
+
+            var organizing = quote.ExtraServiceLines.Single(l => l.ExtraServiceId == OrganizingExtraId);
+            Assert.Equal(2m, organizing.Hours);
+
+            // And they reach the persisted order, which is the whole point of keeping them.
+            var order = new Order();
+            OrderPricingCalculator.AddOrderLinesFromQuote(order, quote);
+            Assert.Equal(2, order.OrderExtraServices.Count);
+            Assert.All(order.OrderExtraServices, oes =>
+            {
+                Assert.Equal(0m, oes.Cost);
+                Assert.Equal(0m, oes.Duration);
+            });
         }
 
         // ── Test doubles ─────────────────────────────────────────────────────────────────────

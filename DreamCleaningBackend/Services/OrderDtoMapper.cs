@@ -84,6 +84,10 @@ namespace DreamCleaningBackend.Services
                 BathroomsQuantity = order.BathroomsQuantity,
                 IsPaid = order.IsPaid,
                 PaidAt = order.PaidAt,
+                // Payment-page consent gate: admin-created orders re-collect the /booking
+                // consents from the customer before their first payment.
+                BookedByAdmin = order.IsBookedByAdmin(),
+                PaymentConsentAcceptedAt = order.PaymentConsentAcceptedAt,
                 CleanerHourlyRate = order.CleanerHourlyRate,
                 CleanerTotalSalary = order.CleanerTotalSalary,
                 HasCleanersService = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false,

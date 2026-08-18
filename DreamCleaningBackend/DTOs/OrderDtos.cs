@@ -62,6 +62,12 @@ namespace DreamCleaningBackend.DTOs
         public int? BathroomsQuantity { get; set; }
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
+        /// <summary>True when an admin created this order through create-for-user rather than
+        /// the customer booking it themselves. Drives the payment page's consent gate.</summary>
+        public bool BookedByAdmin { get; set; }
+        /// <summary>When the payer accepted the SMS / cancellation-fee / terms consents on the
+        /// payment page. Null = not yet — an admin-created order can't be paid until it is set.</summary>
+        public DateTime? PaymentConsentAcceptedAt { get; set; }
         // Phase 1 manual payment tracking — string form of the enum so frontends don't have
         // to know the numeric values. Reference / Notes are admin-visible audit fields.
         public string PaymentMethod { get; set; } = "Normal";

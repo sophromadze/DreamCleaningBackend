@@ -998,12 +998,13 @@ namespace DreamCleaningBackend.Services
             // picked them at booking time. Only emit a row when set (0 is still meaningful — a
             // studio shows "0 bedrooms" — so we check HasValue, not the count).
             if (order.BedroomsQuantity.HasValue)
-                rows.Append(BuildRow(labels["bedrooms"], order.BedroomsQuantity.Value.ToString()));
+                rows.Append(BuildRow(labels["bedrooms"], FormatBedroomsCount(order.BedroomsQuantity.Value, labels)));
             if (order.BathroomsQuantity.HasValue)
                 rows.Append(BuildRow(labels["bathrooms"], order.BathroomsQuantity.Value.ToString()));
             rows.Append(BuildRow(labels["serviceDuration"], formattedDuration));
             rows.Append(BuildRow(labels["dateAndTime"], dateTimeText));
             rows.Append(BuildRow(labels["supplies"], suppliesValue));
+            rows.Append(BuildListRow(labels["extraServices"], BuildCleanerExtraServiceItems(order, language)));
             rows.Append(BuildRow(labels["tips"], tipsValue));
             rows.Append("<p style='margin:18px 0 6px 0;'></p>");
             rows.Append(BuildRow(labels["customerName"], firstName));
@@ -1028,6 +1029,8 @@ namespace DreamCleaningBackend.Services
                 {rows}
             </div>
 
+            <p style='margin: 16px 0;'><strong>{labels["verifyConditionNote"]}</strong></p>
+
             <p style='margin: 16px 0;'>{labels["photosNote"]}</p>
 
             <p style='margin: 16px 0;'>{labels["thirtyMinNote"]}</p>
@@ -1045,6 +1048,67 @@ namespace DreamCleaningBackend.Services
         private static string BuildRow(string label, string value)
         {
             return $"<p style='margin:6px 0;'><strong>{label}:</strong> {value}</p>";
+        }
+
+        /// <summary>
+        /// Bedrooms = 0 means a STUDIO, not a home with no bedrooms — the same label every other
+        /// surface uses (booking page, admin orders panel, order details, user management).
+        /// The cleaner assignment email was the last place printing the raw 0.
+        /// </summary>
+        private static string FormatBedroomsCount(int bedrooms, IReadOnlyDictionary<string, string> labels)
+        {
+            return bedrooms == 0 ? labels["studio"] : bedrooms.ToString();
+        }
+
+        private static string BuildListRow(string label, IReadOnlyList<string> items)
+        {
+            if (items.Count == 0)
+                return BuildRow(label, "—");
+
+            var listItems = string.Join("", items.Select(i => $"<li style='margin:2px 0;'>{i}</li>"));
+            return $"<p style='margin:6px 0 2px 0;'><strong>{label}:</strong></p>" +
+                   $"<ul style='margin:0 0 6px 0; padding-left:20px;'>{listItems}</ul>";
+        }
+
+        // Every extra the cleaner is expected to actually perform, named and quantified but NEVER
+        // priced — cleaners are told what work is included, not what the customer paid for it.
+        // Two entries are deliberately left out: "Cleaning Supplies" (it already has its own
+        // Supplies row, so listing it again reads as a second task) and "Extra Cleaners" (staffing,
+        // not work to do on site).
+        private List<string> BuildCleanerExtraServiceItems(Models.Order order, string language)
+        {
+            var items = new List<string>();
+
+            foreach (var orderExtra in order.OrderExtraServices
+                         .OrderBy(oes => oes.ExtraService?.DisplayOrder ?? 0)
+                         .ThenBy(oes => oes.Id))
+            {
+                var name = orderExtra.ExtraService?.Name?.Trim();
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+                if (name.ToLowerInvariant().Contains("cleaning supplies"))
+                    continue;
+                if (string.Equals(name, OrderPricingCalculator.ExtraCleanersName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var extraService = orderExtra.ExtraService!;
+
+                if (extraService.HasHours && orderExtra.Hours > 0)
+                {
+                    var minutes = (int)Math.Round(orderExtra.Hours * 60, MidpointRounding.AwayFromZero);
+                    items.Add($"{name} ({FormatDurationLocalized(minutes, language)})");
+                }
+                else if (extraService.HasQuantity && orderExtra.Quantity > 1)
+                {
+                    items.Add($"{name} × {orderExtra.Quantity}");
+                }
+                else
+                {
+                    items.Add(name);
+                }
+            }
+
+            return items;
         }
 
         // Compact assignment SMS body for cleaners who have a phone number but no email on file.
@@ -1113,7 +1177,11 @@ namespace DreamCleaningBackend.Services
 
             // Compact bed/bath line — fits both in one row when set, e.g. "2 bd / 1 ba".
             var bb = new List<string>();
-            if (order.BedroomsQuantity.HasValue) bb.Add($"{order.BedroomsQuantity.Value} {labels["bedrooms"].ToLower()}");
+            // "Studio" stands alone — "0 bedrooms" would read as a home with no bedrooms.
+            if (order.BedroomsQuantity.HasValue)
+                bb.Add(order.BedroomsQuantity.Value == 0
+                    ? labels["studio"]
+                    : $"{order.BedroomsQuantity.Value} {labels["bedrooms"].ToLower()}");
             if (order.BathroomsQuantity.HasValue) bb.Add($"{order.BathroomsQuantity.Value} {labels["bathrooms"].ToLower()}");
             if (bb.Count > 0) lines.Add(string.Join(" / ", bb));
 
@@ -1127,12 +1195,23 @@ namespace DreamCleaningBackend.Services
             if (!string.IsNullOrWhiteSpace(order.EntryMethod))
                 lines.Add($"{labels["entryInstruction"]}: {order.EntryMethod}");
             lines.Add($"{labels["supplies"]}: {suppliesValue}");
+
+            // Same extras the email lists (prices stripped there too); comma-joined on one line
+            // because each SMS line costs segment budget.
+            var extraItems = BuildCleanerExtraServiceItems(order, language);
+            if (extraItems.Count > 0)
+                lines.Add($"{labels["extraServices"]}: {string.Join(", ", extraItems)}");
+
             if (perCleanerTips > 0)
                 lines.Add($"{labels["tips"]}: ${perCleanerTips:F2}");
             if (!string.IsNullOrWhiteSpace(order.SpecialInstructions))
                 lines.Add($"{labels["specialInstruction"]}: {order.SpecialInstructions.Trim()}");
             if (!string.IsNullOrWhiteSpace(cleanerAdditionalInstructions))
                 lines.Add($"{labels["specialInstructionForCleaner"]}: {cleanerAdditionalInstructions.Trim()}");
+
+            // Short form of the email's verification note — cleaners reachable only by SMS still
+            // have to confirm the place matches what we told them before they start.
+            lines.Add(labels["verifyConditionShort"]);
 
             return string.Join("\n", lines);
         }
@@ -1184,18 +1263,22 @@ namespace DreamCleaningBackend.Services
                     ["intro"] = "თქვენ გაქვთ ახალი დასუფთავების სამუშაო. დეტალები მოცემულია ქვემოთ:",
                     ["cleaningType"] = "დასუფთავების ტიპი",
                     ["bedrooms"] = "საძინებლები",
+                    ["studio"] = "სტუდიო",
                     ["bathrooms"] = "სველი წერტილები",
                     ["serviceDuration"] = "სერვისის დრო",
                     ["dateAndTime"] = "თარიღი და დრო",
                     ["supplies"] = "ხსნარები",
                     ["suppliesRequired"] = "საჭიროა",
                     ["suppliesNotRequired"] = "არ არის საჭირო",
+                    ["extraServices"] = "დამატებითი სერვისები",
                     ["tips"] = "თიფსი",
                     ["customerName"] = "მომხმარებლის სახელი",
                     ["address"] = "მისამართი",
                     ["entryInstruction"] = "შესვლის ინსტრუქცია",
                     ["specialInstruction"] = "სპეციალური ინსტრუქცია",
                     ["specialInstructionForCleaner"] = "სპეციალური ინსტრუქცია ქლინერებისთვის",
+                    ["verifyConditionNote"] = "ადგილზე მისვლისთანავე გთხოვთ გადაამოწმოთ, ემთხვევა თუ არა ბინის რეალური მდგომარეობა ზემოთ მითითებულ ინფორმაციას — ფართი, საძინებლების და სველი წერტილების რაოდენობა, დამატებითი სერვისები და ინსტრუქციები. თუ რამე განსხვავდება, სამუშაოს დაწყებამდე დაუყოვნებლივ შეგვატყობინეთ.",
+                    ["verifyConditionShort"] = "ადგილზე გადაამოწმეთ, ემთხვევა თუ არა ინფორმაცია რეალურ მდგომარეობას. თუ არა — სამუშაოს დაწყებამდე შეგვატყობინეთ.",
                     ["photosNote"] = "გთხოვთ შეძლებისდაგვარად გადაიღეთ ფოტოები დასუფთავებამდე და დასუფთავების შემდეგ, ერთი და იგივე რაკურსით.",
                     ["thirtyMinNote"] = "დასუფთავების დასრულებამდე 30 წუთით ადრე მომხმარებელს თხოვეთ შეაფასოს სიტუაცია რამის შეცვლა ხომ არ სურს. თუ ფიქრობთ რომ დროის დამატება დაგჭირდებათ, სასწრაფოდ შეგვატყობინეთ ჩვენ, დავუკავშირდებით მომხმარებელს და ავუხსნით სიტუაციას.",
                     ["helpNote"] = "ნებისმიერი სახის დახმარება თუ დაგჭირდებათ შეგვატყობინეთ და დაგვიკავშირდით.",
@@ -1210,18 +1293,22 @@ namespace DreamCleaningBackend.Services
                     ["intro"] = "Вам назначен новый заказ на уборку. Подробности указаны ниже:",
                     ["cleaningType"] = "Тип уборки",
                     ["bedrooms"] = "Спальни",
+                    ["studio"] = "Студия",
                     ["bathrooms"] = "Ванные",
                     ["serviceDuration"] = "Длительность услуги",
                     ["dateAndTime"] = "Дата и время",
                     ["supplies"] = "Чистящие средства",
                     ["suppliesRequired"] = "требуются",
                     ["suppliesNotRequired"] = "не требуются",
+                    ["extraServices"] = "Дополнительные услуги",
                     ["tips"] = "Чаевые",
                     ["customerName"] = "Имя клиента",
                     ["address"] = "Адрес",
                     ["entryInstruction"] = "Инструкция по входу",
                     ["specialInstruction"] = "Особые инструкции",
                     ["specialInstructionForCleaner"] = "Особые инструкции для клинеров",
+                    ["verifyConditionNote"] = "По прибытии, пожалуйста, перепроверьте, соответствует ли фактическое состояние жилья указанной выше информации — площадь, количество спален и ванных, дополнительные услуги и инструкции. Если что-то отличается, немедленно сообщите нам, прежде чем начинать работу.",
+                    ["verifyConditionShort"] = "На месте проверьте, совпадают ли данные с фактическим состоянием. Если нет — сообщите нам до начала работы.",
                     ["photosNote"] = "Пожалуйста, по возможности сделайте фотографии до и после уборки с одного и того же ракурса.",
                     ["thirtyMinNote"] = "За 30 минут до окончания уборки попросите клиента оценить ситуацию и уточните, не желает ли он что-либо изменить. Если вы считаете, что вам потребуется дополнительное время, незамедлительно сообщите нам — мы свяжемся с клиентом и объясним ситуацию.",
                     ["helpNote"] = "Если вам потребуется любая помощь, пожалуйста, сообщите нам и свяжитесь с нами.",
@@ -1236,18 +1323,22 @@ namespace DreamCleaningBackend.Services
                     ["intro"] = "Se le ha asignado un nuevo trabajo de limpieza. Los detalles se indican a continuación:",
                     ["cleaningType"] = "Tipo de limpieza",
                     ["bedrooms"] = "Dormitorios",
+                    ["studio"] = "Estudio",
                     ["bathrooms"] = "Baños",
                     ["serviceDuration"] = "Duración del servicio",
                     ["dateAndTime"] = "Fecha y hora",
                     ["supplies"] = "Productos de limpieza",
                     ["suppliesRequired"] = "se requieren",
                     ["suppliesNotRequired"] = "no se requieren",
+                    ["extraServices"] = "Servicios adicionales",
                     ["tips"] = "Propina",
                     ["customerName"] = "Nombre del cliente",
                     ["address"] = "Dirección",
                     ["entryInstruction"] = "Instrucciones de entrada",
                     ["specialInstruction"] = "Instrucciones especiales",
                     ["specialInstructionForCleaner"] = "Instrucciones especiales para los limpiadores",
+                    ["verifyConditionNote"] = "Al llegar, por favor verifique que el estado real de la vivienda coincida con los detalles indicados arriba — el tamaño, la cantidad de dormitorios y baños, los servicios adicionales y las instrucciones. Si algo es diferente, comuníquese con nosotros de inmediato, antes de empezar a trabajar.",
+                    ["verifyConditionShort"] = "Al llegar, verifique que los datos coincidan con el estado real. Si no, avísenos antes de empezar.",
                     ["photosNote"] = "Por favor, si es posible, tome fotografías antes y después de la limpieza, desde el mismo ángulo.",
                     ["thirtyMinNote"] = "30 minutos antes de finalizar la limpieza, pídale al cliente que evalúe la situación y confirme si desea cambiar algo. Si cree que necesitará tiempo adicional, infórmenos de inmediato; nos pondremos en contacto con el cliente y le explicaremos la situación.",
                     ["helpNote"] = "Si necesita cualquier tipo de ayuda, por favor háganoslo saber y póngase en contacto con nosotros.",
@@ -1262,18 +1353,22 @@ namespace DreamCleaningBackend.Services
                     ["intro"] = "You have been assigned to a new cleaning job. The details are listed below:",
                     ["cleaningType"] = "Cleaning type",
                     ["bedrooms"] = "Bedrooms",
+                    ["studio"] = "Studio",
                     ["bathrooms"] = "Bathrooms",
                     ["serviceDuration"] = "Service duration",
                     ["dateAndTime"] = "Date and time",
                     ["supplies"] = "Supplies",
                     ["suppliesRequired"] = "required",
                     ["suppliesNotRequired"] = "not required",
+                    ["extraServices"] = "Extra services",
                     ["tips"] = "Tips",
                     ["customerName"] = "Customer name",
                     ["address"] = "Address",
                     ["entryInstruction"] = "Entry instruction",
                     ["specialInstruction"] = "Special instruction",
                     ["specialInstructionForCleaner"] = "Special instruction for cleaners",
+                    ["verifyConditionNote"] = "When you arrive, please double-check that the actual condition of the home matches the details listed above — the size, the number of bedrooms and bathrooms, the extra services and the instructions. If anything is different from what is listed, contact us immediately, before you start working.",
+                    ["verifyConditionShort"] = "On arrival, check that these details match the actual condition. If they do not, contact us before starting.",
                     ["photosNote"] = "Please, if possible, take photos before and after the cleaning from the same angle.",
                     ["thirtyMinNote"] = "30 minutes before finishing the cleaning, please ask the customer to assess the situation and check whether they would like to change anything. If you think you will need additional time, notify us immediately — we will contact the customer and explain the situation.",
                     ["helpNote"] = "If you need any kind of help, please let us know and contact us.",

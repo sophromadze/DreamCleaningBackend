@@ -188,9 +188,11 @@ namespace DreamCleaningBackend.Controllers
             // Custom service type visibility is enforced on the frontend (Admin/SuperAdmin only).
             // API returns all types so the client can show/hide based on role.
 
-            // Get all extra services that are available for all
-            var universalExtraServices = await _context.ExtraServices
-                .Where(es => es.IsActive && es.IsAvailableForAll && es.ServiceTypeId == null)
+            // The whole active catalogue, resolved per service type below. Loaded once rather than
+            // queried per type: a custom type needs all of it anyway (see
+            // CatalogDtoMapper.ResolveSelectableExtraServices).
+            var allExtraServices = await _context.ExtraServices
+                .Where(es => es.IsActive)
                 .OrderBy(es => es.DisplayOrder)
                 .ToListAsync();
 
@@ -198,60 +200,13 @@ namespace DreamCleaningBackend.Controllers
 
             foreach (var st in serviceTypes)
             {
-                // Get extra services specific to this service type
-                var specificExtraServices = await _context.ExtraServices
-                    .Where(es => es.IsActive && es.ServiceTypeId == st.Id && !es.IsAvailableForAll)
-                    .OrderBy(es => es.DisplayOrder)
-                    .ToListAsync();
-
                 // Same mapper the admin endpoints use, so MinimumPrice, the zero-quantity fields,
                 // thresholds and rate tiers all reach the booking page — the frontend calculator
                 // needs them to mirror the backend.
                 var serviceTypeDto = CatalogDtoMapper.ToServiceTypeDto(st, st.Services);
-                serviceTypeDto.ExtraServices = new List<ExtraServiceDto>();
-
-                // Add specific extra services first
-                serviceTypeDto.ExtraServices.AddRange(specificExtraServices.Select(es => new ExtraServiceDto
-                {
-                    Id = es.Id,
-                    Name = es.Name,
-                    Description = es.Description,
-                    Price = es.Price,
-                    Duration = es.Duration,
-                    Icon = es.Icon,
-                    HasQuantity = es.HasQuantity,
-                    HasHours = es.HasHours,
-                    IsDeepCleaning = es.IsDeepCleaning,
-                    IsSuperDeepCleaning = es.IsSuperDeepCleaning,
-                    IsSameDayService = es.IsSameDayService,
-                    PriceMultiplier = es.PriceMultiplier,
-                    IsAvailableForAll = es.IsAvailableForAll,
-                    IsActive = es.IsActive,
-                    DisplayOrder = es.DisplayOrder
-                }));
-
-                // Add universal extra services
-                serviceTypeDto.ExtraServices.AddRange(universalExtraServices.Select(es => new ExtraServiceDto
-                {
-                    Id = es.Id,
-                    Name = es.Name,
-                    Description = es.Description,
-                    Price = es.Price,
-                    Duration = es.Duration,
-                    Icon = es.Icon,
-                    HasQuantity = es.HasQuantity,
-                    HasHours = es.HasHours,
-                    IsDeepCleaning = es.IsDeepCleaning,
-                    IsSuperDeepCleaning = es.IsSuperDeepCleaning,
-                    IsSameDayService = es.IsSameDayService,
-                    PriceMultiplier = es.PriceMultiplier,
-                    IsAvailableForAll = es.IsAvailableForAll,
-                    IsActive = es.IsActive,
-                    DisplayOrder = es.DisplayOrder
-                }));
-
-                serviceTypeDto.ExtraServices = serviceTypeDto.ExtraServices
-                    .OrderBy(es => es.DisplayOrder)
+                serviceTypeDto.ExtraServices = CatalogDtoMapper
+                    .ResolveSelectableExtraServices(st, allExtraServices)
+                    .Select(CatalogDtoMapper.ToExtraServiceDto)
                     .ToList();
 
                 result.Add(serviceTypeDto);
@@ -1187,6 +1142,77 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+
+        /// <summary>
+        /// Records the customer's SMS / cancellation-fee / terms consents for an admin-created
+        /// order, before its first payment. Same three agreements the /booking form requires —
+        /// an admin booking on the phone ticks them on the customer's behalf, so the customer
+        /// re-confirms them here when they open the payment link.
+        ///
+        /// Enforcement lives in CreatePaymentIntentForOrder: no consent, no PaymentIntent, no
+        /// client secret, so the card physically cannot be charged. Idempotent — the first
+        /// acceptance wins and re-posting returns it unchanged.
+        /// </summary>
+        [HttpPost("accept-payment-consent/{orderId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<PaymentConsentResultDto>> AcceptPaymentConsent(
+            int orderId, [FromBody] AcceptPaymentConsentDto dto, [FromQuery] string? guestToken = null)
+        {
+            // Same access rule as create-payment-intent: the owner, or anyone holding the
+            // secret payment-link token.
+            var userId = GetUserId();
+            var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+            if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, guestToken))
+                return NotFound(new { message = "Order not found" });
+
+            if (order.IsPaid)
+                return BadRequest(new { message = "Order is already paid" });
+            if (order.PaymentMethod != PaymentMethod.Normal)
+                return BadRequest(new { message = "This order was paid outside the website and has no payment due." });
+
+            // Already accepted (page reloaded, link opened twice) — keep the original record.
+            if (order.PaymentConsentAcceptedAt != null)
+            {
+                return Ok(new PaymentConsentResultDto
+                {
+                    OrderId = order.Id,
+                    AcceptedAt = order.PaymentConsentAcceptedAt.Value
+                });
+            }
+
+            if (dto == null || !dto.SmsConsent || !dto.CancellationConsent || !dto.TermsConsent)
+                return BadRequest(new { message = PaymentConsentPolicy.ConsentRequiredMessage });
+
+            order.PaymentConsentAcceptedAt = DateTime.UtcNow;
+            order.PaymentConsentIpAddress = GetClientIpAddress();
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation(
+                "Payment consents accepted for order {OrderId} from {Ip}", order.Id, order.PaymentConsentIpAddress);
+
+            return Ok(new PaymentConsentResultDto
+            {
+                OrderId = order.Id,
+                AcceptedAt = order.PaymentConsentAcceptedAt.Value
+            });
+        }
+
+        /// <summary>Client IP for the consent record. Production sits behind Cloudflare + Apache,
+        /// so the socket address is the proxy — prefer CF-Connecting-IP, then the first
+        /// X-Forwarded-For hop. Truncated to the column width.</summary>
+        private string? GetClientIpAddress()
+        {
+            var ip = Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+                ?? Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
+                ?? HttpContext.Connection.RemoteIpAddress?.ToString();
+            if (string.IsNullOrWhiteSpace(ip))
+                return null;
+            return ip.Length > 45 ? ip.Substring(0, 45) : ip;
+        }
+
         [HttpPost("create-payment-intent/{orderId}")]
         [AllowAnonymous]
         public async Task<ActionResult<BookingResponseDto>> CreatePaymentIntentForOrder(int orderId, [FromQuery] string? guestToken = null)
@@ -1217,6 +1243,16 @@ namespace DreamCleaningBackend.Controllers
                 // IsPaid=false by design — there is nothing to charge on the website.
                 if (order.PaymentMethod != PaymentMethod.Normal)
                     return BadRequest(new { message = "This order was paid outside the website and has no payment due." });
+
+                // Consent gate for admin-created orders. The customer never saw the /booking
+                // form's SMS / cancellation-fee / terms checkboxes — the admin ticked them on
+                // the phone — so they accept them on the payment page first. Enforced HERE on
+                // purpose: no PaymentIntent means no client secret, so the card cannot be
+                // charged. Placed before the fully-covered branch so a $0 gift-card order is
+                // gated too. Additional payments on an already-paid order never reach this
+                // method (the IsPaid check above returns first).
+                if (PaymentConsentPolicy.RequiresConsent(order))
+                    return BadRequest(new { message = PaymentConsentPolicy.ConsentRequiredMessage, requiresConsent = true });
 
                 // Fully covered (e.g. gift card) — payable total below Stripe's minimum. Skip the
                 // PaymentIntent; the frontend confirms directly and confirm-payment marks it paid.
@@ -1439,6 +1475,12 @@ namespace DreamCleaningBackend.Controllers
                         // Only allow it when the persisted Total is genuinely below Stripe's minimum.
                         if (order.Total >= StripeMinimumChargeAmount)
                             return BadRequest(new { message = "Payment is required to complete this booking." });
+
+                        // Same consent gate as create-payment-intent. Safe to reject here because
+                        // this branch charges NOTHING (the order is already fully covered) — the
+                        // card path below must never be rejected post-charge, so it isn't.
+                        if (PaymentConsentPolicy.RequiresConsent(order))
+                            return BadRequest(new { message = PaymentConsentPolicy.ConsentRequiredMessage, requiresConsent = true });
 
                         effectivePaymentIntentId = $"giftcard_full_{Guid.NewGuid():N}";
                     }

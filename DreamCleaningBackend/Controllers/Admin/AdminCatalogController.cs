@@ -53,9 +53,9 @@ namespace DreamCleaningBackend.Controllers
                 .OrderBy(st => st.DisplayOrder)
                 .ToListAsync();
 
-            // Get all extra services that are available for all
-            var universalExtraServices = await _context.ExtraServices
-                .Where(es => es.IsAvailableForAll && es.ServiceTypeId == null)
+            // The whole catalogue, resolved per service type below. Admin view deliberately keeps
+            // inactive extras, unlike the public endpoint.
+            var allExtraServices = await _context.ExtraServices
                 .OrderBy(es => es.DisplayOrder)
                 .ToListAsync();
 
@@ -63,59 +63,10 @@ namespace DreamCleaningBackend.Controllers
 
             foreach (var st in serviceTypes)
             {
-                // Get extra services specific to this service type
-                var specificExtraServices = await _context.ExtraServices
-                    .Where(es => es.ServiceTypeId == st.Id && !es.IsAvailableForAll)
-                    .OrderBy(es => es.DisplayOrder)
-                    .ToListAsync();
-
-                // Admin view deliberately shows inactive services too, unlike the public endpoint.
                 var serviceTypeDto = CatalogDtoMapper.ToServiceTypeDto(st, st.Services);
-                serviceTypeDto.ExtraServices = new List<ExtraServiceDto>();
-
-                // Add specific extra services first
-                serviceTypeDto.ExtraServices.AddRange(specificExtraServices.Select(es => new ExtraServiceDto
-                {
-                    Id = es.Id,
-                    Name = es.Name,
-                    Description = es.Description,
-                    Price = es.Price,
-                    Duration = es.Duration,
-                    Icon = es.Icon,
-                    HasQuantity = es.HasQuantity,
-                    HasHours = es.HasHours,
-                    IsDeepCleaning = es.IsDeepCleaning,
-                    IsSuperDeepCleaning = es.IsSuperDeepCleaning,
-                    IsSameDayService = es.IsSameDayService,
-                    PriceMultiplier = es.PriceMultiplier,
-                    IsAvailableForAll = es.IsAvailableForAll,
-                    IsActive = es.IsActive,
-                    DisplayOrder = es.DisplayOrder
-                }));
-
-                // Add universal extra services
-                serviceTypeDto.ExtraServices.AddRange(universalExtraServices.Select(es => new ExtraServiceDto
-                {
-                    Id = es.Id,
-                    Name = es.Name,
-                    Description = es.Description,
-                    Price = es.Price,
-                    Duration = es.Duration,
-                    Icon = es.Icon,
-                    HasQuantity = es.HasQuantity,
-                    HasHours = es.HasHours,
-                    IsDeepCleaning = es.IsDeepCleaning,
-                    IsSuperDeepCleaning = es.IsSuperDeepCleaning,
-                    IsSameDayService = es.IsSameDayService,
-                    PriceMultiplier = es.PriceMultiplier,
-                    IsAvailableForAll = es.IsAvailableForAll,
-                    IsActive = es.IsActive,
-                    DisplayOrder = es.DisplayOrder
-                }));
-
-                // Sort the combined extra services by display order
-                serviceTypeDto.ExtraServices = serviceTypeDto.ExtraServices
-                    .OrderBy(es => es.DisplayOrder)
+                serviceTypeDto.ExtraServices = CatalogDtoMapper
+                    .ResolveConfiguredExtraServices(st, allExtraServices)
+                    .Select(CatalogDtoMapper.ToExtraServiceDto)
                     .ToList();
 
                 result.Add(serviceTypeDto);
