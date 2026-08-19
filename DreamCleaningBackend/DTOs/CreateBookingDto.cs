@@ -100,6 +100,22 @@ namespace DreamCleaningBackend.DTOs
         public decimal? CustomDuration { get; set; }
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
+
+        /// <summary>"Apartment" or "House"; null for legacy orders and for service types that
+        /// have no levels service. Normalized server-side by PropertyDetailsHelper - an unknown
+        /// string is stored as null rather than trusted, so the column can only ever hold one of
+        /// the two known values. The level count itself travels as an ordinary service line in
+        /// Services, priced through the shared calculator like bedrooms or bathrooms.</summary>
+        [StringLength(20)]
+        public string? PropertyType { get; set; }
+
+        /// <summary>
+        /// Levels for a house on a service type with NO priced levels service - informational
+        /// only, exactly like BedroomsQuantity / BathroomsQuantity above. Ignored whenever a
+        /// priced levels line is present, so it can never override what was charged. Clamped
+        /// server-side by PropertyDetailsHelper.
+        /// </summary>
+        public int? LevelsQuantity { get; set; }
         public List<PhotoUploadDto> UploadedPhotos { get; set; } = new List<PhotoUploadDto>();
         public int PointsToRedeem { get; set; } = 0;
         public bool UseCredits { get; set; } = false;

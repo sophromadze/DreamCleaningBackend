@@ -61,6 +61,20 @@ namespace DreamCleaningBackend.Models
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
 
+        // Apartment/condo vs house/townhouse. Nullable because every order created before this
+        // feature has no value and must keep rendering without an empty field; legacy orders are
+        // deliberately NOT backfilled. Written only through PropertyDetailsHelper.Apply.
+        [StringLength(20)]
+        public string? PropertyType { get; set; }
+
+        // Levels being cleaned, for a house. DISPLAY ONLY - the levels charge is always computed
+        // from the OrderServices row for the levels service, never from this column. It exists so
+        // the cleaner email, the admin list and the Excel export can read a flat column instead of
+        // joining OrderServices, exactly like BedroomsQuantity above. Null for apartments, for
+        // legacy orders, and for custom (Pre-Arranged) pricing where levels are never priced.
+        // Written only through PropertyDetailsHelper.Apply.
+        public int? LevelsQuantity { get; set; }
+
         // Pricing
         [Column(TypeName = "decimal(18,2)")]
         public decimal SubTotal { get; set; }

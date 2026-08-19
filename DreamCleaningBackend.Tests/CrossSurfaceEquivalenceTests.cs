@@ -1,6 +1,7 @@
 using System.Text.Json;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 using Microsoft.EntityFrameworkCore;
@@ -38,6 +39,7 @@ namespace DreamCleaningBackend.Tests
         private static int BedroomsId(int serviceTypeId) => serviceTypeId * 100 + 1;
         private static int BathroomsId(int serviceTypeId) => serviceTypeId * 100 + 2;
         private static int SqftId(int serviceTypeId) => serviceTypeId * 100 + 3;
+        private static int LevelsId(int serviceTypeId) => serviceTypeId * 100 + 4;
 
         private static readonly (int Quantity, decimal Included)[] SqftThresholds =
         {
@@ -120,7 +122,27 @@ namespace DreamCleaningBackend.Tests
                     Id = SqftId(serviceTypeId), Name = "Sq.ft", ServiceKey = "sqft",
                     Cost = 0.18m, TimeDuration = 0.24m, ServiceTypeId = serviceTypeId,
                     InputType = "slider", IsActive = true, ChargeAboveThreshold = true
+                },
+                // Levels, seeded on BOTH residential-shaped types exactly as the migration does.
+                // Zero-quantity columns stay null so the generic zero-quantity branch can never
+                // hijack the line.
+                new Service
+                {
+                    Id = LevelsId(serviceTypeId), Name = "Levels", ServiceKey = "levels",
+                    Cost = 35m, TimeDuration = 25m, ServiceTypeId = serviceTypeId,
+                    InputType = "dropdown", IsActive = true, ChargeAboveThreshold = true,
+                    MinValue = 1, MaxValue = 4, StepValue = 1, DisplayOrder = 4
                 });
+
+            // The SELF-REFERENCING allowance: the levels service is its own threshold source, so
+            // the first level is included and billable = max(0, levels - 1).
+            _context.ServiceThresholds.Add(new ServiceThreshold
+            {
+                ServiceId = LevelsId(serviceTypeId),
+                SourceServiceId = LevelsId(serviceTypeId),
+                SourceQuantity = 1,
+                IncludedQuantity = 1
+            });
 
             foreach (var (quantity, amount) in SqftThresholds)
             {
@@ -154,8 +176,14 @@ namespace DreamCleaningBackend.Tests
             }
         }
 
+        /// <param name="Levels">
+        /// Level count for a house; null for an apartment, which submits no levels line at all.
+        /// A non-null value also makes the row a House, which is what lets the backend's
+        /// property-type clamps run on the same input the frontend priced.
+        /// </param>
         public record Fixture(
             string ServiceTypeName, int Bedrooms, int Bathrooms, int Sqft, bool DeepCleaning,
+            int? Levels,
             decimal ExpectedSubTotal, decimal ExpectedDisplayDuration, bool ExpectedMinimumPriceApplied);
 
         private record FixtureFile(List<Fixture> Fixtures);
@@ -193,6 +221,9 @@ namespace DreamCleaningBackend.Tests
             var dto = new CreateBookingDto
             {
                 ServiceTypeId = serviceTypeId,
+                // A levels row is a House, so the backend's property-type clamps run. Sending
+                // House WITHOUT a levels line (the apartment rows) also has to be safe.
+                PropertyType = fixture.Levels.HasValue ? PropertyDetailsHelper.House : null,
                 Services = new List<BookingServiceDto>
                 {
                     new() { ServiceId = BedroomsId(serviceTypeId),  Quantity = fixture.Bedrooms },
@@ -204,6 +235,10 @@ namespace DreamCleaningBackend.Tests
                     : new List<BookingExtraServiceDto>()
             };
 
+            if (fixture.Levels.HasValue)
+                dto.Services.Add(new BookingServiceDto
+                    { ServiceId = LevelsId(serviceTypeId), Quantity = fixture.Levels.Value });
+
             // THE REAL BACKEND PATH — the same builder every controller and service uses.
             // allowCustomPricing: false — these fixtures are all catalogue-priced bookings.
             var input = await OrderPricingInputBuilder.FromBookingDtoAsync(
@@ -211,7 +246,8 @@ namespace DreamCleaningBackend.Tests
             var quote = OrderPricingCalculator.CalculateQuote(input);
 
             var label = $"{fixture.ServiceTypeName} {fixture.Bedrooms}bd/{fixture.Bathrooms}ba/{fixture.Sqft}sqft " +
-                        $"{(fixture.DeepCleaning ? "Deep" : "Regular")}";
+                        $"{(fixture.DeepCleaning ? "Deep" : "Regular")}" +
+                        $"{(fixture.Levels.HasValue ? $"/{fixture.Levels}lv" : "/apt")}";
 
             Assert.True(fixture.ExpectedSubTotal == quote.SubTotal,
                 $"{label}: subtotal — frontend {fixture.ExpectedSubTotal:0.00}, backend {quote.SubTotal:0.00}");
@@ -230,7 +266,7 @@ namespace DreamCleaningBackend.Tests
         {
             var fixtures = LoadFixtures();
 
-            Assert.Equal(68, fixtures.Count);
+            Assert.Equal(100, fixtures.Count);
             Assert.Contains(fixtures, f => f.ServiceTypeName.StartsWith("Residential"));
             Assert.Contains(fixtures, f => f.ServiceTypeName.StartsWith("Move"));
             Assert.Contains(fixtures, f => f.DeepCleaning);
@@ -238,6 +274,47 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains(fixtures, f => f.Bathrooms == 2);
             // Both Studio floors must be represented, or the floor is untested.
             Assert.Contains(fixtures, f => f.ExpectedMinimumPriceApplied);
+
+            // Levels: apartments and all four house counts, on both service types.
+            Assert.Contains(fixtures, f => f.Levels == null);
+            foreach (var levels in new[] { 1, 2, 3, 4 })
+                Assert.Contains(fixtures, f => f.Levels == levels);
+            Assert.Contains(fixtures, f => f.Levels.HasValue && f.ServiceTypeName.StartsWith("Residential"));
+            Assert.Contains(fixtures, f => f.Levels.HasValue && f.ServiceTypeName.StartsWith("Move"));
+            Assert.Contains(fixtures, f => f.Levels.HasValue && f.DeepCleaning);
+        }
+
+        /// <summary>
+        /// A one-level house must be priced identically to the same home as an apartment, on both
+        /// service types and at both cleaning levels. This is the fixture-level statement of the
+        /// rule the whole feature rests on: the price driver is stairs, not the property type, so
+        /// a house with nothing to climb costs exactly what a flat costs.
+        /// </summary>
+        [Fact]
+        public void FixtureFile_OneLevelHouse_MatchesTheEquivalentApartment()
+        {
+            var fixtures = LoadFixtures();
+            var oneLevel = fixtures.Where(f => f.Levels == 1).ToList();
+
+            Assert.NotEmpty(oneLevel);
+
+            foreach (var house in oneLevel)
+            {
+                var apartment = fixtures.SingleOrDefault(f =>
+                    f.Levels == null &&
+                    f.ServiceTypeName == house.ServiceTypeName &&
+                    f.Bedrooms == house.Bedrooms &&
+                    f.Bathrooms == house.Bathrooms &&
+                    f.Sqft == house.Sqft &&
+                    f.DeepCleaning == house.DeepCleaning);
+
+                Assert.True(apartment != null,
+                    $"No apartment counterpart for {house.ServiceTypeName} {house.Bedrooms}bd/" +
+                    $"{house.Bathrooms}ba/{house.Sqft}sqft deep={house.DeepCleaning}");
+
+                Assert.Equal(apartment!.ExpectedSubTotal, house.ExpectedSubTotal);
+                Assert.Equal(apartment.ExpectedDisplayDuration, house.ExpectedDisplayDuration);
+            }
         }
     }
 }

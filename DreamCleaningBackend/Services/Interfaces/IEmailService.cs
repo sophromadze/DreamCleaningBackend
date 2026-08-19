@@ -36,7 +36,11 @@ namespace DreamCleaningBackend.Services.Interfaces
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
             bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType,
             string? floorTypes = null, string? floorTypeOther = null,
-            bool paymentAlreadyProcessed = true, bool isUpdate = false);
+            bool paymentAlreadyProcessed = true, bool isUpdate = false,
+            // Property type / levels. Optional and null-defaulted so a caller without the order
+            // in scope keeps working and simply omits the lines, which is also what a legacy
+            // order does. Must stay in step with the implementation's signature.
+            string? propertyType = null, int? levelsQuantity = null);
         Task SendRealEmailVerificationCodeAsync(string email, string firstName, string code);
         Task SendAccountMergeConfirmationAsync(string email, string firstName, string code);
         Task SendEmailAsync(string to, string subject, string html);

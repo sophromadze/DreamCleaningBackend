@@ -110,6 +110,7 @@ namespace DreamCleaningBackend.Controllers
                         Description = dto.Description,
                         DisplayOrder = dto.DisplayOrder,
                         HasPoll = dto.HasPoll,
+                        CollectsPropertyType = dto.CollectsPropertyType,
                         IsCustom = dto.IsCustom,
                         IsActive = true,
                         TimeDuration = dto.TimeDuration,
@@ -150,6 +151,7 @@ namespace DreamCleaningBackend.Controllers
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
                 HasPoll = serviceType.HasPoll,
+                CollectsPropertyType = serviceType.CollectsPropertyType,
                 IsCustom = serviceType.IsCustom,
                 IsActive = serviceType.IsActive,
                 TimeDuration = serviceType.TimeDuration,
@@ -197,6 +199,7 @@ namespace DreamCleaningBackend.Controllers
                     serviceType.Description = dto.Description;
                     serviceType.DisplayOrder = dto.DisplayOrder;
                     serviceType.HasPoll = dto.HasPoll;
+                    serviceType.CollectsPropertyType = dto.CollectsPropertyType;
                     serviceType.IsCustom = dto.IsCustom;
                     serviceType.TimeDuration = dto.TimeDuration;
                     serviceType.MinimumPrice = dto.MinimumPrice;
@@ -235,6 +238,7 @@ namespace DreamCleaningBackend.Controllers
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
                 HasPoll = serviceType.HasPoll,
+                CollectsPropertyType = serviceType.CollectsPropertyType,
                 IsCustom = serviceType.IsCustom,
                 IsActive = serviceType.IsActive,
                 TimeDuration = serviceType.TimeDuration
@@ -268,6 +272,7 @@ namespace DreamCleaningBackend.Controllers
                 Description = serviceType.Description,
                 DisplayOrder = serviceType.DisplayOrder,
                 HasPoll = serviceType.HasPoll,
+                CollectsPropertyType = serviceType.CollectsPropertyType,
                 IsCustom = serviceType.IsCustom,
                 IsActive = serviceType.IsActive,
                 TimeDuration = serviceType.TimeDuration

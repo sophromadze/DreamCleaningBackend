@@ -82,6 +82,10 @@ namespace DreamCleaningBackend.Services
                 MaidsCount = order.MaidsCount,
                 BedroomsQuantity = order.BedroomsQuantity,
                 BathroomsQuantity = order.BathroomsQuantity,
+                // Both null for legacy orders and for apartments, which every consumer reads as
+                // "render no property-type or levels field" rather than as an empty value.
+                PropertyType = order.PropertyType,
+                LevelsQuantity = order.LevelsQuantity,
                 IsPaid = order.IsPaid,
                 PaidAt = order.PaidAt,
                 // Payment-page consent gate: admin-created orders re-collect the /booking
@@ -98,6 +102,7 @@ namespace DreamCleaningBackend.Services
                     Id = os.Id,
                     ServiceId = os.ServiceId,
                     ServiceName = os.Service?.Name ?? "",
+                    ServiceKey = os.Service?.ServiceKey,
                     Quantity = os.Quantity,
                     Cost = os.Cost,
                     Duration = os.Duration,

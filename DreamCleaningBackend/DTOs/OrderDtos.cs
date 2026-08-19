@@ -60,6 +60,16 @@ namespace DreamCleaningBackend.DTOs
         public int MaidsCount { get; set; }
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
+
+        /// <summary>"Apartment" or "House". Null for legacy orders, for service types with no
+        /// levels service, and for custom pricing - every consumer must treat null as "do not
+        /// render a property-type field" rather than as an empty value.</summary>
+        public string? PropertyType { get; set; }
+
+        /// <summary>Levels being cleaned, for a house. Null whenever PropertyType is not "House".
+        /// Display only; the charge lives on the levels OrderService line.</summary>
+        public int? LevelsQuantity { get; set; }
+
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
         /// <summary>True when an admin created this order through create-for-user rather than
@@ -121,6 +131,13 @@ namespace DreamCleaningBackend.DTOs
         public int Id { get; set; }
         public int ServiceId { get; set; }
         public string ServiceName { get; set; }
+
+        /// <summary>
+        /// Stable identifier for the catalogue row ("bedrooms", "sqft", "levels"...). Exposed so
+        /// a client can recognise a line without matching on the admin-editable display Name -
+        /// the pending-edit diff needs to find the levels row to show a level change.
+        /// </summary>
+        public string? ServiceKey { get; set; }
         public int Quantity { get; set; }
         public decimal Cost { get; set; }
         public decimal Duration { get; set; }
@@ -146,6 +163,20 @@ namespace DreamCleaningBackend.DTOs
         public decimal TotalDuration { get; set; }
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
+
+        /// <summary>"Apartment" or "House"; null leaves the order's existing value alone only in
+        /// the sense that null normalizes to null. Normalized by PropertyDetailsHelper. Sending
+        /// anything other than "House" clears the level count server-side, so a customer cannot
+        /// keep a stair charge on an order they have re-declared as an apartment.</summary>
+        [StringLength(20)]
+        public string? PropertyType { get; set; }
+
+        /// <summary>
+        /// Levels for a house on a service type with NO priced levels service - informational
+        /// only. Ignored whenever a priced levels line is present.
+        /// </summary>
+        public int? LevelsQuantity { get; set; }
+
         // Capped to match the Order.EntryMethod column (500) so an edit can't fail the UPDATE.
         [StringLength(500)]
         public string EntryMethod { get; set; }

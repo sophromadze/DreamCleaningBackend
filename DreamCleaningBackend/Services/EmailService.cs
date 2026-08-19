@@ -1001,6 +1001,15 @@ namespace DreamCleaningBackend.Services
                 rows.Append(BuildRow(labels["bedrooms"], FormatBedroomsCount(order.BedroomsQuantity.Value, labels)));
             if (order.BathroomsQuantity.HasValue)
                 rows.Append(BuildRow(labels["bathrooms"], order.BathroomsQuantity.Value.ToString()));
+            // Property type and levels are OPERATIONALLY important: the crew needs to know before
+            // they arrive whether there are stairs to carry equipment up. Both rows are omitted
+            // entirely when unknown (a legacy order) or not applicable (an apartment has no level
+            // count) - an empty row would read as information we lost rather than never had.
+            var propertyTypeLabel = FormatPropertyType(order.PropertyType, labels);
+            if (propertyTypeLabel != null)
+                rows.Append(BuildRow(labels["propertyType"], propertyTypeLabel));
+            if (PropertyDetailsHelper.IsHouse(order.PropertyType) && order.LevelsQuantity.HasValue)
+                rows.Append(BuildRow(labels["levels"], order.LevelsQuantity.Value.ToString()));
             rows.Append(BuildRow(labels["serviceDuration"], formattedDuration));
             rows.Append(BuildRow(labels["dateAndTime"], dateTimeText));
             rows.Append(BuildRow(labels["supplies"], suppliesValue));
@@ -1058,6 +1067,21 @@ namespace DreamCleaningBackend.Services
         private static string FormatBedroomsCount(int bedrooms, IReadOnlyDictionary<string, string> labels)
         {
             return bedrooms == 0 ? labels["studio"] : bedrooms.ToString();
+        }
+
+        /// <summary>
+        /// Localised property-type name, or NULL when the order has none.
+        ///
+        /// Null is the signal to omit the row entirely rather than print an empty one. Every
+        /// order created before this feature has no property type, and telling the crew
+        /// "Property type: —" invites them to call and ask what happened to it.
+        /// </summary>
+        private static string? FormatPropertyType(
+            string? propertyType, IReadOnlyDictionary<string, string> labels)
+        {
+            var normalized = PropertyDetailsHelper.NormalizePropertyType(propertyType);
+            if (normalized == null) return null;
+            return normalized == PropertyDetailsHelper.House ? labels["house"] : labels["apartment"];
         }
 
         private static string BuildListRow(string label, IReadOnlyList<string> items)
@@ -1185,6 +1209,17 @@ namespace DreamCleaningBackend.Services
             if (order.BathroomsQuantity.HasValue) bb.Add($"{order.BathroomsQuantity.Value} {labels["bathrooms"].ToLower()}");
             if (bb.Count > 0) lines.Add(string.Join(" / ", bb));
 
+            // Property type and levels share ONE line — each SMS line costs segment budget, and a
+            // house with stairs is exactly the case worth spending it on.
+            var smsPropertyType = FormatPropertyType(order.PropertyType, labels);
+            if (smsPropertyType != null)
+            {
+                var propertyLine = smsPropertyType;
+                if (PropertyDetailsHelper.IsHouse(order.PropertyType) && order.LevelsQuantity.HasValue)
+                    propertyLine += $" / {order.LevelsQuantity.Value} {labels["levels"].ToLower()}";
+                lines.Add(propertyLine);
+            }
+
             lines.Add($"{labels["serviceDuration"]}: {formattedDuration}");
             lines.Add($"{order.ServiceDate.ToString("ddd dd MMM", culture)} {FormatTimeForEmail(order.ServiceTime)}");
 
@@ -1265,6 +1300,10 @@ namespace DreamCleaningBackend.Services
                     ["bedrooms"] = "საძინებლები",
                     ["studio"] = "სტუდიო",
                     ["bathrooms"] = "სველი წერტილები",
+                    ["propertyType"] = "ქონების ტიპი",
+                    ["apartment"] = "ბინა",
+                    ["house"] = "კერძო სახლი",
+                    ["levels"] = "სართულები",
                     ["serviceDuration"] = "სერვისის დრო",
                     ["dateAndTime"] = "თარიღი და დრო",
                     ["supplies"] = "ხსნარები",
@@ -1295,6 +1334,10 @@ namespace DreamCleaningBackend.Services
                     ["bedrooms"] = "Спальни",
                     ["studio"] = "Студия",
                     ["bathrooms"] = "Ванные",
+                    ["propertyType"] = "Тип жилья",
+                    ["apartment"] = "Квартира",
+                    ["house"] = "Частный дом",
+                    ["levels"] = "Этажи",
                     ["serviceDuration"] = "Длительность услуги",
                     ["dateAndTime"] = "Дата и время",
                     ["supplies"] = "Чистящие средства",
@@ -1325,6 +1368,10 @@ namespace DreamCleaningBackend.Services
                     ["bedrooms"] = "Dormitorios",
                     ["studio"] = "Estudio",
                     ["bathrooms"] = "Baños",
+                    ["propertyType"] = "Tipo de propiedad",
+                    ["apartment"] = "Apartamento",
+                    ["house"] = "Casa",
+                    ["levels"] = "Plantas",
                     ["serviceDuration"] = "Duración del servicio",
                     ["dateAndTime"] = "Fecha y hora",
                     ["supplies"] = "Productos de limpieza",
@@ -1355,6 +1402,10 @@ namespace DreamCleaningBackend.Services
                     ["bedrooms"] = "Bedrooms",
                     ["studio"] = "Studio",
                     ["bathrooms"] = "Bathrooms",
+                    ["propertyType"] = "Property type",
+                    ["apartment"] = "Apartment",
+                    ["house"] = "House",
+                    ["levels"] = "Levels",
                     ["serviceDuration"] = "Service duration",
                     ["dateAndTime"] = "Date and time",
                     ["supplies"] = "Supplies",
@@ -1740,13 +1791,28 @@ namespace DreamCleaningBackend.Services
             // Re-send after an admin changed the order (date/time/address). Same details block —
             // it already renders live order values — but the subject and opening line say
             // "updated" so the customer can tell this apart from the original confirmation.
-            bool isUpdate = false)
+            bool isUpdate = false,
+            // Property type / levels. Optional and null-defaulted so a caller that does not have
+            // the order in scope keeps working and simply omits the lines; a legacy order omits
+            // them too, which is the same thing the customer saw when they booked.
+            string? propertyType = null,
+            int? levelsQuantity = null)
         {
             var subject = isUpdate
                 ? $"Updated Confirmation - Dream Cleaning Order #{orderId}"
                 : "Booking Confirmed - Dream Cleaning Service Scheduled";
 
             var itemsHtml = BuildCustomerSupplyChecklistHtml(hasCleaningSupplies, requiresOvenCleaner, isCustomServiceType);
+
+            // Rendered only when we actually know. An apartment shows the property type but no
+            // level count; a legacy order shows neither.
+            var normalizedPropertyType = PropertyDetailsHelper.NormalizePropertyType(propertyType);
+            var propertyTypeHtml = normalizedPropertyType == null
+                ? ""
+                : $"<p><strong>Property Type:</strong> {(normalizedPropertyType == PropertyDetailsHelper.House ? "House / Townhouse" : "Apartment / Condo")}</p>";
+            var levelsHtml = PropertyDetailsHelper.IsHouse(normalizedPropertyType) && levelsQuantity.HasValue
+                ? $"<p><strong>Levels:</strong> {levelsQuantity.Value}</p>"
+                : "";
             var communicationPolicyHtml = @"
         <div style='background: #fff5f5; padding: 18px; border-radius: 8px; margin: 20px 0; border: 2px solid #dc3545;'>
             <h3 style='margin: 0 0 10px 0; color: #b42318; font-size: 18px;'>&#9888; Important Policy</h3>
@@ -1788,6 +1854,8 @@ namespace DreamCleaningBackend.Services
             <p><strong>Date:</strong> {serviceDate:dddd, MMMM dd, yyyy}</p>
             <p><strong>Time:</strong> {serviceTime}</p>
             <p><strong>Address:</strong> {address}</p>
+            {propertyTypeHtml}
+            {levelsHtml}
             {(!string.IsNullOrEmpty(floorTypes) ? $"<p><strong>Floor Types:</strong> {FloorTypeHelper.FormatFloorTypes(floorTypes, floorTypeOther)}</p>" : "")}
         </div>
 

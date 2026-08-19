@@ -189,6 +189,8 @@ namespace DreamCleaningBackend.Controllers
                 ("borough",       "Borough"),
                 ("zip",           "Zip"),
                 ("rooms",         "Rooms"),
+                ("propertyType",  "Property Type"),
+                ("levels",        "Levels"),
                 ("squareFeet",    "Sq.Ft"),
                 ("maids",         "Maids"),
                 ("duration",      "Duration (hrs)"),
@@ -230,6 +232,8 @@ namespace DreamCleaningBackend.Controllers
                     o.ZipCode,
                     o.BedroomsQuantity,
                     o.BathroomsQuantity,
+                    o.PropertyType,
+                    o.LevelsQuantity,
                     o.MaidsCount,
                     o.TotalDuration,
                     o.SubTotal,
@@ -341,6 +345,17 @@ namespace DreamCleaningBackend.Controllers
                             break;
                         case "rooms":
                             ws.Cell(row, col).Value = rooms;
+                            break;
+                        // Both blank for a legacy order, and Levels is blank for an apartment
+                        // too. A blank cell reads as "not applicable"; a 0 or a "-" would read
+                        // as data and get counted in a pivot.
+                        case "propertyType":
+                            ws.Cell(row, col).Value = o.PropertyType ?? "";
+                            break;
+                        case "levels":
+                            int? levels = PropertyDetailsHelper.IsHouse(o.PropertyType) ? o.LevelsQuantity : null;
+                            if (levels.HasValue) ws.Cell(row, col).Value = levels.Value;
+                            else ws.Cell(row, col).Value = "";
                             break;
                         case "squareFeet":
                             if (sqftByOrder.TryGetValue(o.Id, out var sf)) ws.Cell(row, col).Value = sf;
@@ -1813,7 +1828,8 @@ namespace DreamCleaningBackend.Controllers
                         order.ContactEmail, customerName, order.ServiceDate, serviceTimeStr,
                         order.GetDisplayServiceTypeName(), addressDisplay, order.Id,
                         hasCleaningSupplies, requiresOvenCleaner, isCustom, order.FloorTypes, order.FloorTypeOther,
-                        paymentAlreadyProcessed: order.IsPaid, isUpdate: isUpdate);
+                        paymentAlreadyProcessed: order.IsPaid, isUpdate: isUpdate,
+                        propertyType: order.PropertyType, levelsQuantity: order.LevelsQuantity);
                     result.EmailSent = true;
                 }
                 catch (Exception ex)

@@ -422,6 +422,9 @@ namespace DreamCleaningBackend.Services
             _context.OrderExtraServices.RemoveRange(order.OrderExtraServices);
             OrderPricingCalculator.AddOrderLinesFromQuote(order, quote);
 
+            // Display-only property columns, from the same input the lines were priced from.
+            PropertyDetailsHelper.Apply(order, updateOrderDto.PropertyType, quoteInput, updateOrderDto.LevelsQuantity);
+
             // Backend-authoritative, like TotalDuration below — the calculator derives the
             // maids count from the same selections, so the client's copy is redundant at best.
             // With auto-staffing off, the count is an admin decision for regular service types,
@@ -1021,6 +1024,12 @@ namespace DreamCleaningBackend.Services
                         order.OrderExtraServices.Remove(oes);
                 }
             }
+
+            // Display-only property columns. Deliberately AFTER the dto.Services loop above:
+            // ApplyFromOrderLines reads the levels row back, so it has to run once that row
+            // carries the admin's new quantity. Running it earlier would store the pre-edit
+            // count and hand the crew a stale number of levels.
+            PropertyDetailsHelper.ApplyFromOrderLines(order, dto.PropertyType, dto.LevelsQuantity);
 
             order.UpdatedAt = DateTime.UtcNow;
 

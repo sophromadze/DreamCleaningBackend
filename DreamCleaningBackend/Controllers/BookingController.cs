@@ -692,7 +692,8 @@ namespace DreamCleaningBackend.Controllers
                                     order.FloorTypes, order.FloorTypeOther,
                                     // Manual payment path: customer pays cleaners on arrival, so drop
                                     // the "payment processed successfully" phrasing from the greeting.
-                                    paymentAlreadyProcessed: false);
+                                    paymentAlreadyProcessed: false,
+                                    propertyType: order.PropertyType, levelsQuantity: order.LevelsQuantity);
                                 _logger.LogInformation($"Manual-payment booking confirmation email sent to {manualContactEmail} for order {order.Id}");
                             }
                         }
@@ -1768,7 +1769,9 @@ namespace DreamCleaningBackend.Controllers
                                 requiresOvenCleaner,
                                 isCustomServiceType,
                                 order.FloorTypes,
-                                order.FloorTypeOther
+                                order.FloorTypeOther,
+                                propertyType: order.PropertyType,
+                                levelsQuantity: order.LevelsQuantity
                             );
                             _logger.LogInformation($"Booking confirmation email sent to {contactEmail} for order {order.Id}");
                         }

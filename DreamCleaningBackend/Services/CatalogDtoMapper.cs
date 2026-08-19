@@ -83,6 +83,7 @@ namespace DreamCleaningBackend.Services
             IsActive = serviceType.IsActive,
             DisplayOrder = serviceType.DisplayOrder,
             HasPoll = serviceType.HasPoll,
+            CollectsPropertyType = serviceType.CollectsPropertyType,
             IsCustom = serviceType.IsCustom,
             TimeDuration = serviceType.TimeDuration,
             MinimumPrice = serviceType.MinimumPrice

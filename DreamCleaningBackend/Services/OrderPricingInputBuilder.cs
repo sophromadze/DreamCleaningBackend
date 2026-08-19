@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -103,6 +104,12 @@ namespace DreamCleaningBackend.Services
 
             await AddServiceLinesAsync(context, input, dto.Services);
             await AddExtraServiceLinesAsync(context, input, dto.ExtraServices);
+
+            // Order matters. Levels is settled first (an apartment cannot carry a stair charge),
+            // then the house bedroom floor, and only then the sq.ft floor - because raising
+            // bedrooms 0 -> 1 raises the included sq.ft with it.
+            ClampLevelsToPropertyType(input, dto.PropertyType);
+            ClampBedroomsToPropertyType(input, dto.PropertyType);
             ClampSquareFeetToBedrooms(input);
 
             return input;
@@ -133,6 +140,10 @@ namespace DreamCleaningBackend.Services
 
             await AddServiceLinesAsync(context, input, dto.Services);
             await AddExtraServiceLinesAsync(context, input, dto.ExtraServices);
+
+            // Same order as the booking path - see the comment in FromBookingDtoAsync.
+            ClampLevelsToPropertyType(input, dto.PropertyType);
+            ClampBedroomsToPropertyType(input, dto.PropertyType);
             ClampSquareFeetToBedrooms(input);
 
             var hasCleaner = input.Services.Any(s => s.ServiceRelationType == "cleaner");
@@ -180,6 +191,50 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        /// <summary>
+        /// An apartment can never carry a stair charge. Forces the levels line to the included
+        /// count (1) for anything that is not a House, so a hand-rolled API call cannot buy
+        /// levels on a flat, and a customer who switches House -> Apartment during an edit stops
+        /// paying for stairs immediately.
+        ///
+        /// Forcing to 1 rather than deleting the line is deliberate: the line still prices to
+        /// exactly $0 and 0 minutes through the self-referencing threshold, and keeping it means
+        /// the quote's ServiceLines stay a faithful 1:1 image of what the client submitted, which
+        /// is what lets AddOrderLinesFromQuote and PropertyDetailsHelper agree on every path.
+        /// PropertyDetailsHelper then stores LevelsQuantity as null for the non-house, so nothing
+        /// downstream displays a level count for an apartment.
+        /// </summary>
+        private static void ClampLevelsToPropertyType(
+            OrderPricingCalculator.QuoteInput input, string? propertyType)
+        {
+            if (PropertyDetailsHelper.IsHouse(propertyType)) return;
+
+            foreach (var levels in input.Services.Where(
+                         s => s.ServiceKey == PropertyDetailsHelper.LevelsServiceKey))
+            {
+                levels.Quantity = PropertyDetailsHelper.SeededIncludedLevels;
+            }
+        }
+
+        /// <summary>
+        /// A house has no studio. Raises bedrooms to 1 for a House, mirroring the booking page's
+        /// rule that Studio is neither selectable nor displayed once House is picked.
+        ///
+        /// Server-side because the booking endpoint accepts direct API calls; without it a caller
+        /// could book a "studio house" and pay the studio's zero-quantity price for a property we
+        /// have already decided has at least one bedroom. Runs BEFORE ClampSquareFeetToBedrooms
+        /// so the raised bedroom count drags the included sq.ft up with it, exactly as the UI does.
+        /// </summary>
+        private static void ClampBedroomsToPropertyType(
+            OrderPricingCalculator.QuoteInput input, string? propertyType)
+        {
+            if (!PropertyDetailsHelper.IsHouse(propertyType)) return;
+
+            var bedrooms = input.Services.FirstOrDefault(s => s.ServiceKey == "bedrooms");
+            if (bedrooms != null && bedrooms.Quantity < 1)
+                bedrooms.Quantity = 1;
+        }
+
         // Raises the sqft service quantity to the bedroom-count minimum, exactly like the
         // booking / order-edit pages do client-side. Reads the CONFIGURED thresholds so the
         // clamp and the free allowance are the same data — a hardcoded clamp against
@@ -217,6 +272,27 @@ namespace DreamCleaningBackend.Services
             return match.IncludedQuantity;
         }
 
+        /// <summary>
+        /// Clamps a submitted LEVELS quantity into the range the admin configured on the service
+        /// row (MinValue/MaxValue, defaulting to 1..4). Applied only to levels, deliberately:
+        /// clamping every service to its configured range would silently change how bedrooms,
+        /// sq.ft and cleaner-hours behave on paths that have always accepted the raw value, and
+        /// that is a much larger behavioural change than this feature is entitled to make.
+        ///
+        /// The booking endpoint accepts direct API calls, so without this a caller could submit
+        /// 400 levels and be quoted a five-figure stair charge that no UI could ever produce.
+        /// </summary>
+        private static int ClampLevelsToConfiguredRange(Service service, int quantity)
+        {
+            if (service.ServiceKey != PropertyDetailsHelper.LevelsServiceKey) return quantity;
+
+            var min = service.MinValue ?? 1;
+            var max = service.MaxValue ?? 4;
+            if (max < min) max = min;
+
+            return Math.Clamp(quantity, min, max);
+        }
+
         private static async Task AddServiceLinesAsync(
             ApplicationDbContext context,
             OrderPricingCalculator.QuoteInput input,
@@ -247,11 +323,11 @@ namespace DreamCleaningBackend.Services
                 input.Services.Add(new OrderPricingCalculator.ServiceLineInput
                 {
                     ServiceId = service.Id,
+                    Quantity = ClampLevelsToConfiguredRange(service, serviceDto.Quantity),
                     Cost = service.Cost,
                     TimeDuration = service.TimeDuration,
                     ServiceRelationType = service.ServiceRelationType,
                     ServiceKey = service.ServiceKey,
-                    Quantity = serviceDto.Quantity,
                     ChargeAboveThreshold = service.ChargeAboveThreshold,
                     ZeroQuantityCost = service.ZeroQuantityCost,
                     ZeroQuantityDuration = service.ZeroQuantityDuration,

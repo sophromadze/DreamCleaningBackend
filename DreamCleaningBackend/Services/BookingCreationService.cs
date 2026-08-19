@@ -354,6 +354,11 @@ namespace DreamCleaningBackend.Services
             // Persist per-line costs/durations from the shared calculator.
             OrderPricingCalculator.AddOrderLinesFromQuote(order, quote);
 
+            // Display-only property columns, derived from the SAME quoteInput those lines were
+            // priced from, so Order.LevelsQuantity and the levels OrderService row can never
+            // disagree. Must follow AddOrderLinesFromQuote for that reading to hold.
+            PropertyDetailsHelper.Apply(order, dto.PropertyType, quoteInput, dto.LevelsQuantity);
+
             // Loyalty Discount + stacking for the ORDER OWNER (for admin-on-behalf bookings
             // that's the target customer — the admin's own discount must never leak in).
             // Must run before the tax/total math so tax sees the post-stacking slate.

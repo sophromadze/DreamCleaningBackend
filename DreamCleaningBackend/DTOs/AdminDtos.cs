@@ -13,6 +13,10 @@ namespace DreamCleaningBackend.DTOs
         public int DisplayOrder { get; set; }
         public bool HasPoll { get; set; }
         public bool IsCustom { get; set; }
+
+        /// <summary>Whether this type asks apartment vs house. See ServiceType.CollectsPropertyType.</summary>
+        public bool CollectsPropertyType { get; set; } = true;
+
         public decimal TimeDuration { get; set; }
 
         /// <summary>Floor for base price + services. 0 = no floor.</summary>
@@ -126,6 +130,9 @@ namespace DreamCleaningBackend.DTOs
         public int DisplayOrder { get; set; }
         public bool HasPoll { get; set; } = false;
         public bool IsCustom { get; set; }
+
+        /// <summary>Whether this type asks apartment vs house. Defaults true, matching the column.</summary>
+        public bool CollectsPropertyType { get; set; } = true;
         [Required]
         public decimal TimeDuration { get; set; } = 90;
 
@@ -142,6 +149,9 @@ namespace DreamCleaningBackend.DTOs
         public string? Description { get; set; }
         public bool HasPoll { get; set; } = false;
         public bool IsCustom { get; set; }
+
+        /// <summary>Whether this type asks apartment vs house. Defaults true, matching the column.</summary>
+        public bool CollectsPropertyType { get; set; } = true;
         public int DisplayOrder { get; set; }
         [Required]
         public decimal TimeDuration { get; set; }
@@ -710,6 +720,23 @@ namespace DreamCleaningBackend.DTOs
         public decimal? TotalDuration { get; set; }
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
+
+        /// <summary>"Apartment" or "House". Null means NO CHANGE on this path, unlike the
+        /// customer-facing UpdateOrderDto: an admin editing only the service date must not
+        /// silently strip the property type off the order. Normalized by PropertyDetailsHelper.
+        /// Serialized into PendingOrderEdit.ProposedChangesJson like every other field here, so
+        /// it survives the submit/approve gap with no special handling.</summary>
+        [StringLength(20)]
+        public string? PropertyType { get; set; }
+
+        /// <summary>
+        /// Levels for a house on a service type with NO priced levels service - informational
+        /// only, exactly like BedroomsQuantity / BathroomsQuantity above. Ignored whenever a
+        /// priced levels line is present, so it can never override what was charged. Clamped
+        /// server-side by PropertyDetailsHelper.
+        /// </summary>
+        public int? LevelsQuantity { get; set; }
+
         public string? EntryMethod { get; set; }
         public string? SpecialInstructions { get; set; }
         // Capped to match the Order columns (300 / 100) so an admin edit can't

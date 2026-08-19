@@ -36,6 +36,21 @@ namespace DreamCleaningBackend.Models
         public bool HasPoll { get; set; } = false;
         public bool IsCustom { get; set; } = false;
 
+        /// <summary>
+        /// Whether the booking flow asks apartment/condo vs house/townhouse for this type.
+        ///
+        /// A FLAG rather than an inferred rule, because there is no structural way to tell some
+        /// types apart: Office Cleaning and Heavy Conditional Cleaning have identical shape (same
+        /// cleaner+hours services, no bedrooms, no sq.ft, HasPoll and IsCustom both false) and yet
+        /// one should ask and the other should not. Matching on Id or Name to separate them is
+        /// ruled out - both diverge between the local and production databases.
+        ///
+        /// Defaults to TRUE so every existing type keeps its current behaviour and a type added
+        /// later opts in automatically. Admin-editable in the Booking Services tab, so a new
+        /// hourly type can be switched off without a deploy.
+        /// </summary>
+        public bool CollectsPropertyType { get; set; } = true;
+
         // Navigation properties
         public virtual ICollection<Service> Services { get; set; } = new List<Service>();
         public virtual ICollection<ExtraService> ExtraServices { get; set; } = new List<ExtraService>();
