@@ -515,9 +515,10 @@ namespace DreamCleaningBackend.Controllers.Crm
 
         /// <summary>
         /// Stamp each lead DTO with the problem flag of the registered customer it matches —
-        /// by ClientId first, then email, then phone — mirroring the lead↔user matching used
-        /// to hide blocked users. The flag lives on User.Flag (single source of truth); the
-        /// lead itself is never flagged. Only non-None flags are applied.
+        /// by ClientId first, then email, then phone. The rule itself lives in
+        /// <see cref="LeadCustomerMatcher"/> so this and the Company → Customers follow-up report
+        /// can never disagree about who a lead belongs to. The flag lives on User.Flag (single
+        /// source of truth); the lead itself is never flagged. Only non-None flags are applied.
         /// </summary>
         private async Task ApplyClientFlagsAsync(IReadOnlyCollection<LeadDto> dtos)
         {
@@ -529,39 +530,18 @@ namespace DreamCleaningBackend.Controllers.Crm
                 .ToListAsync();
             if (flagged.Count == 0) return;
 
+            var index = LeadCustomerMatcher.BuildIndex(
+                flagged.Select(f => new LeadCustomerMatcher.CustomerIdentity(f.Id, f.Email, f.Phone)));
             var byId = flagged.ToDictionary(f => f.Id, f => (f.Flag, f.FlagReason));
-            var byEmail = new Dictionary<string, (CustomerFlagLevel Flag, string? Reason)>();
-            var byPhone = new Dictionary<string, (CustomerFlagLevel Flag, string? Reason)>();
-            foreach (var f in flagged)
-            {
-                if (!string.IsNullOrWhiteSpace(f.Email) && !NoEmailHelper.IsPlaceholder(f.Email))
-                    byEmail[f.Email!.ToLowerInvariant()] = (f.Flag, f.FlagReason);
-                var p = PhoneHelper.NormalizeToDigits(f.Phone);
-                if (!string.IsNullOrWhiteSpace(p))
-                    byPhone[p!] = (f.Flag, f.FlagReason);
-            }
 
             foreach (var dto in dtos)
             {
-                (CustomerFlagLevel Flag, string? Reason)? match = null;
+                if (!index.TryMatch(dto.ClientId, dto.Email, dto.Phone, out var userId)) continue;
+                if (!byId.TryGetValue(userId, out var match) || match.Flag == CustomerFlagLevel.None)
+                    continue;
 
-                if (dto.ClientId.HasValue && byId.TryGetValue(dto.ClientId.Value, out var byIdMatch))
-                    match = byIdMatch;
-                else if (!string.IsNullOrWhiteSpace(dto.Email)
-                         && byEmail.TryGetValue(dto.Email!.ToLowerInvariant(), out var em))
-                    match = em;
-                else
-                {
-                    var p = PhoneHelper.NormalizeToDigits(dto.Phone);
-                    if (!string.IsNullOrWhiteSpace(p) && byPhone.TryGetValue(p!, out var ph))
-                        match = ph;
-                }
-
-                if (match.HasValue && match.Value.Flag != CustomerFlagLevel.None)
-                {
-                    dto.Flag = match.Value.Flag.ToString();
-                    dto.FlagReason = match.Value.Reason;
-                }
+                dto.Flag = match.Flag.ToString();
+                dto.FlagReason = match.FlagReason;
             }
         }
 

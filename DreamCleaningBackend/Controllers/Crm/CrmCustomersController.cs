@@ -321,8 +321,10 @@ namespace DreamCleaningBackend.Controllers.Crm
                 // customers who have no (non-cancelled) orders to aggregate.
                 var ltv = agg != null ? agg.Sum : u.TotalSpentAmount;
                 var lastOrder = agg?.MaxDate ?? u.LastOrderDate;
-                var isSubscribed = u.SubscriptionId != null && u.SubDays > 0 &&
-                    (u.SubscriptionExpiryDate == null || u.SubscriptionExpiryDate >= now);
+                // Same rule as IsSubscribed above, off the flattened projection rather than the
+                // entity — RecurringPlanRule keeps the two from drifting.
+                var isSubscribed = RecurringPlanRule.IsActiveUserSubscription(
+                    u.SubscriptionId, u.SubDays, u.SubscriptionExpiryDate, now);
 
                 var lifecycle = ComputeLifecycle(orderCount, u.CreatedAt, lastOrder);
                 var segments = ComputeSegments(lifecycle, isSubscribed, ltv, orderCount);
@@ -351,12 +353,12 @@ namespace DreamCleaningBackend.Controllers.Crm
             return result;
         }
 
-        private static bool IsSubscribed(User u)
-        {
-            if (u.SubscriptionId == null || u.Subscription == null || u.Subscription.SubscriptionDays <= 0)
-                return false;
-            return u.SubscriptionExpiryDate == null || u.SubscriptionExpiryDate >= DateTime.UtcNow;
-        }
+        /// <summary>
+        /// Live recurring plan, per <see cref="RecurringPlanRule"/> — the seeded "One Time" tier is
+        /// a real Subscription row with 0 days, so the check is on the cadence, never on the id.
+        /// </summary>
+        private static bool IsSubscribed(User u) =>
+            RecurringPlanRule.IsActiveUserSubscription(u, DateTime.UtcNow);
 
         /// <summary>Single funnel stage. Prospect (no orders) → New → Active → AtRisk → Churned.</summary>
         private static string ComputeLifecycle(int orderCount, DateTime createdAt, DateTime? lastOrder)

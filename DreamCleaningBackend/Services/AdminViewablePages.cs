@@ -19,6 +19,7 @@ namespace DreamCleaningBackend.Services
         public const string Ads = "ads";
         public const string Traffic = "traffic";
         public const string Keywords = "keywords";
+        public const string CustomerStats = "customer-stats";
 
         public static readonly IReadOnlyList<string> All = new[]
         {
@@ -28,7 +29,8 @@ namespace DreamCleaningBackend.Services
             Finances,
             Ads,
             Traffic,
-            Keywords
+            Keywords,
+            CustomerStats
         };
 
         public static bool IsValid(string? key) => key != null && All.Contains(key);
