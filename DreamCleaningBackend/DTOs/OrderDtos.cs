@@ -51,6 +51,24 @@ namespace DreamCleaningBackend.DTOs
         public string ContactLastName { get; set; }
         public string ContactEmail { get; set; }
         public string ContactPhone { get; set; }
+
+        /// <summary>True when the order OWNER'S ACCOUNT has no email address on file (a no-email
+        /// cash customer, or a generated no-email.invalid placeholder). ContactEmail above is
+        /// FROZEN on the order at booking time and can hold a perfectly real-looking address
+        /// while this is true - that disagreement is exactly what made admins read a skipped
+        /// send as a bug, so the panel warns off this flag rather than off ContactEmail.
+        /// False when the User navigation wasn't Included: unknown is not "has no email".</summary>
+        public bool CustomerHasNoAccountEmail { get; set; }
+
+        /// <summary>The owner's real account email, or null when the account has none / the User
+        /// wasn't loaded. Shown by the admin panel only when it DIFFERS from ContactEmail.</summary>
+        public string? CustomerAccountEmail { get; set; }
+
+        /// <summary>Where a payment reminder / updated-payment mail for this order would actually
+        /// land (NoEmailHelper.ResolveOrderNotificationEmail — order contact first, account as
+        /// fallback). Null means those notifications can only go by text.</summary>
+        public string? NotificationEmailTarget { get; set; }
+
         public string ServiceAddress { get; set; }
         public string? AptSuite { get; set; }
         public string City { get; set; }

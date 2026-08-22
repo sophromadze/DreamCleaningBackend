@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Models;
 using System.Security.Cryptography;
 
 namespace DreamCleaningBackend.Helpers
@@ -26,6 +27,36 @@ namespace DreamCleaningBackend.Helpers
         {
             return !string.IsNullOrWhiteSpace(email)
                 && email.TrimEnd().EndsWith("@" + PlaceholderDomain, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>The account's real, sendable email address, or null when it has none (a
+        /// no-email customer, or a User that simply wasn't loaded). The ONE rule for "can this
+        /// account receive mail at all" - every send path and every admin display resolves it
+        /// here, so the panel can never show an address the sender would refuse.</summary>
+        public static string? ResolveRealEmail(User? user)
+        {
+            if (user == null || user.IsNoEmailUser) return null;
+            return string.IsNullOrWhiteSpace(user.Email) || IsPlaceholder(user.Email) ? null : user.Email;
+        }
+
+        /// <summary>True when the account definitely has NO email on file. False when the User
+        /// wasn't loaded - "unknown" must not render as a warning that the customer has no email.</summary>
+        public static bool HasNoRealEmail(User? user)
+        {
+            return user != null && ResolveRealEmail(user) == null;
+        }
+
+        /// <summary>The address an order's payment mails actually reach: the order's FROZEN contact
+        /// email when it is real, otherwise the owner's account email. Null when neither exists -
+        /// those notifications can then only go by text. Shared by the admin send endpoints and by
+        /// OrderDtoMapper so the panel promises exactly what the sender will do. A placeholder
+        /// contact address (an order transferred from a no-email account keeps one) falls through
+        /// to the account, which is the only routable address left.</summary>
+        public static string? ResolveOrderNotificationEmail(string? contactEmail, User? user)
+        {
+            if (!string.IsNullOrWhiteSpace(contactEmail) && !IsPlaceholder(contactEmail))
+                return contactEmail;
+            return ResolveRealEmail(user);
         }
     }
 }

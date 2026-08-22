@@ -1817,9 +1817,11 @@ namespace DreamCleaningBackend.Controllers
             var addressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
             var serviceTimeStr = order.ServiceTime.ToString();
 
-            var canEmail = order.User != null && order.User.CanReceiveEmails && !order.User.IsNoEmailUser &&
-                           !string.IsNullOrWhiteSpace(order.ContactEmail) &&
-                           !order.ContactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+            var accountHasNoEmail = NoEmailHelper.HasNoRealEmail(order.User);
+            var isAppleRelay = !string.IsNullOrWhiteSpace(order.ContactEmail) &&
+                               order.ContactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+            var canEmail = order.User != null && order.User.CanReceiveEmails && !accountHasNoEmail &&
+                           !string.IsNullOrWhiteSpace(order.ContactEmail) && !isAppleRelay;
             if (canEmail)
             {
                 try
@@ -1840,9 +1842,16 @@ namespace DreamCleaningBackend.Controllers
             }
             else
             {
-                result.EmailSkipReason = string.IsNullOrWhiteSpace(order.ContactEmail)
-                    ? "no email address on file"
-                    : "the customer has email notifications turned off";
+                // Name the REAL reason. A no-email account keeps whatever address was typed on
+                // the order, so reporting "notifications turned off" (the old fallback) sent
+                // admins hunting for a preference that was never the problem.
+                result.EmailSkipReason = accountHasNoEmail
+                    ? "the customer's account has no email address"
+                    : string.IsNullOrWhiteSpace(order.ContactEmail)
+                        ? "no email address on file"
+                        : isAppleRelay
+                            ? "the order's email is an Apple private-relay address that can't receive mail"
+                            : "the customer has email notifications turned off";
             }
 
             if (order.User != null && order.User.CanReceiveMessages && !string.IsNullOrWhiteSpace(order.ContactPhone))
@@ -1968,9 +1977,9 @@ namespace DreamCleaningBackend.Controllers
                 : (order.User != null ? $"{order.User.FirstName?.Trim()} {order.User.LastName?.Trim()}".Trim() : "Valued Customer");
             if (string.IsNullOrWhiteSpace(customerName))
                 customerName = order.User?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
-            var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : order.User?.Email;
-            // No-email (cash) accounts carry a non-routable placeholder — treat as no email.
-            if (NoEmailHelper.IsPlaceholder(customerEmail)) customerEmail = null;
+            // Order contact address first, account address as the fallback; null when the
+            // customer has neither, in which case only the SMS below can go out.
+            var customerEmail = NoEmailHelper.ResolveOrderNotificationEmail(order.ContactEmail, order.User);
             var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
 
             var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
@@ -2041,7 +2050,8 @@ namespace DreamCleaningBackend.Controllers
                 return NotFound(new { message = "Order not found" });
 
             // Contact comes from the live user account (the corrected value), not order.ContactEmail.
-            var customerEmail = order.User?.Email;
+            // Null for a no-email account — nothing to send an email to.
+            var customerEmail = NoEmailHelper.ResolveRealEmail(order.User);
             var customerPhone = order.User?.Phone;
 
             var customerName = order.User != null
@@ -2063,7 +2073,7 @@ namespace DreamCleaningBackend.Controllers
                 // creation path uses. Surface it so the admin knows why nothing went out.
                 var isAppleHiddenMail = !string.IsNullOrEmpty(customerEmail) &&
                     customerEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
-                if (string.IsNullOrWhiteSpace(customerEmail) || NoEmailHelper.IsPlaceholder(customerEmail))
+                if (string.IsNullOrWhiteSpace(customerEmail))
                     return BadRequest(new { message = "No email on the customer's account to send to." });
                 if (isAppleHiddenMail)
                     return BadRequest(new { message = "The customer's account email is an Apple private-relay address and can't receive mail." });
@@ -2159,9 +2169,9 @@ namespace DreamCleaningBackend.Controllers
                 : (order.User != null ? $"{order.User.FirstName?.Trim()} {order.User.LastName?.Trim()}".Trim() : "Valued Customer");
             if (string.IsNullOrWhiteSpace(customerName))
                 customerName = order.User?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
-            var customerEmail = !string.IsNullOrWhiteSpace(order.ContactEmail) ? order.ContactEmail : order.User?.Email;
-            // No-email (cash) accounts carry a non-routable placeholder — treat as no email.
-            if (NoEmailHelper.IsPlaceholder(customerEmail)) customerEmail = null;
+            // Order contact address first, account address as the fallback; null when the
+            // customer has neither, in which case only the SMS below can go out.
+            var customerEmail = NoEmailHelper.ResolveOrderNotificationEmail(order.ContactEmail, order.User);
             var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
 
             var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";

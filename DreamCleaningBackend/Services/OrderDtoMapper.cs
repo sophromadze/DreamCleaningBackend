@@ -73,6 +73,11 @@ namespace DreamCleaningBackend.Services
                 ContactLastName = order.ContactLastName,
                 ContactEmail = order.ContactEmail,
                 ContactPhone = order.ContactPhone,
+                // Account-email status of the owner, resolved through NoEmailHelper. Both stay
+                // neutral (false / null) when the User isn't Included - admin fetches Include it.
+                CustomerHasNoAccountEmail = NoEmailHelper.HasNoRealEmail(order.User),
+                CustomerAccountEmail = NoEmailHelper.ResolveRealEmail(order.User),
+                NotificationEmailTarget = NoEmailHelper.ResolveOrderNotificationEmail(order.ContactEmail, order.User),
                 ServiceAddress = order.ServiceAddress,
                 AptSuite = order.AptSuite,
                 City = order.City,
