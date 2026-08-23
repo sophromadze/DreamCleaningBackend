@@ -591,6 +591,101 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        /// <summary>
+        /// The internal staff note attached to one order. Kept on its own admin-only endpoint for
+        /// the same reason refunds are (see GetOrderRefunds): OrderDtoMapper.ToOrderDto is the
+        /// SHARED shape behind the customer's own order-details page, and this text is written for
+        /// staff only. Returns an empty note rather than 404 when the order simply has none.
+        /// </summary>
+        [HttpGet("orders/{orderId}/notes")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<OrderAdminNoteDto>> GetOrderAdminNotes(int orderId)
+        {
+            if (!await _context.Orders.AnyAsync(o => o.Id == orderId))
+                return NotFound();
+
+            var note = await _context.AdminOrderNotes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(n => n.OrderId == orderId);
+
+            if (note == null)
+                return Ok(new OrderAdminNoteDto { OrderId = orderId });
+
+            return Ok(new OrderAdminNoteDto
+            {
+                OrderId = orderId,
+                Notes = note.Notes,
+                UpdatedAt = note.UpdatedAt,
+                UpdatedByName = await ResolveNoteAuthorNameAsync(note.UpdatedByUserId)
+            });
+        }
+
+        /// <summary>
+        /// Save (or clear) the internal note on one order. Requires canUpdate, the same permission
+        /// every other order mutation on this panel asks for. The 2000-character cap is enforced by
+        /// UpdateOrderAdminNotesDto's [StringLength], which [ApiController] rejects before we run.
+        /// Clearing the box DELETES the row rather than storing an empty one, so "no note" has a
+        /// single representation and a cleared note doesn't keep an author line nobody wrote.
+        /// </summary>
+        [HttpPut("orders/{orderId}/notes")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<OrderAdminNoteDto>> UpdateOrderAdminNotes(int orderId, [FromBody] UpdateOrderAdminNotesDto dto)
+        {
+            if (!await _context.Orders.AnyAsync(o => o.Id == orderId))
+                return NotFound();
+
+            var text = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
+            var note = await _context.AdminOrderNotes.FirstOrDefaultAsync(n => n.OrderId == orderId);
+
+            if (text == null)
+            {
+                if (note != null)
+                    _context.AdminOrderNotes.Remove(note);
+                await _context.SaveChangesAsync();
+                return Ok(new OrderAdminNoteDto { OrderId = orderId });
+            }
+
+            var currentUserId = GetCurrentUserId();
+            if (note == null)
+            {
+                note = new AdminOrderNote { OrderId = orderId };
+                _context.AdminOrderNotes.Add(note);
+            }
+
+            note.Notes = text;
+            note.UpdatedAt = DateTime.UtcNow;
+            note.UpdatedByUserId = currentUserId > 0 ? currentUserId : null;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new OrderAdminNoteDto
+            {
+                OrderId = orderId,
+                Notes = note.Notes,
+                UpdatedAt = note.UpdatedAt,
+                UpdatedByName = await ResolveNoteAuthorNameAsync(note.UpdatedByUserId)
+            });
+        }
+
+        /// <summary>Display name for the admin who last saved a note; null if they no longer exist.</summary>
+        private async Task<string?> ResolveNoteAuthorNameAsync(int? userId)
+        {
+            if (userId == null)
+                return null;
+
+            var author = await _context.Users
+                .AsNoTracking()
+                .Where(u => u.Id == userId.Value)
+                .Select(u => new { u.FirstName, u.LastName })
+                .FirstOrDefaultAsync();
+
+            if (author == null)
+                return null;
+
+            var name = $"{author.FirstName} {author.LastName}".Trim();
+            return string.IsNullOrEmpty(name) ? null : name;
+        }
+
         // Promo/special-offer/gift-card display helpers live in OrderDtoMapper.
 
         [HttpPut("orders/{orderId}/status")]

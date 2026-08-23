@@ -53,6 +53,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<RealEmailVerification> RealEmailVerifications { get; set; }
         public DbSet<AccountMergeRequest> AccountMergeRequests { get; set; }
         public DbSet<AdminUserNote> AdminUserNotes { get; set; }
+        public DbSet<AdminOrderNote> AdminOrderNotes { get; set; }
         public DbSet<PendingOrderEdit> PendingOrderEdits { get; set; }
         public DbSet<OrderReminderAcknowledgment> OrderReminderAcknowledgments { get; set; }
         public DbSet<AdminTask> AdminTasks { get; set; }
@@ -237,6 +238,15 @@ namespace DreamCleaningBackend.Data
                 entity.HasOne(e => e.User)
                     .WithMany()
                     .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<AdminOrderNote>(entity =>
+            {
+                entity.HasKey(e => e.OrderId);
+                entity.HasOne(e => e.Order)
+                    .WithMany()
+                    .HasForeignKey(e => e.OrderId)
                     .OnDelete(DeleteBehavior.Cascade);
             });
 

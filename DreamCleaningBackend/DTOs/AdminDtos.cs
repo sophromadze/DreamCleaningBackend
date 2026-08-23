@@ -710,6 +710,22 @@ namespace DreamCleaningBackend.DTOs
         public string? AdminNotes { get; set; }
     }
 
+    /// <summary>Admin/SuperAdmin: internal free-text note on a single order. Requires canUpdate.</summary>
+    public class UpdateOrderAdminNotesDto
+    {
+        [StringLength(2000)]
+        public string? Notes { get; set; }
+    }
+
+    /// <summary>The internal note on one order, plus who last saved it.</summary>
+    public class OrderAdminNoteDto
+    {
+        public int OrderId { get; set; }
+        public string? Notes { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedByName { get; set; }
+    }
+
     // SuperAdmin-only: full order edit (all changes are audit-logged)
     public class SuperAdminUpdateOrderDto
     {
