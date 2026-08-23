@@ -20,5 +20,8 @@ namespace DreamCleaningBackend.DTOs
         public bool IsEmailVerified { get; set; }
         /// <summary>Restricted-admin-page keys this (Admin-role) user has read-only access to. Drives nav/guards client-side.</summary>
         public List<string> ViewablePages { get; set; } = new();
+        /// <summary>True when this (Admin-role) user may save order edits without SuperAdmin approval.
+        /// Rule: Helpers/OrderEditApprovalPolicy.</summary>
+        public bool CanEditOrdersWithoutApproval { get; set; }
     }
 }

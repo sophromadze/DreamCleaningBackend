@@ -765,15 +765,29 @@ namespace DreamCleaningBackend.Services
             public decimal RewardBalanceUsed { get; set; }
 
             /// <summary>
-            /// Custom Pricing only (see <see cref="SplitTaxInclusiveAmount"/>): the exact tax contained
-            /// in the tax-inclusive amount the admin typed, used verbatim so the total matches it to
-            /// the cent.
+            /// The exact tax contained in a tax-inclusive amount an admin typed (see
+            /// <see cref="SplitTaxInclusiveAmount"/>), used verbatim so the total matches what was
+            /// typed to the cent. Set by Custom Pricing at booking and by the admin order editor's
+            /// Total field.
             ///
-            /// Honoured ONLY while no discount has reduced the subtotal. Once one does, the entered
-            /// total no longer describes what is owed, so tax reverts to the normal
-            /// <c>Round2(discountedSubTotal × SalesTaxRate)</c>.
+            /// Honoured ONLY while the amount actually being taxed still equals
+            /// <see cref="TaxOverrideBase"/>. Once anything moves it, the typed figure no longer
+            /// describes what is owed and tax reverts to <c>Round2(discountedSubTotal × SalesTaxRate)</c>.
             /// </summary>
             public decimal? TaxOverride { get; set; }
+
+            /// <summary>
+            /// The amount <see cref="TaxOverride"/> was split out of. Two callers, two different
+            /// bases, which is exactly why this is explicit rather than assumed:
+            ///
+            ///   - Custom Pricing types a PRE-discount amount, so the base is the SubTotal — leave
+            ///     this null and it defaults there, and any discount then voids the override.
+            ///   - The admin order editor types the POST-discount amount owed, so the base is the
+            ///     discounted subtotal and the recorded discounts stay untouched.
+            ///
+            /// Null means "the SubTotal", which is what every pre-existing caller meant.
+            /// </summary>
+            public decimal? TaxOverrideBase { get; set; }
         }
 
         public class TotalsResult
@@ -798,9 +812,15 @@ namespace DreamCleaningBackend.Services
                 - input.LoyaltyDiscountAmount;
             if (discountedSubTotal < 0m) discountedSubTotal = 0m;
 
-            // The override is only meaningful against the subtotal it was split out of, so any
-            // discount hands the tax back to the standard rate math.
-            var useOverride = input.TaxOverride.HasValue && discountedSubTotal == Round2(input.SubTotal);
+            // The override is only meaningful against the amount it was split out of; once the
+            // taxed amount no longer matches that base, the tax goes back to the rate math.
+            //
+            // Both sides are rounded before comparing. Here that is a no-op - decimal subtraction
+            // is exact - but the TypeScript mirror needs it, because 367.40 - 91.85 is
+            // 275.55000000000007 in binary floating point and an exact comparison there threw the
+            // override away and slipped the charged total by a cent. Kept so the two read the same.
+            var overrideBase = Round2(input.TaxOverrideBase ?? input.SubTotal);
+            var useOverride = input.TaxOverride.HasValue && Round2(discountedSubTotal) == overrideBase;
 
             var tax = useOverride ? Round2(input.TaxOverride!.Value) : Round2(discountedSubTotal * SalesTaxRate);
             var totalBeforeGiftCard = discountedSubTotal + tax + input.Tips + input.CompanyDevelopmentTips;

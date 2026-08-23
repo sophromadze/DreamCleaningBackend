@@ -47,6 +47,13 @@ namespace DreamCleaningBackend.Models
         /// </summary>
         public string? ViewablePages { get; set; }
 
+        /// <summary>
+        /// SuperAdmin grant: when true, this (Admin-role) user saves order edits directly instead of
+        /// submitting them for SuperAdmin approval. Inert for every other role - the rule itself lives
+        /// in <see cref="DreamCleaningBackend.Helpers.OrderEditApprovalPolicy"/>.
+        /// </summary>
+        public bool CanEditOrdersWithoutApproval { get; set; }
+
         // Refresh token for JWT
         public string? RefreshToken { get; set; }
         public DateTime? RefreshTokenExpiryTime { get; set; }

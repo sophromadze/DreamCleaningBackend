@@ -93,6 +93,7 @@ namespace DreamCleaningBackend.Controllers
                     FirstTimeOrder = u.FirstTimeOrder,
                     IsActive = u.IsActive,
                     CreatedAt = u.CreatedAt,
+                    CanEditOrdersWithoutApproval = u.CanEditOrdersWithoutApproval,
                     CanReceiveCommunications = u.CanReceiveCommunications,
                     CanReceiveEmails = u.CanReceiveEmails,
                     CanReceiveMessages = u.CanReceiveMessages,
@@ -635,6 +636,54 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = "Page access updated", pages = saved });
         }
 
+        // Grants/revokes a regular Admin the right to SAVE order edits directly, instead of sending
+        // them to a SuperAdmin for approval. SuperAdmin-only, same shape as the page-view grants
+        // above; the API reads it live on every save, so changes take effect immediately.
+        [HttpPut("users/{id}/order-edit-approval")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> UpdateOrderEditApproval(int id, UpdateOrderEditApprovalDto dto)
+        {
+            var targetUser = await _context.Users.FindAsync(id);
+            if (targetUser == null)
+                return NotFound();
+
+            // Only meaningful for the Admin role: SuperAdmins already save directly, and everyone
+            // else cannot edit orders at all. Refusing here keeps a stale flag from being set on a
+            // Customer who might later be promoted.
+            if (targetUser.Role != UserRole.Admin)
+                return BadRequest(new { message = "Direct order-edit saves can only be granted to users with the Admin role." });
+
+            // Audit copy (captures the flag diff via the generic User update log).
+            var originalUser = new User
+            {
+                Id = targetUser.Id,
+                FirstName = targetUser.FirstName,
+                LastName = targetUser.LastName,
+                Email = targetUser.Email,
+                Role = targetUser.Role,
+                CanEditOrdersWithoutApproval = targetUser.CanEditOrdersWithoutApproval
+            };
+
+            targetUser.CanEditOrdersWithoutApproval = dto.CanEditOrdersWithoutApproval;
+            targetUser.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _auditService.LogUpdateAsync(originalUser, targetUser);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Audit logging failed for order-edit-approval update");
+            }
+
+            return Ok(new
+            {
+                message = "Order edit access updated",
+                canEditOrdersWithoutApproval = targetUser.CanEditOrdersWithoutApproval
+            });
+        }
+
         [HttpGet("users/{id}/online-status")]
         [RequirePermission(Permission.View)]
         public ActionResult<bool> GetUserOnlineStatus(int id)
@@ -1106,7 +1155,7 @@ namespace DreamCleaningBackend.Controllers
 
         [HttpGet("permissions")]
         [Authorize]
-        public ActionResult<object> GetUserPermissions()
+        public async Task<ActionResult<object>> GetUserPermissions()
         {
             var roleClaim = User.FindFirst("Role")?.Value;
             if (!Enum.TryParse<UserRole>(roleClaim, out var userRole))
@@ -1114,9 +1163,21 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest("Invalid role");
             }
 
+            // Read the order-edit grant from the DB rather than a claim, so a SuperAdmin granting or
+            // revoking it takes effect on the admin's next page load instead of their next login -
+            // the same "enforced live on every request" property the page-view grants have.
+            var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            var canEditOrdersWithoutApproval = await _context.Users
+                .Where(u => u.Id == currentUserId)
+                .Select(u => u.CanEditOrdersWithoutApproval)
+                .FirstOrDefaultAsync();
+
             return Ok(new
             {
                 role = userRole.ToString(),
+                // Order edits: SuperAdmins always apply directly; an Admin only when granted.
+                // Rule: Helpers/OrderEditApprovalPolicy.
+                canSaveOrderEditsDirectly = OrderEditApprovalPolicy.CanSaveDirectly(userRole, canEditOrdersWithoutApproval),
                 permissions = new
                 {
                     canView = _permissionService.CanView(userRole),

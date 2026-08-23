@@ -486,6 +486,8 @@ namespace DreamCleaningBackend.DTOs
         public DateTime CreatedAt { get; set; }
         /// <summary>Restricted-admin-page keys this (Admin-role) user has been granted read-only access to.</summary>
         public List<string> ViewablePages { get; set; } = new();
+        /// <summary>True when a SuperAdmin has granted this Admin direct order-edit saves (no approval step).</summary>
+        public bool CanEditOrdersWithoutApproval { get; set; }
         /// <summary>When true, user can receive emails and (in future) SMS from the company.</summary>
         public bool CanReceiveCommunications { get; set; }
         public bool CanReceiveEmails { get; set; }
@@ -591,6 +593,12 @@ namespace DreamCleaningBackend.DTOs
     public class UpdateViewablePagesDto
     {
         public List<string> Pages { get; set; } = new();
+    }
+
+    /// <summary>SuperAdmin grant: may this Admin save order edits directly, skipping the approval step?</summary>
+    public class UpdateOrderEditApprovalDto
+    {
+        public bool CanEditOrdersWithoutApproval { get; set; }
     }
 
     public class UpdateUserStatusDto
@@ -751,8 +759,23 @@ namespace DreamCleaningBackend.DTOs
         public string? Status { get; set; }
         public string? CancellationReason { get; set; }
         public decimal? SubTotal { get; set; }
+        // Tax and Total are NOT applied from the DTO — the update path recomputes both through
+        // OrderPricingCalculator.CalculateTotals so the server stays the authority on price.
+        // They are still sent so the admin's preview and the audit trail agree with the request.
         public decimal? Tax { get; set; }
         public decimal? Total { get; set; }
+        /// <summary>
+        /// Set when the admin typed a TOTAL rather than a subtotal: the exact tax contained in
+        /// that tax-inclusive figure, so the charged total matches it to the cent instead of
+        /// drifting by one (see OrderPricingCalculator.SplitTaxInclusiveAmount).
+        ///
+        /// Verified, not trusted: it is honoured only while <see cref="TaxOverrideBase"/> still
+        /// equals the subtotal actually being taxed after this order's discounts. Anything else
+        /// falls back to the ordinary rate math.
+        /// </summary>
+        public decimal? TaxOverride { get; set; }
+        /// <summary>The discounted subtotal <see cref="TaxOverride"/> was split out of.</summary>
+        public decimal? TaxOverrideBase { get; set; }
         public decimal? DiscountAmount { get; set; }
         public decimal? SubscriptionDiscountAmount { get; set; }
         /// <summary>Recalculated loyalty discount on subtotal change (scaled proportionally on

@@ -884,7 +884,9 @@ namespace DreamCleaningBackend.Services
             return OrderDtoMapper.ToOrderDto(order, pointsEarned);
         }
 
-        /// <summary>SuperAdmin-only: full order update without 48h or "can't reduce" checks. All changes must be audit-logged by the caller.</summary>
+        /// <summary>Full order update without 48h or "can't reduce" checks. All changes must be audit-logged by the
+        /// caller, which is also where the "may this admin apply an edit directly?" decision lives
+        /// (Helpers/OrderEditApprovalPolicy) - this method performs no authorization of its own.</summary>
         public async Task SuperAdminFullUpdateOrder(int orderId, int updatedByUserId, SuperAdminUpdateOrderDto dto)
         {
             var order = await _orderRepository.GetByIdWithDetailsAsync(orderId);
@@ -972,7 +974,13 @@ namespace DreamCleaningBackend.Services
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
                 Tips = order.Tips,
-                CompanyDevelopmentTips = order.CompanyDevelopmentTips
+                CompanyDevelopmentTips = order.CompanyDevelopmentTips,
+                // Present only when the admin typed a TOTAL instead of a subtotal. The base makes
+                // this a verification rather than a trust: if it does not match the subtotal this
+                // order's discounts actually leave behind, CalculateTotals ignores the override
+                // and prices the order the ordinary way.
+                TaxOverride = dto.TaxOverride,
+                TaxOverrideBase = dto.TaxOverrideBase
                 // gift card + points/rewards applied below to mirror the user edit path
             });
             order.Tax = totals.Tax;

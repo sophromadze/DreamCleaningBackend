@@ -1066,13 +1066,39 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        /// <summary>SuperAdmin-only: edit any order field. All changes are audit-logged.</summary>
+        /// <summary>
+        /// True when the caller applies order edits themselves instead of sending them for
+        /// approval — a SuperAdmin, or an Admin a SuperAdmin has granted it. That same answer
+        /// gates REVIEWING other admins' pending edits: someone trusted to write the order
+        /// directly is trusted to approve the same write coming from a colleague.
+        ///
+        /// The grant is read live from the DB rather than from a claim, so revoking it takes
+        /// effect on the caller's very next request. Rule: Helpers/OrderEditApprovalPolicy.
+        /// </summary>
+        private async Task<bool> CallerCanApplyOrderEditsAsync()
+        {
+            var callerId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            var granted = await _context.Users
+                .Where(u => u.Id == callerId)
+                .Select(u => u.CanEditOrdersWithoutApproval)
+                .FirstOrDefaultAsync();
+            return OrderEditApprovalPolicy.CanSaveDirectly(GetCurrentUserRole(), granted);
+        }
+
+        /// <summary>
+        /// Edit any order field and apply it immediately. All changes are audit-logged.
+        /// Open to SuperAdmins, and to Admins a SuperAdmin has granted direct saves
+        /// (see Helpers/OrderEditApprovalPolicy); every other Admin goes through the
+        /// pending-edit approval flow below instead.
+        /// </summary>
         [HttpPut("orders/{orderId}/superadmin-full-update")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult> SuperAdminFullUpdateOrder(int orderId, [FromBody] SuperAdminUpdateOrderDto dto)
         {
-            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+            if (!await CallerCanApplyOrderEditsAsync())
                 return Forbid();
+
+            var editorId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
 
             var orderBefore = await _context.Orders
                 .AsNoTracking()
@@ -1086,8 +1112,7 @@ namespace DreamCleaningBackend.Controllers
 
             try
             {
-                var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-                await _orderService.SuperAdminFullUpdateOrder(orderId, currentUserId, dto);
+                await _orderService.SuperAdminFullUpdateOrder(orderId, editorId, dto);
             }
             catch (Exception ex)
             {
@@ -1200,7 +1225,8 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        /// <summary>Admin-only: submit proposed order changes for SuperAdmin approval. SuperAdmins should use direct save.</summary>
+        /// <summary>Submit proposed order changes for approval. Only for Admins WITHOUT the direct-save
+        /// grant; anyone who can apply edits themselves uses superadmin-full-update instead.</summary>
         [HttpPost("orders/{orderId}/pending-edit")]
         [Authorize(Roles = "Admin")]
         public async Task<ActionResult<PendingOrderEditListDto>> SubmitPendingOrderEdit(int orderId, [FromBody] SuperAdminUpdateOrderDto dto)
@@ -1237,11 +1263,14 @@ namespace DreamCleaningBackend.Controllers
             });
         }
 
-        /// <summary>SuperAdmin-only: list all pending order edits.</summary>
+        /// <summary>List all pending order edits. Reviewers only (see CallerCanApplyOrderEditsAsync).</summary>
         [HttpGet("orders/pending-edits")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult<List<PendingOrderEditListDto>>> GetPendingOrderEdits()
         {
+            if (!await CallerCanApplyOrderEditsAsync())
+                return Forbid();
+
             var list = await _context.PendingOrderEdits
                 .Where(poe => poe.Status == "Pending")
                 .Include(poe => poe.Order)
@@ -1261,11 +1290,15 @@ namespace DreamCleaningBackend.Controllers
             return Ok(list);
         }
 
-        /// <summary>SuperAdmin-only: get one pending edit with current order state and proposed changes (for diff and approve/reject).</summary>
+        /// <summary>Get one pending edit with current order state and proposed changes (for diff and approve/reject).
+        /// Reviewers only (see CallerCanApplyOrderEditsAsync).</summary>
         [HttpGet("orders/pending-edits/{id}")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult<PendingOrderEditDetailDto>> GetPendingOrderEditDetail(int id)
         {
+            if (!await CallerCanApplyOrderEditsAsync())
+                return Forbid();
+
             var pending = await _context.PendingOrderEdits
                 .Include(poe => poe.Order)
                 .Include(poe => poe.RequestedByUser)
@@ -1307,12 +1340,12 @@ namespace DreamCleaningBackend.Controllers
             });
         }
 
-        /// <summary>SuperAdmin-only: approve and apply the pending order edit.</summary>
+        /// <summary>Approve and apply the pending order edit. Reviewers only (see CallerCanApplyOrderEditsAsync).</summary>
         [HttpPost("orders/pending-edits/{id}/approve")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult> ApprovePendingOrderEdit(int id)
         {
-            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+            if (!await CallerCanApplyOrderEditsAsync())
                 return Forbid();
 
             var pending = await _context.PendingOrderEdits
@@ -1371,12 +1404,12 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = "Order edit approved and applied successfully" });
         }
 
-        /// <summary>SuperAdmin-only: reject the pending order edit.</summary>
+        /// <summary>Reject the pending order edit. Reviewers only (see CallerCanApplyOrderEditsAsync).</summary>
         [HttpPost("orders/pending-edits/{id}/reject")]
-        [Authorize(Roles = "SuperAdmin")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
         public async Task<ActionResult> RejectPendingOrderEdit(int id, [FromBody] RejectPendingOrderEditDto? dto = null)
         {
-            if (GetCurrentUserRole() != UserRole.SuperAdmin)
+            if (!await CallerCanApplyOrderEditsAsync())
                 return Forbid();
 
             var pending = await _context.PendingOrderEdits.FindAsync(id);

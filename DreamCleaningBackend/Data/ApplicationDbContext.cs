@@ -685,6 +685,14 @@ namespace DreamCleaningBackend.Data
                 }
             );
 
+            // The DB-level default of TRUE comes from migration AddServiceTypeCollectsPropertyType
+            // ("every existing service type keeps exactly its current behaviour"). It has to be
+            // declared here as well, or the regenerated model snapshot does not know about it and
+            // the NEXT migration silently emits an AlterColumn dropping it.
+            modelBuilder.Entity<ServiceType>()
+                .Property(st => st.CollectsPropertyType)
+                .HasDefaultValue(true);
+
             // Seed Service Types
             modelBuilder.Entity<ServiceType>().HasData(
                 new ServiceType
