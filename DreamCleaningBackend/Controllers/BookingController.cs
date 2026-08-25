@@ -583,6 +583,34 @@ namespace DreamCleaningBackend.Controllers
                 }
                 var initialStatus = paymentMethod == PaymentMethod.Normal ? "Pending" : "Active";
 
+                // The admin recreate flow may override the status — a job re-entered after the
+                // fact is usually already Done. Unlike PaymentMethod above, an unrecognised value
+                // is REJECTED rather than coerced: Order.Status is a free string, so a typo would
+                // otherwise be persisted and quietly fall out of every status filter in the panel.
+                if (!string.IsNullOrWhiteSpace(dto.InitialStatus))
+                {
+                    var requested = new[] { OrderStatuses.Pending, OrderStatuses.Active, OrderStatuses.Done }
+                        .FirstOrDefault(s => OrderStatuses.Is(dto.InitialStatus, s));
+                    if (requested == null)
+                        return BadRequest(new { message = $"'{dto.InitialStatus}' is not a status a new order can start in. Use Pending, Active or Done." });
+                    initialStatus = requested;
+                }
+
+                // Back-dating is the reason this flow exists (re-entering cash jobs that were
+                // missed at the time), and an unpaid order whose service date has passed is
+                // auto-cancelled on sight by OrderService. Exempt it, or the order the admin just
+                // re-entered disappears the next time anyone opens that customer's list.
+                //
+                // Compared against NY's today, not UTC's: ServiceDate is NY wall-clock, and after
+                // 8pm New York the UTC date is already tomorrow — which would have flagged a job
+                // booked for this evening as back-dated.
+                var isBackDated = dto.BookingData.ServiceDate.Date < NyTimeHelper.NowNy.Date;
+
+                // Null = this endpoint's historic behaviour (the customer's loyalty and plan
+                // discounts apply), which is what the booking page's Admin Mode relies on. Only an
+                // explicit false suppresses them.
+                var suppressAutomaticDiscounts = dto.ApplyCurrentDiscounts == false;
+
                 // Get service type
                 var serviceType = await _context.ServiceTypes
                     .Include(st => st.Services)
@@ -626,8 +654,32 @@ namespace DreamCleaningBackend.Controllers
                     PaymentReference = dto.PaymentReference,
                     PaymentNotes = dto.PaymentNotes,
                     ManualPaymentRecordedByUserId = adminUserId,
-                    BookedByAdminUserId = adminUserId
+                    BookedByAdminUserId = adminUserId,
+                    IsAutoCancelExempt = isBackDated,
+                    SuppressAutomaticDiscounts = suppressAutomaticDiscounts
                 });
+
+                // A back-dated re-entry usually describes a job that already happened, so the
+                // admin can start it at Done. Run the same completion hook the Orders panel runs
+                // on a Done transition — otherwise an order created Done never earns the customer
+                // their bubble points, and nothing later would award them (the hook only fires on
+                // a TRANSITION into Done, which this order will never make).
+                if (OrderStatuses.Is(order.Status, OrderStatuses.Done))
+                {
+                    try
+                    {
+                        // Resolved from the request scope like every other bubble-points call in
+                        // this controller, rather than injected — same pattern, no ctor change.
+                        var bubbleSvc = HttpContext.RequestServices.GetService<IBubblePointsService>();
+                        if (bubbleSvc != null)
+                            await bubbleSvc.ProcessOrderCompletion(order.Id);
+                    }
+                    catch (Exception rewardsEx)
+                    {
+                        _logger.LogError(rewardsEx,
+                            "[BubbleRewards] ProcessOrderCompletion failed for order {OrderId} created directly as Done", order.Id);
+                    }
+                }
 
                 // Auto-assign the creating admin to the order (goes through AdminBonusService so
                 // the assignment lands in OrderAdminAssignmentHistory with the current bonus rate).
@@ -651,6 +703,28 @@ namespace DreamCleaningBackend.Controllers
                 // Store booking data including photos for later use when payment is confirmed
                 var sessionId = $"booking_{order.Id}_{dto.TargetUserId}";
                 _bookingDataService.StoreBookingData(sessionId, dto.BookingData);
+
+                // Customer notifications are OPT-OUT for the historic flow and OPT-IN for the
+                // recreate flow, expressed as one rule: null means "as this endpoint always
+                // behaved" (send), and only an explicit false suppresses. Re-entering a job that
+                // already happened must not text the customer a confirmation for it, so the
+                // recreate modal always sends explicit values.
+                //
+                // Only the CUSTOMER-facing sends are gated. NotifyAdminsNewOrder above is
+                // internal and always runs: the order genuinely exists and staff must see it.
+                var notifyCustomerByEmail = dto.SendCustomerEmail != false;
+                var notifyCustomerBySms = dto.SendCustomerSms != false;
+
+                if (dto.RecreatedFromOrderId.HasValue)
+                {
+                    _logger.LogInformation(
+                        "Order {OrderId} recreated from order {SourceOrderId} by admin {AdminId}: status {Status}, "
+                        + "paymentMethod {PaymentMethod}, backDated {BackDated}, currentDiscountsApplied {DiscountsApplied}, "
+                        + "notifyEmail {NotifyEmail}, notifySms {NotifySms}",
+                        order.Id, dto.RecreatedFromOrderId.Value, adminUserId, order.Status,
+                        paymentMethod, isBackDated, !suppressAutomaticDiscounts,
+                        notifyCustomerByEmail, notifyCustomerBySms);
+                }
 
                 // Manual payment path: skip the Pay Now reminder entirely and send a real
                 // booking confirmation (no payment link). Reuses the existing customer template
@@ -677,33 +751,40 @@ namespace DreamCleaningBackend.Controllers
 
                     // Fire-and-forget email (skip Apple hidden mail). Same isAppleHiddenMail
                     // check the Stripe path uses below — keep behavior aligned.
-                    _ = Task.Run(async () =>
+                    if (notifyCustomerByEmail)
                     {
-                        try
+                        _ = Task.Run(async () =>
                         {
-                            var isAppleHiddenMail = !string.IsNullOrEmpty(manualContactEmail) &&
-                                manualContactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
-                            if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(manualContactEmail))
+                            try
                             {
-                                await _emailService.SendCustomerBookingConfirmationAsync(
-                                    manualContactEmail, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
-                                    order.GetDisplayServiceTypeName(), manualAddressDisplay, order.Id,
-                                    manualHasCleaningSupplies, manualRequiresOvenCleaner, manualIsCustomServiceType,
-                                    order.FloorTypes, order.FloorTypeOther,
-                                    // Manual payment path: customer pays cleaners on arrival, so drop
-                                    // the "payment processed successfully" phrasing from the greeting.
-                                    paymentAlreadyProcessed: false,
-                                    propertyType: order.PropertyType, levelsQuantity: order.LevelsQuantity);
-                                _logger.LogInformation($"Manual-payment booking confirmation email sent to {manualContactEmail} for order {order.Id}");
+                                var isAppleHiddenMail = !string.IsNullOrEmpty(manualContactEmail) &&
+                                    manualContactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+                                if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(manualContactEmail))
+                                {
+                                    await _emailService.SendCustomerBookingConfirmationAsync(
+                                        manualContactEmail, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
+                                        order.GetDisplayServiceTypeName(), manualAddressDisplay, order.Id,
+                                        manualHasCleaningSupplies, manualRequiresOvenCleaner, manualIsCustomServiceType,
+                                        order.FloorTypes, order.FloorTypeOther,
+                                        // Manual payment path: customer pays cleaners on arrival, so drop
+                                        // the "payment processed successfully" phrasing from the greeting.
+                                        paymentAlreadyProcessed: false,
+                                        propertyType: order.PropertyType, levelsQuantity: order.LevelsQuantity);
+                                    _logger.LogInformation($"Manual-payment booking confirmation email sent to {manualContactEmail} for order {order.Id}");
+                                }
                             }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, $"Failed to send manual-payment booking confirmation email for order {order.Id}");
-                        }
-                    });
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, $"Failed to send manual-payment booking confirmation email for order {order.Id}");
+                            }
+                        });
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"Booking confirmation email suppressed by the creating admin for order {order.Id}");
+                    }
 
-                    if (!string.IsNullOrWhiteSpace(manualContactPhone))
+                    if (notifyCustomerBySms && !string.IsNullOrWhiteSpace(manualContactPhone))
                     {
                         _ = Task.Run(async () =>
                         {
@@ -789,7 +870,11 @@ namespace DreamCleaningBackend.Controllers
                                                targetUser.Email.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
 
                         // Send email if not Apple hidden mail
-                        if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(targetUser.Email))
+                        if (!notifyCustomerByEmail)
+                        {
+                            _logger.LogInformation($"Payment reminder email suppressed by the creating admin for Order #{order.Id}");
+                        }
+                        else if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(targetUser.Email))
                         {
                             try
                             {
@@ -814,7 +899,11 @@ namespace DreamCleaningBackend.Controllers
                         }
 
                         // Send SMS if phone number exists
-                        if (!string.IsNullOrWhiteSpace(targetUser.Phone))
+                        if (!notifyCustomerBySms)
+                        {
+                            _logger.LogInformation($"Payment reminder SMS suppressed by the creating admin for Order #{order.Id}");
+                        }
+                        else if (!string.IsNullOrWhiteSpace(targetUser.Phone))
                         {
                             try
                             {

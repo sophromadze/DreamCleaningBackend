@@ -447,7 +447,14 @@ namespace DreamCleaningBackend.Controllers
             else
             {
                 if (string.IsNullOrWhiteSpace(dto.Email))
-                    return BadRequest(new { message = "Email is required." });
+                    return BadRequest(new { message = "Email is required (or mark the customer as having no email)." });
+
+                // Named, actionable format error rather than a model-validation 400 the panel
+                // cannot render — see Helpers/EmailAddressValidator.cs for the incident.
+                var emailProblem = EmailAddressValidator.DescribeProblem(dto.Email);
+                if (emailProblem != null)
+                    return BadRequest(new { message = emailProblem });
+
                 emailLower = dto.Email.Trim().ToLowerInvariant();
                 var existing = await _context.Users.AnyAsync(u => u.Email.ToLower() == emailLower);
                 if (existing)

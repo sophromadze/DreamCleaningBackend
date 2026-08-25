@@ -158,5 +158,54 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentMethod { get; set; }
         public string? PaymentReference { get; set; }
         public string? PaymentNotes { get; set; }
+
+        // ── Admin "recreate a past order" controls (2026-08) ──────────────────────────────────
+        // All four are NULLABLE and null means "behave exactly as this endpoint always has".
+        // That is what keeps the booking page's Admin Mode flow — which sends none of them —
+        // byte-for-byte unchanged while the recreate modal drives the same endpoint explicitly.
+
+        /// <summary>
+        /// Whether to email the customer about this booking. Null = the endpoint's historic
+        /// behaviour (always send). The recreate flow always sends an explicit true/false, because
+        /// re-entering a job that already happened must not text the customer a confirmation for
+        /// it — that is the whole reason this knob exists.
+        /// </summary>
+        public bool? SendCustomerEmail { get; set; }
+
+        /// <summary>Whether to text the customer. Same null-means-historic rule as
+        /// <see cref="SendCustomerEmail"/>.</summary>
+        public bool? SendCustomerSms { get; set; }
+
+        /// <summary>
+        /// Initial Order.Status. Null keeps the derived default (Pending for Stripe, Active for a
+        /// manual payment method). Only Pending / Active / Done are accepted — anything else is
+        /// rejected rather than silently coerced. "Done" exists for back-dated re-entry of a job
+        /// that has already been performed; the controller then runs the same
+        /// bubble-points completion hook the Orders panel runs on a Done transition, so a
+        /// re-entered order earns points exactly like one that reached Done the normal way.
+        /// </summary>
+        public string? InitialStatus { get; set; }
+
+        /// <summary>
+        /// The order this one was recreated from. Recorded in the log/audit trail only — it does
+        /// NOT link the two orders or copy anything from the source. The prefill has already been
+        /// resolved into BookingData by the time this arrives.
+        /// </summary>
+        public int? RecreatedFromOrderId { get; set; }
+
+        /// <summary>
+        /// Whether the customer's CURRENT loyalty and recurring-plan discounts may apply — the two
+        /// the server grants on its own initiative, so the two a cleared DTO cannot suppress.
+        ///
+        /// Null keeps the historic behaviour (they apply), which is what the booking page's Admin
+        /// Mode relies on. The recreate modal always sends an explicit value and defaults it to
+        /// FALSE: "recreate the same job without the old discounts" is the point, and applying the
+        /// loyalty discount also CONSUMES it, so a re-entered cash job from three months ago must
+        /// not silently spend an entitlement the admin never chose to spend.
+        ///
+        /// Every other discount slot is unreachable from the recreate flow already: its prefill
+        /// carries no promo code, gift card, special offer, points or credits.
+        /// </summary>
+        public bool? ApplyCurrentDiscounts { get; set; }
     }
 }

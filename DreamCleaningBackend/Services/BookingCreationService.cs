@@ -20,6 +20,30 @@ namespace DreamCleaningBackend.Services
         /// <summary>Admin creating the order via create-for-user (any payment method).
         /// Null = the customer booked it themselves.</summary>
         public int? BookedByAdminUserId { get; set; }
+
+        /// <summary>
+        /// Exempts the order from OrderService's "unpaid and the service date has passed" sweep.
+        /// Set by the admin recreate flow when the service date is deliberately BACK-DATED:
+        /// without it, re-entering a job that happened last month on the Stripe method would be
+        /// auto-cancelled the moment anyone loaded the customer's order list.
+        /// </summary>
+        public bool IsAutoCancelExempt { get; set; }
+
+        /// <summary>
+        /// Skips the two discounts this service applies on its own initiative — the customer's
+        /// current loyalty discount and their recurring-plan discount. Used by the admin recreate
+        /// flow, where the point is to reproduce a past job WITHOUT its discounts: the caller has
+        /// already cleared every client-supplied discount slot, and these two are the only ones
+        /// that would otherwise re-appear from the server side.
+        ///
+        /// Loyalty in particular is not just a price: applying it CONSUMES the customer's
+        /// entitlement, so re-entering a cash job from three months ago would silently spend a
+        /// discount the admin never chose to spend.
+        ///
+        /// SubscriptionId is still recorded on the order — the plan is job metadata (it is what
+        /// makes the order count as recurring in the CRM), only its DISCOUNT is suppressed.
+        /// </summary>
+        public bool SuppressAutomaticDiscounts { get; set; }
     }
 
     public interface IBookingCreationService
@@ -279,6 +303,12 @@ namespace DreamCleaningBackend.Services
             var (discountAmount, subscriptionDiscountAmount) =
                 await ResolveDiscountsAsync(dto, orderUserId, quote.SubTotal);
 
+            // Admin recreate flow: the plan stays on the order, its discount does not. Applied
+            // here rather than by clearing dto.SubscriptionId so the recreated order still counts
+            // as recurring everywhere the CRM joins Order.SubscriptionId.
+            if (options.SuppressAutomaticDiscounts)
+                subscriptionDiscountAmount = 0m;
+
             var order = new Order
             {
                 UserId = orderUserId,
@@ -329,6 +359,8 @@ namespace DreamCleaningBackend.Services
                 ManualPaymentRecordedByUserId = manualPayment ? options.ManualPaymentRecordedByUserId : null,
                 // Who booked it: the create-for-user flow passes the admin; self-service leaves null.
                 BookedByAdminUserId = options.BookedByAdminUserId,
+                // Back-dated admin re-entry only — see BookingCreationOptions.IsAutoCancelExempt.
+                IsAutoCancelExempt = options.IsAutoCancelExempt,
                 // Backend-authoritative pricing from the shared calculator (Tax/Total are
                 // finalized below after loyalty stacking).
                 MaidsCount = quote.MaidsCount,
@@ -362,7 +394,15 @@ namespace DreamCleaningBackend.Services
             // Loyalty Discount + stacking for the ORDER OWNER (for admin-on-behalf bookings
             // that's the target customer — the admin's own discount must never leak in).
             // Must run before the tax/total math so tax sees the post-stacking slate.
-            await ApplyLoyaltyDiscountAndStackingAsync(order, orderUserId);
+            //
+            // Skipped entirely for the admin recreate flow: applying the loyalty discount also
+            // CONSUMES it, and re-entering a job that already happened must not spend an
+            // entitlement the admin never chose to spend. Skipping the whole call rather than
+            // zeroing the result afterwards is deliberate — the stacking gate is what decides
+            // which of loyalty / subscription / promo survives, and running it with a loyalty
+            // candidate that will be discarded could zero a discount that should have stood.
+            if (!options.SuppressAutomaticDiscounts)
+                await ApplyLoyaltyDiscountAndStackingAsync(order, orderUserId);
 
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
             {

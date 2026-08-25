@@ -41,6 +41,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly ISubscriptionService _subscriptionService;
         private readonly IOrderRefundService _orderRefundService;
         private readonly IOrderPaymentStatusReconciler _reconciler;
+        private readonly IOrderReorderPreviewService _reorderPreviewService;
         private readonly ILogger<AdminOrdersController> _logger;
 
         public AdminOrdersController(ApplicationDbContext context,
@@ -58,6 +59,7 @@ namespace DreamCleaningBackend.Controllers
             ISubscriptionService subscriptionService,
             IOrderRefundService orderRefundService,
             IOrderPaymentStatusReconciler reconciler,
+            IOrderReorderPreviewService reorderPreviewService,
             ILogger<AdminOrdersController> logger)
         {
             _logger = logger;
@@ -76,6 +78,7 @@ namespace DreamCleaningBackend.Controllers
             _subscriptionService = subscriptionService;
             _orderRefundService = orderRefundService;
             _reconciler = reconciler;
+            _reorderPreviewService = reorderPreviewService;
         }
 
         /// <summary>
@@ -586,6 +589,46 @@ namespace DreamCleaningBackend.Controllers
                 return OrderDtoMapper.ToOrderDto(order);
             }
             catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// "Recreate this order" preview — the diff an admin reads BEFORE the mini booking form
+        /// opens, plus the prefill for that form, in one round trip.
+        ///
+        /// Read-only: nothing is created here. The recreated order is written by the ordinary
+        /// create-for-user endpoint, which re-prices the posted DTO independently, so this is a
+        /// preview in the strict sense and can never be the thing that decides a charge.
+        ///
+        /// Requires Create, not View: it is the first step of creating an order, and a View-only
+        /// Moderator has no business opening a flow whose next button books a job. The
+        /// custom-pricing half of the gate is resolved from the DATABASE role rather than the JWT
+        /// claim, for the same reason BookingController does it — a token issued before a
+        /// demotion stays valid until it expires, and this preview promises a price.
+        /// </summary>
+        [HttpGet("orders/{orderId}/reorder-preview")]
+        [RequirePermission(Permission.Create)]
+        public async Task<ActionResult<ReorderPreviewDto>> GetReorderPreview(int orderId)
+        {
+            try
+            {
+                var callerRole = await _context.Users
+                    .AsNoTracking()
+                    .Where(u => u.Id == GetCurrentUserId())
+                    .Select(u => (UserRole?)u.Role)
+                    .FirstOrDefaultAsync();
+
+                var allowCustomPricing = callerRole == UserRole.Admin || callerRole == UserRole.SuperAdmin;
+
+                return Ok(await _reorderPreviewService.BuildAsync(orderId, allowCustomPricing));
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound(new { message = "Order not found." });
+            }
+            catch (InvalidOperationException ex)
             {
                 return BadRequest(new { message = ex.Message });
             }

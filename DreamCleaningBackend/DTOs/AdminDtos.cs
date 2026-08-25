@@ -410,8 +410,14 @@ namespace DreamCleaningBackend.DTOs
         public string FirstName { get; set; }
         [Required]
         public string LastName { get; set; }
-        /// <summary>Required unless NoEmail is true (validated in the controller — a placeholder is generated then).</summary>
-        [EmailAddress]
+        /// <summary>
+        /// Required unless NoEmail is true (validated in the controller — a placeholder is generated then).
+        /// FORMAT is deliberately validated in the controller too, via EmailAddressValidator, rather
+        /// than with [EmailAddress]: the attribute rejects through automatic model validation, whose
+        /// ValidationProblemDetails body carries no "message" property, so the admin panel showed the
+        /// bare "Http failure response ...: 400" instead of naming the missing "@". See
+        /// Helpers/EmailAddressValidator.cs.
+        /// </summary>
         public string? Email { get; set; }
         public string? Phone { get; set; }
         /// <summary>Customer has no email at all (cash customer). Phone becomes required; account cannot log in.</summary>
