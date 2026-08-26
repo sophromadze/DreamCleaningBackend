@@ -48,6 +48,52 @@ namespace DreamCleaningBackend.Controllers
         private decimal StripeFeePercent => _configuration.GetValue<decimal>("Stripe:FeePercent", 0.029m);
         private decimal StripeFixedFee => _configuration.GetValue<decimal>("Stripe:FixedFeePerOrder", 0.30m);
 
+        // ───── Retained sales tax (tax collected outside Stripe) ─────
+        // Sales tax charged on a Cash/Zelle/Check/Other payment is not remitted, so the reports
+        // count it as company revenue instead of as a pass-through. Everything a caller needs to
+        // decide that per order lives here; the arithmetic itself is OrderRevenueMath's.
+
+        /// <summary>
+        /// Tax added by each order's PAID edit top-ups, split by how that top-up was collected.
+        /// Key is the order id; ViaStripe/Outside are the summed NewTax − OriginalTax deltas.
+        /// A missing key simply means the order was never edited (or never topped up).
+        /// </summary>
+        /// <remarks>
+        /// The rows are grouped in memory rather than in SQL: one row per order EDIT is a small
+        /// set even over "all time", and a GroupBy on a computed boolean is the kind of thing that
+        /// silently falls back to client evaluation anyway.
+        /// </remarks>
+        private static async Task<Dictionary<int, (decimal ViaStripe, decimal Outside)>>
+            LoadAdditionalTaxByOrderAsync(IQueryable<Order> orders)
+        {
+            var rows = await orders
+                .SelectMany(o => o.UpdateHistory)
+                .Where(h => h.IsPaid)
+                .Select(h => new { h.OrderId, h.PaymentMethod, TaxDelta = h.NewTax - h.OriginalTax })
+                .ToListAsync();
+
+            return rows
+                .GroupBy(h => h.OrderId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => (
+                        ViaStripe: g.Where(h => h.PaymentMethod == PaymentMethod.Normal)
+                                    .Sum(h => h.TaxDelta),
+                        Outside: g.Where(h => h.PaymentMethod != PaymentMethod.Normal)
+                                  .Sum(h => h.TaxDelta)));
+        }
+
+        /// <summary>How much of one order's tax was collected outside Stripe.</summary>
+        private static decimal RetainedTaxFor(
+            Dictionary<int, (decimal ViaStripe, decimal Outside)> additionalTax,
+            int orderId,
+            decimal tax,
+            PaymentMethod paymentMethod)
+        {
+            additionalTax.TryGetValue(orderId, out var add);
+            return OrderRevenueMath.ResolveRetainedTax(tax, paymentMethod, add.ViaStripe, add.Outside);
+        }
+
         // ───── Statistics (SuperAdmin only) ─────
 
         [HttpGet("statistics")]
@@ -92,6 +138,7 @@ namespace DreamCleaningBackend.Controllers
             var rows = await query
                 .Select(o => new
                 {
+                    o.Id,
                     o.Status,
                     o.SubTotal,
                     o.DiscountAmount,
@@ -101,9 +148,12 @@ namespace DreamCleaningBackend.Controllers
                     o.Tips,
                     o.CompanyDevelopmentTips,
                     o.CleanerTotalSalary,
-                    o.TotalRefundedAmount
+                    o.TotalRefundedAmount,
+                    o.PaymentMethod
                 })
                 .ToListAsync();
+
+            var additionalTax = await LoadAdditionalTaxByOrderAsync(query);
 
             var money = rows
                 .Select(o => new
@@ -113,11 +163,14 @@ namespace DreamCleaningBackend.Controllers
                     Split = OrderRevenueMath.Split(
                         o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount,
                         o.LoyaltyDiscountAmount, o.Tax, o.Tips, o.CompanyDevelopmentTips,
-                        o.TotalRefundedAmount)
+                        o.TotalRefundedAmount,
+                        RetainedTaxFor(additionalTax, o.Id, o.Tax, o.PaymentMethod))
                 })
                 .ToList();
 
-            var totalRevenue = money.Sum(o => o.Split.Revenue);
+            // "Company Revenue" — the taxable revenue PLUS the sales tax that was collected
+            // outside Stripe and so never goes to the state. See OrderRevenueMath.
+            var totalRevenue = money.Sum(o => o.Split.ReportedRevenue);
             var totalSalary = money.Sum(o => o.CleanerTotalSalary);
 
             var stats = new OrderStatisticsDto
@@ -129,11 +182,14 @@ namespace DreamCleaningBackend.Controllers
                 TotalOrders = money.Count(o => !OrderStatuses.IsRefunded(o.Status)),
                 TotalAmount = totalRevenue,
                 TotalTaxes = money.Sum(o => o.Split.Tax),
+                TotalTaxRetained = money.Sum(o => o.Split.TaxRetained),
                 TotalTips = money.Sum(o => o.Split.Tips),
                 TotalDiscounts = money.Sum(o => o.Split.Discounts),
                 TotalCleanersSalary = totalSalary,
-                // Tax is NOT subtracted: it is charged on top of the price, so it was never part
-                // of TotalAmount in the first place. Subtracting it here used to double-count it.
+                // TotalTaxes is NOT subtracted: it is charged on top of the price, so it was never
+                // part of TotalAmount in the first place. Subtracting it here used to double-count
+                // it. TotalTaxRetained is the opposite case — it IS inside TotalAmount on purpose,
+                // because tax collected outside Stripe is never remitted and stays company money.
                 TotalCompanyRevenueGross = totalRevenue - totalSalary
             };
 
@@ -335,11 +391,14 @@ namespace DreamCleaningBackend.Controllers
                 })
                 .ToListAsync();
 
+            var additionalTax = await LoadAdditionalTaxByOrderAsync(query);
+
             // Same buckets the /statistics totals use, so a summed chart matches the cards.
             var moneyByOrder = orders.ToDictionary(o => o.Id, o => OrderRevenueMath.Split(
                 o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount,
                 o.LoyaltyDiscountAmount, o.Tax, o.Tips, o.CompanyDevelopmentTips,
-                o.TotalRefundedAmount));
+                o.TotalRefundedAmount,
+                RetainedTaxFor(additionalTax, o.Id, o.Tax, o.PaymentMethod)));
 
             // Per-order sum of additional amounts that were paid OUTSIDE Stripe (mirrors the
             // mixed-payment correction in /statistics). Subtracted from each order's Stripe-fee
@@ -390,7 +449,9 @@ namespace DreamCleaningBackend.Controllers
                                                  && !OrderStatuses.IsRefunded(o.Status))
                                         .Sum(o => BonusUsdFor(o.ServiceDate.Year, o.ServiceDate.Month));
                     var computed = stripeFees + adminBonuses;
-                    var revenue = g.Sum(o => moneyByOrder[o.Id].Revenue);
+                    // ReportedRevenue, not Revenue: sales tax collected outside Stripe is company
+                    // money (see OrderRevenueMath), so it rides inside Amount rather than Taxes.
+                    var revenue = g.Sum(o => moneyByOrder[o.Id].ReportedRevenue);
                     var salary = g.Sum(o => o.CleanerTotalSalary);
                     return new DailyStatisticsDto
                     {
@@ -398,6 +459,7 @@ namespace DreamCleaningBackend.Controllers
                         Orders = g.Count(o => !OrderStatuses.IsRefunded(o.Status)),
                         Amount = revenue,
                         Taxes = g.Sum(o => moneyByOrder[o.Id].Tax),
+                        TaxRetained = g.Sum(o => moneyByOrder[o.Id].TaxRetained),
                         Tips = g.Sum(o => moneyByOrder[o.Id].Tips),
                         CleanersSalary = salary,
                         StripeFees = stripeFees,

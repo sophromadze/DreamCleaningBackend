@@ -876,15 +876,31 @@ namespace DreamCleaningBackend.DTOs
     ///
     /// Sales tax is deliberately NOT part of that formula. It is charged on top of the price,
     /// so it never sat inside TotalAmount — it is collected for the state and reported on its
-    /// own. Every money figure here comes from OrderRevenueMath.Split, which means
-    /// TotalTaxes is always exactly OrderPricingCalculator.SalesTaxRate × TotalAmount.
+    /// own. Every money figure here comes from OrderRevenueMath.Split.
+    ///
+    /// The exception is TotalTaxRetained (2026-08): sales tax charged on a payment collected
+    /// OUTSIDE Stripe (Cash/Zelle/Check/Other) is not remitted, so it counts as company money
+    /// and is reported INSIDE TotalAmount, with TotalTaxes carrying only the remitted part.
+    /// TotalTaxes + TotalTaxRetained is the whole tax the customers were charged, and it is
+    /// that SUM — not TotalTaxes alone — that is SalesTaxRate × (TotalAmount − TotalTaxRetained).
     /// </remarks>
     public class OrderStatisticsDto
     {
         public int TotalOrders { get; set; }
-        /// <summary>Taxable cleaning revenue: subtotals after discounts, before tax, without tips, net of refunds.</summary>
+        /// <summary>
+        /// Taxable cleaning revenue (subtotals after discounts, before tax, without tips, net of
+        /// refunds) PLUS TotalTaxRetained — the sales tax collected outside Stripe, which the
+        /// company keeps. Shown as "Company Revenue".
+        /// </summary>
         public decimal TotalAmount { get; set; }
+        /// <summary>Sales tax owed to the state: the part collected through Stripe.</summary>
         public decimal TotalTaxes { get; set; }
+        /// <summary>
+        /// Sales tax charged on Cash/Zelle/Check/Other payments — never remitted, so it is
+        /// company money. ALREADY INCLUDED in TotalAmount; reported separately only so the page
+        /// can say how much of the revenue it is. Never add it to TotalAmount again.
+        /// </summary>
+        public decimal TotalTaxRetained { get; set; }
         public decimal TotalTips { get; set; }
         /// <summary>Promo/first-time + subscription + loyalty discounts granted. Informational only.</summary>
         public decimal TotalDiscounts { get; set; }
@@ -941,9 +957,15 @@ namespace DreamCleaningBackend.DTOs
     {
         public string Date { get; set; } = "";
         public int Orders { get; set; }
-        /// <summary>Taxable cleaning revenue: after discounts, before tax, without tips, net of refunds.</summary>
+        /// <summary>
+        /// Taxable cleaning revenue (after discounts, before tax, without tips, net of refunds)
+        /// plus TaxRetained — same basis as OrderStatisticsDto.TotalAmount.
+        /// </summary>
         public decimal Amount { get; set; }
+        /// <summary>Sales tax owed to the state: the part collected through Stripe.</summary>
         public decimal Taxes { get; set; }
+        /// <summary>Sales tax collected outside Stripe. ALREADY INSIDE Amount — never add it again.</summary>
+        public decimal TaxRetained { get; set; }
         public decimal Tips { get; set; }
         public decimal CleanersSalary { get; set; }
         // Expenses here is the GRAND total for the day (table + Stripe fees + admin bonuses),
