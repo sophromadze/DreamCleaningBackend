@@ -15,13 +15,20 @@ namespace DreamCleaningBackend.Services
     ///
     /// Three rules that must hold:
     ///
-    /// 1. The split is over the ASSIGNED cleaner count, not Order.MaidsCount. MaidsCount is what
-    ///    the job was priced for; the assignment list is who actually did it, and the payments
-    ///    page has to add up to what really leaves the company. When the two disagree the page
-    ///    warns rather than silently picking one.
-    /// 2. With NOBODY assigned there is no per-cleaner truth to sum, so the total falls back to
-    ///    the historical MaidsCount estimate. Returning 0 there would understate labour cost on
-    ///    every done-but-unassigned order and quietly inflate reported net income.
+    /// 1. **The work is split across <c>max(MaidsCount, assigned)</c> people, not across the
+    ///    assignment list.** Order.TotalDuration is TOTAL cleaner-minutes; an 18-hour job staffed
+    ///    for 3 is 6 hours each, and it stays 6 hours each when only 2 of those people exist in
+    ///    the system — the third cleaner still worked their 6 hours, they are just not recorded.
+    ///    Dividing by the assignment count instead produced 9 hours each, which never happened
+    ///    and overpaid the two who were recorded (found in production, 2026-08). Taking the
+    ///    LARGER of the two counts also keeps the arithmetic honest the other way round: three
+    ///    people on a job priced for two split it three ways rather than being paid 1.5× the job.
+    /// 2. **A staffing slot with nobody assigned is still a payout.** The shortfall is reported as
+    ///    <see cref="Result.UnassignedCount"/> lines at the same hours and rate, and they count
+    ///    toward the order's total. That is what keeps Order.CleanerTotalSalary equal to the
+    ///    labour cost of the job (3 × 6h × $25 = $450) whether or not the paperwork is complete —
+    ///    dropping them would understate cost on every under-assigned order and quietly inflate
+    ///    reported net income.
     /// 3. Overrides are NULL by default and null means "track the order". An override that
     ///    happens to equal the automatic figure is NOT the same thing — it stays put when the
     ///    order is re-priced.
@@ -62,20 +69,41 @@ namespace DreamCleaningBackend.Services
 
         public class Result
         {
+            /// <summary>One line per ASSIGNED cleaner — the people who can actually be paid.</summary>
             public List<CleanerLine> Lines { get; set; } = new();
 
             /// <summary>
-            /// What goes on Order.CleanerTotalSalary: the sum of the lines when anyone is
-            /// assigned, otherwise the MaidsCount estimate. Tips are NOT included — they are the
-            /// customer's money passing through and are reported separately everywhere.
+            /// What goes on Order.CleanerTotalSalary: every line PLUS every unassigned staffing
+            /// slot, so it equals the labour cost of the job whether or not the paperwork is
+            /// complete. Tips are NOT included — they are the customer's money passing through
+            /// and are reported separately everywhere.
             /// </summary>
             public decimal TotalSalary { get; set; }
 
             /// <summary>The even split every line falls back to, before any override.</summary>
             public decimal AutomaticBillableMinutes { get; set; }
 
-            /// <summary>How many cleaners the split was actually divided by.</summary>
+            /// <summary>How many assignment rows the order has.</summary>
             public int AssignedCount { get; set; }
+
+            /// <summary>
+            /// How many people the work was actually split across — <c>max(MaidsCount, assigned)</c>.
+            /// This, not the assignment count, is what "· 6h each cleaner" is derived from.
+            /// </summary>
+            public int SplitCount { get; set; }
+
+            /// <summary>
+            /// Staffing slots with nobody assigned (<c>SplitCount − AssignedCount</c>). Somebody
+            /// worked those hours; they are simply not in the system, so their pay is reported
+            /// rather than payable.
+            /// </summary>
+            public int UnassignedCount { get; set; }
+
+            /// <summary>What ONE unassigned slot is owed in wages.</summary>
+            public decimal UnassignedSalaryEach { get; set; }
+
+            /// <summary>Tips belonging to the unassigned slots, in total.</summary>
+            public decimal UnassignedTips { get; set; }
         }
 
         /// <summary>
@@ -94,13 +122,14 @@ namespace DreamCleaningBackend.Services
             var list = assignments ?? (IReadOnlyList<AssignmentInput>)Array.Empty<AssignmentInput>();
             var assignedCount = list.Count;
 
-            // Divide by who is actually assigned; with nobody assigned, fall back to the count the
-            // job was priced for so the automatic figure still means something.
-            var splitCount = assignedCount > 0 ? assignedCount : Math.Max(1, maidsCount);
+            var splitCount = ResolveSplitCount(maidsCount, assignedCount);
+
             var automaticMinutes = OrderPricingCalculator.CalculatePerCleanerBillableMinutes(
                 totalDuration, splitCount, hasCleanerService);
 
-            var tipShares = SplitTips(tips, assignedCount);
+            // Tips are shared by everyone who worked, so the shares are cut over the SPLIT count.
+            // Anything past the assigned lines belongs to the unassigned slots.
+            var tipShares = SplitTips(tips, splitCount);
 
             var lines = new List<CleanerLine>(assignedCount);
             for (var i = 0; i < assignedCount; i++)
@@ -122,16 +151,89 @@ namespace DreamCleaningBackend.Services
                 });
             }
 
+            var unassignedCount = Math.Max(0, splitCount - assignedCount);
+            var unassignedSalaryEach = OrderPricingCalculator.Round2(automaticMinutes / 60m * orderHourlyRate);
+            var unassignedTips = OrderPricingCalculator.Round2(tipShares.Skip(assignedCount).Sum());
+
             return new Result
             {
                 Lines = lines,
                 AssignedCount = assignedCount,
+                SplitCount = splitCount,
+                UnassignedCount = unassignedCount,
+                UnassignedSalaryEach = unassignedCount > 0 ? unassignedSalaryEach : 0m,
+                UnassignedTips = unassignedTips,
                 AutomaticBillableMinutes = automaticMinutes,
-                TotalSalary = assignedCount > 0
-                    ? OrderPricingCalculator.Round2(lines.Sum(l => l.Salary))
-                    : OrderPricingCalculator.CalculateCleanerTotalSalary(
-                        totalDuration, maidsCount, hasCleanerService, orderHourlyRate)
+                // The unassigned slots count toward the order's labour cost — somebody worked
+                // those hours. Dropping them would understate every under-assigned order.
+                TotalSalary = OrderPricingCalculator.Round2(
+                    lines.Sum(l => l.Salary) + unassignedCount * unassignedSalaryEach)
             };
+        }
+
+        /// <summary>
+        /// How many people the work is spread across: the count the job was STAFFED for,
+        /// widened if more people turned out to be assigned than it was priced for. See rule 1
+        /// in the class comment for why it is not simply the assignment count.
+        ///
+        /// SINGLE source, mirrored by <c>resolveCleanerSplitCount</c> in
+        /// order-pricing.calculator.ts. Every surface that divides a duration or a salary
+        /// across cleaners must use it — the admin orders panel used bare MaidsCount, so an
+        /// order priced for 2 but staffed with 3 showed "6h per cleaner" next to an Outgoing
+        /// Payments page paying each of them for 4h.
+        /// </summary>
+        public static int ResolveSplitCount(int maidsCount, int assignedCount) =>
+            Math.Max(1, Math.Max(maidsCount, assignedCount));
+
+        /// <summary>
+        /// Does this order carry a cleaner-hours service (cleaners × hours picked by the
+        /// customer)? SINGLE in-memory implementation of that test — it decides whether
+        /// Order.TotalDuration is already per-cleaner or has to be divided, so two callers
+        /// answering it differently is a 2× error in somebody's hours.
+        ///
+        /// It reads <c>ServiceRelationType</c>, which is what the pricing calculator, the
+        /// scheduling conflict math, OrderDtoMapper and the Outgoing Payments page all read.
+        /// EmailService used to ask a DIFFERENT column here — <c>ServiceKey</c> containing
+        /// "cleaner" — which happens to agree on the seeded row (key "cleaners", relation
+        /// "cleaner") and therefore never showed up in dev, but the two are independent
+        /// admin-editable fields and production catalogue keys are known to drift from the
+        /// seed. Whenever they disagreed, the cleaner assignment email would divide a duration
+        /// the payroll page did not (or the reverse) and tell the cleaner half or double the
+        /// hours they were actually being paid for.
+        ///
+        /// EF cannot translate this into SQL — call sites that need it inside a query keep
+        /// their own <c>ServiceRelationType == "cleaner"</c> predicate expression.
+        /// Requires OrderServices → Service to be loaded.
+        /// </summary>
+        public static bool HasCleanerHoursService(Order order) =>
+            order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") ?? false;
+
+        /// <summary>
+        /// The billable minutes ONE named cleaner is owed on this order — their per-cleaner
+        /// override when an admin set one, otherwise the automatic split.
+        ///
+        /// This is what a cleaner must be TOLD in their assignment email/SMS, because it is
+        /// exactly what the Outgoing Payments page will pay them. Computing the hours straight
+        /// from <see cref="OrderPricingCalculator.CalculatePerCleanerBillableMinutes"/> at the
+        /// notification site instead was wrong in two reachable ways (2026-08): it divided by
+        /// <c>MaidsCount</c> rather than the <c>max(MaidsCount, assigned)</c> the payroll
+        /// splits by, so a third cleaner assigned to a job priced for two was told half the
+        /// job when they would be paid a third of it; and it could not see a per-cleaner hours
+        /// override, so a resent mail contradicted the figure the owner had already signed off.
+        ///
+        /// Requires OrderServices → Service and OrderCleaners to be loaded. A cleaner with no
+        /// assignment row (or a null id) gets the automatic split, which is the right answer
+        /// for a notification going out before the row exists.
+        /// </summary>
+        public static decimal ResolveBillableMinutesForCleaner(Order order, int? cleanerId)
+        {
+            var payroll = Build(order, HasCleanerHoursService(order), order.OrderCleaners);
+
+            var line = cleanerId.HasValue
+                ? payroll.Lines.FirstOrDefault(l => l.CleanerId == cleanerId.Value)
+                : null;
+
+            return line?.BillableMinutes ?? payroll.AutomaticBillableMinutes;
         }
 
         /// <summary>

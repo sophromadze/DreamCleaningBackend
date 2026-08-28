@@ -9,7 +9,7 @@ namespace DreamCleaningBackend.Tests
     /// these tests pin the keyword matching against the names that actually exist in the catalog.
     ///
     /// Owner's rates (2026-08): regular 20, deep 21, move in/out 21, office 20, custom 20,
-    /// post construction 21, heavy 25, filthy 28.
+    /// post construction 25, heavy 25, filthy 28.
     ///
     /// The frontend mirror (getDefaultCleanerHourlyRate in order-pricing.calculator.ts) must stay
     /// in step with every case below.
@@ -37,11 +37,19 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(21m, OrderPricingCalculator.GetDefaultCleanerHourlyRate(DeepFee, "Residential Cleaning"));
         }
 
-        /// <summary>A custom order labelled "Deep" pays the deep rate off the label alone.</summary>
-        [Fact]
-        public void CustomOrderLabelledDeep_PaysTheMidRate()
+        /// <summary>
+        /// A Custom ("Pre-Arranged") order labelled "Deep" carries NO deep-cleaning extra — that
+        /// extra is deliberately filtered out of the custom extras grid — so the fee is 0 and the
+        /// rate has to come off the NAME. It used to fall through to the $20 base and then warn
+        /// the owner that his own correct $21 order was wrong (found in production, 2026-08).
+        /// </summary>
+        [Theory]
+        [InlineData("Deep")]
+        [InlineData("Deep Cleaning")]
+        [InlineData("Super Deep Cleaning")]
+        public void ADeepLabelWithNoDeepExtra_StillPaysTheMidRate(string serviceTypeName)
         {
-            Assert.Equal(21m, OrderPricingCalculator.GetDefaultCleanerHourlyRate(DeepFee, "Deep"));
+            Assert.Equal(21m, OrderPricingCalculator.GetDefaultCleanerHourlyRate(NoDeepFee, serviceTypeName));
         }
 
         [Theory]
@@ -53,23 +61,12 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(21m, OrderPricingCalculator.GetDefaultCleanerHourlyRate(NoDeepFee, serviceTypeName));
         }
 
-        /// <summary>
-        /// Post construction used to share the heavy-condition top rate. It pays the MID rate now
-        /// (owner's call, 2026-08) — this test is the record of that, so a future "tidy-up" that
-        /// folds it back in with heavy fails here instead of quietly overpaying every build-out job.
-        /// </summary>
-        [Theory]
-        [InlineData("Post Construction Cleaning")]
-        [InlineData("post-construction cleaning")]
-        public void PostConstruction_PaysTheMidRate(string serviceTypeName)
-        {
-            Assert.Equal(21m, OrderPricingCalculator.GetDefaultCleanerHourlyRate(NoDeepFee, serviceTypeName));
-        }
-
         [Theory]
         [InlineData("Heavy Condition Cleaning")]
         [InlineData("Heavy Conditional Cleaning")]
-        public void HeavyCondition_PaysTheTopRate(string serviceTypeName)
+        [InlineData("Post Construction Cleaning")]
+        [InlineData("post-construction cleaning")]
+        public void HeavyConditionAndPostConstruction_PayTheTopRate(string serviceTypeName)
         {
             Assert.Equal(25m, OrderPricingCalculator.GetDefaultCleanerHourlyRate(NoDeepFee, serviceTypeName));
         }

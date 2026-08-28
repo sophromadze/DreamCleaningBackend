@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 using Xunit;
 
@@ -64,25 +65,58 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(60.00m, result.TotalSalary);
         }
 
-        // ===== The split is over the ASSIGNED cleaners =====
+        // ===== The split follows the count the job was STAFFED for =====
 
         /// <summary>
-        /// An order priced for 2 maids that only one cleaner turned up to pays that one cleaner
-        /// for the WHOLE job. Splitting by MaidsCount would show — and pay — half.
+        /// The production case that exposed this (2026-08): an 18-hour Heavy job staffed for 3
+        /// cleaners, only 2 of whom exist in the system. Each of them worked SIX hours, not nine.
+        /// The third cleaner worked their six hours too — they are simply not on file — so the
+        /// shortfall is reported as an unassigned slot and still counts toward the order's cost.
+        ///
+        /// Dividing by the assignment count instead produced 9h each and paid $225 a head against
+        /// an order whose stored labour cost was $450.
         /// </summary>
         [Fact]
-        public void OneCleanerOnATwoMaidOrder_IsPaidForTheWholeJob()
+        public void AnUnderAssignedJob_StillPaysEachCleanerTheirStaffedShare()
+        {
+            var result = CleanerPayrollCalculator.Build(
+                totalDuration: 1080m, maidsCount: 3, hasCleanerService: false,
+                orderHourlyRate: 25m, tips: 0m, assignments: Assignments(2));
+
+            Assert.All(result.Lines, l => Assert.Equal(360m, l.BillableMinutes));   // 6h, not 9h
+            Assert.All(result.Lines, l => Assert.Equal(150.00m, l.Salary));
+
+            Assert.Equal(3, result.SplitCount);
+            Assert.Equal(1, result.UnassignedCount);
+            Assert.Equal(150.00m, result.UnassignedSalaryEach);
+
+            // 2 × $150 paid out + $150 owed to somebody not on file = the order's real cost.
+            Assert.Equal(450.00m, result.TotalSalary);
+        }
+
+        /// <summary>
+        /// An order priced for 2 with only one cleaner assigned pays that cleaner HALF the job —
+        /// their own share — and reports the other half as an unassigned slot.
+        /// </summary>
+        [Fact]
+        public void OneCleanerOnATwoMaidOrder_IsPaidTheirOwnShareOnly()
         {
             var result = CleanerPayrollCalculator.Build(
                 totalDuration: 540m, maidsCount: 2, hasCleanerService: false,
                 orderHourlyRate: 21m, tips: 0m, assignments: Assignments(1));
 
-            Assert.Equal(540m, Assert.Single(result.Lines).BillableMinutes);
+            Assert.Equal(270m, Assert.Single(result.Lines).BillableMinutes);
+            Assert.Equal(94.50m, result.Lines[0].Salary);
+            Assert.Equal(1, result.UnassignedCount);
+            Assert.Equal(94.50m, result.UnassignedSalaryEach);
             Assert.Equal(189.00m, result.TotalSalary);
-            Assert.Equal(1, result.AssignedCount);
         }
 
-        /// <summary>Three cleaners on a two-maid order split it three ways.</summary>
+        /// <summary>
+        /// The other direction: MORE people assigned than the job was priced for. The split widens
+        /// to the assignment count so the shares still add up to the job, rather than paying three
+        /// people a two-way share each.
+        /// </summary>
         [Fact]
         public void ThreeCleanersOnATwoMaidOrder_SplitThreeWays()
         {
@@ -91,16 +125,18 @@ namespace DreamCleaningBackend.Tests
                 orderHourlyRate: 20m, tips: 0m, assignments: Assignments(3));
 
             Assert.All(result.Lines, l => Assert.Equal(180m, l.BillableMinutes));
+            Assert.Equal(3, result.SplitCount);
+            Assert.Equal(0, result.UnassignedCount);
             Assert.Equal(180.00m, result.TotalSalary);
         }
 
         /// <summary>
-        /// With nobody assigned there is no per-cleaner truth to sum, so the order keeps the
-        /// MaidsCount estimate. Zeroing it would understate labour cost on every done-but-
-        /// unassigned order and inflate reported net income.
+        /// With nobody assigned the whole job is unassigned slots — reported, counted, unpayable.
+        /// The total still equals the MaidsCount estimate, because zeroing it would understate
+        /// labour cost on every done-but-unassigned order and inflate reported net income.
         /// </summary>
         [Fact]
-        public void NoCleanersAssigned_KeepsTheMaidsCountEstimate()
+        public void NoCleanersAssigned_ReportsEveryStaffingSlotAndKeepsTheCost()
         {
             var result = CleanerPayrollCalculator.Build(
                 totalDuration: 540m, maidsCount: 2, hasCleanerService: false,
@@ -108,10 +144,28 @@ namespace DreamCleaningBackend.Tests
                 assignments: new List<CleanerPayrollCalculator.AssignmentInput>());
 
             Assert.Empty(result.Lines);
+            Assert.Equal(2, result.UnassignedCount);
+            Assert.Equal(94.50m, result.UnassignedSalaryEach);
             Assert.Equal(
                 OrderPricingCalculator.CalculateCleanerTotalSalary(540m, 2, false, 21m),
                 result.TotalSalary);
             Assert.Equal(189.00m, result.TotalSalary);
+        }
+
+        /// <summary>
+        /// Tips are cut over everyone who worked, so an unassigned slot holds a share too — and
+        /// the assigned shares plus the unassigned ones still re-add to the order's tips exactly.
+        /// </summary>
+        [Fact]
+        public void TipsAreSharedAcrossTheStaffedCount_NotJustTheAssignedOne()
+        {
+            var result = CleanerPayrollCalculator.Build(
+                totalDuration: 1080m, maidsCount: 3, hasCleanerService: false,
+                orderHourlyRate: 25m, tips: 30m, assignments: Assignments(2));
+
+            Assert.All(result.Lines, l => Assert.Equal(10.00m, l.Tips));
+            Assert.Equal(10.00m, result.UnassignedTips);
+            Assert.Equal(30.00m, result.Lines.Sum(l => l.Tips) + result.UnassignedTips);
         }
 
         // ===== Per-cleaner overrides drive the order total =====
@@ -321,6 +375,133 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(157.50m, one);
             Assert.Equal(147.00m, two);
             Assert.True(two <= one);
+        }
+
+        /// <summary>
+        /// The hours on a payout line are the DISPLAYED total divided by the split count, so
+        /// the panel's "12h total" and its "6h each" are the same arithmetic (2026-08).
+        ///
+        /// The order that exposed it stored 710 minutes and was staffed for 2: the page showed
+        /// "12h total" beside "5h 30m per cleaner" and paid $231.00, and nobody could reconcile
+        /// the two numbers on screen. Dividing the rounded total pays what 12h at $21 actually
+        /// costs.
+        /// </summary>
+        [Fact]
+        public void PayoutLines_SplitTheDisplayedTotal_NotTheRawMinutes()
+        {
+            var result = CleanerPayrollCalculator.Build(
+                totalDuration: 710m, maidsCount: 2, hasCleanerService: false,
+                orderHourlyRate: 21m, tips: 0m, assignments: Assignments(2));
+
+            Assert.Equal(360m, result.AutomaticBillableMinutes);
+            Assert.All(result.Lines, l => Assert.Equal(126.00m, l.Salary));
+            Assert.Equal(252.00m, result.TotalSalary);
+        }
+
+        /// <summary>
+        /// An unassigned staffing slot is paid the same share as a named cleaner, so the
+        /// rounded-total split has to reach it too — otherwise an under-staffed order's
+        /// reported labour cost would disagree with the identical fully-staffed one.
+        /// </summary>
+        [Fact]
+        public void UnassignedSlots_UseTheSameDisplayedTotalSplit()
+        {
+            var result = CleanerPayrollCalculator.Build(
+                totalDuration: 710m, maidsCount: 2, hasCleanerService: false,
+                orderHourlyRate: 21m, tips: 0m, assignments: Assignments(1));
+
+            Assert.Equal(1, result.UnassignedCount);
+            Assert.Equal(126.00m, result.UnassignedSalaryEach);
+            Assert.Equal(252.00m, result.TotalSalary);
+        }
+
+        // ===== The hours a cleaner is TOLD must be the hours they are PAID (2026-08) =====
+
+        private static Order OrderWith(
+            decimal totalDuration, int maidsCount, string? relationType = null,
+            string serviceKey = "bedrooms", params OrderCleaner[] cleaners)
+        {
+            var order = new Order
+            {
+                Id = 1,
+                TotalDuration = totalDuration,
+                MaidsCount = maidsCount,
+                CleanerHourlyRate = 21m,
+                Tips = 0m
+            };
+
+            order.OrderServices.Add(new DreamCleaningBackend.Models.OrderService
+            {
+                Service = new Service { Name = "S", ServiceKey = serviceKey, ServiceRelationType = relationType }
+            });
+
+            foreach (var c in cleaners) order.OrderCleaners.Add(c);
+            return order;
+        }
+
+        private static OrderCleaner Assigned(int id, decimal? minutes = null) =>
+            new() { Id = id, CleanerId = id, SalaryBillableMinutes = minutes };
+
+        /// <summary>
+        /// The assignment mail/SMS quotes the payroll line, not a fresh split off MaidsCount.
+        ///
+        /// The work is spread over max(MaidsCount, assigned), so a third cleaner turning up on
+        /// a job priced for two is paid a THIRD of it. Re-deriving the hours at the
+        /// notification site divided by MaidsCount and told all three of them a half — 6h each
+        /// against the 4h each the Outgoing Payments page would pay.
+        /// </summary>
+        [Fact]
+        public void AssignmentNotification_QuotesTheHoursTheCleanerIsActuallyPaidFor()
+        {
+            var order = OrderWith(720m, 2, cleaners: new[] { Assigned(1), Assigned(2), Assigned(3) });
+
+            var payroll = CleanerPayrollCalculator.Build(
+                order, CleanerPayrollCalculator.HasCleanerHoursService(order), order.OrderCleaners);
+
+            Assert.Equal(3, payroll.SplitCount);
+            Assert.Equal(240m, payroll.AutomaticBillableMinutes);
+
+            // What the mail now says — the same 4h, for every one of the three.
+            foreach (var id in new[] { 1, 2, 3 })
+                Assert.Equal(240m, CleanerPayrollCalculator.ResolveBillableMinutesForCleaner(order, id));
+        }
+
+        /// <summary>
+        /// A per-cleaner hours override is a figure the owner signed off on. A resent
+        /// assignment mail must repeat it, not the automatic split it replaced.
+        /// </summary>
+        [Fact]
+        public void AssignmentNotification_HonoursAPerCleanerHoursOverride()
+        {
+            var order = OrderWith(720m, 2, cleaners: new[] { Assigned(1, minutes: 300m), Assigned(2) });
+
+            Assert.Equal(300m, CleanerPayrollCalculator.ResolveBillableMinutesForCleaner(order, 1));
+            Assert.Equal(360m, CleanerPayrollCalculator.ResolveBillableMinutesForCleaner(order, 2));
+
+            // Not yet assigned (notification racing the row): the automatic split is right.
+            Assert.Equal(360m, CleanerPayrollCalculator.ResolveBillableMinutesForCleaner(order, null));
+        }
+
+        /// <summary>
+        /// "Is TotalDuration already per-cleaner?" is read off ServiceRelationType, the column
+        /// the pricing calculator and the payments page use. EmailService used to ask whether
+        /// ServiceKey CONTAINED "cleaner" instead — the two agree on the seeded row (key
+        /// "cleaners", relation "cleaner") and so never diverged in dev, but they are
+        /// independent admin-editable fields. Whenever they disagreed the mail divided a
+        /// duration the payroll did not, quoting half or double the real hours.
+        /// </summary>
+        [Fact]
+        public void CleanerHoursServiceIsReadFromTheRelationType_NotTheServiceKey()
+        {
+            // Relation says cleaner-hours; the key does not mention cleaners at all.
+            var byRelation = OrderWith(360m, 2, relationType: "cleaner", serviceKey: "hourly_team");
+            Assert.True(CleanerPayrollCalculator.HasCleanerHoursService(byRelation));
+            Assert.Equal(360m, CleanerPayrollCalculator.ResolveBillableMinutesForCleaner(byRelation, null));
+
+            // The key mentions cleaners; the relation says this is an ordinary priced service.
+            var byKeyOnly = OrderWith(360m, 2, relationType: null, serviceKey: "extra_cleaners");
+            Assert.False(CleanerPayrollCalculator.HasCleanerHoursService(byKeyOnly));
+            Assert.Equal(180m, CleanerPayrollCalculator.ResolveBillableMinutesForCleaner(byKeyOnly, null));
         }
     }
 }

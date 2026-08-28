@@ -71,8 +71,8 @@ namespace DreamCleaningBackend.Services
 
         /// <summary>
         /// Default cleaner hourly rates. Regular residential (and office, and an unrecognised
-        /// custom label) is the base; deep/super-deep, move in/out and post-construction pay the
-        /// mid rate; heavy-condition pays the top rate and a filthy job pays the highest.
+        /// custom label) is the base; deep/super-deep and move in/out pay the mid rate;
+        /// heavy-condition and post-construction pay the top rate; a filthy job pays the highest.
         /// Mirrored by *_CLEANER_HOURLY_RATE in order-pricing.calculator.ts.
         /// </summary>
         public const decimal RegularCleanerHourlyRate = 20m;
@@ -874,10 +874,16 @@ namespace DreamCleaningBackend.Services
             if (name.Contains("filthy"))
                 return FilthyCleanerHourlyRate;
 
-            if (name.Contains("heavy"))
+            if (name.Contains("heavy") || name.Contains("post construction"))
                 return HeavyDutyCleanerHourlyRate;
 
-            if (name.Contains("post construction") || name.Contains("move"))
+            // "deep" is matched on the NAME as well as on the fee. A Custom ("Pre-Arranged")
+            // order labelled "Deep" carries no deep-cleaning extra — that extra is deliberately
+            // filtered out of the custom extras grid — so the fee is 0 and the rate used to fall
+            // through to the $20 base, which then warned the owner that his own $21 order was
+            // wrong. The label is the truth for a custom order, so it is read here.
+            // "Super Deep" contains "deep" and is meant to match: it pays the same mid rate.
+            if (name.Contains("move") || name.Contains("deep"))
                 return DeepCleaningCleanerHourlyRate;
 
             return deepCleaningFee > 0m ? DeepCleaningCleanerHourlyRate : RegularCleanerHourlyRate;
@@ -901,32 +907,48 @@ namespace DreamCleaningBackend.Services
         /// Only cleaner-hours service types store TotalDuration as per-cleaner; everything
         /// else (including Custom Pricing) stores it as TOTAL across all maids and we divide.
         ///
-        /// The split rounds DOWN, and that is the whole point. Rounding each share to the
-        /// NEAREST increment and then multiplying back by the cleaner count inflated payroll
-        /// purely because an admin raised the count: a 456-minute job paid 450 min (7h30) at
-        /// 1 cleaner but 2 × 240 min (2 × 4h) at 2 cleaners, +$10.50 for identical work.
-        /// Flooring makes the paid total a multiple of the increment that is always ≤ the
-        /// raw total, so raising MaidsCount can never increase what we pay out.
+        /// **The DISPLAYED total is what gets divided, not the raw one (2026-08).** Every
+        /// surface shows the order's total rounded to the nearest increment, so the split has
+        /// to start from that same figure or two labels sitting side by side contradict each
+        /// other: a raw 710-minute job read "12h total · 5h 30m per cleaner" at 2 cleaners,
+        /// because the 12h came from rounding 710 UP to 720 while the share came from
+        /// flooring 710 / 2 = 355 DOWN to 330. Dividing the rounded total gives 720 / 2 = 360
+        /// — "12h total · 6h per cleaner", arithmetic an admin can check by halving.
+        ///
+        /// The split itself still rounds DOWN, and that is the whole point. Rounding each
+        /// share to the NEAREST increment and then multiplying back by the cleaner count
+        /// inflated payroll purely because an admin raised the count: a 456-minute job paid
+        /// 450 min (7h30) at 1 cleaner but 2 × 240 min (2 × 4h) at 2 cleaners, +$10.50 for
+        /// identical work. Flooring keeps the paid total a multiple of the increment that is
+        /// always ≤ the rounded total, so raising MaidsCount can never increase what we pay
+        /// out. The consequence the owner accepted (2026-08) is that an UNEVEN split still
+        /// pays slightly under the displayed total — 11h30 across 2 cleaners is 5h30 each,
+        /// not 5h45 — because clean half-hour labels were worth more than exactness.
         /// </summary>
         public static decimal CalculatePerCleanerBillableMinutes(
             decimal totalDuration, int maidsCount, bool hasCleanerService)
         {
             var maids = Math.Max(1, maidsCount);
 
-            // Already per-cleaner (cleaner-hours types), or nothing to split: keep the
-            // historical Nearest behaviour so single-cleaner orders are untouched.
+            // The figure every surface prints as the order's total. Dividing THIS is what
+            // keeps "X total · Y per cleaner" internally consistent.
+            var roundedTotal = DurationUtils.RoundToIncrement(
+                totalDuration, DurationRoundingMinutes, DurationRounding.Nearest);
+
+            // Already per-cleaner (cleaner-hours types), or nothing to split.
             if (hasCleanerService || maids == 1)
-                return DurationUtils.RoundToIncrement(
-                    totalDuration, DurationRoundingMinutes, DurationRounding.Nearest);
+                return roundedTotal;
 
             var floored = DurationUtils.RoundToIncrement(
-                totalDuration / maids, DurationRoundingMinutes, DurationRounding.Down);
+                roundedTotal / maids, DurationRoundingMinutes, DurationRounding.Down);
 
             // Never floor a real job down to zero pay: with more cleaners than there are
             // half-hours of work (6 cleaners on a 1h job) the share floors to 0. Pay one
             // increment instead. This is the ONE case where the never-raises guarantee can
-            // be exceeded, and $0 payroll is the worse failure.
-            return totalDuration > 0m && floored <= 0m ? DurationRoundingMinutes : floored;
+            // be exceeded, and $0 payroll is the worse failure. The shortest job this system
+            // can quote is 2h30 (studio, one bathroom), so it takes more than 5 cleaners on
+            // a single order before this can fire at all.
+            return roundedTotal > 0m && floored <= 0m ? DurationRoundingMinutes : floored;
         }
 
         /// <summary>

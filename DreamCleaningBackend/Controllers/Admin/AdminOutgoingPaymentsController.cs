@@ -176,6 +176,43 @@ namespace DreamCleaningBackend.Controllers
             return Ok(order);
         }
 
+        /// <summary>
+        /// Marks ONE unassigned staffing slot paid — the person who worked the job but is not in
+        /// the system. Addressed by slot index, since there is no assignment id to use.
+        /// </summary>
+        [HttpPost("order/{orderId}/unassigned/{slotIndex}/pay")]
+        public async Task<ActionResult<OutgoingPaymentOrderDto>> MarkUnassignedSlotPaid(
+            int orderId, int slotIndex, [FromBody] MarkCleanerPaidDto? dto)
+        {
+            var order = await _service.MarkUnassignedSlotPaidAsync(
+                orderId, slotIndex, dto ?? new MarkCleanerPaidDto(), GetCurrentUserId());
+
+            if (order == null)
+                return NotFound(new { message = "That order has no unassigned payout in that position." });
+
+            _logger.LogInformation(
+                "Unassigned payout recorded: order {OrderId}, slot {SlotIndex}, by user {UserId}",
+                orderId, slotIndex, GetCurrentUserId());
+
+            return Ok(order);
+        }
+
+        /// <summary>Undoes a payout recorded against an unassigned staffing slot.</summary>
+        [HttpPost("order/{orderId}/unassigned/{slotIndex}/unpay")]
+        public async Task<ActionResult<OutgoingPaymentOrderDto>> UndoUnassignedSlotPayment(int orderId, int slotIndex)
+        {
+            var order = await _service.UndoUnassignedSlotPaymentAsync(orderId, slotIndex);
+
+            if (order == null)
+                return NotFound(new { message = "There is no recorded payout in that position." });
+
+            _logger.LogInformation(
+                "Unassigned payout REVERSED: order {OrderId}, slot {SlotIndex}, by user {UserId}",
+                orderId, slotIndex, GetCurrentUserId());
+
+            return Ok(order);
+        }
+
         /// <summary>Undoes a payout marking — for the case where it was ticked by mistake.</summary>
         [HttpPost("order/{orderId}/cleaner/{orderCleanerId}/unpay")]
         public async Task<ActionResult<OutgoingPaymentOrderDto>> UndoCleanerPayment(int orderId, int orderCleanerId)

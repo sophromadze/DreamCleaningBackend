@@ -298,6 +298,10 @@ namespace DreamCleaningBackend.Models
         // Add to existing Order model
         public virtual ICollection<OrderCleaner> OrderCleaners { get; set; } = new List<OrderCleaner>();
 
+        // Payout records for staffing slots with no cleaner assigned — the third person on a
+        // 3-cleaner job who is not in the system. See OrderUnassignedPayout.
+        public virtual ICollection<OrderUnassignedPayout> UnassignedPayouts { get; set; } = new List<OrderUnassignedPayout>();
+
         [Column(TypeName = "decimal(18,2)")]
         public decimal InitialSubTotal { get; set; }
 

@@ -894,13 +894,12 @@ namespace DreamCleaningBackend.Services
             var cleanerAdditionalInstructions = assignment?.TipsForCleaner;
             var cleanerLanguage = ResolveCleanerLanguage(assignment?.Cleaner?.Nationality);
 
-            bool hasCleanersService = order.OrderServices.Any(os =>
-                os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
-
-            // Same per-cleaner minutes the salary is computed from, so the hours a cleaner is
-            // told they'll work always match the hours they're paid for.
-            decimal durationPerCleaner = OrderPricingCalculator.CalculatePerCleanerBillableMinutes(
-                order.TotalDuration, order.MaidsCount, hasCleanersService);
+            // THE hours this cleaner will be paid for, straight off the payroll calculator —
+            // the same object the Outgoing Payments page renders. Never re-derive them here:
+            // this has to honour the max(MaidsCount, assigned) split and any per-cleaner hours
+            // override, or the mail contradicts the panel the admin is looking at.
+            decimal durationPerCleaner = CleanerPayrollCalculator.ResolveBillableMinutesForCleaner(
+                order, assignment?.CleanerId);
 
             var formattedDuration = FormatDurationLocalized((int)durationPerCleaner, cleanerLanguage);
 
@@ -1172,12 +1171,10 @@ namespace DreamCleaningBackend.Services
             var assignment = order.OrderCleaners.FirstOrDefault(oc => oc.CleanerId == cleaner.Id);
             var cleanerAdditionalInstructions = assignment?.TipsForCleaner;
 
-            bool hasCleanersService = order.OrderServices.Any(os =>
-                os.Service.ServiceKey != null && os.Service.ServiceKey.ToLower().Contains("cleaner"));
-            // Same per-cleaner minutes the salary is computed from, so the hours a cleaner is
-            // told they'll work always match the hours they're paid for.
-            decimal durationPerCleaner = OrderPricingCalculator.CalculatePerCleanerBillableMinutes(
-                order.TotalDuration, order.MaidsCount, hasCleanersService);
+            // THE hours this cleaner will be paid for — see the email path above; the SMS must
+            // not answer this question differently from the mail it stands in for.
+            decimal durationPerCleaner = CleanerPayrollCalculator.ResolveBillableMinutesForCleaner(
+                order, cleaner.Id);
             var formattedDuration = FormatDurationLocalized((int)durationPerCleaner, language);
 
             var hasCleaningSupplies = order.OrderExtraServices

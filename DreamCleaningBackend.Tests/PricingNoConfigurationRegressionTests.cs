@@ -274,6 +274,59 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(30m, OrderPricingCalculator.CalculatePerCleanerBillableMinutes(60m, 6, false));
         }
 
+        /// <summary>
+        /// The per-cleaner share is cut from the total the admin can SEE, not from the raw
+        /// stored minutes (2026-08).
+        ///
+        /// Reported against a real order: 710 stored minutes with 2 cleaners rendered
+        /// "12h total · 5h 30m per cleaner". Neither half was wrong on its own — the 12h
+        /// rounded 710 to the NEAREST increment (720), the share floored 710 / 2 = 355 down
+        /// to 330 — but side by side they read as arithmetic that does not work, because
+        /// halving the only total on screen gives 6h. The split now starts from the same
+        /// rounded figure every surface prints, so the label survives being checked by hand.
+        /// </summary>
+        [Fact]
+        public void PerCleanerSplit_DividesTheDisplayedTotal_NotTheRawMinutes()
+        {
+            // The total every surface shows for this order.
+            Assert.Equal(720m, DurationUtils.RoundToIncrement(
+                710m, OrderPricingCalculator.DurationRoundingMinutes, DurationRounding.Nearest));
+
+            // ...and therefore the share, and the money it explains. Was 330m / $231.00.
+            Assert.Equal(360m, OrderPricingCalculator.CalculatePerCleanerBillableMinutes(710m, 2, false));
+            Assert.Equal(252.00m, OrderPricingCalculator.CalculateCleanerTotalSalary(710m, 2, false, 21m));
+
+            // A single cleaner is unaffected: there is nothing to divide, and rounding the
+            // total to the nearest increment is what that case always did.
+            Assert.Equal(720m, OrderPricingCalculator.CalculatePerCleanerBillableMinutes(710m, 1, false));
+
+            // An UNEVEN split still rounds DOWN — the owner chose clean half-hour labels over
+            // exactness (2026-08). 11h30 across 2 cleaners is 5h30 each, not 5h45, so the
+            // paid total sits half an hour under the displayed one. Deliberate, not drift.
+            Assert.Equal(330m, OrderPricingCalculator.CalculatePerCleanerBillableMinutes(690m, 2, false));
+            Assert.Equal(180m, OrderPricingCalculator.CalculatePerCleanerBillableMinutes(600m, 3, false));
+
+            // The general guarantee that replaces exactness: over the whole grid the shares
+            // never add up to MORE than the total on screen. Only the documented zero-pay
+            // guard may exceed it, so shares that floor to nothing are skipped.
+            for (var total = 60m; total <= 1200m; total += 1m)
+            {
+                var shown = DurationUtils.RoundToIncrement(
+                    total, OrderPricingCalculator.DurationRoundingMinutes, DurationRounding.Nearest);
+
+                for (var maids = 2; maids <= 6; maids++)
+                {
+                    if (shown / maids < OrderPricingCalculator.DurationRoundingMinutes) continue;
+
+                    var paidFor = maids * OrderPricingCalculator.CalculatePerCleanerBillableMinutes(
+                        total, maids, false);
+
+                    Assert.True(paidFor <= shown,
+                        $"{total} min shown as {shown} paid {maids} cleaners for {paidFor} min");
+                }
+            }
+        }
+
         [Fact]
         public void ChatQuotedDuration_MatchesTheBookingPage()
         {

@@ -61,8 +61,14 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>The even per-cleaner split every line falls back to, before any override.</summary>
         public decimal AutomaticMinutesPerCleaner { get; set; }
 
-        /// <summary>What the job was PRICED for. Compared against the assignment count for the mismatch warning.</summary>
+        /// <summary>What the job was PRICED for.</summary>
         public int MaidsCount { get; set; }
+
+        /// <summary>
+        /// How many people the work was split across — <c>max(MaidsCount, assigned)</c>. This is
+        /// what "· 6h each cleaner" is derived from, NOT the assignment count.
+        /// </summary>
+        public int SplitCount { get; set; }
 
         /// <summary>The order's default hourly rate — what a line with no override is paid at.</summary>
         public decimal OrderHourlyRate { get; set; }
@@ -78,6 +84,18 @@ namespace DreamCleaningBackend.DTOs
 
         public List<OutgoingPaymentCleanerDto> Cleaners { get; set; } = new();
 
+        /// <summary>
+        /// Staffing slots nobody is assigned to. Somebody worked those hours — they are just not
+        /// in the system — so their pay is reported here at the same hours and rate, counted in
+        /// TotalSalary/TotalPayout, and CAN be marked paid like any other line (the record lives
+        /// on OrderUnassignedPayout, keyed by SlotIndex, since there is no cleaner to key on).
+        ///
+        /// Kept OUT of <see cref="Cleaners"/> so that anything walking the assignment list —
+        /// per-cleaner rate/hours edits, cleaner-name search — cannot trip over a line with no
+        /// cleaner behind it. IsFullyPaid deliberately spans BOTH lists.
+        /// </summary>
+        public List<OutgoingPaymentCleanerDto> UnassignedCleaners { get; set; } = new();
+
         /// <summary>Human-readable problems a SuperAdmin should look at before paying. Never blocks paying.</summary>
         public List<string> Warnings { get; set; } = new();
 
@@ -91,10 +109,24 @@ namespace DreamCleaningBackend.DTOs
     /// <summary>What one cleaner is owed for one order, and whether they have had it.</summary>
     public class OutgoingPaymentCleanerDto
     {
+        /// <summary>0 on an unassigned slot — there is no assignment row behind it.</summary>
         public int OrderCleanerId { get; set; }
         public int CleanerId { get; set; }
         public string FirstName { get; set; } = string.Empty;
         public string LastName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// True for a staffing slot with nobody assigned. The figures are real — somebody worked
+        /// those hours — and the slot CAN be marked paid; it just cannot have its rate or hours
+        /// edited, because there is no per-cleaner record to hang an override on.
+        /// </summary>
+        public bool IsUnassigned { get; set; }
+
+        /// <summary>
+        /// Unassigned slots only: which slot this is, 0-based. This is what the pay/unpay
+        /// endpoints address the line by, in place of an assignment id.
+        /// </summary>
+        public int SlotIndex { get; set; }
 
         /// <summary>The cleaner's saved payout method — a hint for whoever sends the money.</summary>
         public CleanerPaymentMethod? PaymentMethod { get; set; }

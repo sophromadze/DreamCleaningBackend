@@ -16,9 +16,12 @@ namespace DreamCleaningBackend.Services
     /// hourly rate comes from <see cref="OrderPricingCalculator.GetDefaultCleanerHourlyRate"/> so a
     /// rate somebody set wrong shows up as a warning instead of as a wrong payment.
     ///
-    /// Which orders qualify: <see cref="OrderStatuses.WasPerformed"/> — Done, plus an order that
-    /// was Done and later fully refunded. The customer's money going back does not un-work the
-    /// cleaner's day, and that pay is still owed.
+    /// Which orders qualify: <b>Done, with no refund of any size</b> (owner's call, 2026-08).
+    /// Cancelled, fully refunded and part-refunded orders are all out — the page is a list of
+    /// finished jobs to settle, and an order whose money went back is a conversation rather than
+    /// a routine payout. The trade-off is that a cleaner who worked a later-refunded job has to be
+    /// settled outside this page; widening the predicate in PerformedOrdersWithIncludes is the
+    /// one-line change if that turns out to matter.
     /// </summary>
     public class OutgoingPaymentService : IOutgoingPaymentService
     {
@@ -40,7 +43,7 @@ namespace DreamCleaningBackend.Services
             var filtered = query.PaidStatus switch
             {
                 OutgoingPaymentPaidStatus.Unpaid => rows.Where(r => !r.IsFullyPaid).ToList(),
-                OutgoingPaymentPaidStatus.Paid => rows.Where(r => r.IsFullyPaid && r.Cleaners.Count > 0).ToList(),
+                OutgoingPaymentPaidStatus.Paid => rows.Where(r => r.IsFullyPaid).ToList(),
                 _ => rows
             };
 
@@ -192,6 +195,59 @@ namespace DreamCleaningBackend.Services
                 MarkPaid(assignment, line, null, dto.PaymentNote, paidByUserId);
             }
 
+            // "Everyone on this order" includes the staffing slots with nobody on file — they
+            // were paid too, and leaving them out would make "mark all paid" a lie.
+            var unassignedPayout = UnassignedSlotPayout(payroll);
+            for (var slot = 0; slot < payroll.UnassignedCount; slot++)
+                MarkSlotPaid(ResolveSlotRecord(order, slot), unassignedPayout, null, dto.PaymentNote, paidByUserId);
+
+            order.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+            return BuildOrderRow(order);
+        }
+
+        /// <summary>
+        /// Marks ONE unassigned staffing slot paid. The slot has no cleaner record, so the payout
+        /// row is created here on first use rather than existing up front — see
+        /// <see cref="OrderUnassignedPayout"/> for why the table holds decisions, not arithmetic.
+        /// </summary>
+        public async Task<OutgoingPaymentOrderDto?> MarkUnassignedSlotPaidAsync(
+            int orderId, int slotIndex, MarkCleanerPaidDto dto, int paidByUserId)
+        {
+            var order = await PerformedOrdersWithIncludes()
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null) return null;
+
+            ApplyOrderTotalSalary(order);
+            var payroll = BuildPayroll(order);
+
+            if (slotIndex < 0 || slotIndex >= payroll.UnassignedCount) return null;
+
+            MarkSlotPaid(ResolveSlotRecord(order, slotIndex), UnassignedSlotPayout(payroll),
+                dto.PaidVia, dto.PaymentNote, paidByUserId);
+
+            order.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+            return BuildOrderRow(order);
+        }
+
+        /// <summary>Reverses a payout recorded against an unassigned staffing slot.</summary>
+        public async Task<OutgoingPaymentOrderDto?> UndoUnassignedSlotPaymentAsync(int orderId, int slotIndex)
+        {
+            var order = await PerformedOrdersWithIncludes()
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null) return null;
+
+            var record = order.UnassignedPayouts.FirstOrDefault(p => p.SlotIndex == slotIndex);
+            if (record == null) return null;
+
+            record.IsPaid = false;
+            record.PaidAmount = null;
+            record.PaidVia = null;
+            record.PaidAt = null;
+            record.PaidByUserId = null;
+            record.PaymentNote = null;
+
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
             return BuildOrderRow(order);
@@ -225,6 +281,46 @@ namespace DreamCleaningBackend.Services
 
         // ===== internals =====
 
+        /// <summary>What ONE unassigned slot is handed: its wages plus its share of the tips.</summary>
+        private static decimal UnassignedSlotPayout(CleanerPayrollCalculator.Result payroll) =>
+            payroll.UnassignedCount == 0
+                ? 0m
+                : OrderPricingCalculator.Round2(
+                    payroll.UnassignedSalaryEach + payroll.UnassignedTips / payroll.UnassignedCount);
+
+        /// <summary>
+        /// The payout row for one slot, created on first use. Attaching it to the order's loaded
+        /// collection (rather than to the DbSet) keeps BuildOrderRow's view of the order correct
+        /// in the same request, without a reload.
+        /// </summary>
+        private OrderUnassignedPayout ResolveSlotRecord(Order order, int slotIndex)
+        {
+            var record = order.UnassignedPayouts.FirstOrDefault(p => p.SlotIndex == slotIndex);
+            if (record != null) return record;
+
+            record = new OrderUnassignedPayout { OrderId = order.Id, SlotIndex = slotIndex };
+            order.UnassignedPayouts.Add(record);
+            _context.OrderUnassignedPayouts.Add(record);
+            return record;
+        }
+
+        private static void MarkSlotPaid(
+            OrderUnassignedPayout record,
+            decimal payout,
+            CleanerPaymentMethod? paidVia,
+            string? note,
+            int paidByUserId)
+        {
+            if (record.IsPaid) return;
+
+            record.IsPaid = true;
+            record.PaidAmount = payout;
+            record.PaidVia = paidVia;
+            record.PaidAt = DateTime.UtcNow;
+            record.PaidByUserId = paidByUserId;
+            record.PaymentNote = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+        }
+
         private static void MarkPaid(
             OrderCleaner assignment,
             CleanerPayrollCalculator.CleanerLine? line,
@@ -254,8 +350,17 @@ namespace DreamCleaningBackend.Services
                     .ThenInclude(oc => oc.Cleaner)
                 .Include(o => o.OrderCleaners)
                     .ThenInclude(oc => oc.PaidByUser)
-                .Where(o => o.Status == OrderStatuses.Done
-                            || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done));
+                .Include(o => o.UnassignedPayouts)
+                    .ThenInclude(p => p.PaidByUser)
+                // DONE, and not refunded in any amount. Anything cancelled, fully refunded or
+                // part-refunded is out (owner's call, 2026-08): the page is a list of finished
+                // jobs to settle, and an order whose money went back is a conversation, not a
+                // routine payout.
+                //
+                // The consequence is deliberate and worth knowing: a cleaner who worked a job that
+                // was later part-refunded will not appear here, so that payout has to be handled
+                // outside the page. Widening this back out is a one-line change if that bites.
+                .Where(o => o.Status == OrderStatuses.Done && o.TotalRefundedAmount <= 0);
 
         private async Task<List<Order>> LoadPerformedOrdersAsync(OutgoingPaymentQuery query)
         {
@@ -297,8 +402,11 @@ namespace DreamCleaningBackend.Services
                 .ToListAsync();
         }
 
+        // Single-sourced so this page and the cleaner assignment mail cannot answer
+        // "is TotalDuration already per-cleaner?" differently — that disagreement is a 2×
+        // error in the hours a cleaner is quoted against the hours this page pays them.
         private static bool HasCleanerService(Order order) =>
-            order.OrderServices.Any(os => os.Service?.ServiceRelationType == "cleaner");
+            CleanerPayrollCalculator.HasCleanerHoursService(order);
 
         private static CleanerPayrollCalculator.Result BuildPayroll(Order order) =>
             CleanerPayrollCalculator.Build(order, HasCleanerService(order), order.OrderCleaners);
@@ -368,8 +476,55 @@ namespace DreamCleaningBackend.Services
                 };
             }).ToList();
 
+            // One reported line per staffing slot nobody is assigned to. The figures are real —
+            // somebody worked those hours — so they are shown and counted; they simply cannot be
+            // paid, because there is no person on file to pay.
+            var slotRecords = order.UnassignedPayouts.ToDictionary(p => p.SlotIndex);
+
+            var unassigned = new List<OutgoingPaymentCleanerDto>(payroll.UnassignedCount);
+            for (var i = 0; i < payroll.UnassignedCount; i++)
+            {
+                var tipShare = payroll.UnassignedCount == 0
+                    ? 0m
+                    : OrderPricingCalculator.Round2(payroll.UnassignedTips / payroll.UnassignedCount);
+
+                // A slot only has a row once somebody has acted on it; until then it is unpaid.
+                slotRecords.TryGetValue(i, out var record);
+
+                unassigned.Add(new OutgoingPaymentCleanerDto
+                {
+                    // SlotIndex travels in CleanerId's place — it is the id the pay/unpay
+                    // endpoints address this line by. OrderCleanerId stays 0: there is no
+                    // assignment row, and anything keying off it must not mistake this for one.
+                    OrderCleanerId = 0,
+                    CleanerId = i,
+                    SlotIndex = i,
+                    IsUnassigned = true,
+                    FirstName = "Unassigned cleaner",
+                    LastName = string.Empty,
+                    BillableMinutes = payroll.AutomaticBillableMinutes,
+                    HourlyRate = order.CleanerHourlyRate,
+                    RateDiffersFromDefault = order.CleanerHourlyRate != expectedRate,
+                    Salary = payroll.UnassignedSalaryEach,
+                    Tips = tipShare,
+                    Payout = OrderPricingCalculator.Round2(payroll.UnassignedSalaryEach + tipShare),
+                    IsPaid = record?.IsPaid ?? false,
+                    PaidAmount = record?.PaidAmount,
+                    PaidVia = record?.PaidVia,
+                    PaidAt = record?.PaidAt,
+                    PaidByName = record?.PaidByUser != null
+                        ? $"{record.PaidByUser.FirstName} {record.PaidByUser.LastName}".Trim()
+                        : null,
+                    PaymentNote = record?.PaymentNote
+                });
+            }
+
             var totalSalary = payroll.TotalSalary;
-            var totalPayout = OrderPricingCalculator.Round2(cleaners.Sum(c => c.Payout));
+
+            // Wages + the customer's tips, ALWAYS — including the unassigned slots. An order
+            // nobody was assigned to still cost the company money, and reporting its payout as
+            // $0 in the list made it look like there was nothing to settle.
+            var totalPayout = OrderPricingCalculator.Round2(totalSalary + order.Tips);
 
             var row = new OutgoingPaymentOrderDto
             {
@@ -399,14 +554,20 @@ namespace DreamCleaningBackend.Services
                 TotalDuration = order.TotalDuration,
                 AutomaticMinutesPerCleaner = payroll.AutomaticBillableMinutes,
                 MaidsCount = order.MaidsCount,
+                SplitCount = payroll.SplitCount,
                 OrderHourlyRate = order.CleanerHourlyRate,
                 ExpectedHourlyRate = expectedRate,
                 TotalSalary = totalSalary,
                 TotalPayout = totalPayout,
                 Cleaners = cleaners,
-                IsFullyPaid = cleaners.Count > 0 && cleaners.All(c => c.IsPaid),
-                IsPartiallyPaid = cleaners.Any(c => c.IsPaid) && cleaners.Any(c => !c.IsPaid)
+                UnassignedCleaners = unassigned
             };
+
+            // Paid state spans BOTH lists. An unassigned slot is a real payout that can be
+            // recorded, so an order is only "Paid" once every line — named or not — is settled.
+            var allLines = cleaners.Concat(unassigned).ToList();
+            row.IsFullyPaid = allLines.Count > 0 && allLines.All(c => c.IsPaid);
+            row.IsPartiallyPaid = allLines.Any(c => c.IsPaid) && allLines.Any(c => !c.IsPaid);
 
             row.Warnings = BuildWarnings(order, row, expectedRate);
             return row;
@@ -421,13 +582,6 @@ namespace DreamCleaningBackend.Services
         private static List<string> BuildWarnings(Order order, OutgoingPaymentOrderDto row, decimal expectedRate)
         {
             var warnings = new List<string>();
-
-            if (row.Cleaners.Count == 0)
-            {
-                warnings.Add("No cleaners are assigned to this order, so nobody can be paid for it. "
-                    + $"The reported labour cost is still the estimate for {Math.Max(1, order.MaidsCount)} cleaner(s).");
-                return warnings;
-            }
 
             // The rate warning is per DISTINCT rate: with mixed rates on one job, naming each one
             // is what tells the reader whether the odd one out was deliberate.
@@ -445,10 +599,28 @@ namespace DreamCleaningBackend.Services
                     + "Check whether this was intentional before paying.");
             }
 
-            if (row.Cleaners.Count != order.MaidsCount)
+            // Under-staffed on paper: those people worked and are owed, but there is no cleaner
+            // record naming them. The per-cleaner HOURS are unaffected — the split follows the
+            // count the job was staffed for — so this is about who, not about how much.
+            if (row.UnassignedCleaners.Count > 0)
             {
-                warnings.Add($"{row.Cleaners.Count} cleaner(s) assigned but the order was priced for {order.MaidsCount}. "
-                    + "Pay is split across the assigned cleaners, so the per-cleaner hours differ from the booking.");
+                var slots = row.UnassignedCleaners.Count;
+                warnings.Add(row.Cleaners.Count == 0
+                    ? $"Nobody on this order is in the system. It was staffed for {row.SplitCount} cleaner(s), "
+                      + $"so ${row.TotalSalary:0.00} of wages is owed — the payouts can still be recorded, "
+                      + "but not against a name."
+                    : $"{row.Cleaners.Count} of {row.SplitCount} cleaner(s) are in the system. The other {slots} "
+                      + $"payout(s) of ${row.UnassignedCleaners[0].Payout:0.00} each can be recorded, but not "
+                      + "against a name — add a note saying who was paid.");
+            }
+
+            // Over-assigned: more people on the job than it was priced for, so the work divides
+            // further and everyone's share drops.
+            if (row.Cleaners.Count > order.MaidsCount && order.MaidsCount > 0)
+            {
+                warnings.Add($"{row.Cleaners.Count} cleaner(s) are assigned but the order was priced for "
+                    + $"{order.MaidsCount}. The hours are split {row.Cleaners.Count} ways, so each share is smaller "
+                    + "than the booking assumed.");
             }
 
             if (order.TotalDuration <= 0)
@@ -462,7 +634,10 @@ namespace DreamCleaningBackend.Services
 
         private static OutgoingPaymentSummaryDto BuildSummary(List<OutgoingPaymentOrderDto> rows)
         {
-            var lines = rows.SelectMany(r => r.Cleaners).ToList();
+            // Unassigned staffing slots are included: the money is owed whether or not there is a
+            // name on file, and a header that quietly omitted it would under-report what has to
+            // go out. They are never paid, so they always land in the unpaid bucket.
+            var lines = rows.SelectMany(r => r.Cleaners.Concat(r.UnassignedCleaners)).ToList();
 
             return new OutgoingPaymentSummaryDto
             {
@@ -510,5 +685,7 @@ namespace DreamCleaningBackend.Services
         Task<OutgoingPaymentOrderDto?> MarkCleanerPaidAsync(int orderId, int orderCleanerId, MarkCleanerPaidDto dto, int paidByUserId);
         Task<OutgoingPaymentOrderDto?> MarkOrderPaidAsync(int orderId, MarkOrderPaidDto dto, int paidByUserId);
         Task<OutgoingPaymentOrderDto?> UndoCleanerPaymentAsync(int orderId, int orderCleanerId);
+        Task<OutgoingPaymentOrderDto?> MarkUnassignedSlotPaidAsync(int orderId, int slotIndex, MarkCleanerPaidDto dto, int paidByUserId);
+        Task<OutgoingPaymentOrderDto?> UndoUnassignedSlotPaymentAsync(int orderId, int slotIndex);
     }
 }

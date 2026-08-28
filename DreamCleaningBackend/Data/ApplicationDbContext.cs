@@ -38,6 +38,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<UserSpecialOffer> UserSpecialOffers { get; set; }
         public DbSet<GiftCardConfig> GiftCardConfigs { get; set; }
         public DbSet<OrderCleaner> OrderCleaners { get; set; }
+        public DbSet<OrderUnassignedPayout> OrderUnassignedPayouts { get; set; }
         public DbSet<NotificationLog> NotificationLogs { get; set; }
         public DbSet<PollQuestion> PollQuestions { get; set; }
         public DbSet<PollSubmission> PollSubmissions { get; set; }
@@ -454,6 +455,29 @@ namespace DreamCleaningBackend.Data
                 // service date, then filters on paid/unpaid; this is the index that serves it.
                 entity.HasIndex(oc => oc.IsPaid)
                       .HasDatabaseName("IX_OrderCleaners_IsPaid");
+            });
+
+            // Payout records for staffing slots with no cleaner assigned. One row per slot the
+            // page has actually acted on; unacted slots have no row (see OrderUnassignedPayout).
+            modelBuilder.Entity<OrderUnassignedPayout>(entity =>
+            {
+                entity.HasKey(p => p.Id);
+
+                entity.HasOne(p => p.Order)
+                      .WithMany(o => o.UnassignedPayouts)
+                      .HasForeignKey(p => p.OrderId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(p => p.PaidByUser)
+                      .WithMany()
+                      .HasForeignKey(p => p.PaidByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                // One row per slot, enforced in the database: two concurrent "mark paid" clicks
+                // on the same slot must not become two payout records.
+                entity.HasIndex(p => new { p.OrderId, p.SlotIndex })
+                      .IsUnique()
+                      .HasDatabaseName("IX_OrderUnassignedPayouts_OrderId_SlotIndex");
             });
 
             // OrderUpdateHistory configuration
