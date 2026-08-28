@@ -27,6 +27,11 @@ namespace DreamCleaningBackend.DTOs
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
 
+        // How this cleaner is paid their wages. Both optional — the Outgoing Payments page
+        // treats them as a hint for whoever sends the money, never as a requirement.
+        public CleanerPaymentMethod? PaymentMethod { get; set; }
+        public string? PaymentDetails { get; set; }
+
         // Included in the list so the dashboard doesn't need an N+1 detail fetch per cleaner.
         public string? MainNote { get; set; }
     }
@@ -115,6 +120,13 @@ namespace DreamCleaningBackend.DTOs
         public string? MainNote { get; set; }
 
         public CleanerDocumentType? DocumentType { get; set; }
+
+        /// <summary>How this cleaner is paid their wages. Optional — blank is normal.</summary>
+        public CleanerPaymentMethod? PaymentMethod { get; set; }
+
+        /// <summary>Zelle number/email, who a check is written out to, and so on. Optional.</summary>
+        [StringLength(200)]
+        public string? PaymentDetails { get; set; }
     }
 
     public class UpdateCleanerDto : CreateCleanerDto

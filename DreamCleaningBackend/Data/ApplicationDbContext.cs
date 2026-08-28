@@ -442,6 +442,18 @@ namespace DreamCleaningBackend.Data
                       .WithMany()
                       .HasForeignKey(oc => oc.AssignedBy)
                       .OnDelete(DeleteBehavior.Restrict);
+
+                // Who marked this cleaner paid (Outgoing Payments). Restrict, like every other
+                // admin back-reference here — a payout record must outlive an admin account.
+                entity.HasOne(oc => oc.PaidByUser)
+                      .WithMany()
+                      .HasForeignKey(oc => oc.PaidByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                // The Outgoing Payments page pages through assignments by order status and
+                // service date, then filters on paid/unpaid; this is the index that serves it.
+                entity.HasIndex(oc => oc.IsPaid)
+                      .HasDatabaseName("IX_OrderCleaners_IsPaid");
             });
 
             // OrderUpdateHistory configuration

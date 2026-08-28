@@ -437,8 +437,14 @@ namespace DreamCleaningBackend.Services
             order.TotalDuration = quote.TotalDuration;
 
             // Recompute cleaner total salary so it stays in sync with the new duration/maids.
-            order.CleanerTotalSalary = OrderPricingCalculator.CalculateCleanerTotalSalary(
-                order.TotalDuration, order.MaidsCount, quote.HasCleanerService, order.CleanerHourlyRate);
+            // Routed through the payroll calculator, and the assignments are loaded rather than
+            // skipped on purpose: a customer editing their order must not silently revert a
+            // per-cleaner rate or hours a SuperAdmin set on the Outgoing Payments page.
+            var assignmentsForSalary = await _context.OrderCleaners
+                .Where(oc => oc.OrderId == order.Id)
+                .ToListAsync();
+            CleanerPayrollCalculator.ApplyOrderTotalSalary(
+                order, quote.HasCleanerService, assignmentsForSalary);
 
             // Recalculate totals. Edit flows rescale the ORIGINAL discounts server-side:
             // promo/subscription by the subtotal ratio, loyalty from the locked percentage
@@ -950,16 +956,35 @@ namespace DreamCleaningBackend.Services
                 order.CustomServiceDisplayName = string.IsNullOrWhiteSpace(trimmedName) ? null : trimmedName;
             }
 
-            // Auto-recalculate cleaner total salary when hourly rate or duration or maids count changes
-            if (dto.CleanerHourlyRate.HasValue || dto.TotalDuration.HasValue || dto.MaidsCount.HasValue)
+            // Cleaner total salary.
+            //
+            // Once ANYBODY is assigned, the per-cleaner lines are the truth and the total is
+            // summed from them — see CleanerPayrollCalculator. The client's CleanerTotalSalary is
+            // deliberately ignored in that case: the admin order editor computes it from
+            // MaidsCount and the order's single rate, which cannot express two cleaners paid
+            // differently, so honouring it would silently revert whatever a SuperAdmin set on the
+            // Outgoing Payments page every time somebody saved an unrelated edit.
+            //
+            // With nobody assigned there is nothing to sum, so the historical behaviour stands:
+            // an explicit figure wins, otherwise recompute from rate × duration × maids.
+            var assignmentsForSalary = await _context.OrderCleaners
+                .Where(oc => oc.OrderId == order.Id)
+                .ToListAsync();
+
+            if (assignmentsForSalary.Count > 0)
             {
-                // Only auto-recalculate if CleanerTotalSalary was NOT explicitly provided
+                bool hasCleanersService = order.OrderServices.Any(os =>
+                    os.Service?.ServiceRelationType == "cleaner");
+                CleanerPayrollCalculator.ApplyOrderTotalSalary(
+                    order, hasCleanersService, assignmentsForSalary);
+            }
+            else if (dto.CleanerHourlyRate.HasValue || dto.TotalDuration.HasValue || dto.MaidsCount.HasValue)
+            {
                 if (!dto.CleanerTotalSalary.HasValue)
                 {
                     bool hasCleanersService = order.OrderServices.Any(os =>
                         os.Service?.ServiceRelationType == "cleaner");
-                    order.CleanerTotalSalary = OrderPricingCalculator.CalculateCleanerTotalSalary(
-                        order.TotalDuration, order.MaidsCount, hasCleanersService, order.CleanerHourlyRate);
+                    CleanerPayrollCalculator.ApplyOrderTotalSalary(order, hasCleanersService, null);
                 }
             }
 

@@ -428,8 +428,10 @@ namespace DreamCleaningBackend.Services
                 : order.CustomServiceDisplayName;
             order.CleanerHourlyRate = OrderPricingCalculator.GetDefaultCleanerHourlyRate(
                 quote.DeepCleaningFee, rateServiceTypeName);
-            order.CleanerTotalSalary = OrderPricingCalculator.CalculateCleanerTotalSalary(
-                order.TotalDuration, order.MaidsCount, quote.HasCleanerService, order.CleanerHourlyRate);
+            // A brand-new order has no cleaner assignments yet, so this is the MaidsCount
+            // estimate by definition. It stops being an estimate the moment someone is assigned
+            // — see CleanerPayrollCalculator, which owns this column from then on.
+            CleanerPayrollCalculator.ApplyOrderTotalSalary(order, quote.HasCleanerService, null);
 
             // One transaction so order, special offer and gift card usage land together.
             using (var transaction = await _context.Database.BeginTransactionAsync())

@@ -77,6 +77,21 @@ namespace DreamCleaningBackend.Models
         [StringLength(2000)]
         public string? MainNote { get; set; }
 
+        /// <summary>
+        /// How this cleaner is paid their wages (Zelle / Cash / Check / Other). Optional — a
+        /// blank method is normal and never blocks a payout being recorded; it is a hint for
+        /// whoever sends the money on the Outgoing Payments page.
+        /// </summary>
+        public CleanerPaymentMethod? PaymentMethod { get; set; }
+
+        /// <summary>
+        /// The destination that goes with <see cref="PaymentMethod"/> — a Zelle phone/email, the
+        /// name a check is written out to, and so on. Free text on purpose: one field has to hold
+        /// all four methods' details, and none of them share a format worth validating.
+        /// </summary>
+        [StringLength(200)]
+        public string? PaymentDetails { get; set; }
+
         [StringLength(500)]
         public string? PhotoUrl { get; set; }
 

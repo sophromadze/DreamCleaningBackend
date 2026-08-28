@@ -193,6 +193,28 @@ namespace DreamCleaningBackend.Services
             return WallClockMinutes(order.TotalDuration, order.MaidsCount, hasCleanerService);
         }
 
+        /// <summary>
+        /// Refreshes Order.CleanerTotalSalary from the order's CURRENT assignment rows, through
+        /// CleanerPayrollCalculator. Called after every assign and unassign, because the labour
+        /// cost of a job depends on how many people did it — and Statistics/Finances read that
+        /// column straight off the order.
+        ///
+        /// Does not save; the caller owns the transaction.
+        /// </summary>
+        private async Task RecalculateOrderSalaryFromAssignmentsAsync(Order order)
+        {
+            var hasCleanersService = order.OrderServices != null && order.OrderServices.Count > 0
+                ? order.OrderServices.Any(os => os.Service?.ServiceRelationType == "cleaner")
+                : await _context.OrderServices
+                    .AnyAsync(os => os.OrderId == order.Id && os.Service.ServiceRelationType == "cleaner");
+
+            var assignments = await _context.OrderCleaners
+                .Where(oc => oc.OrderId == order.Id)
+                .ToListAsync();
+
+            CleanerPayrollCalculator.ApplyOrderTotalSalary(order, hasCleanersService, assignments);
+        }
+
         // Parses the CSV of DayOfWeek integers stored on Cleaner.BusyDaysOfWeek.
         public static HashSet<DayOfWeek> ParseBusyDaysOfWeek(string? csv)
         {
@@ -337,14 +359,12 @@ namespace DreamCleaningBackend.Services
                         + string.Join(", ", conflicts) + ".");
                 }
 
-                // Update hourly rate and recalculate total salary if provided
+                // Update the order's default hourly rate if provided. The TOTAL is recomputed
+                // further down, AFTER the assignment rows exist — the payroll total is the sum
+                // over assigned cleaners, so computing it here would divide by the old count.
                 if (dto.CleanerHourlyRate.HasValue)
                 {
                     order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
-                    bool hasCleanersService = order.OrderServices.Any(os =>
-                        os.Service?.ServiceRelationType == "cleaner");
-                    order.CleanerTotalSalary = OrderPricingCalculator.CalculateCleanerTotalSalary(
-                        order.TotalDuration, order.MaidsCount, hasCleanersService, order.CleanerHourlyRate);
                 }
 
                 // DON'T remove existing assignments - just add new ones or update existing ones
@@ -400,6 +420,15 @@ namespace DreamCleaningBackend.Services
                 }
 
                 await _context.SaveChangesAsync();
+
+                // Now that the assignment rows exist, resolve the order's labour cost from them.
+                // Assigning a second cleaner changes what the job costs (the duration splits
+                // across two people), so this has to run on every assign, not only when a rate
+                // was passed. CleanerPayrollCalculator honours any per-cleaner override already
+                // recorded on the Outgoing Payments page.
+                await RecalculateOrderSalaryFromAssignmentsAsync(order);
+                await _context.SaveChangesAsync();
+
                 await transaction.CommitAsync();
 
                 return true;
@@ -461,6 +490,11 @@ namespace DreamCleaningBackend.Services
                 _context.NotificationLogs.RemoveRange(staleNotifications);
             }
 
+            await _context.SaveChangesAsync();
+
+            // Removing a cleaner changes what the job costs — the duration now splits across one
+            // fewer person — so the order's labour cost is re-resolved from what is left.
+            await RecalculateOrderSalaryFromAssignmentsAsync(assignment.Order);
             await _context.SaveChangesAsync();
 
             // OPTIMIZED: Send removal notification in background (fire and forget)

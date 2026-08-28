@@ -70,13 +70,15 @@ namespace DreamCleaningBackend.Services
         public const decimal ExtraCleanersPerMaidMinimumMinutes = 150m;
 
         /// <summary>
-        /// Default cleaner hourly rates. Regular residential is the base; deep/super-deep and
-        /// move in/out pay the mid rate; heavy-condition and post-construction pay the top rate.
+        /// Default cleaner hourly rates. Regular residential (and office, and an unrecognised
+        /// custom label) is the base; deep/super-deep, move in/out and post-construction pay the
+        /// mid rate; heavy-condition pays the top rate and a filthy job pays the highest.
         /// Mirrored by *_CLEANER_HOURLY_RATE in order-pricing.calculator.ts.
         /// </summary>
         public const decimal RegularCleanerHourlyRate = 20m;
         public const decimal DeepCleaningCleanerHourlyRate = 21m;
         public const decimal HeavyDutyCleanerHourlyRate = 25m;
+        public const decimal FilthyCleanerHourlyRate = 28m;
 
         /// <summary>The extra service that adds cleaners is identified by name, like the booking page does.</summary>
         public const string ExtraCleanersName = "Extra Cleaners";
@@ -850,20 +852,32 @@ namespace DreamCleaningBackend.Services
         /// Default cleaner hourly rate for an order, matched on the EFFECTIVE service-type name
         /// (i.e. the custom "Pre-Arranged" label when there is one — see GetDisplayServiceTypeName)
         /// and, for residential, on whether the deep-cleaning extra was picked:
-        ///   heavy condition / post construction → 25, move in/out → 21,
-        ///   residential deep / super-deep → 21, everything else → 20.
-        /// The rate is only a DEFAULT — admins can override it per order in the orders panel, and
-        /// order edits never reset an overridden value.
+        ///   filthy → 28, heavy condition → 25, post construction / move in/out → 21,
+        ///   residential deep / super-deep → 21, everything else (regular, office, and an
+        ///   unrecognised custom label) → 20.
+        ///
+        /// The keyword ORDER is the contract, not an accident. A label reading "Heavy / Filthy"
+        /// must pay the filthy rate, so filthy is tested first; and post construction is tested
+        /// on its own line because it used to share the heavy rate and deliberately no longer
+        /// does (owner's rates, 2026-08).
+        ///
+        /// The rate is only a DEFAULT — admins override it per order in the orders panel and per
+        /// CLEANER on the Outgoing Payments page, and order edits never reset an overridden
+        /// value. That page warns whenever the rate actually in force differs from what this
+        /// returns, which is how a mis-set rate gets caught before anybody is paid.
         /// Mirrored by getDefaultCleanerHourlyRate in order-pricing.calculator.ts.
         /// </summary>
         public static decimal GetDefaultCleanerHourlyRate(decimal deepCleaningFee, string? serviceTypeName = null)
         {
             var name = NormalizeServiceTypeName(serviceTypeName);
 
-            if (name.Contains("heavy") || name.Contains("post construction"))
+            if (name.Contains("filthy"))
+                return FilthyCleanerHourlyRate;
+
+            if (name.Contains("heavy"))
                 return HeavyDutyCleanerHourlyRate;
 
-            if (name.Contains("move"))
+            if (name.Contains("post construction") || name.Contains("move"))
                 return DeepCleaningCleanerHourlyRate;
 
             return deepCleaningFee > 0m ? DeepCleaningCleanerHourlyRate : RegularCleanerHourlyRate;

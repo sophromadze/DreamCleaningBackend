@@ -69,7 +69,9 @@ namespace DreamCleaningBackend.Services
                 PhotoUrl = c.PhotoUrl,
                 IsActive = c.IsActive,
                 CreatedAt = c.CreatedAt,
-                MainNote = c.MainNote
+                MainNote = c.MainNote,
+                PaymentMethod = c.PaymentMethod,
+                PaymentDetails = c.PaymentDetails
             }).ToList();
         }
 
@@ -183,6 +185,8 @@ namespace DreamCleaningBackend.Services
                 Restrictions = dto.Restrictions,
                 MainNote = dto.MainNote,
                 DocumentType = dto.DocumentType,
+                PaymentMethod = dto.PaymentMethod,
+                PaymentDetails = dto.PaymentDetails,
                 IsActive = true,
                 CreatedAt = DateTime.UtcNow,
                 CreatedByAdminId = adminId
@@ -228,6 +232,8 @@ namespace DreamCleaningBackend.Services
             cleaner.Restrictions = dto.Restrictions;
             cleaner.MainNote = dto.MainNote;
             cleaner.DocumentType = dto.DocumentType;
+            cleaner.PaymentMethod = dto.PaymentMethod;
+            cleaner.PaymentDetails = dto.PaymentDetails;
             cleaner.IsActive = dto.IsActive;
             cleaner.UpdatedAt = DateTime.UtcNow;
 
@@ -528,6 +534,8 @@ namespace DreamCleaningBackend.Services
                 MainNote = cleaner.MainNote,
                 DocumentUrl = cleaner.DocumentUrl,
                 DocumentType = cleaner.DocumentType,
+                PaymentMethod = cleaner.PaymentMethod,
+                PaymentDetails = cleaner.PaymentDetails,
                 CreatedAt = cleaner.CreatedAt,
                 UpdatedAt = cleaner.UpdatedAt,
                 CreatedByAdminId = cleaner.CreatedByAdminId,
