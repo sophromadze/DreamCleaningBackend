@@ -541,19 +541,11 @@ namespace DreamCleaningBackend.Controllers
             if (targetUser == null)
                 return NotFound();
 
-            // Create audit copy
-            var originalUser = new User
-            {
-                Id = targetUser.Id,
-                FirstName = targetUser.FirstName,
-                LastName = targetUser.LastName,
-                Email = targetUser.Email,
-                Phone = targetUser.Phone,
-                Role = targetUser.Role,
-                IsActive = targetUser.IsActive,
-                AuthProvider = targetUser.AuthProvider,
-                FirstTimeOrder = targetUser.FirstTimeOrder
-            };
+            // FULL scalar snapshot, never a hand-picked subset: the "after" side is the live
+            // entity, so every field a partial copy missed was recorded as a change from its CLR
+            // default - and Undo replays those defaults, which on a User means blanking
+            // PasswordHash. See AuditSnapshot.
+            var originalUser = AuditSnapshot.Of(targetUser);
 
             // Cleaner role is deprecated — cleaners are managed via the standalone Cleaners table/dashboard.
             if (string.Equals(dto.Role, "Cleaner", StringComparison.OrdinalIgnoreCase))
@@ -610,15 +602,8 @@ namespace DreamCleaningBackend.Controllers
                 return NotFound();
 
             // Audit copy (captures the ViewablePages diff via the generic User update log).
-            var originalUser = new User
-            {
-                Id = targetUser.Id,
-                FirstName = targetUser.FirstName,
-                LastName = targetUser.LastName,
-                Email = targetUser.Email,
-                Role = targetUser.Role,
-                ViewablePages = targetUser.ViewablePages
-            };
+            // Full scalar snapshot - see AuditSnapshot for why a hand-picked subset is a bug.
+            var originalUser = AuditSnapshot.Of(targetUser);
 
             List<string> saved;
             try
@@ -661,15 +646,8 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "Direct order-edit saves can only be granted to users with the Admin role." });
 
             // Audit copy (captures the flag diff via the generic User update log).
-            var originalUser = new User
-            {
-                Id = targetUser.Id,
-                FirstName = targetUser.FirstName,
-                LastName = targetUser.LastName,
-                Email = targetUser.Email,
-                Role = targetUser.Role,
-                CanEditOrdersWithoutApproval = targetUser.CanEditOrdersWithoutApproval
-            };
+            // Full scalar snapshot - see AuditSnapshot for why a hand-picked subset is a bug.
+            var originalUser = AuditSnapshot.Of(targetUser);
 
             targetUser.CanEditOrdersWithoutApproval = dto.CanEditOrdersWithoutApproval;
             targetUser.UpdatedAt = DateTime.UtcNow;
@@ -735,19 +713,8 @@ namespace DreamCleaningBackend.Controllers
             if (targetUser == null)
                 return NotFound();
 
-            // Create audit copy
-            var originalUser = new User
-            {
-                Id = targetUser.Id,
-                FirstName = targetUser.FirstName,
-                LastName = targetUser.LastName,
-                Email = targetUser.Email,
-                Phone = targetUser.Phone,
-                Role = targetUser.Role,
-                IsActive = targetUser.IsActive,
-                AuthProvider = targetUser.AuthProvider,
-                FirstTimeOrder = targetUser.FirstTimeOrder
-            };
+            // Full scalar snapshot - see AuditSnapshot for why a hand-picked subset is a bug.
+            var originalUser = AuditSnapshot.Of(targetUser);
 
             var currentUserRole = GetCurrentUserRole();
             var targetUserRole = targetUser.Role;
@@ -824,13 +791,10 @@ namespace DreamCleaningBackend.Controllers
                 return NotFound();
 
             // Full scalar snapshot BEFORE mutating, so the audit diff lists only the flag fields
-            // (GetChangedFields reflects over every scalar property).
-            var originalUser = new User();
-            foreach (var p in typeof(User).GetProperties().Where(p => p.CanRead && p.CanWrite))
-            {
-                if (p.GetGetMethod()?.IsVirtual == true) continue; // skip navigation properties
-                try { p.SetValue(originalUser, p.GetValue(targetUser)); } catch { /* skip */ }
-            }
+            // (GetChangedFields reflects over every scalar property). This used to be an inline
+            // reflection loop; it is now the shared AuditSnapshot so there is exactly one
+            // implementation for every call site to reach for.
+            var originalUser = AuditSnapshot.Of(targetUser);
 
             var currentUserId = int.Parse(User.FindFirst("UserId")?.Value ?? "0");
 
@@ -885,21 +849,8 @@ namespace DreamCleaningBackend.Controllers
             if (currentUserRole == UserRole.Admin && targetUser.Role == UserRole.SuperAdmin)
                 return BadRequest(new { message = "Admins cannot modify SuperAdmin users" });
 
-            var originalUser = new User
-            {
-                Id = targetUser.Id,
-                FirstName = targetUser.FirstName,
-                LastName = targetUser.LastName,
-                Email = targetUser.Email,
-                Phone = targetUser.Phone,
-                Role = targetUser.Role,
-                IsActive = targetUser.IsActive,
-                AuthProvider = targetUser.AuthProvider,
-                FirstTimeOrder = targetUser.FirstTimeOrder,
-                CanReceiveCommunications = targetUser.CanReceiveCommunications,
-                CanReceiveEmails = targetUser.CanReceiveEmails,
-                CanReceiveMessages = targetUser.CanReceiveMessages
-            };
+            // Full scalar snapshot - see AuditSnapshot for why a hand-picked subset is a bug.
+            var originalUser = AuditSnapshot.Of(targetUser);
 
             if (!Enum.TryParse<UserRole>(dto.Role, out var newRole))
                 return BadRequest("Invalid role");
@@ -1006,19 +957,10 @@ namespace DreamCleaningBackend.Controllers
             var wasLocked = targetUser.TwoFactorPinLockedUntil.HasValue
                 && targetUser.TwoFactorPinLockedUntil.Value > DateTime.UtcNow;
 
-            // Snapshot the 2FA fields before the wipe so the audit diff records the reset.
-            var originalUser = new User
-            {
-                Id = targetUser.Id,
-                FirstName = targetUser.FirstName,
-                LastName = targetUser.LastName,
-                Email = targetUser.Email,
-                Role = targetUser.Role,
-                TwoFactorPinHash = targetUser.TwoFactorPinHash,
-                TwoFactorPinSetAt = targetUser.TwoFactorPinSetAt,
-                TwoFactorPinFailedAttempts = targetUser.TwoFactorPinFailedAttempts,
-                TwoFactorPinLockedUntil = targetUser.TwoFactorPinLockedUntil
-            };
+            // Snapshot before the wipe so the audit diff records the reset. Full scalar copy:
+            // a subset would report every uncopied field as cleared, and this row in particular
+            // must never be replayable onto a live account - see AuditSnapshot.
+            var originalUser = AuditSnapshot.Of(targetUser);
 
             await _twoFactorService.ResetPinAsync(id);
 

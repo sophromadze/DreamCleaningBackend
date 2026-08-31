@@ -79,19 +79,10 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException("Orders can only be transferred to Customer accounts.");
 
             // Keep the audit copy BEFORE mutating (generic Order update log shows the owner change).
-            var originalOrderForAudit = new Order
-            {
-                Id = order.Id,
-                UserId = order.UserId,
-                ApartmentId = order.ApartmentId,
-                ApartmentName = order.ApartmentName,
-                ContactFirstName = order.ContactFirstName,
-                ContactLastName = order.ContactLastName,
-                ContactEmail = order.ContactEmail,
-                ContactPhone = order.ContactPhone,
-                Status = order.Status,
-                Total = order.Total
-            };
+            // A FULL scalar snapshot, never a hand-picked subset: the "after" side is the live
+            // entity, so every field a partial copy missed used to be recorded as a change from
+            // its CLR default, and Undo replays those defaults onto the order. See AuditSnapshot.
+            var originalOrderForAudit = AuditSnapshot.Of(order);
 
             var snapshot = new OrderTransferSnapshot
             {
@@ -289,19 +280,8 @@ namespace DreamCleaningBackend.Services
             var targetUser = await _context.Users.FindAsync(transfer.ToUserId)
                 ?? throw new InvalidOperationException("The target user no longer exists.");
 
-            var originalOrderForAudit = new Order
-            {
-                Id = order.Id,
-                UserId = order.UserId,
-                ApartmentId = order.ApartmentId,
-                ApartmentName = order.ApartmentName,
-                ContactFirstName = order.ContactFirstName,
-                ContactLastName = order.ContactLastName,
-                ContactEmail = order.ContactEmail,
-                ContactPhone = order.ContactPhone,
-                Status = order.Status,
-                Total = order.Total
-            };
+            // Full scalar snapshot for the same reason as the transfer path above.
+            var originalOrderForAudit = AuditSnapshot.Of(order);
 
             using var transaction = await _context.Database.BeginTransactionAsync();
             try

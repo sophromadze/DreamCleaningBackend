@@ -143,20 +143,10 @@ namespace DreamCleaningBackend.Controllers
                 return NotFound();
 
             // CREATE A COPY FOR AUDITING
-            var originalServiceType = new ServiceType
-            {
-                Id = serviceType.Id,
-                Name = serviceType.Name,
-                BasePrice = serviceType.BasePrice,
-                Description = serviceType.Description,
-                DisplayOrder = serviceType.DisplayOrder,
-                HasPoll = serviceType.HasPoll,
-                CollectsPropertyType = serviceType.CollectsPropertyType,
-                IsCustom = serviceType.IsCustom,
-                IsActive = serviceType.IsActive,
-                TimeDuration = serviceType.TimeDuration,
-                MinimumPrice = serviceType.MinimumPrice
-            };
+            // FULL scalar snapshot: the "after" side is the live entity, so any field a
+            // hand-picked copy missed is recorded as a change from its CLR default and Undo
+            // replays that default onto the row. See AuditSnapshot.
+            var originalServiceType = AuditSnapshot.Of(serviceType);
 
             // Check if display order is changing
             bool isDisplayOrderChanging = serviceType.DisplayOrder != dto.DisplayOrder;
@@ -230,19 +220,9 @@ namespace DreamCleaningBackend.Controllers
                 return NotFound();
 
             // CREATE A COPY FOR AUDITING
-            var originalServiceType = new ServiceType
-            {
-                Id = serviceType.Id,
-                Name = serviceType.Name,
-                BasePrice = serviceType.BasePrice,
-                Description = serviceType.Description,
-                DisplayOrder = serviceType.DisplayOrder,
-                HasPoll = serviceType.HasPoll,
-                CollectsPropertyType = serviceType.CollectsPropertyType,
-                IsCustom = serviceType.IsCustom,
-                IsActive = serviceType.IsActive,
-                TimeDuration = serviceType.TimeDuration
-            };
+            // Full scalar snapshot - see AuditSnapshot. This copy also omitted MinimumPrice, so
+            // deactivating a service type reported its minimum price as falling to zero.
+            var originalServiceType = AuditSnapshot.Of(serviceType);
 
             serviceType.IsActive = false;
             serviceType.UpdatedAt = DateTime.UtcNow;
@@ -264,19 +244,8 @@ namespace DreamCleaningBackend.Controllers
                 return NotFound();
 
             // CREATE A COPY FOR AUDITING
-            var originalServiceType = new ServiceType
-            {
-                Id = serviceType.Id,
-                Name = serviceType.Name,
-                BasePrice = serviceType.BasePrice,
-                Description = serviceType.Description,
-                DisplayOrder = serviceType.DisplayOrder,
-                HasPoll = serviceType.HasPoll,
-                CollectsPropertyType = serviceType.CollectsPropertyType,
-                IsCustom = serviceType.IsCustom,
-                IsActive = serviceType.IsActive,
-                TimeDuration = serviceType.TimeDuration
-            };
+            // Full scalar snapshot - see AuditSnapshot. Same omission as the deactivate path.
+            var originalServiceType = AuditSnapshot.Of(serviceType);
 
             serviceType.IsActive = true;
             serviceType.UpdatedAt = DateTime.UtcNow;
@@ -528,25 +497,15 @@ namespace DreamCleaningBackend.Controllers
             if (service == null)
                 return NotFound();
 
-            // CREATE A COPY FOR AUDITING
-            var originalService = new Service
-            {
-                Id = service.Id,
-                Name = service.Name,
-                ServiceKey = service.ServiceKey,
-                Cost = service.Cost,
-                TimeDuration = service.TimeDuration,
-                ServiceTypeId = service.ServiceTypeId,
-                InputType = service.InputType,
-                MinValue = service.MinValue,
-                MaxValue = service.MaxValue,
-                StepValue = service.StepValue,
-                IsRangeInput = service.IsRangeInput,
-                Unit = service.Unit,
-                ServiceRelationType = service.ServiceRelationType,
-                DisplayOrder = service.DisplayOrder,
-                IsActive = service.IsActive
-            };
+            // FULL scalar snapshot - see AuditSnapshot.
+            //
+            // This copy omitted ChargeAboveThreshold, ZeroQuantityCost and ZeroQuantityDuration,
+            // which made it the most dangerous of the partial snapshots after Order and User:
+            // ZeroQuantityCost/Duration MUST stay NULL on the levels row (the calculator's
+            // generic zero-quantity branch fires for any non-null value, and the bedrooms-keyed
+            // studio rule is protected by those columns being null), so replaying this row's
+            // fabricated nulls over a service that has them set breaks studio pricing.
+            var originalService = AuditSnapshot.Of(service);
 
             // Check if display order is changing
             bool isDisplayOrderChanging = service.DisplayOrder != dto.DisplayOrder;
@@ -1250,26 +1209,8 @@ namespace DreamCleaningBackend.Controllers
             if (extraService == null)
                 return NotFound();
 
-            // CREATE A COPY FOR AUDITING
-            var originalExtraService = new ExtraService
-            {
-                Id = extraService.Id,
-                Name = extraService.Name,
-                Description = extraService.Description,
-                Price = extraService.Price,
-                Duration = extraService.Duration,
-                Icon = extraService.Icon,
-                HasQuantity = extraService.HasQuantity,
-                HasHours = extraService.HasHours,
-                IsDeepCleaning = extraService.IsDeepCleaning,
-                IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
-                IsSameDayService = extraService.IsSameDayService,
-                PriceMultiplier = extraService.PriceMultiplier,
-                ServiceTypeId = extraService.ServiceTypeId,
-                IsAvailableForAll = extraService.IsAvailableForAll,
-                DisplayOrder = extraService.DisplayOrder,
-                IsActive = extraService.IsActive
-            };
+            // Full scalar snapshot - see AuditSnapshot.
+            var originalExtraService = AuditSnapshot.Of(extraService);
 
             // Check if display order is changing
             bool isDisplayOrderChanging = extraService.DisplayOrder != dto.DisplayOrder;
@@ -1947,22 +1888,8 @@ namespace DreamCleaningBackend.Controllers
             if (promoCode == null)
                 return NotFound();
 
-            // CREATE A COPY FOR AUDITING
-            var originalPromoCode = new PromoCode
-            {
-                Id = promoCode.Id,
-                Code = promoCode.Code,
-                Description = promoCode.Description,
-                IsPercentage = promoCode.IsPercentage,
-                DiscountValue = promoCode.DiscountValue,
-                MaxUsageCount = promoCode.MaxUsageCount,
-                CurrentUsageCount = promoCode.CurrentUsageCount,
-                MaxUsagePerUser = promoCode.MaxUsagePerUser,
-                ValidFrom = promoCode.ValidFrom,
-                ValidTo = promoCode.ValidTo,
-                MinimumOrderAmount = promoCode.MinimumOrderAmount,
-                IsActive = promoCode.IsActive
-            };
+            // Full scalar snapshot - see AuditSnapshot.
+            var originalPromoCode = AuditSnapshot.Of(promoCode);
 
             promoCode.Description = dto.Description;
             promoCode.IsPercentage = dto.IsPercentage;

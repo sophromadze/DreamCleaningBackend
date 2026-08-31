@@ -64,6 +64,16 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        /// <summary>
+        /// Fields that are bookkeeping rather than content. They are excluded from an update's
+        /// changed-field list, and an update that changes nothing else is not logged. Keep this
+        /// set tiny - anything listed here becomes invisible in the audit trail.
+        /// </summary>
+        private static readonly HashSet<string> AuditNoiseFields = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "UpdatedAt"
+        };
+
         public async Task LogUpdateAsync<T>(T originalEntity, T currentEntity) where T : class
         {
             try
@@ -72,7 +82,18 @@ namespace DreamCleaningBackend.Services
                 var entityId = GetEntityId(currentEntity);
                 var userId = GetCurrentUserId();
 
-                var changedFields = GetChangedFields(originalEntity, currentEntity);
+                // A row whose ONLY change is a housekeeping timestamp tells a reader nothing, and
+                // the Audits tab deliberately hides UpdatedAt, so such a row rendered as a
+                // literally blank expansion (found 2026-08-31: audit #2112 on order #315, an admin
+                // edit whose one real field - CleanerTotalSalary - the server discards by design
+                // once cleaners are assigned). Strip the noise, and if nothing survives, write no
+                // row at all: an audit entry that cannot describe a change is worse than absent.
+                //
+                // Order LINE changes are unaffected - LogOrderServiceChanges below runs on its own
+                // and still writes its OrderServicesUpdate row.
+                var changedFields = GetChangedFields(originalEntity, currentEntity)
+                    .Where(f => !AuditNoiseFields.Contains(f))
+                    .ToList();
 
                 // Special handling for Order entity
                 if (entityType == "Order" && originalEntity is Order originalOrder && currentEntity is Order currentOrder)
@@ -504,6 +525,13 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException("This change has already been undone");
             if (UndoBlockedEntityTypes.Contains(log.EntityType))
                 throw new InvalidOperationException($"'{log.EntityType}' changes cannot be undone (side-effect or audit-only entity)");
+            if (AuditSnapshot.HasFabricatedBeforeImage(log))
+            {
+                _logger.LogWarning(
+                    "Refused UNDO of audit row {AuditLogId} ({EntityType} #{EntityId}): fabricated before-image",
+                    log.Id, log.EntityType, log.EntityId);
+                throw new InvalidOperationException(AuditSnapshot.FabricatedBeforeImageMessage);
+            }
 
             // Special path for the virtual loyalty entity type — see ApplyLoyaltyAuditAsync for
             // the field-by-field logic. The standard reflection dispatcher would throw on this
@@ -545,6 +573,13 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException("This change is currently applied; nothing to redo");
             if (UndoBlockedEntityTypes.Contains(log.EntityType))
                 throw new InvalidOperationException($"'{log.EntityType}' changes cannot be redone");
+            if (AuditSnapshot.HasFabricatedBeforeImage(log))
+            {
+                _logger.LogWarning(
+                    "Refused REDO of audit row {AuditLogId} ({EntityType} #{EntityId}): fabricated before-image",
+                    log.Id, log.EntityType, log.EntityId);
+                throw new InvalidOperationException(AuditSnapshot.FabricatedBeforeImageMessage);
+            }
 
             if (string.Equals(log.EntityType, "UserLoyaltyDiscount", StringComparison.OrdinalIgnoreCase))
             {

@@ -29,6 +29,15 @@ namespace DreamCleaningBackend.Services
     ///    labour cost of the job (3 × 6h × $25 = $450) whether or not the paperwork is complete —
     ///    dropping them would understate cost on every under-assigned order and quietly inflate
     ///    reported net income.
+    ///
+    ///    RECONFIRMED 2026-08-31 (owner's call), because it reads like an oversight and is not.
+    ///    A proposal to redefine the order total as the sum over ASSIGNED cleaners only was
+    ///    rejected on exactly this ground: the money left the business either way, so excluding
+    ///    the slots would move real labour cost out of Statistics and Finances — which read
+    ///    Order.CleanerTotalSalary directly — and show the company as more profitable than it is.
+    ///    The symptom that prompted the proposal (order #315 reading $200 against a $175 payout
+    ///    sheet) was an unrelated display bug in the admin Orders panel, which was recomputing the
+    ///    figure client-side instead of reading the stored column. Do not "simplify" this away.
     /// 3. Overrides are NULL by default and null means "track the order". An override that
     ///    happens to equal the automatic figure is NOT the same thing — it stays put when the
     ///    order is re-priced.
@@ -166,6 +175,7 @@ namespace DreamCleaningBackend.Services
                 AutomaticBillableMinutes = automaticMinutes,
                 // The unassigned slots count toward the order's labour cost — somebody worked
                 // those hours. Dropping them would understate every under-assigned order.
+                // Reconfirmed 2026-08-31; see rule 2 in the class comment before changing this.
                 TotalSalary = OrderPricingCalculator.Round2(
                     lines.Sum(l => l.Salary) + unassignedCount * unassignedSalaryEach)
             };

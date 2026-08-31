@@ -139,20 +139,10 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException("Invalid or unusable gift card");
             }
 
-            // CREATE A COPY FOR AUDITING
-            var originalGiftCard = new GiftCard
-            {
-                Id = giftCard.Id,
-                Code = giftCard.Code,
-                OriginalAmount = giftCard.OriginalAmount,
-                CurrentBalance = giftCard.CurrentBalance,
-                RecipientName = giftCard.RecipientName,
-                RecipientEmail = giftCard.RecipientEmail,
-                SenderName = giftCard.SenderName,
-                SenderEmail = giftCard.SenderEmail,
-                IsActive = giftCard.IsActive,
-                IsPaid = giftCard.IsPaid
-            };
+            // FULL scalar snapshot - see AuditSnapshot. The hand-picked copy omitted PaidAt,
+            // PaymentIntentId, PurchasedByUserId, Message and CreatedAt, so every one of those
+            // was recorded as cleared and Undo would have replayed the blanks.
+            var originalGiftCard = AuditSnapshot.Of(giftCard);
 
             // Calculate the amount to apply
             var amountToApply = Math.Min(giftCard.CurrentBalance, orderAmount);
@@ -320,16 +310,10 @@ namespace DreamCleaningBackend.Services
 			// NEW: Check if this is the initial payment
 			bool isInitialPayment = !giftCard.IsPaid && giftCard.PaidAt == null;
 
-			// YOUR EXISTING CODE: CREATE A COPY FOR AUDITING
-			var originalGiftCard = new GiftCard
-			{
-				Id = giftCard.Id,
-				Code = giftCard.Code,
-				IsPaid = giftCard.IsPaid,
-				PaidAt = giftCard.PaidAt,
-				PaymentIntentId = giftCard.PaymentIntentId,
-				CurrentBalance = giftCard.CurrentBalance
-			};
+			// FULL scalar snapshot - see AuditSnapshot. This copy carried only 6 of the GiftCard
+			// model's 16 scalars, dropping OriginalAmount along with the recipient and sender
+			// details, so marking a card paid logged its face value as falling to zero.
+			var originalGiftCard = AuditSnapshot.Of(giftCard);
 
 			// YOUR EXISTING CODE: All updates remain exactly the same
 			giftCard.IsPaid = true;

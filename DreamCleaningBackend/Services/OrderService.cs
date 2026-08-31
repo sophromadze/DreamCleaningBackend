@@ -947,7 +947,27 @@ namespace DreamCleaningBackend.Services
             // through this endpoint — only the recalculated $ amount.
             if (dto.LoyaltyDiscountAmount.HasValue) order.LoyaltyDiscountAmount = dto.LoyaltyDiscountAmount.Value;
             if (dto.CleanerHourlyRate.HasValue) order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
-            if (dto.CleanerTotalSalary.HasValue) order.CleanerTotalSalary = dto.CleanerTotalSalary.Value;
+
+            // Who is actually on this job? Needed twice below, and loaded here because the very
+            // next line depends on it.
+            var assignmentsForSalary = await _context.OrderCleaners
+                .Where(oc => oc.OrderId == order.Id)
+                .ToListAsync();
+            var hasAssignedCleaners = assignmentsForSalary.Count > 0;
+
+            // A client-submitted CleanerTotalSalary is REFUSED outright once anybody is assigned.
+            //
+            // The recompute below already overwrites it, so this gate changes no outcome - it
+            // makes the refusal intentional rather than incidental (owner's call, 2026-08-31),
+            // per the project rule that client-submitted pricing fields are never trusted. The
+            // admin order editor derives that number from MaidsCount x the order's single rate,
+            // which cannot express two cleaners paid different rates or hours, so accepting it
+            // would mean a stray client - or a future reordering of this method - could revert
+            // figures a SuperAdmin set on the Outgoing Payments page.
+            //
+            // With nobody assigned there is nothing to sum from, so an explicit figure still wins.
+            if (dto.CleanerTotalSalary.HasValue && !hasAssignedCleaners)
+                order.CleanerTotalSalary = dto.CleanerTotalSalary.Value;
             // Custom ("Pre-Arranged") orders only: relabel the display name. null = no change,
             // empty string = clear back to "Arranged". Mirrors OrderController.SetCustomServiceName.
             if (dto.CustomServiceDisplayName != null && order.ServiceType?.IsCustom == true)
@@ -959,19 +979,12 @@ namespace DreamCleaningBackend.Services
             // Cleaner total salary.
             //
             // Once ANYBODY is assigned, the per-cleaner lines are the truth and the total is
-            // summed from them — see CleanerPayrollCalculator. The client's CleanerTotalSalary is
-            // deliberately ignored in that case: the admin order editor computes it from
-            // MaidsCount and the order's single rate, which cannot express two cleaners paid
-            // differently, so honouring it would silently revert whatever a SuperAdmin set on the
-            // Outgoing Payments page every time somebody saved an unrelated edit.
+            // summed from them — see CleanerPayrollCalculator. The client's figure was already
+            // refused above for exactly that reason.
             //
             // With nobody assigned there is nothing to sum, so the historical behaviour stands:
             // an explicit figure wins, otherwise recompute from rate × duration × maids.
-            var assignmentsForSalary = await _context.OrderCleaners
-                .Where(oc => oc.OrderId == order.Id)
-                .ToListAsync();
-
-            if (assignmentsForSalary.Count > 0)
+            if (hasAssignedCleaners)
             {
                 bool hasCleanersService = order.OrderServices.Any(os =>
                     os.Service?.ServiceRelationType == "cleaner");
@@ -1064,7 +1077,32 @@ namespace DreamCleaningBackend.Services
             // count and hand the crew a stale number of levels.
             PropertyDetailsHelper.ApplyFromOrderLines(order, dto.PropertyType, dto.LevelsQuantity);
 
-            order.UpdatedAt = DateTime.UtcNow;
+            // Did this save actually change anything?
+            //
+            // Every admin save used to bump UpdatedAt and insert an OrderUpdateHistory row even
+            // when the submitted DTO changed nothing - which is how a no-op edit produced a $0
+            // history row plus an audit row whose only changed field was UpdatedAt, rendering as a
+            // literally blank row in the Audits tab (found 2026-08-31 on order #315: the admin
+            // typed a new Cleaners Total Salary, which this endpoint discards by design once
+            // cleaners are assigned, so nothing else moved). DetectChanges is called explicitly
+            // because this runs before SaveChangesAsync would do it for us.
+            _context.ChangeTracker.DetectChanges();
+
+            var orderScalarsChanged = _context.Entry(order).Properties
+                .Any(p => p.IsModified && p.Metadata.Name != nameof(Order.UpdatedAt));
+
+            // Line edits touch no scalar on the order itself, so they have to be asked for
+            // separately: a service swapped for one of identical price moves no money and is
+            // still absolutely a change to the job. Models.OrderService is qualified because this
+            // class is also called OrderService.
+            var orderLinesChanged = _context.ChangeTracker.Entries().Any(e =>
+                (e.State == EntityState.Added || e.State == EntityState.Modified || e.State == EntityState.Deleted) &&
+                (e.Entity is Models.OrderService || e.Entity is OrderExtraService));
+
+            var anythingChanged = orderScalarsChanged || orderLinesChanged;
+
+            if (anythingChanged)
+                order.UpdatedAt = DateTime.UtcNow;
 
             // Track additional amount (if any) for this update
             var additionalAmount = order.Total - originalTotal;
@@ -1088,27 +1126,35 @@ namespace DreamCleaningBackend.Services
                 }
             }
 
-            // Create an update-history record (used to show "additional payments" + allow customer to pay later)
-            var updateHistory = new OrderUpdateHistory
+            // Create an update-history record (used to show "additional payments" + allow customer to pay later).
+            //
+            // Only a TRUE no-op skips it (owner's call, 2026-08-31). Money moving is deliberately
+            // NOT the test: a service swapped for one of equal price, or a change to TotalDuration
+            // or MaidsCount, moves no money and still has to leave a record. Every save that
+            // changes anything at all keeps writing a row exactly as before.
+            if (anythingChanged)
             {
-                OrderId = order.Id,
-                UpdatedByUserId = updatedByUserId,
-                UpdatedAt = DateTime.UtcNow,
-                OriginalSubTotal = originalSubTotal,
-                OriginalTax = originalTax,
-                OriginalTips = originalTips,
-                OriginalCompanyDevelopmentTips = originalCompanyDevelopmentTips,
-                OriginalTotal = originalTotal,
-                NewSubTotal = order.SubTotal,
-                NewTax = order.Tax,
-                NewTips = order.Tips,
-                NewCompanyDevelopmentTips = order.CompanyDevelopmentTips,
-                NewTotal = order.Total,
-                AdditionalAmount = additionalAmount,
-                IsPaid = additionalAmount <= 0.01m
-            };
+                var updateHistory = new OrderUpdateHistory
+                {
+                    OrderId = order.Id,
+                    UpdatedByUserId = updatedByUserId,
+                    UpdatedAt = DateTime.UtcNow,
+                    OriginalSubTotal = originalSubTotal,
+                    OriginalTax = originalTax,
+                    OriginalTips = originalTips,
+                    OriginalCompanyDevelopmentTips = originalCompanyDevelopmentTips,
+                    OriginalTotal = originalTotal,
+                    NewSubTotal = order.SubTotal,
+                    NewTax = order.Tax,
+                    NewTips = order.Tips,
+                    NewCompanyDevelopmentTips = order.CompanyDevelopmentTips,
+                    NewTotal = order.Total,
+                    AdditionalAmount = additionalAmount,
+                    IsPaid = additionalAmount <= 0.01m
+                };
 
-            _context.OrderUpdateHistories.Add(updateHistory);
+                _context.OrderUpdateHistories.Add(updateHistory);
+            }
 
             // NOTE: The "additional payment required" email + SMS used to fire here automatically.
             // That is now admin-triggered via POST /api/admin/orders/{orderId}/send-updated-payment

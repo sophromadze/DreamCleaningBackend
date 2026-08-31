@@ -1366,21 +1366,15 @@ namespace DreamCleaningBackend.Services
             if (emailExists)
                 throw new Exception("This email address is no longer available");
 
-            // ADDED: Capture user state before email change for auditing
-            var userBeforeUpdate = new User
-            {
-                Id = user.Id,
-                FirstName = user.FirstName,
-                LastName = user.LastName,
-                Email = user.Email, // This is the OLD email
-                Phone = user.Phone,
-                Role = user.Role,
-                IsActive = user.IsActive,
-                FirstTimeOrder = user.FirstTimeOrder,
-                SubscriptionId = user.SubscriptionId,
-                CreatedAt = user.CreatedAt,
-                UpdatedAt = user.UpdatedAt
-            };
+            // Capture user state before the email change for auditing. Taken BEFORE the
+            // assignment below, so Email here is still the OLD address.
+            //
+            // FULL scalar snapshot, never a hand-picked subset: the "after" side is the live
+            // entity, so every field a partial copy missed was recorded as a change from its CLR
+            // default. This site copied 11 of the User model's 70 scalars - the worst in the
+            // codebase - so a single Undo on one of its rows would have blanked PasswordHash,
+            // BubblePoints, TotalSpentAmount and every 2FA and loyalty column. See AuditSnapshot.
+            var userBeforeUpdate = AuditSnapshot.Of(user);
 
             // Update the email
             user.Email = user.PendingEmail;

@@ -528,15 +528,10 @@ namespace DreamCleaningBackend.Controllers
                 });
             }
 
-            var originalOrder = new Order
-            {
-                Id = order.Id,
-                UserId = order.UserId,
-                Status = order.Status,
-                IsHidden = order.IsHidden,
-                HiddenAt = order.HiddenAt,
-                HiddenByUserId = order.HiddenByUserId
-            };
+            // FULL scalar snapshot, never a hand-picked subset: the "after" side below is the
+            // live entity, so every field this copy missed used to be recorded as a change from
+            // its CLR default, and Undo replays those defaults onto the order. See AuditSnapshot.
+            var originalOrder = AuditSnapshot.Of(order);
 
             order.IsHidden = hidden;
             // Cleared on unhide so a re-hidden order doesn't carry a misleading earlier timestamp.
@@ -592,6 +587,84 @@ namespace DreamCleaningBackend.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// The cleaner-wage breakdown behind this order's "Cleaners Total Salary".
+        ///
+        /// Read-only. Exists so the admin Orders panel can DISPLAY the same figure the Outgoing
+        /// Payments page pays, itemised, instead of recomputing it client-side from
+        /// TotalDuration x MaidsCount x rate — which cannot see a per-cleaner rate or hours
+        /// override, and had order #315 reading $200 against a $175 payout sheet (2026-08-31).
+        ///
+        /// SuperAdmin, matching the existing gate on the figure it explains: the "Cleaners Total
+        /// Salary" row and its edit input are both `*ngIf="isSuperAdmin"` in the Orders panel, so
+        /// this neither widens nor narrows who can see cleaner wages.
+        ///
+        /// Deliberately NOT the Outgoing Payments endpoint, which filters to Done-and-unrefunded
+        /// orders and would 404 on exactly the orders an admin is looking at while staffing one.
+        /// Both derive from CleanerPayrollCalculator, so they cannot disagree.
+        /// </summary>
+        [HttpGet("orders/{orderId}/cleaner-payroll")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<OrderCleanerPayrollDto>> GetOrderCleanerPayroll(int orderId)
+        {
+            var order = await _context.Orders
+                .AsNoTracking()
+                // OrderServices -> Service is what HasCleanerHoursService reads; without it every
+                // cleaner-hours order would have its duration divided a second time.
+                .Include(o => o.OrderServices)
+                    .ThenInclude(os => os.Service)
+                .Include(o => o.OrderCleaners)
+                    .ThenInclude(oc => oc.Cleaner)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+
+            if (order == null)
+                return NotFound();
+
+            var hasCleanerService = CleanerPayrollCalculator.HasCleanerHoursService(order);
+            var payroll = CleanerPayrollCalculator.Build(order, hasCleanerService, order.OrderCleaners);
+
+            var assignmentsById = order.OrderCleaners.ToDictionary(oc => oc.Id);
+
+            var dto = new OrderCleanerPayrollDto
+            {
+                OrderId = order.Id,
+                TotalSalary = payroll.TotalSalary,
+                StoredTotalSalary = order.CleanerTotalSalary,
+                SplitCount = payroll.SplitCount,
+                AssignedCount = payroll.AssignedCount,
+                AutomaticMinutesPerCleaner = payroll.AutomaticBillableMinutes,
+                OrderHourlyRate = order.CleanerHourlyRate,
+                Lines = payroll.Lines.Select(line =>
+                {
+                    var cleaner = assignmentsById.TryGetValue(line.OrderCleanerId, out var a) ? a.Cleaner : null;
+                    return new OrderCleanerPayrollLineDto
+                    {
+                        CleanerId = line.CleanerId,
+                        FirstName = cleaner?.FirstName ?? string.Empty,
+                        LastName = cleaner?.LastName ?? string.Empty,
+                        IsUnassignedSlot = false,
+                        BillableMinutes = line.BillableMinutes,
+                        HoursOverridden = line.HoursOverridden,
+                        HourlyRate = line.HourlyRate,
+                        RateOverridden = line.RateOverridden,
+                        Salary = line.Salary
+                    };
+                }).ToList(),
+                // One line per unstaffed slot rather than a single lumped row, so the breakdown
+                // adds up to the total by inspection.
+                UnassignedLines = Enumerable.Range(0, payroll.UnassignedCount)
+                    .Select(_ => new OrderCleanerPayrollLineDto
+                    {
+                        IsUnassignedSlot = true,
+                        BillableMinutes = payroll.AutomaticBillableMinutes,
+                        HourlyRate = order.CleanerHourlyRate,
+                        Salary = payroll.UnassignedSalaryEach
+                    }).ToList()
+            };
+
+            return Ok(dto);
         }
 
         /// <summary>
