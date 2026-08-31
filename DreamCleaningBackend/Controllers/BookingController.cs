@@ -41,6 +41,9 @@ namespace DreamCleaningBackend.Controllers
         private readonly IBookingCreationService _bookingCreationService;
         private readonly IAdminBonusService _adminBonusService;
         private readonly ICardOnFileService _cardOnFileService;
+        // Used ONLY by the admin create-for-user path: a customer booking their own cleaning is
+        // not an admin action, so the customer flow deliberately writes no audit row.
+        private readonly IAuditService _auditService;
 
         // Stripe rejects any charge below $0.50 USD. When the payable total falls under this
         // (a gift card / credits fully cover the order), we skip Stripe entirely and treat the
@@ -63,7 +66,8 @@ namespace DreamCleaningBackend.Controllers
             ILoyaltyDiscountService loyaltyDiscountService,
             IBookingCreationService bookingCreationService,
             IAdminBonusService adminBonusService,
-            ICardOnFileService cardOnFileService)
+            ICardOnFileService cardOnFileService,
+            IAuditService auditService)
         {
             _context = context;
             _configuration = configuration;
@@ -82,6 +86,7 @@ namespace DreamCleaningBackend.Controllers
             _bookingCreationService = bookingCreationService;
             _adminBonusService = adminBonusService;
             _cardOnFileService = cardOnFileService;
+            _auditService = auditService;
         }
 
         // Mirrors AuthController.SetAuthCookies — used by the guest auto-registration path in
@@ -812,6 +817,12 @@ namespace DreamCleaningBackend.Controllers
 
                     _logger.LogInformation($"Admin booking created with manual payment {paymentMethod}: order {order.Id}, status {order.Status}, isPaid {order.IsPaid}");
 
+                    // An admin created an order on somebody's behalf, already marked paid outside
+                    // Stripe. Nothing else records that: BookingCreationService does not audit
+                    // (it also serves the customer's own booking flow), and there is no payment
+                    // intent or webhook behind a cash order.
+                    await _auditService.LogCreateAsync(order);
+
                     return Ok(new BookingResponseDto
                     {
                         OrderId = order.Id,
@@ -935,6 +946,12 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 _logger.LogInformation($"Admin booking created: order {order.Id}, status {order.Status}, isPaid {order.IsPaid}");
+
+                // The card branch of the same admin action. Audited here rather than inside
+                // BookingCreationService because that service also serves the CUSTOMER's own
+                // booking flow, and a customer booking their own cleaning is not an admin action
+                // for the Audits tab to carry.
+                await _auditService.LogCreateAsync(order);
 
                 return Ok(new BookingResponseDto
                 {

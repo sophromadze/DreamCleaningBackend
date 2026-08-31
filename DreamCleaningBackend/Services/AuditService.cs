@@ -441,6 +441,114 @@ namespace DreamCleaningBackend.Services
             return changedFields;
         }
 
+        /// <summary>
+        /// The general-purpose writer, for admin actions that do NOT map cleanly onto "one row of
+        /// one EF entity changed". Everything in the 2026-08-31 coverage sweep that is an EVENT
+        /// rather than a field edit goes through here: a cleaner was paid, a refund was issued, a
+        /// change request was rejected, a data sync was run.
+        ///
+        /// Three rules it enforces so the new streams behave like the old ones:
+        ///
+        ///  - <b>The entity type must be a known pseudo-entity or a real model name.</b> Callers
+        ///    pass an <see cref="AuditEntityTypes"/> constant; a pseudo-entity is in the undo block
+        ///    list by construction, so an admin never gets an Undo button that would resolve to the
+        ///    wrong record.
+        ///  - <b>Changed fields are DERIVED when not supplied</b>, by diffing the two payloads
+        ///    property by property. Hand-listing them at 120 call sites is exactly how the
+        ///    old partial-snapshot defect got in.
+        ///  - <b>An Update that changed nothing writes no row.</b> Same rule as
+        ///    <see cref="LogUpdateAsync"/>: a row that cannot describe a change is worse than
+        ///    absent. Non-Update actions always write, because "marked paid" is meaningful even
+        ///    when the payload is identical to last time.
+        ///
+        /// <paramref name="actingUserId"/> overrides the ambient claim, for the rare service-layer
+        /// caller that already knows the admin id and may not have an HttpContext.
+        /// </summary>
+        public async Task LogActionAsync(
+            string entityType,
+            long entityId,
+            string action,
+            object? oldValues,
+            object? newValues,
+            IEnumerable<string>? changedFields = null,
+            int? actingUserId = null)
+        {
+            try
+            {
+                var fields = changedFields?.ToList() ?? DeriveChangedFields(oldValues, newValues);
+
+                // Same no-op rule as LogUpdateAsync — see AuditNoiseFields there.
+                fields = fields.Where(f => !AuditNoiseFields.Contains(f)).ToList();
+                if (fields.Count == 0 &&
+                    string.Equals(action, "Update", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                var auditLog = new AuditLog
+                {
+                    EntityType = entityType,
+                    EntityId = entityId,
+                    Action = action,
+                    OldValues = oldValues == null ? null : JsonConvert.SerializeObject(oldValues, _jsonSettings),
+                    NewValues = newValues == null ? null : JsonConvert.SerializeObject(newValues, _jsonSettings),
+                    ChangedFields = JsonConvert.SerializeObject(fields, _jsonSettings),
+                    UserId = actingUserId ?? GetCurrentUserId(),
+                    IpAddress = GetIpAddress(),
+                    UserAgent = GetUserAgent(),
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.AuditLogs.Add(auditLog);
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                // Auditing must never break the action it is recording.
+                _logger.LogError(ex, "Audit logging failed for {EntityType} #{EntityId} ({Action})",
+                    entityType, entityId, action);
+            }
+        }
+
+        /// <summary>
+        /// Property-by-property diff of two anonymous payloads, by JSON token equality. Any key
+        /// present on either side counts, so a field that appears or disappears between the two
+        /// shapes is reported rather than silently dropped. When only one side is supplied every
+        /// key on it is "changed" — a create or a delete describes its whole payload.
+        /// </summary>
+        private List<string> DeriveChangedFields(object? oldValues, object? newValues)
+        {
+            var oldObj = ToJObject(oldValues);
+            var newObj = ToJObject(newValues);
+
+            if (oldObj == null && newObj == null) return new List<string>();
+            if (oldObj == null) return newObj!.Properties().Select(p => p.Name).ToList();
+            if (newObj == null) return oldObj.Properties().Select(p => p.Name).ToList();
+
+            var names = oldObj.Properties().Select(p => p.Name)
+                .Union(newObj.Properties().Select(p => p.Name), StringComparer.Ordinal)
+                .ToList();
+
+            return names
+                .Where(n => !Newtonsoft.Json.Linq.JToken.DeepEquals(oldObj[n], newObj[n]))
+                .ToList();
+        }
+
+        private Newtonsoft.Json.Linq.JObject? ToJObject(object? value)
+        {
+            if (value == null) return null;
+            try
+            {
+                return Newtonsoft.Json.Linq.JObject.FromObject(value,
+                    JsonSerializer.Create(_jsonSettings));
+            }
+            catch
+            {
+                // A non-object payload (a bare string or list) has no fields to name.
+                return null;
+            }
+        }
+
         public async Task LogBubblePointsAdjustmentAsync(int targetUserId, string targetUserName, int points, string? reason, int adminId, string adminName)
         {
             try
@@ -494,28 +602,12 @@ namespace DreamCleaningBackend.Services
         // charges captured, etc.) are NOT reversed; this only changes database state. Admins
         // should be aware of that — it's the explicit scope of this feature.
 
-        private static readonly HashSet<string> UndoBlockedEntityTypes = new(StringComparer.OrdinalIgnoreCase)
-        {
-            // Audit/event logs — undoing these would lie about history.
-            "AuditLog", "BubblePointsAdjustment", "CleanerAssignment", "OrderServicesUpdate",
-            "OrderNotification",
-            // Payment + external side effects.
-            "PaymentHistory", "WebhookEvent",
-            // Refunds are real money already returned to the customer. Deleting the row would
-            // hide the payout and make the order look fully refundable again.
-            "OrderRefund",
-            // Notification + scheduling logs.
-            "NotificationLog", "ScheduledMail", "ScheduledSms",
-            // Order-update history rows track money owed; reverting these breaks payment accounting.
-            "OrderUpdateHistory",
-            // Order transfers move points/spent/photos across users; the generic row revert would
-            // only delete the record without moving anything back. Use the dedicated
-            // POST api/admin/order-transfers/{id}/undo endpoint instead.
-            "OrderTransfer",
-            // NOTE: UserLoyaltyDiscount is intentionally NOT in this list. It's a virtual entity
-            // type that scopes loyalty fields on the User row; the generic reflection dispatcher
-            // can't resolve it, so UndoAsync / RedoAsync handle it explicitly below.
-        };
+        // The block list itself lives in AuditEntityTypes, alongside a human-readable reason per
+        // entry. It used to be a private HashSet here AND a literal array in
+        // audit-history.component.ts, with nothing keeping the two in step — so the Audits tab
+        // showed an enabled Undo button on rows this method was always going to refuse. The
+        // frontend now reads it from GET api/admin/audit-logs/metadata.
+        private static IReadOnlySet<string> UndoBlockedEntityTypes => AuditEntityTypes.UndoBlockedEntityTypes;
 
         public async Task UndoAsync(long auditLogId)
         {

@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -16,13 +17,16 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly IGoogleAdsCostService _googleAds;
         private readonly ILogger<AdminGoogleAdsController> _logger;
+        private readonly IAuditService _auditService;
 
         public AdminGoogleAdsController(
             IGoogleAdsCostService googleAds,
-            ILogger<AdminGoogleAdsController> logger)
+            ILogger<AdminGoogleAdsController> logger,
+            IAuditService auditService)
         {
             _googleAds = googleAds;
             _logger = logger;
+            _auditService = auditService;
         }
 
         // Full historical pull: BackfillStartDate → yesterday. Idempotent (upsert by SourceKey).
@@ -35,6 +39,16 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var result = await _googleAds.BackfillAsync(ct);
+
+                // Ad spend lands in Expenses, so a sync moves reported profit.
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.DataSync, 0, "GoogleAdsBackfill", null, new
+                    {
+                        Source = "Google Ads spend backfill",
+                        DaysSynced = result.DaysSynced,
+                        TotalUsd = result.TotalUsd
+                    });
+
                 return Ok(new { daysSynced = result.DaysSynced, totalUsd = result.TotalUsd });
             }
             catch (InvalidOperationException ex)
@@ -54,6 +68,14 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var result = await _googleAds.SyncRecentAsync(ct);
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.DataSync, 0, "GoogleAdsSyncRecent", null, new
+                    {
+                        Source = "Google Ads recent spend sync",
+                        DaysSynced = result.DaysSynced
+                    });
+
                 return Ok(new { daysSynced = result.DaysSynced });
             }
             catch (InvalidOperationException ex)

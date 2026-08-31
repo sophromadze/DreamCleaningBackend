@@ -8,6 +8,19 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task LogUpdateAsync<T>(T originalEntity, T currentEntity) where T : class;
         Task LogDeleteAsync<T>(T entity) where T : class;
         Task<List<AuditLog>> GetEntityHistoryAsync(string entityType, long entityId);
+
+        // The general-purpose writer for admin actions that are EVENTS rather than field edits on
+        // one EF row — a cleaner paid, a refund issued, a change request rejected, a data sync
+        // run. entityType is an AuditEntityTypes constant; changedFields is DERIVED from the two
+        // payloads when null. See AuditService.LogActionAsync for the full contract.
+        Task LogActionAsync(
+            string entityType,
+            long entityId,
+            string action,
+            object? oldValues,
+            object? newValues,
+            IEnumerable<string>? changedFields = null,
+            int? actingUserId = null);
         Task LogCleanerAssignmentAsync(int orderId, string cleanerEmail, string action, int adminId);
 
         // Customer-facing notification sent for an order (e.g. a resent confirmation). Audit-only:

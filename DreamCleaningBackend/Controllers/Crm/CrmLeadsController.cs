@@ -3,6 +3,7 @@ using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -24,11 +25,13 @@ namespace DreamCleaningBackend.Controllers.Crm
     {
         private readonly ApplicationDbContext _context;
         private readonly ILeadCaptureService _leadCapture;
+        private readonly IAuditService _auditService;
 
-        public CrmLeadsController(ApplicationDbContext context, ILeadCaptureService leadCapture)
+        public CrmLeadsController(ApplicationDbContext context, ILeadCaptureService leadCapture, IAuditService auditService)
         {
             _context = context;
             _leadCapture = leadCapture;
+            _auditService = auditService;
         }
 
         // ─────────────────────────────────────────────────────────
@@ -287,6 +290,10 @@ namespace DreamCleaningBackend.Controllers.Crm
             _context.Leads.Add(lead);
             await _context.SaveChangesAsync();
 
+            // The lead timeline is the CRM's own narrative and is only visible on that lead; the
+            // Audits tab is where an admin looks for "what did anybody change today". Both.
+            await _auditService.LogCreateAsync(lead);
+
             await AddActivity(lead.Id, LeadActivityType.System, "Lead created", system: true);
             if (dto.SourceOrderId.HasValue)
                 await AddActivity(lead.Id, LeadActivityType.System, $"Imported from order #{dto.SourceOrderId.Value}", system: true);
@@ -308,6 +315,8 @@ namespace DreamCleaningBackend.Controllers.Crm
                 .FirstOrDefaultAsync(l => l.Id == id);
 
             if (lead == null) return NotFound(new { message = "Lead not found" });
+
+            var beforeLead = AuditSnapshot.Of(lead);
 
             // Track field-level changes so every edit lands in the timeline (not just stage moves).
             var changes = new List<string>();
@@ -338,6 +347,8 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             await _context.SaveChangesAsync();
 
+            await _auditService.LogUpdateAsync(beforeLead, lead);
+
             // Reload assigned admin (may have changed) and the timeline (new Update entry).
             await _context.Entry(lead).Reference(l => l.AssignedToAdmin).LoadAsync();
             await _context.Entry(lead).Collection(l => l.Activities).LoadAsync();
@@ -366,6 +377,8 @@ namespace DreamCleaningBackend.Controllers.Crm
                 return Ok(MapToDetailDto(lead));
             }
 
+            var beforeStage = AuditSnapshot.Of(lead);
+
             lead.Stage = dto.Stage;
             lead.LostReason = dto.Stage == LeadStage.Lost ? Trim(dto.LostReason) : null;
             lead.UpdatedAt = DateTime.UtcNow;
@@ -377,6 +390,8 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             await AddActivity(lead.Id, LeadActivityType.StageChange, summary);
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeStage, lead);
 
             await _context.Entry(lead).Collection(l => l.Activities).LoadAsync();
             return Ok(MapToDetailDto(lead));
@@ -400,6 +415,8 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             if (!lead.IsArchived)
             {
+                var beforeArchive = AuditSnapshot.Of(lead);
+
                 lead.IsArchived = true;
                 lead.ArchivedAt = DateTime.UtcNow;
                 lead.UpdatedAt = DateTime.UtcNow;
@@ -407,6 +424,7 @@ namespace DreamCleaningBackend.Controllers.Crm
 
                 await AddActivity(lead.Id, LeadActivityType.System, "Lead archived");
                 await _context.SaveChangesAsync();
+                await _auditService.LogUpdateAsync(beforeArchive, lead);
                 await _context.Entry(lead).Collection(l => l.Activities).LoadAsync();
             }
 
@@ -427,6 +445,8 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             if (lead.IsArchived)
             {
+                var beforeUnarchive = AuditSnapshot.Of(lead);
+
                 lead.IsArchived = false;
                 lead.ArchivedAt = null;
                 lead.UpdatedAt = DateTime.UtcNow;
@@ -434,6 +454,7 @@ namespace DreamCleaningBackend.Controllers.Crm
 
                 await AddActivity(lead.Id, LeadActivityType.System, "Lead restored from archive");
                 await _context.SaveChangesAsync();
+                await _auditService.LogUpdateAsync(beforeUnarchive, lead);
                 await _context.Entry(lead).Collection(l => l.Activities).LoadAsync();
             }
 
@@ -447,6 +468,10 @@ namespace DreamCleaningBackend.Controllers.Crm
         {
             var lead = await _context.Leads.FirstOrDefaultAsync(l => l.Id == id);
             if (lead == null) return NotFound(new { message = "Lead not found" });
+
+            // Logged first: the activity timeline cascades away with the lead, so this row is the
+            // only surviving evidence the lead ever existed.
+            await _auditService.LogDeleteAsync(lead);
 
             _context.Leads.Remove(lead); // activities cascade
             await _context.SaveChangesAsync();
@@ -472,6 +497,10 @@ namespace DreamCleaningBackend.Controllers.Crm
             lead.LastActivityAt = DateTime.UtcNow;
             lead.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            // Call/Email/Sms activities are what the follow-up attribution report counts, so a
+            // logged contact is a business fact, not just a note.
+            await _auditService.LogCreateAsync(activity);
 
             return Ok(MapActivityToDto(activity));
         }

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using System.Security.Claims;
 
 namespace DreamCleaningBackend.Controllers
@@ -14,10 +15,12 @@ namespace DreamCleaningBackend.Controllers
     public class AdminShiftsController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly Services.Interfaces.IAuditService _auditService;
 
-        public AdminShiftsController(ApplicationDbContext context)
+        public AdminShiftsController(ApplicationDbContext context, Services.Interfaces.IAuditService auditService)
         {
             _context = context;
+            _auditService = auditService;
         }
 
         private int GetUserId()
@@ -111,6 +114,10 @@ namespace DreamCleaningBackend.Controllers
             var existingShifts = await _context.AdminShifts
                 .Where(s => s.ShiftDate == shiftDate)
                 .ToListAsync();
+            // Who was rostered before, read before the rows go. A bulk set is one decision, so it
+            // gets ONE audit row naming both sides — a Delete row per removed shift plus a Create
+            // row per added one would bury the change it represents.
+            var previousAdminIds = existingShifts.Select(s => s.AdminId).OrderBy(id => id).ToList();
             _context.AdminShifts.RemoveRange(existingShifts);
 
             // Create new shifts
@@ -126,6 +133,11 @@ namespace DreamCleaningBackend.Controllers
 
             _context.AdminShifts.AddRange(newShifts);
             await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(
+                Services.AuditEntityTypes.SiteSetting, 0, "ShiftRosterSet",
+                new { ShiftDate = shiftDate, AdminIds = string.Join(", ", previousAdminIds) },
+                new { ShiftDate = shiftDate, AdminIds = string.Join(", ", dto.AdminIds.OrderBy(id => id)), Notes = dto.Notes });
 
             // Return the new shifts with admin details
             var result = await _context.AdminShifts
@@ -185,6 +197,8 @@ namespace DreamCleaningBackend.Controllers
             _context.AdminShifts.Add(shift);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(shift);
+
             await _context.Entry(shift).Reference(s => s.Admin).LoadAsync();
             await _context.Entry(shift).Reference(s => s.CreatedByUser).LoadAsync();
 
@@ -214,6 +228,8 @@ namespace DreamCleaningBackend.Controllers
             if (shift == null)
                 return NotFound(new { message = "Shift not found." });
 
+            await _auditService.LogDeleteAsync(shift);
+
             _context.AdminShifts.Remove(shift);
             await _context.SaveChangesAsync();
 
@@ -231,8 +247,13 @@ namespace DreamCleaningBackend.Controllers
             if (user == null || user.IsDeleted || user.Role != UserRole.Admin)
                 return NotFound(new { message = "Admin not found." });
 
+            var before = AuditSnapshot.Of(user);
+
             user.ShiftColor = dto.Color;
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(before, user);
+
             return Ok(new { message = "Color updated." });
         }
 
@@ -250,6 +271,11 @@ namespace DreamCleaningBackend.Controllers
 
             if (!shifts.Any())
                 return NotFound(new { message = "No shifts found for this date." });
+
+            await _auditService.LogActionAsync(
+                Services.AuditEntityTypes.SiteSetting, 0, "ShiftRosterCleared",
+                new { ShiftDate = shiftDate, AdminIds = string.Join(", ", shifts.Select(s => s.AdminId).OrderBy(id => id)) },
+                new { ShiftDate = shiftDate, AdminIds = "" });
 
             _context.AdminShifts.RemoveRange(shifts);
             await _context.SaveChangesAsync();

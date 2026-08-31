@@ -844,6 +844,42 @@ namespace DreamCleaningBackend.DTOs
         public string Status { get; set; } = "Pending";
     }
 
+    /// <summary>
+    /// One requested field change, captured AT SUBMIT TIME.
+    ///
+    /// <c>Current</c> is the value as it stood when the request was made, not as it stands now —
+    /// that is the whole point. The review screen compares it against the live order and warns
+    /// when they no longer agree, because approving a request built against a stale order applies
+    /// a change nobody reviewed.
+    ///
+    /// Values are the already-FORMATTED display strings the requesting admin saw ("$289.50",
+    /// "8/14/2026"), not raw values. The formatting lives in <c>computeOrderEditChanges</c> in
+    /// orders.component.ts, which is deliberately the ONE implementation of an order-edit diff —
+    /// a server-side mirror of it would be free to drift, and the reviewer would then read a
+    /// different table from the one the requester confirmed.
+    /// </summary>
+    public class PendingOrderEditFieldChangeDto
+    {
+        /// <summary>Human-readable field label, e.g. "Service Date" or "Total".</summary>
+        public string Field { get; set; } = "";
+        /// <summary>Formatted value at submit time.</summary>
+        public string Current { get; set; } = "";
+        /// <summary>Formatted value the requester wants.</summary>
+        public string Proposed { get; set; } = "";
+        /// <summary>Signed numeric delta where the field is numeric, otherwise a dash.</summary>
+        public string Difference { get; set; } = "";
+        /// <summary>True for the pinned Total row (rendered emphasised in both review tables).</summary>
+        public bool Emphasised { get; set; }
+        /// <summary>
+        /// Set by the SERVER when the request is read back: the live order no longer matches the
+        /// submit-time <see cref="Current"/>, so the order drifted underneath the request. Never
+        /// sent by the client.
+        /// </summary>
+        public string? LiveCurrent { get; set; }
+        /// <summary>True when <see cref="LiveCurrent"/> differs from <see cref="Current"/>.</summary>
+        public bool HasDrifted { get; set; }
+    }
+
     /// <summary>Single pending edit with current order state and proposed changes (for diff/approve).</summary>
     public class PendingOrderEditDetailDto
     {
@@ -855,12 +891,46 @@ namespace DreamCleaningBackend.DTOs
         public string Status { get; set; } = "Pending";
         public OrderDto? CurrentOrder { get; set; }
         public SuperAdminUpdateOrderDto? ProposedChanges { get; set; }
+
+        /// <summary>What was asked for, as captured at submit time. Null for legacy rows.</summary>
+        public List<PendingOrderEditFieldChangeDto>? RequestedChanges { get; set; }
+        /// <summary>
+        /// True when the request predates the field-level payload (or its JSON is unreadable). The
+        /// review screen says so plainly instead of rendering an empty table — order #296 is the
+        /// row this was found on.
+        /// </summary>
+        public bool RequestedChangesUnavailable { get; set; }
+        /// <summary>Why the requester says the change is needed.</summary>
+        public string? Reason { get; set; }
+
+        // Decision record. A decided request stays readable forever (the endpoint used to 400 on
+        // anything but "Pending", so an approved request could never be inspected again).
+        public int? ReviewedByUserId { get; set; }
+        public string? ReviewedByName { get; set; }
+        public DateTime? ReviewedAt { get; set; }
+        public string? RejectReason { get; set; }
     }
 
     public class RejectPendingOrderEditDto
     {
         [StringLength(500)]
         public string? RejectReason { get; set; }
+    }
+
+    /// <summary>
+    /// Body of <c>POST orders/{orderId}/pending-edit</c>. Wraps the update DTO so the request can
+    /// also carry the submit-time field payload and the requester's reason.
+    ///
+    /// Both extras are OPTIONAL: a client that posts a bare SuperAdminUpdateOrderDto (as every
+    /// caller did before 2026-08-31) still submits successfully and simply produces a request with
+    /// no readable payload — the same shape as the legacy rows already in the table.
+    /// </summary>
+    public class SubmitPendingOrderEditDto
+    {
+        public SuperAdminUpdateOrderDto? Changes { get; set; }
+        public List<PendingOrderEditFieldChangeDto>? FieldChanges { get; set; }
+        [StringLength(1000)]
+        public string? Reason { get; set; }
     }
 
     /// <summary>Response DTO for order statistics (SuperAdmin only).</summary>

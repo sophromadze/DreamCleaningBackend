@@ -2,6 +2,7 @@ using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -23,11 +24,13 @@ namespace DreamCleaningBackend.Controllers.Crm
     {
         private readonly ApplicationDbContext _context;
         private readonly IAutomationEvaluationService _evaluator;
+        private readonly IAuditService _auditService;
 
-        public CrmAutomationController(ApplicationDbContext context, IAutomationEvaluationService evaluator)
+        public CrmAutomationController(ApplicationDbContext context, IAutomationEvaluationService evaluator, IAuditService auditService)
         {
             _context = context;
             _evaluator = evaluator;
+            _auditService = auditService;
         }
 
         // ── Rules ──
@@ -62,12 +65,16 @@ namespace DreamCleaningBackend.Controllers.Crm
             var rule = await _context.AutomationRules.FirstOrDefaultAsync(r => r.Id == id);
             if (rule == null) return NotFound(new { message = "Rule not found" });
 
+            var before = AuditSnapshot.Of(rule);
+
             if (dto.IsEnabled.HasValue) rule.IsEnabled = dto.IsEnabled.Value;
             if (dto.ThresholdDays.HasValue) rule.ThresholdDays = dto.ThresholdDays.Value;
             if (dto.CooldownDays.HasValue) rule.CooldownDays = dto.CooldownDays.Value;
             rule.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(before, rule);
 
             var openCount = await _context.AutomationAlerts
                 .CountAsync(a => a.RuleKey == rule.Key && a.Status == AutomationAlertStatus.Open && a.User.IsActive);
@@ -84,6 +91,17 @@ namespace DreamCleaningBackend.Controllers.Crm
             if (rule == null) return NotFound(new { message = "Rule not found" });
 
             var created = await _evaluator.EvaluateRuleAsync(rule.Key, ignoreEnabledFlag: true);
+
+            // "Run now" bypasses the enabled flag, so it can produce alerts from a rule that is
+            // deliberately switched off. Worth a row even when it created nothing.
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SiteSetting, rule.Id, "AutomationRuleRunNow", null, new
+                {
+                    RuleKey = rule.Key,
+                    RuleWasEnabled = rule.IsEnabled,
+                    AlertsCreated = created
+                });
+
             return Ok(new { created, message = $"Created {created} new alert(s)." });
         }
 
@@ -182,6 +200,8 @@ namespace DreamCleaningBackend.Controllers.Crm
                 .FirstOrDefaultAsync(a => a.Id == id);
             if (alert == null) return NotFound(new { message = "Alert not found" });
 
+            var beforeAlert = AuditSnapshot.Of(alert);
+
             alert.Status = dto.Status;
             if (dto.Status == AutomationAlertStatus.Open)
             {
@@ -207,6 +227,8 @@ namespace DreamCleaningBackend.Controllers.Crm
             }
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeAlert, alert);
 
             // LTV + last order from the Orders table (source of truth).
             var agg = await _context.Orders
@@ -257,6 +279,17 @@ namespace DreamCleaningBackend.Controllers.Crm
             alert.ResolvedByAdminName = null;
 
             await _context.SaveChangesAsync();
+
+            // A logged outreach attempt is what the follow-up attribution report counts, so it is
+            // a business fact rather than a UI state change.
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SiteSetting, alert.Id, "AutomationAlertNoAnswer", null, new
+                {
+                    RuleKey = alert.RuleKey,
+                    UserId = alert.UserId,
+                    CustomerName = alert.CustomerName,
+                    Attempts = alert.Attempts
+                });
 
             var agg = await _context.Orders
                 .Where(o => o.UserId == alert.UserId && o.Status != "cancelled")

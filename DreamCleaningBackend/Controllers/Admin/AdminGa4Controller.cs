@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
+
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -19,15 +20,18 @@ namespace DreamCleaningBackend.Controllers
         private readonly IGa4AttributionBackfillService _backfill;
         private readonly IGa4SessionSyncService _sessionSync;
         private readonly ILogger<AdminGa4Controller> _logger;
+        private readonly IAuditService _auditService;
 
         public AdminGa4Controller(
             IGa4AttributionBackfillService backfill,
             IGa4SessionSyncService sessionSync,
-            ILogger<AdminGa4Controller> logger)
+            ILogger<AdminGa4Controller> logger,
+            IAuditService auditService)
         {
             _backfill = backfill;
             _sessionSync = sessionSync;
             _logger = logger;
+            _auditService = auditService;
         }
 
         // POST /api/admin/ga4/backfill-attribution?target=firsttouch|converting  (default firsttouch)
@@ -47,6 +51,22 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var r = await _backfill.RunAsync(backfillTarget, ct);
+
+                // A backfill WRITES acquisition channels onto historical orders, which is what the
+                // CRM Ads tab reports against ad spend. It is audited for the same reason a
+                // pricing import is: one click, many rows, and a later "why did last quarter's
+                // channel mix change" needs an answer.
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.DataSync, 0, "Ga4AttributionBackfill", null, new
+                    {
+                        Source = "GA4 attribution backfill",
+                        Target = backfillTarget.ToString(),
+                        DateRange = r.DateRange,
+                        OrdersUpdated = r.OrdersUpdated,
+                        OrdersAlreadyAttributed = r.OrdersAlreadyAttributed,
+                        TransactionsWithNoOrder = r.TransactionsWithNoOrder
+                    });
+
                 return Ok(new
                 {
                     target = backfillTarget.ToString(),
@@ -82,6 +102,17 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var r = await _sessionSync.BackfillHistoricalAsync(ct);
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.DataSync, 0, "Ga4SessionBackfill", null, new
+                    {
+                        Source = "GA4 session backfill",
+                        DateRange = r.DateRange,
+                        DaysOverwritten = r.DaysOverwritten,
+                        SessionRowsWritten = r.SessionRowsWritten,
+                        TotalSessions = r.TotalSessions
+                    });
+
                 return Ok(new
                 {
                     dateRange = r.DateRange,

@@ -111,7 +111,22 @@ namespace DreamCleaningBackend.Controllers
         [Authorize(Roles = "SuperAdmin")]
         public async Task<ActionResult<RefundSyncResultDto>> SyncOrderRefunds(int orderId)
         {
-            return Ok(await _orderRefundService.SyncRefundsFromStripeAsync(orderId));
+            var result = await _orderRefundService.SyncRefundsFromStripeAsync(orderId);
+
+            // Only when it actually imported something. A reconciliation that finds nothing is a
+            // read, and logging every "no change" pass would bury the ones that mattered.
+            if (result != null && result.RefundsImported > 0)
+            {
+                await LogRefundActionAsync(orderId, "RefundsImported", new
+                {
+                    RefundsImported = result.RefundsImported,
+                    AmountImported = result.AmountImported,
+                    HasDispute = result.HasDispute,
+                    Source = "Stripe reconciliation"
+                });
+            }
+
+            return Ok(result);
         }
 
         /// <summary>
@@ -125,7 +140,26 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<RefundBackfillResultDto>> BackfillOrderRefunds(
             [FromQuery] int limit = 200, [FromQuery] int? afterOrderId = null)
         {
-            return Ok(await _orderRefundService.BackfillRefundsFromStripeAsync(limit, afterOrderId));
+            var result = await _orderRefundService.BackfillRefundsFromStripeAsync(limit, afterOrderId);
+
+            // A sweep touches many orders, so it is recorded once as a DataSync event rather than
+            // per order — the per-order rows the sync itself writes are the detail.
+            if (result != null && result.RefundsImported > 0)
+            {
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.DataSync, 0, "RefundBackfill", null, new
+                    {
+                        Source = "Stripe refund backfill",
+                        OrdersScanned = result.OrdersScanned,
+                        OrdersWithImports = result.OrdersWithImports,
+                        RefundsImported = result.RefundsImported,
+                        AmountImported = result.AmountImported,
+                        DisputesFound = result.DisputesFound,
+                        Failures = result.Failures
+                    });
+            }
+
+            return Ok(result);
         }
 
         /// <summary>
@@ -137,7 +171,17 @@ namespace DreamCleaningBackend.Controllers
         [Authorize(Roles = "SuperAdmin")]
         public async Task<ActionResult<RefundResultDto>> SendRefundEmail(int orderId, int refundId)
         {
-            return Ok(await _orderRefundService.SendRefundEmailAsync(orderId, refundId));
+            var result = await _orderRefundService.SendRefundEmailAsync(orderId, refundId);
+
+            if (result != null && result.EmailSent)
+            {
+                await _auditService.LogOrderNotificationAsync(
+                    orderId, "RefundEmailSent",
+                    $"Refund confirmation for refund #{refundId} ({result.AmountRefunded:C})",
+                    GetCurrentUserId());
+            }
+
+            return Ok(result);
         }
 
         /// <summary>
@@ -156,8 +200,39 @@ namespace DreamCleaningBackend.Controllers
             if (adminUserId == 0)
                 return Unauthorized();
 
+            var refundedBefore = await _context.Orders
+                .Where(o => o.Id == orderId)
+                .Select(o => (decimal?)o.TotalRefundedAmount)
+                .FirstOrDefaultAsync();
+
             var result = await _orderRefundService.IssueRefundAsync(
                 orderId, dto.Amount, dto.Reason, adminUserId, dto.SendEmail);
+
+            // Logged whenever money actually moved, INCLUDING the partial-success case below —
+            // a refund that went through for less than was asked for is exactly the event
+            // somebody will later need to find.
+            if (result != null && result.AmountRefunded > 0)
+            {
+                var refundedAfter = await _context.Orders
+                    .Where(o => o.Id == orderId)
+                    .Select(o => (decimal?)o.TotalRefundedAmount)
+                    .FirstOrDefaultAsync();
+
+                await LogRefundActionAsync(orderId, "RefundIssued", new
+                {
+                    AmountRefunded = result.AmountRefunded,
+                    // Null means "everything still refundable" on this endpoint, and that is a
+                    // materially different instruction from a typed figure that happened to equal
+                    // the balance, so it is recorded as asked rather than as resolved.
+                    RequestedAmount = dto.Amount,
+                    Reason = dto.Reason,
+                    StripeRefundIds = result.RefundIds.Count == 0 ? null : string.Join(", ", result.RefundIds),
+                    CustomerEmailSent = result.EmailSent,
+                    FullyApplied = result.Success,
+                    TotalRefundedBefore = refundedBefore,
+                    TotalRefundedAfter = refundedAfter
+                });
+            }
 
             // A partial refund reports Success=false but still carries the amount that DID go
             // through, so 200 is correct — the client must render the outcome, not treat it as a
@@ -418,6 +493,23 @@ namespace DreamCleaningBackend.Controllers
 
         // ── SuperAdmin order transfer (move an order between user accounts, undoable) ──
 
+        /// <summary>
+        /// Refund events, recorded against the ORDER so they sit in the same stream as everything
+        /// else about it. Deliberately a pseudo-entity: an OrderRefund row must never be replayable
+        /// by the generic Undo, which would delete the record of money that already left.
+        /// </summary>
+        private async Task LogRefundActionAsync(int orderId, string action, object payload)
+        {
+            try
+            {
+                await _auditService.LogActionAsync(AuditEntityTypes.OrderRefundAction, orderId, action, null, payload);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit refund action on order {OrderId}", orderId);
+            }
+        }
+
         /// <summary>SuperAdmin-only: move an order — and everything it gave its current owner
         /// (points, spent amount, first-time flag, photos, service address) — to another user.</summary>
         [HttpPost("orders/{orderId}/transfer")]
@@ -427,6 +519,24 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var result = await _orderTransferService.TransferAsync(orderId, dto.TargetUserId, GetCurrentUserId(), dto.Notes);
+
+                // A transfer moves points, spend, the first-time flag and photos between two
+                // accounts. Both ends are named so the row answers "where did this order go"
+                // without a second lookup against a transfer table an admin cannot browse.
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.OrderTransferAction, orderId, "Transferred", null, new
+                    {
+                        TransferId = result.Id,
+                        FromUserId = result.FromUserId,
+                        FromUserName = result.FromUserName,
+                        ToUserId = result.ToUserId,
+                        ToUserName = result.ToUserName,
+                        PointsMoved = result.PointsMoved,
+                        SpentAmountMoved = result.SpentAmountMoved,
+                        PhotosMoved = result.PhotosMoved,
+                        Notes = dto.Notes
+                    });
+
                 return Ok(result);
             }
             catch (InvalidOperationException ex)
@@ -451,6 +561,23 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var result = await _orderTransferService.UndoAsync(transferId, GetCurrentUserId());
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.OrderTransferAction, result.OrderId, "TransferUndone", null, new
+                    {
+                        TransferId = result.Id,
+                        // The direction the undo moved things: back from the current owner to the
+                        // original one. Written this way round so the row reads as what happened
+                        // rather than as a copy of the original transfer.
+                        FromUserId = result.ToUserId,
+                        FromUserName = result.ToUserName,
+                        ToUserId = result.FromUserId,
+                        ToUserName = result.FromUserName,
+                        PointsMoved = result.PointsMoved,
+                        SpentAmountMoved = result.SpentAmountMoved,
+                        PhotosMoved = result.PhotosMoved
+                    });
+
                 return Ok(result);
             }
             catch (InvalidOperationException ex)
@@ -587,6 +714,115 @@ namespace DreamCleaningBackend.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Staffing warnings for many orders in one round trip — what feeds the ⚠ tooltip in the
+        /// Orders table and the warning block in the order detail panel.
+        ///
+        /// **Admin AND SuperAdmin**, deliberately wider than the payroll endpoint below. The two
+        /// answer different questions: that one says what each cleaner is PAID and stays
+        /// SuperAdmin-only, while "is something wrong with how this order is staffed" is the
+        /// Admins' daily work — they assign the cleaners and chase the unpaid customer — and a
+        /// warning only a SuperAdmin can see is not a warning. Moderators are View-only and do
+        /// not staff orders, so they are not included; widening to them is a one-word change here.
+        ///
+        /// Shape and semantics mirror `orders/assigned-cleaners-with-ids/bulk`: a map keyed by
+        /// order id, one request for the whole list, because the Orders table's paging, filtering
+        /// and sorting are all client-side and there is no single place a per-page fetch could
+        /// hook into without being missed by one of them.
+        ///
+        /// <paramref name="orderIds"/> narrows it to specific orders — that is the targeted
+        /// refresh after a write moves an order's staffing (assign, unassign, order edit), so a
+        /// save does not drag the whole table back over the wire. Omitted = every order the list
+        /// itself would show, so <paramref name="includeHidden"/> has to match the list's own
+        /// toggle or a hidden order's row would have no warnings to hover.
+        ///
+        /// PROJECTED, never Include()d: the whole point is to answer for hundreds of orders, and
+        /// the entity graph the warnings need (assignments, service lines, extras, service type)
+        /// is far more than the six columns and two booleans that actually go into them.
+        /// </summary>
+        [HttpGet("orders/staffing-warnings/bulk")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        public async Task<ActionResult<Dictionary<string, List<string>>>> GetOrdersStaffingWarningsBulk(
+            [FromQuery] int[]? orderIds = null, [FromQuery] bool includeHidden = false)
+        {
+            var query = _context.Orders.AsNoTracking().AsQueryable();
+
+            if (orderIds != null && orderIds.Length > 0)
+                query = query.Where(o => orderIds.Contains(o.Id));
+            else if (!includeHidden)
+                query = query.Where(o => !o.IsHidden);
+
+            // GetDisplayServiceTypeName cannot be translated to SQL, so the custom-label ternary
+            // is inlined here — the same arrangement GetAllOrdersForAdmin's projection uses.
+            var rows = await query
+                .Select(o => new
+                {
+                    o.Id,
+                    ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom
+                                      && o.CustomServiceDisplayName != null
+                                      && o.CustomServiceDisplayName != ""
+                        ? o.CustomServiceDisplayName + " Cleaning"
+                        : (o.ServiceType != null && o.ServiceType.Name != "" ? o.ServiceType.Name : "Cleaning"),
+                    HasCleanerHoursService = o.OrderServices.Any(os => os.Service.ServiceRelationType == "cleaner"),
+                    HasDeepCleaningExtra = o.OrderExtraServices.Any(oes =>
+                        oes.ExtraService.Name.ToLower().Contains("deep cleaning")),
+                    o.TotalDuration,
+                    o.MaidsCount,
+                    o.CleanerHourlyRate,
+                    o.Tips,
+                    o.IsPaid,
+                    o.PaymentMethod,
+                    Assignments = o.OrderCleaners
+                        .OrderBy(oc => oc.Id)
+                        .Select(oc => new
+                        {
+                            OrderCleanerId = oc.Id,
+                            oc.CleanerId,
+                            oc.SalaryHourlyRate,
+                            oc.SalaryBillableMinutes
+                        })
+                        .ToList()
+                })
+                .ToListAsync();
+
+            var result = new Dictionary<string, List<string>>(rows.Count);
+
+            foreach (var row in rows)
+            {
+                var warnings = OrderStaffingWarnings.BuildFromFacts(new OrderStaffingWarnings.OrderFacts
+                {
+                    ServiceTypeName = row.ServiceTypeName,
+                    HasCleanerHoursService = row.HasCleanerHoursService,
+                    HasDeepCleaningExtra = row.HasDeepCleaningExtra,
+                    TotalDuration = row.TotalDuration,
+                    MaidsCount = row.MaidsCount,
+                    CleanerHourlyRate = row.CleanerHourlyRate,
+                    Tips = row.Tips,
+                    // A non-Stripe order (cash / Zelle / check) is settled outside the system, so
+                    // IsPaid stays false on rows nobody is owed anything on. Same test as the
+                    // payouts page, or the panel would warn about money that already changed hands.
+                    IsPaidByCustomer = row.IsPaid || row.PaymentMethod != Models.PaymentMethod.Normal,
+                    Assignments = row.Assignments
+                        .Select(a => new CleanerPayrollCalculator.AssignmentInput
+                        {
+                            OrderCleanerId = a.OrderCleanerId,
+                            CleanerId = a.CleanerId,
+                            SalaryHourlyRate = a.SalaryHourlyRate,
+                            SalaryBillableMinutes = a.SalaryBillableMinutes
+                        })
+                        .ToList()
+                });
+
+                // Only orders that actually have something wrong travel. An empty list carries no
+                // information the caller does not already have, and on a full table that is most
+                // of the payload.
+                if (warnings.Count > 0)
+                    result[row.Id.ToString()] = warnings;
+            }
+
+            return Ok(result);
         }
 
         /// <summary>
@@ -752,12 +988,20 @@ namespace DreamCleaningBackend.Controllers
 
             var text = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
             var note = await _context.AdminOrderNotes.FirstOrDefaultAsync(n => n.OrderId == orderId);
+            // Read off the tracked row BEFORE it is mutated or removed; afterwards there is
+            // nothing left to describe what the note used to say.
+            var previousText = note?.Notes;
 
             if (text == null)
             {
                 if (note != null)
                     _context.AdminOrderNotes.Remove(note);
                 await _context.SaveChangesAsync();
+
+                // Only when there WAS a note: clearing an empty box is not an event.
+                if (previousText != null)
+                    await LogOrderNoteChangeAsync(orderId, previousText, null);
+
                 return Ok(new OrderAdminNoteDto { OrderId = orderId });
             }
 
@@ -774,6 +1018,8 @@ namespace DreamCleaningBackend.Controllers
 
             await _context.SaveChangesAsync();
 
+            await LogOrderNoteChangeAsync(orderId, previousText, text);
+
             return Ok(new OrderAdminNoteDto
             {
                 OrderId = orderId,
@@ -781,6 +1027,36 @@ namespace DreamCleaningBackend.Controllers
                 UpdatedAt = note.UpdatedAt,
                 UpdatedByName = await ResolveNoteAuthorNameAsync(note.UpdatedByUserId)
             });
+        }
+
+        /// <summary>
+        /// Records an internal-note change against the ORDER (EntityId = order id), not against
+        /// the AdminOrderNote row: an admin looking for "what happened to #296" filters by order,
+        /// and the note row's own id means nothing to them. Deleting the row on clear also means
+        /// the AdminOrderNote id is not stable enough to key history on.
+        ///
+        /// The note text itself is stored in the audit row. That is deliberate — a note is
+        /// free-text an admin wrote about a customer, and "it changed" without saying what it said
+        /// before is not a usable record.
+        /// </summary>
+        private async Task LogOrderNoteChangeAsync(int orderId, string? before, string? after)
+        {
+            if (before == after) return;
+
+            try
+            {
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.OrderAdminNote,
+                    orderId,
+                    before == null ? "Create" : after == null ? "Delete" : "Update",
+                    before == null ? null : new { Notes = before },
+                    after == null ? null : new { Notes = after },
+                    new[] { "Notes" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit admin note change on order {OrderId}", orderId);
+            }
         }
 
         /// <summary>Display name for the admin who last saved a note; null if they no longer exist.</summary>
@@ -1097,12 +1373,18 @@ namespace DreamCleaningBackend.Controllers
                 var email = order.ContactEmail;
                 var phone = order.User?.Phone ?? order.ContactPhone;
 
+                // Tracked, not assumed: both sends swallow their own exceptions, so the audit
+                // row has to reflect what actually left rather than what was attempted.
+                var reviewEmailSent = false;
+                var reviewSmsSent = false;
+
                 // Send email if available
                 if (!string.IsNullOrWhiteSpace(email))
                 {
                     try
                     {
                         await _emailService.SendReviewRequestEmailAsync(email, customerName);
+                        reviewEmailSent = true;
                     }
                     catch (Exception ex)
                     {
@@ -1116,12 +1398,15 @@ namespace DreamCleaningBackend.Controllers
                     try
                     {
                         await _smsService.SendReviewRequestSmsAsync(phone, customerName);
+                        reviewSmsSent = true;
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, $"Failed to send review SMS for order #{orderId}");
                     }
                 }
+
+                await LogOrderNotificationIfSentAsync(orderId, "ReviewRequestSent", reviewEmailSent, reviewSmsSent, "Review request");
 
                 return Ok(new { message = "Review request sent" });
             }
@@ -1440,14 +1725,51 @@ namespace DreamCleaningBackend.Controllers
         /// grant; anyone who can apply edits themselves uses superadmin-full-update instead.</summary>
         [HttpPost("orders/{orderId}/pending-edit")]
         [Authorize(Roles = "Admin")]
-        public async Task<ActionResult<PendingOrderEditListDto>> SubmitPendingOrderEdit(int orderId, [FromBody] SuperAdminUpdateOrderDto dto)
+        public async Task<ActionResult<PendingOrderEditListDto>> SubmitPendingOrderEdit(
+            int orderId, [FromBody] Newtonsoft.Json.Linq.JObject body)
         {
             var order = await _context.Orders.FindAsync(orderId);
             if (order == null)
                 return NotFound(new { message = "Order not found" });
 
+            // TWO accepted body shapes, and the older one still works. Before 2026-08-31 the body
+            // WAS the SuperAdminUpdateOrderDto; it is now a wrapper carrying the same DTO under
+            // "changes" plus the submit-time field payload and a reason. A body with no "changes"
+            // key is read the old way, so a stale client (or a direct API caller) submits a
+            // request with no readable payload rather than a 400 — the same shape as the legacy
+            // rows already in the table.
+            SubmitPendingOrderEditDto submission;
+            if (body?.GetValue("changes", StringComparison.OrdinalIgnoreCase) != null)
+            {
+                submission = body.ToObject<SubmitPendingOrderEditDto>() ?? new SubmitPendingOrderEditDto();
+            }
+            else
+            {
+                submission = new SubmitPendingOrderEditDto
+                {
+                    Changes = body?.ToObject<SuperAdminUpdateOrderDto>()
+                };
+            }
+
+            var dto = submission.Changes;
+            if (dto == null)
+                return BadRequest(new { message = "No proposed changes were supplied." });
+
             var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
             var proposedJson = JsonConvert.SerializeObject(dto);
+
+            // Never trust the client's drift verdict — it is computed fresh on every read. Only
+            // the three descriptive columns come from the submission.
+            var fieldChanges = submission.FieldChanges?
+                .Select(f => new PendingOrderEditFieldChangeDto
+                {
+                    Field = f.Field,
+                    Current = f.Current,
+                    Proposed = f.Proposed,
+                    Difference = f.Difference,
+                    Emphasised = f.Emphasised
+                })
+                .ToList();
 
             var pending = new PendingOrderEdit
             {
@@ -1455,10 +1777,16 @@ namespace DreamCleaningBackend.Controllers
                 RequestedByUserId = currentUserId,
                 RequestedAt = DateTime.UtcNow,
                 ProposedChangesJson = proposedJson,
+                FieldChangesJson = fieldChanges == null || fieldChanges.Count == 0
+                    ? null
+                    : JsonConvert.SerializeObject(fieldChanges),
+                Reason = string.IsNullOrWhiteSpace(submission.Reason) ? null : submission.Reason.Trim(),
                 Status = "Pending"
             };
             _context.PendingOrderEdits.Add(pending);
             await _context.SaveChangesAsync();
+
+            await LogOrderEditRequestAsync(pending, "ChangeRequested", fieldChanges);
 
             var requestedBy = await _context.Users.FindAsync(currentUserId);
             var summary = $"Order #{orderId} - {order.ContactFirstName} {order.ContactLastName} - {order.ServiceDate:yyyy-MM-dd}";
@@ -1513,11 +1841,16 @@ namespace DreamCleaningBackend.Controllers
             var pending = await _context.PendingOrderEdits
                 .Include(poe => poe.Order)
                 .Include(poe => poe.RequestedByUser)
+                .Include(poe => poe.ReviewedByUser)
                 .FirstOrDefaultAsync(poe => poe.Id == id);
             if (pending == null)
                 return NotFound(new { message = "Pending edit not found" });
-            if (pending.Status != "Pending")
-                return BadRequest(new { message = "This edit was already approved or rejected" });
+
+            // A DECIDED request stays readable forever. This used to 400 on anything but
+            // "Pending", and the frontend's error handler blanked the panel — so the moment a
+            // request was approved or rejected, nobody could ever see what had been asked for
+            // (order #296 is why this was found). "Already decided" is a fact to display, not a
+            // reason to refuse the read; approve/reject still refuse, which is where it matters.
 
             var order = await _context.Orders
                 .Include(o => o.ServiceType)
@@ -1538,6 +1871,8 @@ namespace DreamCleaningBackend.Controllers
             }
             catch { /* ignore */ }
 
+            var requestedChanges = ReadRequestedChanges(pending);
+
             return Ok(new PendingOrderEditDetailDto
             {
                 Id = pending.Id,
@@ -1547,8 +1882,50 @@ namespace DreamCleaningBackend.Controllers
                 RequestedAt = pending.RequestedAt,
                 Status = pending.Status,
                 CurrentOrder = currentOrder,
-                ProposedChanges = proposed
+                ProposedChanges = proposed,
+                RequestedChanges = requestedChanges,
+                // "No payload" and "an empty payload" are the same thing to a reviewer: there is
+                // nothing to read. Both fall back to the live diff against ProposedChanges.
+                RequestedChangesUnavailable = requestedChanges == null || requestedChanges.Count == 0,
+                Reason = pending.Reason,
+                ReviewedByUserId = pending.ReviewedByUserId,
+                ReviewedByName = pending.ReviewedByUser != null
+                    ? $"{pending.ReviewedByUser.FirstName} {pending.ReviewedByUser.LastName}".Trim()
+                    : null,
+                ReviewedAt = pending.ReviewedAt,
+                RejectReason = pending.RejectReason
             });
+        }
+
+        /// <summary>
+        /// The submit-time payload, exactly as it was captured.
+        ///
+        /// <b>Drift is resolved on the CLIENT, not here</b>, and that is a deliberate split. The
+        /// stored <c>Current</c> strings are the FORMATTED values the requesting admin saw, and
+        /// the only implementation that formats an order-edit diff is
+        /// <c>computeOrderEditChanges</c> in orders.component.ts — the single source the save
+        /// confirmation and the approval table both read. Comparing a stored string against a
+        /// server-side re-derivation would compare two different formatters and report drift on
+        /// every request that used a date or a money value. The component runs its own diff
+        /// against the live order it was handed and matches by field label.
+        ///
+        /// Returns null for a legacy row with no payload, and also for one whose JSON will not
+        /// parse — an unreadable payload is not a readable one, and the review screen says so
+        /// rather than rendering an empty table.
+        /// </summary>
+        private List<PendingOrderEditFieldChangeDto>? ReadRequestedChanges(PendingOrderEdit pending)
+        {
+            if (string.IsNullOrWhiteSpace(pending.FieldChangesJson)) return null;
+
+            try
+            {
+                var stored = JsonConvert.DeserializeObject<List<PendingOrderEditFieldChangeDto>>(pending.FieldChangesJson);
+                return stored == null || stored.Count == 0 ? null : stored;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>Approve and apply the pending order edit. Reviewers only (see CallerCanApplyOrderEditsAsync).</summary>
@@ -1596,6 +1973,11 @@ namespace DreamCleaningBackend.Controllers
             pending.ReviewedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
+            // The DECISION, separate from the resulting order diff logged below. Approval used to
+            // be visible only as its side effect — an Order Update row that looked exactly like a
+            // direct save — so "who approved this, and when" had no record at all.
+            await LogOrderEditRequestAsync(pending, "ChangeApproved", ReadRequestedChanges(pending));
+
             var orderAfter = await _context.Orders
                 .Include(o => o.OrderServices).ThenInclude(os => os.Service)
                 .Include(o => o.OrderExtraServices).ThenInclude(oes => oes.ExtraService)
@@ -1636,7 +2018,51 @@ namespace DreamCleaningBackend.Controllers
             pending.RejectReason = dto?.RejectReason;
             await _context.SaveChangesAsync();
 
+            // A rejection changes nothing about the order, which is exactly why it had no trace
+            // whatsoever before: no order diff, no audit row. "I sent that change and nothing
+            // happened" was unanswerable.
+            await LogOrderEditRequestAsync(pending, "ChangeRejected", ReadRequestedChanges(pending));
+
             return Ok(new { message = "Order edit rejected" });
+        }
+
+        /// <summary>
+        /// One change-request lifecycle event, recorded against the ORDER so submission, approval
+        /// and rejection sit in the same stream as the order's other history.
+        ///
+        /// The requested fields are flattened into a single readable line rather than nested JSON:
+        /// the Audits tab renders field/old/new pairs, and a nested array would be the raw JSON
+        /// blob this whole pass exists to get rid of.
+        /// </summary>
+        private async Task LogOrderEditRequestAsync(
+            PendingOrderEdit pending, string action, List<PendingOrderEditFieldChangeDto>? fieldChanges)
+        {
+            try
+            {
+                var summary = fieldChanges == null || fieldChanges.Count == 0
+                    ? null
+                    : string.Join("; ", fieldChanges.Select(f => $"{f.Field}: {f.Current} -> {f.Proposed}"));
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.OrderEditRequest,
+                    pending.OrderId,
+                    action,
+                    null,
+                    new
+                    {
+                        RequestId = pending.Id,
+                        Status = pending.Status,
+                        RequestedByUserId = pending.RequestedByUserId,
+                        RequestedAt = pending.RequestedAt,
+                        Reason = pending.Reason,
+                        RequestedChanges = summary,
+                        RejectReason = pending.RejectReason
+                    });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit order-edit request {RequestId}", pending.Id);
+            }
         }
 
         [HttpGet("orders/{orderId}/available-cleaners")]
@@ -1685,6 +2111,14 @@ namespace DreamCleaningBackend.Controllers
             if (result == null)
                 return NotFound(new { message = "Order not found" });
 
+            // Only when something actually went out — several of these paths return 200 having
+            // sent nothing, and a row claiming a send that did not happen is what an admin later
+            // builds a wrong conclusion on.
+            if (result.EmailsSent > 0)
+                await _auditService.LogOrderNotificationAsync(
+                    orderId, "CleanerAssignmentMailsSent",
+                    $"Assignment details sent to {result.EmailsSent} cleaner(s)", GetCurrentUserId());
+
             return Ok(result);
         }
 
@@ -1698,6 +2132,10 @@ namespace DreamCleaningBackend.Controllers
 
             if (result.EmailsSent <= 0)
                 return BadRequest(new { message = result.Message });
+
+            await _auditService.LogOrderNotificationAsync(
+                orderId, "CleanerAssignmentMailResent",
+                $"Assignment details re-sent to cleaner #{cleanerId}", GetCurrentUserId());
 
             return Ok(result);
         }
@@ -1864,6 +2302,20 @@ namespace DreamCleaningBackend.Controllers
             var statusReactivated = await _reconciler.ReconcileStatusAfterAdditionalPaymentAsync(orderId);
             var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
 
+            // Money collected outside Stripe leaves no other trace — there is no PaymentHistory
+            // row and no webhook. Tax on a non-Stripe top-up is also RETAINED rather than
+            // remitted (see OrderRevenueMath), so this row is the only record of a decision that
+            // moves reported revenue.
+            await LogOrderPaymentActionAsync(orderId, "ManualPaymentRecorded", new
+            {
+                UpdateHistoryId = history.Id,
+                AdditionalAmount = history.AdditionalAmount,
+                PaymentMethod = pm.ToString(),
+                PaymentReference = dto.PaymentReference,
+                PaymentNotes = dto.PaymentNotes,
+                StatusReactivated = statusReactivated
+            });
+
             return Ok(new
             {
                 message = $"Recorded {pm} payment of ${history.AdditionalAmount:F2} for the additional charge.",
@@ -2020,6 +2472,16 @@ namespace DreamCleaningBackend.Controllers
             await _context.SaveChangesAsync();
             _logger.LogInformation("Admin {AdminId} charged saved card for order {OrderId}: {Amount}", GetCurrentUserId(), orderId, order.Total);
 
+            // An admin took money from a customer who was not present. That is the single most
+            // consequential thing on this panel that left no audit trace.
+            await LogOrderPaymentActionAsync(orderId, "SavedCardCharged", new
+            {
+                Amount = order.Total,
+                CardLast4 = order.User.SavedCardLast4,
+                PaymentIntentId = chargeResult.PaymentIntentId,
+                Status = order.Status
+            });
+
             // Same confirmation templates the normal payment flow sends.
             await SendOrderConfirmationNotificationsAsync(order);
 
@@ -2029,6 +2491,50 @@ namespace DreamCleaningBackend.Controllers
                 message = $"Charged ${order.Total:F2} to the customer's card ending {order.User.SavedCardLast4 ?? "----"}. The order is now paid.",
                 paymentIntentId = chargeResult.PaymentIntentId
             });
+        }
+
+        /// <summary>
+        /// Records that a customer-facing message went out, reusing the existing OrderNotification
+        /// stream so every "we contacted the customer" event reads the same way.
+        ///
+        /// Writes NOTHING when neither channel actually sent. That matters: several of these
+        /// endpoints return 200 with a "no email on file" message, and a row claiming a send that
+        /// did not happen is exactly the kind of thing an admin later builds a wrong conclusion
+        /// on. The channels that DID fire are named, because "we told them" and "we tried to tell
+        /// them by SMS and their number is wrong" are different facts.
+        /// </summary>
+        private async Task LogOrderNotificationIfSentAsync(
+            int orderId, string action, bool emailSent, bool smsSent, string what)
+        {
+            if (!emailSent && !smsSent) return;
+
+            var channels = emailSent && smsSent ? "email and SMS" : emailSent ? "email" : "SMS";
+            try
+            {
+                await _auditService.LogOrderNotificationAsync(
+                    orderId, action, $"{what} sent by {channels}", GetCurrentUserId());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit notification {Action} on order {OrderId}", action, orderId);
+            }
+        }
+
+        /// <summary>
+        /// A money movement an admin initiated on the order. Pseudo-entity, and undo-blocked: the
+        /// charge or the cash has already happened, and flipping IsPaid back would only make the
+        /// records disagree with the bank.
+        /// </summary>
+        private async Task LogOrderPaymentActionAsync(int orderId, string action, object payload)
+        {
+            try
+            {
+                await _auditService.LogActionAsync(AuditEntityTypes.OrderPaymentAction, orderId, action, null, payload);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit payment action on order {OrderId}", orderId);
+            }
         }
 
         /// <summary>Outcome of one confirmation send, so the resend endpoint can tell the admin
@@ -2269,6 +2775,8 @@ namespace DreamCleaningBackend.Controllers
             if (string.IsNullOrWhiteSpace(customerEmail) && (string.IsNullOrWhiteSpace(customerPhone) || !_smsService.IsSmsEnabled()))
                 return BadRequest(new { message = "No email or phone available to send the reminder." });
 
+            await LogOrderNotificationIfSentAsync(orderId, "PaymentReminderSent", emailSent, smsSent, $"Payment reminder for ${amountToSend:F2}");
+
             return Ok(new { message = BuildSendResultMessage("Payment reminder", emailSent, smsSent, smsInvalid) });
         }
 
@@ -2362,6 +2870,8 @@ namespace DreamCleaningBackend.Controllers
                     return BadRequest(new { message = "Payment-link SMS could not be sent: " + ex.Message });
                 }
             }
+
+            await LogOrderNotificationIfSentAsync(orderId, "PaymentLinkSent", emailSent, smsSent, $"Payment link for ${order.Total:F2}");
 
             return Ok(new
             {
@@ -2473,6 +2983,8 @@ namespace DreamCleaningBackend.Controllers
                 row.UpdatedPaymentNotificationSentAt = stampedAt;
             if (rowsToStamp.Count > 0)
                 await _context.SaveChangesAsync();
+
+            await LogOrderNotificationIfSentAsync(orderId, "UpdatedPaymentNotificationSent", emailSent, smsSent, "Updated payment notification");
 
             return Ok(new { message = BuildSendResultMessage("Updated-payment notification", emailSent, smsSent, smsInvalid) });
         }

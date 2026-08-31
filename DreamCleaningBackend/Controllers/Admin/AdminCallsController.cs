@@ -3,7 +3,9 @@ using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.CallTracking;
+using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -27,15 +29,18 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly ILogger<AdminCallsController> _logger;
         private readonly IConfiguration _configuration;
+        private readonly IAuditService _auditService;
 
         public AdminCallsController(
             ApplicationDbContext context,
             ILogger<AdminCallsController> logger,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IAuditService auditService)
         {
             _context = context;
             _logger = logger;
             _configuration = configuration;
+            _auditService = auditService;
         }
 
         // GET /api/admin/calls?from=&to=&direction=&category=&excludeNonCustomer=&page=&pageSize=
@@ -144,6 +149,21 @@ namespace DreamCleaningBackend.Controllers
             await _context.SaveChangesAsync(ct);
 
             _logger.LogInformation("Call reclassify backfill: reprocessed {Count} records.", all.Count);
+
+            // This rewrites the category on EVERY call record in one go, which moves the numbers
+            // on the CRM Ads and Calls tabs. Recorded so an unexplained shift in those figures can
+            // be traced to the run that caused it.
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.DataSync, 0, "CallsReclassified", null, new
+                {
+                    Source = "Call classification backfill",
+                    RecordsProcessed = all.Count,
+                    Customer = all.Count(c => c.CallCategory == CallCategory.Customer),
+                    Cleaner = all.Count(c => c.CallCategory == CallCategory.Cleaner),
+                    Spam = all.Count(c => c.CallCategory == CallCategory.Spam),
+                    Unknown = all.Count(c => c.CallCategory == CallCategory.Unknown),
+                    AdCalls = all.Count(c => c.IsAdCall)
+                });
 
             return Ok(new
             {

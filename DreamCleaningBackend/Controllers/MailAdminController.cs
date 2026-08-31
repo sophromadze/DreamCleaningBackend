@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -20,12 +21,14 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly IEmailService _emailService;
         private readonly ILogger<MailAdminController> _logger;
+        private readonly IAuditService _auditService;
 
-        public MailAdminController(ApplicationDbContext context, IEmailService emailService, ILogger<MailAdminController> logger)
+        public MailAdminController(ApplicationDbContext context, IEmailService emailService, ILogger<MailAdminController> logger, IAuditService auditService)
         {
             _context = context;
             _emailService = emailService;
             _logger = logger;
+            _auditService = auditService;
         }
 
         [HttpGet]
@@ -87,7 +90,11 @@ namespace DreamCleaningBackend.Controllers
             {
                 _context.ScheduledMails.Add(mail);
                 await _context.SaveChangesAsync();
+                await _auditService.LogCreateAsync(mail);
                 await SendMailNow(mail);
+                // Two rows on purpose: the campaign was created, and then it was SENT. The send is
+                // the irreversible half and has to be findable on its own.
+                await LogCampaignActionAsync(mail.Id, "MailSentNow", mail.Subject, mail.RecipientCount);
                 return Ok(MapToDto(mail));
             }
             _context.ScheduledMails.Add(mail);
@@ -101,6 +108,7 @@ namespace DreamCleaningBackend.Controllers
                 mail.NextScheduledAt = ScheduleHelper.ComputeNextScheduled(mail.ScheduledDate, mail.ScheduledTime.Value, mail.Frequency, mail.DayOfWeek, mail.DayOfMonth, mail.ScheduleTimezone);
             }
             await _context.SaveChangesAsync();
+            await _auditService.LogCreateAsync(mail);
             return Ok(MapToDto(mail));
         }
 
@@ -111,6 +119,7 @@ namespace DreamCleaningBackend.Controllers
             var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
             if (mail == null) return NotFound();
             if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled) return BadRequest("Cannot update mail that is already sent.");
+            var before = AuditSnapshot.Of(mail);
             if (dto.Subject != null) mail.Subject = dto.Subject.Trim();
             if (dto.Content != null) mail.Content = dto.Content;
             if (dto.TargetRoles != null) { mail.TargetRoles = dto.TargetRoles; mail.RecipientCount = await CountRecipients(ParseRoleNames(dto.TargetRoles)); }
@@ -131,6 +140,7 @@ namespace DreamCleaningBackend.Controllers
                  mail.Frequency != MailFrequency.Once && mail.ScheduledDate.HasValue))
                 mail.NextScheduledAt = ScheduleHelper.ComputeNextScheduled(mail.ScheduledDate, mail.ScheduledTime.Value, mail.Frequency, mail.DayOfWeek, mail.DayOfMonth, mail.ScheduleTimezone);
             await _context.SaveChangesAsync();
+            await _auditService.LogUpdateAsync(before, mail);
             return Ok(MapToDto(mail));
         }
 
@@ -141,6 +151,7 @@ namespace DreamCleaningBackend.Controllers
             var mail = await _context.ScheduledMails.FindAsync(id);
             if (mail == null) return NotFound();
             if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled && mail.Status != MailStatus.Cancelled) return BadRequest("Cannot delete sent mail.");
+            await _auditService.LogDeleteAsync(mail);
             _context.ScheduledMails.Remove(mail);
             await _context.SaveChangesAsync();
             return NoContent();
@@ -154,6 +165,7 @@ namespace DreamCleaningBackend.Controllers
             if (mail == null) return NotFound();
             if (mail.Status != MailStatus.Draft && mail.Status != MailStatus.Scheduled) return BadRequest("Mail already sent.");
             await SendMailNow(mail);
+            await LogCampaignActionAsync(mail.Id, "MailSentNow", mail.Subject, mail.RecipientCount);
             return Ok(MapToDto(mail));
         }
 
@@ -164,9 +176,11 @@ namespace DreamCleaningBackend.Controllers
             var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
             if (mail == null) return NotFound();
             if (mail.Status != MailStatus.Scheduled) return BadRequest("Only scheduled mails can be disabled.");
+            var beforeDisable = AuditSnapshot.Of(mail);
             mail.IsActive = false;
             mail.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await _auditService.LogUpdateAsync(beforeDisable, mail);
             return Ok(MapToDto(mail));
         }
 
@@ -177,10 +191,33 @@ namespace DreamCleaningBackend.Controllers
             var mail = await _context.ScheduledMails.Include(m => m.CreatedBy).FirstOrDefaultAsync(m => m.Id == id);
             if (mail == null) return NotFound();
             if (mail.Status != MailStatus.Scheduled) return BadRequest("Only scheduled mails can be enabled.");
+            var beforeEnable = AuditSnapshot.Of(mail);
             mail.IsActive = true;
             mail.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await _auditService.LogUpdateAsync(beforeEnable, mail);
             return Ok(MapToDto(mail));
+        }
+
+        /// <summary>
+        /// "This campaign went out", as a separate undo-blocked stream from the ScheduledMail row
+        /// itself. The mail has left; nothing about the record can call it back, so it must never
+        /// look revertible.
+        /// </summary>
+        private async Task LogCampaignActionAsync(int id, string action, string subject, int recipientCount)
+        {
+            try
+            {
+                await _auditService.LogActionAsync(AuditEntityTypes.CampaignAction, id, action, null, new
+                {
+                    Subject = subject,
+                    RecipientCount = recipientCount
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit campaign action {Action} on mail {MailId}", action, id);
+            }
         }
 
         [HttpGet("stats")]

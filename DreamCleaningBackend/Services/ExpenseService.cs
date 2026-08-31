@@ -10,10 +10,12 @@ namespace DreamCleaningBackend.Services
     public class ExpenseService : IExpenseService
     {
         private readonly ApplicationDbContext _context;
+        private readonly Interfaces.IAuditService _audit;
 
-        public ExpenseService(ApplicationDbContext context)
+        public ExpenseService(ApplicationDbContext context, Interfaces.IAuditService audit)
         {
             _context = context;
+            _audit = audit;
         }
 
         public async Task<List<ExpenseDto>> GetAllAsync()
@@ -59,6 +61,8 @@ namespace DreamCleaningBackend.Services
             _context.Expenses.Add(row);
             await _context.SaveChangesAsync();
 
+            await _audit.LogCreateAsync(row);
+
             return (await GetByIdAsync(row.Id))!;
         }
 
@@ -69,6 +73,10 @@ namespace DreamCleaningBackend.Services
             var row = await _context.Expenses.FirstOrDefaultAsync(e => e.Id == id);
             if (row == null)
                 throw new InvalidOperationException("Expense not found.");
+
+            // Full scalar copy before anything moves — see AuditSnapshot for why a hand-picked
+            // subset would record every uncopied field as a change from zero.
+            var before = AuditSnapshot.Of(row);
 
             row.Name = dto.Name.Trim();
             row.Amount = dto.Amount;
@@ -82,6 +90,9 @@ namespace DreamCleaningBackend.Services
             row.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _audit.LogUpdateAsync(before, row);
+
             return (await GetByIdAsync(row.Id))!;
         }
 
@@ -89,6 +100,8 @@ namespace DreamCleaningBackend.Services
         {
             var row = await _context.Expenses.FirstOrDefaultAsync(e => e.Id == id);
             if (row == null) return false;
+            // Before the remove, while the row still carries its values.
+            await _audit.LogDeleteAsync(row);
             _context.Expenses.Remove(row);
             await _context.SaveChangesAsync();
             return true;
@@ -278,6 +291,8 @@ namespace DreamCleaningBackend.Services
             _context.ExpenseCategories.Add(row);
             await _context.SaveChangesAsync();
 
+            await _audit.LogCreateAsync(row);
+
             return new ExpenseCategoryDto
             {
                 Id = row.Id,
@@ -300,8 +315,11 @@ namespace DreamCleaningBackend.Services
             if (await _context.ExpenseCategories.AnyAsync(c => c.Name == name && c.Id != id))
                 throw new InvalidOperationException("A category with that name already exists.");
 
+            var beforeCategory = AuditSnapshot.Of(row);
             row.Name = name;
             await _context.SaveChangesAsync();
+
+            await _audit.LogUpdateAsync(beforeCategory, row);
 
             var count = await _context.Expenses.CountAsync(e => e.CategoryId == id);
             return new ExpenseCategoryDto
@@ -322,6 +340,8 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException("Built-in categories can't be deleted.");
             if (await _context.Expenses.AnyAsync(e => e.CategoryId == id))
                 throw new InvalidOperationException("This category still has expenses. Move or delete them first.");
+
+            await _audit.LogDeleteAsync(row);
 
             _context.ExpenseCategories.Remove(row);
             await _context.SaveChangesAsync();

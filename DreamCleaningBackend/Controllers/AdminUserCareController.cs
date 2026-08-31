@@ -3,6 +3,7 @@ using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -24,12 +25,14 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly IUserCleaningPhotoService _photoService;
+        private readonly IAuditService _auditService;
 
-        public AdminUserCareController(ApplicationDbContext context, IConfiguration configuration, IUserCleaningPhotoService photoService)
+        public AdminUserCareController(ApplicationDbContext context, IConfiguration configuration, IUserCleaningPhotoService photoService, IAuditService auditService)
         {
             _context = context;
             _configuration = configuration;
             _photoService = photoService;
+            _auditService = auditService;
         }
 
         // ─────────────────────────────────────────────────────────
@@ -88,6 +91,8 @@ namespace DreamCleaningBackend.Controllers
             _context.UserNotes.Add(note);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(note);
+
             return Ok(MapNote(note));
         }
 
@@ -100,10 +105,15 @@ namespace DreamCleaningBackend.Controllers
             var note = await _context.UserNotes.FirstOrDefaultAsync(n => n.Id == noteId);
             if (note == null) return NotFound(new { message = "Note not found" });
 
+            var before = AuditSnapshot.Of(note);
+
             note.Content = dto.Content.Trim();
             note.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(before, note);
+
             return Ok(MapNote(note));
         }
 
@@ -113,6 +123,8 @@ namespace DreamCleaningBackend.Controllers
         {
             var note = await _context.UserNotes.FirstOrDefaultAsync(n => n.Id == noteId);
             if (note == null) return NotFound(new { message = "Note not found" });
+
+            await _auditService.LogDeleteAsync(note);
 
             _context.UserNotes.Remove(note);
             await _context.SaveChangesAsync();
@@ -189,6 +201,8 @@ namespace DreamCleaningBackend.Controllers
                 // Prune photos for orders older than the user's two most recent distinct orders
                 var pruned = await _photoService.PruneOldPhotosAsync(userId);
 
+                await _auditService.LogCreateAsync(photo);
+
                 return Ok(new UserCleaningPhotoUploadResultDto
                 {
                     Photo = MapPhoto(photo),
@@ -245,6 +259,8 @@ namespace DreamCleaningBackend.Controllers
 
                 var pruned = await _photoService.PruneOldPhotosAsync(order.UserId);
 
+                await _auditService.LogCreateAsync(photo);
+
                 return Ok(new UserCleaningPhotoUploadResultDto
                 {
                     Photo = MapPhoto(photo),
@@ -263,6 +279,10 @@ namespace DreamCleaningBackend.Controllers
         {
             var photo = await _context.UserCleaningPhotos.FirstOrDefaultAsync(p => p.Id == photoId);
             if (photo == null) return NotFound(new { message = "Photo not found" });
+
+            // Logged before the file leaves disk and the row leaves the table — afterwards there
+            // is nothing anywhere that says the photo existed.
+            await _auditService.LogDeleteAsync(photo);
 
             DeleteFileIfExists(photo.PhotoUrl);
             _context.UserCleaningPhotos.Remove(photo);
@@ -385,6 +405,8 @@ namespace DreamCleaningBackend.Controllers
             _context.ClientInteractions.Add(interaction);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(interaction);
+
             // Reload with admin for display name
             var admin = await _context.Users.FindAsync(adminId);
 
@@ -415,12 +437,16 @@ namespace DreamCleaningBackend.Controllers
                 .FirstOrDefaultAsync(i => i.Id == id);
             if (item == null) return NotFound();
 
+            var beforeInteraction = AuditSnapshot.Of(item);
+
             if (!string.IsNullOrWhiteSpace(dto.Type)) item.Type = dto.Type.Trim();
             if (dto.Notes != null) item.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
             if (!string.IsNullOrWhiteSpace(dto.Status)) item.Status = dto.Status.Trim();
             // ClientName/Phone/Email are kept as-is — the user this communication is attached to does not change.
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeInteraction, item);
 
             return Ok(new ClientInteractionDto
             {
@@ -446,6 +472,9 @@ namespace DreamCleaningBackend.Controllers
         {
             var item = await _context.ClientInteractions.FirstOrDefaultAsync(i => i.Id == id);
             if (item == null) return NotFound();
+
+            await _auditService.LogDeleteAsync(item);
+
             _context.ClientInteractions.Remove(item);
             await _context.SaveChangesAsync();
             return Ok(new { message = "Communication deleted" });

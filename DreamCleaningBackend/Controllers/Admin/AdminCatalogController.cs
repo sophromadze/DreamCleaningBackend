@@ -332,6 +332,21 @@ namespace DreamCleaningBackend.Controllers
             if (!result.Success)
                 return BadRequest(result);
 
+            // A pricing import rewrites many catalogue rows at once. It is recorded as ONE event
+            // rather than as an Update per row: the decision an admin made was "apply this
+            // configuration", and a hundred individual rows would hide it rather than explain it.
+            // Undo-blocked for the same reason — reverting one row of a bulk import leaves the
+            // catalogue in a state nobody chose.
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.PricingConfiguration, 0, "PricingConfigurationApplied", null, new
+                {
+                    ServiceTypesAffected = result.ServiceTypesUpdated,
+                    ServicesAffected = result.ServicesUpdated,
+                    ThresholdsWritten = result.ThresholdsWritten,
+                    RateTiersWritten = result.RateTiersWritten,
+                    Summary = result.Message
+                });
+
             return Ok(result);
         }
 
@@ -467,6 +482,21 @@ namespace DreamCleaningBackend.Controllers
 
             _context.Services.Add(newService);
             await _context.SaveChangesAsync();
+
+            // Both rows: the new Service exists (Create), and it exists BECAUSE somebody copied a
+            // specific source into a specific service type — which the Create row alone cannot
+            // say, and which is exactly what an admin is trying to reconstruct when a copied
+            // service prices differently from the original.
+            await _auditService.LogCreateAsync(newService);
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.CatalogueCopy, newService.Id, "ServiceCopied", null, new
+                {
+                    SourceServiceId = dto.SourceServiceId,
+                    SourceServiceName = sourceService.Name,
+                    TargetServiceTypeId = dto.TargetServiceTypeId,
+                    ThresholdsCopied = newService.Thresholds.Count,
+                    RateTiersCopied = newService.RateTiers.Count
+                });
 
             var skipped = (sourceService.Thresholds?.Count ?? 0) - newService.Thresholds.Count;
             if (skipped > 0)
@@ -840,12 +870,18 @@ namespace DreamCleaningBackend.Controllers
             var error = await ValidateThresholdAsync(serviceId, dto, excludeId: id);
             if (error != null) return BadRequest(new { message = error });
 
+            var beforeThreshold = AuditSnapshot.Of(threshold);
+
             threshold.SourceServiceId = dto.SourceServiceId;
             threshold.SourceQuantity = dto.SourceQuantity;
             threshold.IncludedQuantity = dto.IncludedQuantity;
             threshold.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            // Included amounts drive the levels rule and the bedrooms-to-sqft floor, so an edit
+            // here moves quoted prices without touching a single price field.
+            await _auditService.LogUpdateAsync(beforeThreshold, threshold);
 
             await _context.Entry(threshold).Reference(t => t.SourceService).LoadAsync();
             return Ok(CatalogDtoMapper.ToThresholdDto(threshold));
@@ -949,6 +985,8 @@ namespace DreamCleaningBackend.Controllers
             var error = await ValidateRateTierAsync(serviceId, dto, excludeId: id);
             if (error != null) return BadRequest(new { message = error });
 
+            var beforeTier = AuditSnapshot.Of(tier);
+
             tier.FromQuantity = dto.FromQuantity;
             tier.Cost = dto.Cost;
             tier.TimeDuration = dto.TimeDuration;
@@ -956,6 +994,8 @@ namespace DreamCleaningBackend.Controllers
             tier.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeTier, tier);
             return Ok(CatalogDtoMapper.ToRateTierDto(tier));
         }
 
@@ -1181,6 +1221,15 @@ namespace DreamCleaningBackend.Controllers
 
             _context.ExtraServices.Add(newExtraService);
             await _context.SaveChangesAsync();
+
+            await _auditService.LogCreateAsync(newExtraService);
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.CatalogueCopy, newExtraService.Id, "ExtraServiceCopied", null, new
+                {
+                    SourceExtraServiceId = dto.SourceExtraServiceId,
+                    SourceExtraServiceName = sourceExtraService.Name,
+                    TargetServiceTypeId = dto.TargetServiceTypeId
+                });
 
             return Ok(new ExtraServiceDto
             {

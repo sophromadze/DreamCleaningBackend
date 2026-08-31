@@ -2,6 +2,10 @@ using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 using Newtonsoft.Json;
 using Xunit;
+// Models.OrderService (an order LINE) and Services.OrderService (the service class) share a name,
+// and this file needs both namespaces, so the line type is aliased. Without this the file does not
+// compile at all — which is how it shipped in Phase 1, so these tests had never been run.
+using OrderLine = DreamCleaningBackend.Models.OrderService;
 
 namespace DreamCleaningBackend.Tests
 {
@@ -81,7 +85,7 @@ namespace DreamCleaningBackend.Tests
             {
                 Id = 1,
                 User = new User { Id = 7, Email = "someone@example.com" },
-                OrderServices = new List<OrderService> { new() { Id = 3, Quantity = 2 } }
+                OrderServices = new List<OrderLine> { new() { Id = 3, Quantity = 2 } }
             };
 
             var snapshot = AuditSnapshot.Of(order);
@@ -389,7 +393,11 @@ namespace DreamCleaningBackend.Tests
         [Fact]
         public void TheRefusalMessageTellsTheAdminWhatToDoNext()
         {
-            Assert.Contains("Make the correction directly on the order",
+            // "the RECORD", not "the order": the guard covers User, GiftCard and the catalogue
+            // types as well, so the message cannot name orders specifically. What is being pinned
+            // here is that the refusal names a next step at all — "this is corrupt" on its own
+            // leaves the admin with nothing to do.
+            Assert.Contains("Make the correction directly on the record",
                 AuditSnapshot.FabricatedBeforeImageMessage);
         }
     }

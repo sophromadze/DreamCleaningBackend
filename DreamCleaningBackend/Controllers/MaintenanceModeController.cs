@@ -12,10 +12,12 @@ namespace DreamCleaningBackend.Controllers
     public class MaintenanceModeController : ControllerBase
     {
         private readonly IMaintenanceModeService _maintenanceModeService;
+        private readonly IAuditService _auditService;
 
-        public MaintenanceModeController(IMaintenanceModeService maintenanceModeService)
+        public MaintenanceModeController(IMaintenanceModeService maintenanceModeService, IAuditService auditService)
         {
             _maintenanceModeService = maintenanceModeService;
+            _auditService = auditService;
         }
 
         [HttpGet("status")]
@@ -31,7 +33,18 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<MaintenanceModeDto>> ToggleMaintenanceMode([FromBody] ToggleMaintenanceModeDto dto)
         {
             var userEmail = User.FindFirst(ClaimTypes.Email)?.Value ?? "Unknown";
+
+            // Read before the toggle: this takes the whole public site down, and "when did we go
+            // into maintenance and who did it" is the question somebody asks afterwards.
+            var before = await _maintenanceModeService.GetMaintenanceModeStatus();
+
             var status = await _maintenanceModeService.ToggleMaintenanceMode(dto, userEmail);
+
+            await _auditService.LogActionAsync(
+                DreamCleaningBackend.Services.AuditEntityTypes.SiteSetting, 0, "MaintenanceModeToggled",
+                new { MaintenanceMode = before?.IsEnabled },
+                new { MaintenanceMode = status?.IsEnabled, Message = dto?.Message });
+
             return Ok(status);
         }
 

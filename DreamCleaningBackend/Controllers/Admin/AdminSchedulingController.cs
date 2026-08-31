@@ -26,10 +26,12 @@ namespace DreamCleaningBackend.Controllers
     public class AdminSchedulingController : AdminControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly IAuditService _auditService;
 
-        public AdminSchedulingController(ApplicationDbContext context)
+        public AdminSchedulingController(ApplicationDbContext context, IAuditService auditService)
         {
             _context = context;
+            _auditService = auditService;
         }
 
         // ── Blocked Time Slots (Scheduling) ─────────────────────────────
@@ -78,13 +80,22 @@ namespace DreamCleaningBackend.Controllers
             var existing = await _context.BlockedTimeSlots
                 .FirstOrDefaultAsync(b => b.Date == parsedDate.Date);
 
+            // This endpoint is an UPSERT, so it produces a Create row or an Update row depending
+            // on what it found — an admin reading the log should be able to tell whether a date
+            // was newly blocked or an existing block was changed.
+            BlockedTimeSlot? beforeSnapshot = null;
+            BlockedTimeSlot saved;
+
             if (existing != null)
             {
+                beforeSnapshot = AuditSnapshot.Of(existing);
+
                 // Update existing block
                 existing.IsFullDay = dto.IsFullDay;
                 existing.BlockedHours = dto.IsFullDay ? null : dto.BlockedHours;
                 existing.Reason = dto.Reason;
                 existing.UpdatedAt = DateTime.UtcNow;
+                saved = existing;
             }
             else
             {
@@ -98,9 +109,16 @@ namespace DreamCleaningBackend.Controllers
                     CreatedAt = DateTime.UtcNow
                 };
                 _context.BlockedTimeSlots.Add(blocked);
+                saved = blocked;
             }
 
             await _context.SaveChangesAsync();
+
+            if (beforeSnapshot == null)
+                await _auditService.LogCreateAsync(saved);
+            else
+                await _auditService.LogUpdateAsync(beforeSnapshot, saved);
+
             return Ok(new { message = "Blocked time slot saved successfully." });
         }
 
@@ -114,6 +132,8 @@ namespace DreamCleaningBackend.Controllers
             if (!DateTime.TryParse(dto.Date, out var parsedDate))
                 return BadRequest(new { message = "Invalid date format." });
 
+            var before = AuditSnapshot.Of(blocked);
+
             blocked.Date = parsedDate.Date;
             blocked.IsFullDay = dto.IsFullDay;
             blocked.BlockedHours = dto.IsFullDay ? null : dto.BlockedHours;
@@ -121,6 +141,9 @@ namespace DreamCleaningBackend.Controllers
             blocked.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(before, blocked);
+
             return Ok(new { message = "Blocked time slot updated successfully." });
         }
 
@@ -130,6 +153,8 @@ namespace DreamCleaningBackend.Controllers
             var blocked = await _context.BlockedTimeSlots.FindAsync(id);
             if (blocked == null)
                 return NotFound(new { message = "Blocked time slot not found." });
+
+            await _auditService.LogDeleteAsync(blocked);
 
             _context.BlockedTimeSlots.Remove(blocked);
             await _context.SaveChangesAsync();

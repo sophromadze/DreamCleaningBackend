@@ -26,10 +26,12 @@ namespace DreamCleaningBackend.Controllers
     public class AdminPollsController : AdminControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly IAuditService _auditService;
 
-        public AdminPollsController(ApplicationDbContext context)
+        public AdminPollsController(ApplicationDbContext context, IAuditService auditService)
         {
             _context = context;
+            _auditService = auditService;
         }
 
         [HttpGet("poll-questions")]
@@ -103,6 +105,8 @@ namespace DreamCleaningBackend.Controllers
             _context.PollQuestions.Add(question);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(question);
+
             var result = new PollQuestionDto
             {
                 Id = question.Id,
@@ -128,6 +132,8 @@ namespace DreamCleaningBackend.Controllers
                 return NotFound();
             }
 
+            var before = AuditSnapshot.Of(question);
+
             question.Question = dto.Question;
             question.QuestionType = dto.QuestionType;
             question.Options = dto.Options;
@@ -137,6 +143,9 @@ namespace DreamCleaningBackend.Controllers
             question.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(before, question);
+
             return Ok();
         }
 
@@ -149,6 +158,8 @@ namespace DreamCleaningBackend.Controllers
             {
                 return NotFound();
             }
+
+            await _auditService.LogDeleteAsync(question);
 
             _context.PollQuestions.Remove(question);
             await _context.SaveChangesAsync();
@@ -205,11 +216,16 @@ namespace DreamCleaningBackend.Controllers
                 return NotFound();
             }
 
+            var beforeSubmission = AuditSnapshot.Of(submission);
+
             submission.Status = dto.Status;
             submission.AdminNotes = dto.AdminNotes;
             submission.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeSubmission, submission);
+
             return Ok();
         }
 

@@ -215,6 +215,66 @@ namespace DreamCleaningBackend.Services
             CleanerPayrollCalculator.ApplyOrderTotalSalary(order, hasCleanersService, assignments);
         }
 
+        /// <summary>
+        /// Whether this order's MaidsCount is an explicit PRICED selection rather than the
+        /// default of 1 — in which case the staffing decision must not touch it.
+        ///
+        /// Two cases, and they share one reason: <see cref="Order.TotalDuration"/> was DERIVED
+        /// from the count. A cleaner+hours service type multiplies the customer's chosen cleaners
+        /// by their chosen hours, and a Custom ("Pre-Arranged") order multiplies the admin's own
+        /// "Number of Cleaners" by the duration they typed. Moving the count on its own would
+        /// break that relation and make the order's own duration unexplainable — and on a
+        /// cleaner+hours order the next admin save would reset it from the service row anyway.
+        ///
+        /// Over-assigning one of these is still visible: the payroll splits across
+        /// max(MaidsCount, assigned) either way, and the "more cleaners assigned than the order
+        /// was priced for" warning fires on both the Orders panel and Outgoing Payments.
+        /// </summary>
+        private async Task<bool> HasExplicitCleanerCountAsync(Order order)
+        {
+            if (order.ServiceType?.IsCustom == true)
+                return true;
+
+            return order.OrderServices != null && order.OrderServices.Count > 0
+                ? order.OrderServices.Any(os => os.Service?.ServiceRelationType == "cleaner")
+                : await _context.OrderServices
+                    .AnyAsync(os => os.OrderId == order.Id && os.Service.ServiceRelationType == "cleaner");
+        }
+
+        /// <summary>
+        /// What Order.MaidsCount should be once <paramref name="assignedCount"/> cleaners are on
+        /// the order. The whole rule, as a pure function, so it can be asserted without a database.
+        ///
+        /// It only ever RISES. An order priced for 3 and staffed with 2 keeps its 3: the third
+        /// cleaner worked, they are simply not on file — that is exactly what
+        /// CleanerPayrollCalculator's unassigned slots exist to pay — and lowering the count would
+        /// silently cut the labour cost Statistics and Finances report. Unassigning a cleaner
+        /// therefore never lowers it either.
+        /// </summary>
+        public static int ResolveMaidsCountAfterAssignment(
+            int currentMaidsCount, int assignedCount, bool hasExplicitCleanerCount)
+        {
+            if (hasExplicitCleanerCount)
+                return currentMaidsCount;
+
+            return assignedCount > currentMaidsCount ? assignedCount : currentMaidsCount;
+        }
+
+        /// <summary>
+        /// Applies <see cref="ResolveMaidsCountAfterAssignment"/> to the order. Runs after the
+        /// assignment rows are saved, so the count it reads is the post-assignment one.
+        ///
+        /// Does not save; the caller owns the transaction.
+        /// </summary>
+        private async Task RaiseMaidsCountToAssignedAsync(Order order)
+        {
+            var hasExplicitCount = await HasExplicitCleanerCountAsync(order);
+            var assignedCount = await _context.OrderCleaners.CountAsync(oc => oc.OrderId == order.Id);
+
+            order.MaidsCount = ResolveMaidsCountAfterAssignment(
+                order.MaidsCount, assignedCount, hasExplicitCount);
+        }
+
         // Parses the CSV of DayOfWeek integers stored on Cleaner.BusyDaysOfWeek.
         public static HashSet<DayOfWeek> ParseBusyDaysOfWeek(string? csv)
         {
@@ -340,6 +400,10 @@ namespace DreamCleaningBackend.Services
                 var order = await _context.Orders
                     .Include(o => o.OrderServices)
                         .ThenInclude(os => os.Service)
+                    // ServiceType is what tells a Custom ("Pre-Arranged") order apart, and a
+                    // custom order's cleaner count is the admin's own priced selection — see
+                    // HasExplicitCleanerCount.
+                    .Include(o => o.ServiceType)
                     .FirstOrDefaultAsync(o => o.Id == dto.OrderId);
 
                 if (order == null)
@@ -348,11 +412,17 @@ namespace DreamCleaningBackend.Services
                     return false;
                 }
 
-                // HARD RULE: refuse cleaners that already have an Active/Pending job the same day
-                // within 1 hour of this one. Admins MAY assign cleaners marked "busy" (weekday/vacation),
-                // so that is intentionally NOT blocked here — only real schedule overlaps are.
+                // The 1-hour-gap rule is a WARNING an admin may overrule, not a hard block
+                // (2026-08-31). The rule cannot see that two jobs are on the same block, or that
+                // the earlier one is a studio that will finish early — the admin can, and refusing
+                // outright left them with no way to staff the day at all.
+                //
+                // It is still refused WITHOUT the acknowledgement, so nothing assigns over a
+                // conflict by accident: the modal has to have shown the admin the conflict and
+                // had them tick through it. Busy-day cleaners (weekday/vacation) were never
+                // blocked here and still are not — that is a softer signal again.
                 var conflicts = await FindScheduleConflictsAsync(order, dto.CleanerIds);
-                if (conflicts.Count > 0)
+                if (conflicts.Count > 0 && !dto.AcknowledgeScheduleConflicts)
                 {
                     throw new CleanerAssignmentException(
                         "Cannot assign — these cleaners have another job within 1 hour the same day: "
@@ -362,6 +432,16 @@ namespace DreamCleaningBackend.Services
                 // Update the order's default hourly rate if provided. The TOTAL is recomputed
                 // further down, AFTER the assignment rows exist — the payroll total is the sum
                 // over assigned cleaners, so computing it here would divide by the old count.
+                //
+                // AUDITED because it is a silent move: confirming this modal writes the order's
+                // rate, which is the effective rate of every already-assigned line that has no
+                // rate of its own. Unlike the Outgoing Payments rate change, this path does NOT
+                // pin already-paid lines to the old figure first — behaviour deliberately left
+                // alone here (2026-08-31: recording what happens, not changing it), which is
+                // exactly why the change has to be visible in the audit trail.
+                var rateBeforeAssignment = order.CleanerHourlyRate;
+                var rateMoved = dto.CleanerHourlyRate.HasValue
+                                && dto.CleanerHourlyRate.Value != order.CleanerHourlyRate;
                 if (dto.CleanerHourlyRate.HasValue)
                 {
                     order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
@@ -421,15 +501,47 @@ namespace DreamCleaningBackend.Services
 
                 await _context.SaveChangesAsync();
 
+                // The staffing decision IS the cleaner count. Auto-staffing by duration is off,
+                // so an order sits at the default MaidsCount = 1 until somebody sets it; assign
+                // three cleaners and every surface reading that column — the panel's "Cleaners
+                // Count", the "X total · Y per cleaner" label, the payroll split — went on saying
+                // one. Raising it here is deliberately NOT an order edit: it moves no price, so
+                // it never enters the approval queue and an ungranted Admin can record who is
+                // actually doing the job.
+                var maidsBeforeAssignment = order.MaidsCount;
+                await RaiseMaidsCountToAssignedAsync(order);
+
                 // Now that the assignment rows exist, resolve the order's labour cost from them.
                 // Assigning a second cleaner changes what the job costs (the duration splits
                 // across two people), so this has to run on every assign, not only when a rate
                 // was passed. CleanerPayrollCalculator honours any per-cleaner override already
                 // recorded on the Outgoing Payments page.
+                var salaryBeforeAssignment = order.CleanerTotalSalary;
                 await RecalculateOrderSalaryFromAssignmentsAsync(order);
                 await _context.SaveChangesAsync();
 
                 await transaction.CommitAsync();
+
+                // After the commit: an audit failure must not roll back a completed assignment.
+                if (rateMoved
+                    || salaryBeforeAssignment != order.CleanerTotalSalary
+                    || maidsBeforeAssignment != order.MaidsCount)
+                {
+                    try
+                    {
+                        await _auditService.LogActionAsync(
+                            AuditEntityTypes.OrderCleanerHourlyRate,
+                            order.Id,
+                            "Update",
+                            new { CleanerHourlyRate = rateBeforeAssignment, CleanerTotalSalary = salaryBeforeAssignment, MaidsCount = maidsBeforeAssignment },
+                            new { CleanerHourlyRate = order.CleanerHourlyRate, CleanerTotalSalary = order.CleanerTotalSalary, MaidsCount = order.MaidsCount },
+                            actingUserId: assignedBy);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Audit logging failed for assignment-time rate change");
+                    }
+                }
 
                 return true;
             }

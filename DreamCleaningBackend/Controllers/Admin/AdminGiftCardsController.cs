@@ -427,6 +427,7 @@ namespace DreamCleaningBackend.Controllers
                 var relativePath = $"/images/{fileName}";
 
                 var config = await _context.GiftCardConfigs.FirstOrDefaultAsync();
+                var previousBackgroundPath = config?.BackgroundImagePath;
                 if (config == null)
                 {
                     config = new GiftCardConfig
@@ -463,6 +464,13 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 await _context.SaveChangesAsync();
+
+                // The previous background file has already been deleted from disk above, so this
+                // row is the only remaining record of what the gift card used to look like.
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.SiteSetting, config.Id, "GiftCardBackgroundChanged",
+                    new { BackgroundImagePath = previousBackgroundPath },
+                    new { BackgroundImagePath = relativePath });
 
                 return Ok(new
                 {

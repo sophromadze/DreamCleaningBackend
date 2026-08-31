@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
+using DreamCleaningBackend.Services.Interfaces;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -20,11 +22,13 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly Services.IChatAgentService _chatAgentService;
+        private readonly IAuditService _auditService;
 
-        public ChatAgentAdminController(ApplicationDbContext context, Services.IChatAgentService chatAgentService)
+        public ChatAgentAdminController(ApplicationDbContext context, Services.IChatAgentService chatAgentService, IAuditService auditService)
         {
             _context = context;
             _chatAgentService = chatAgentService;
+            _auditService = auditService;
         }
 
         [HttpGet("settings")]
@@ -38,10 +42,12 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult<ChatAgentSettingsDto>> ToggleEscalationEmail()
         {
             var settings = await GetOrCreateSettingsAsync();
+            var before = AuditSnapshot.Of(settings);
             settings.EscalationEmailEnabled = !settings.EscalationEmailEnabled;
             settings.UpdatedAt = DateTime.UtcNow;
             settings.UpdatedByEmail = User.FindFirst(ClaimTypes.Email)?.Value;
             await _context.SaveChangesAsync();
+            await _auditService.LogUpdateAsync(before, settings);
             return Ok(ToDto(settings));
         }
 
@@ -54,10 +60,12 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "Mode must be Disabled, AdminOnly or Public" });
 
             var settings = await GetOrCreateSettingsAsync();
+            var before = AuditSnapshot.Of(settings);
             settings.VisibilityMode = mode;
             settings.UpdatedAt = DateTime.UtcNow;
             settings.UpdatedByEmail = User.FindFirst(ClaimTypes.Email)?.Value;
             await _context.SaveChangesAsync();
+            await _auditService.LogUpdateAsync(before, settings);
             return Ok(ToDto(settings));
         }
 
@@ -212,6 +220,11 @@ namespace DreamCleaningBackend.Controllers
             var resolved = await _chatAgentService.ResolveSessionAsync(sessionId, $"marked resolved by {adminEmail}");
             if (!resolved)
                 return NotFound(new { message = "Session not found" });
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SiteSetting, 0, "ChatSessionResolved", null,
+                new { SessionId = sessionId.ToString(), ResolvedBy = adminEmail });
+
             return Ok(new { status = "Resolved" });
         }
 
@@ -225,6 +238,14 @@ namespace DreamCleaningBackend.Controllers
             var deleted = await _chatAgentService.DeleteSessionAsync(sessionId);
             if (!deleted)
                 return NotFound(new { message = "Session not found" });
+
+            // A deleted transcript is gone for good; the audit row is the only remaining evidence
+            // that a conversation with a customer existed at all. EntityId is 0 because the
+            // session key is a GUID and the audit table's EntityId is numeric.
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SiteSetting, 0, "ChatSessionDeleted", null,
+                new { SessionId = sessionId.ToString() });
+
             return Ok(new { status = "deleted" });
         }
 
@@ -311,6 +332,12 @@ namespace DreamCleaningBackend.Controllers
             }
             await _context.SaveChangesAsync();
 
+            // The display name is what a customer sees a human agent called in live chat, so it
+            // is customer-facing copy rather than an internal label.
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SiteSetting, 0, "TelegramAgentNameSet", null,
+                new { TelegramUserId = telegramUserId, DisplayName = displayName });
+
             return Ok(new TelegramAgentDisplayNameDto
             {
                 TelegramUserId = entry.TelegramUserId,
@@ -329,6 +356,10 @@ namespace DreamCleaningBackend.Controllers
                 .FirstOrDefaultAsync(d => d.TelegramUserId == telegramUserId);
             if (entry == null)
                 return NotFound(new { message = "No mapping for that Telegram user id" });
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SiteSetting, 0, "TelegramAgentNameRemoved",
+                new { TelegramUserId = telegramUserId, DisplayName = entry.DisplayName }, null);
 
             _context.TelegramAgentDisplayNames.Remove(entry);
             await _context.SaveChangesAsync();

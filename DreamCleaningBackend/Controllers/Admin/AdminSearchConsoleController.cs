@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -16,13 +17,16 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly ISearchConsoleSyncService _searchConsole;
         private readonly ILogger<AdminSearchConsoleController> _logger;
+        private readonly IAuditService _auditService;
 
         public AdminSearchConsoleController(
             ISearchConsoleSyncService searchConsole,
-            ILogger<AdminSearchConsoleController> logger)
+            ILogger<AdminSearchConsoleController> logger,
+            IAuditService auditService)
         {
             _searchConsole = searchConsole;
             _logger = logger;
+            _auditService = auditService;
         }
 
         // Full historical pull: BackfillStartDate → most recent available day. Idempotent (upsert).
@@ -35,6 +39,15 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var result = await _searchConsole.BackfillAsync(ct);
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.DataSync, 0, "SearchConsoleBackfill", null, new
+                    {
+                        Source = "Search Console backfill",
+                        RowsUpserted = result.RowsUpserted,
+                        DaysCovered = result.DaysCovered
+                    });
+
                 return Ok(new { rowsUpserted = result.RowsUpserted, daysCovered = result.DaysCovered });
             }
             catch (InvalidOperationException ex)
@@ -54,6 +67,15 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var result = await _searchConsole.SyncRecentAsync(ct);
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.DataSync, 0, "SearchConsoleSyncRecent", null, new
+                    {
+                        Source = "Search Console recent sync",
+                        RowsUpserted = result.RowsUpserted,
+                        DaysCovered = result.DaysCovered
+                    });
+
                 return Ok(new { rowsUpserted = result.RowsUpserted, daysCovered = result.DaysCovered });
             }
             catch (InvalidOperationException ex)

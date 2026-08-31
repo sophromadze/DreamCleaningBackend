@@ -91,26 +91,7 @@ namespace DreamCleaningBackend.Services
             if (offer == null)
                 throw new Exception("Special offer not found");
 
-            var originalOffer = new SpecialOffer
-            {
-                Id = offer.Id,
-                Name = offer.Name,
-                Description = offer.Description,
-                IsPercentage = offer.IsPercentage,
-                DiscountValue = offer.DiscountValue,
-                IsActive = offer.IsActive,
-                Type = offer.Type,
-                ValidFrom = offer.ValidFrom,
-                ValidTo = offer.ValidTo,
-                Icon = offer.Icon,
-                BadgeColor = offer.BadgeColor,
-                MinimumOrderAmount = offer.MinimumOrderAmount,
-                RequiresFirstTimeCustomer = offer.RequiresFirstTimeCustomer,
-                DisplayOrder = offer.DisplayOrder,
-                CreatedAt = offer.CreatedAt,
-                UpdatedAt = offer.UpdatedAt,
-                CreatedByUserId = offer.CreatedByUserId
-            };
+            var originalOffer = AuditSnapshot.Of(offer);
 
             offer.Name = dto.Name;
             offer.Description = dto.Description;
@@ -273,27 +254,10 @@ namespace DreamCleaningBackend.Services
             if (offer == null)
                 return false;
 
-            // Create a copy of the original state for audit
-            var originalOffer = new SpecialOffer
-            {
-                Id = offer.Id,
-                Name = offer.Name,
-                Description = offer.Description,
-                IsPercentage = offer.IsPercentage,
-                DiscountValue = offer.DiscountValue,
-                IsActive = offer.IsActive,
-                Type = offer.Type,
-                ValidFrom = offer.ValidFrom,
-                ValidTo = offer.ValidTo,
-                Icon = offer.Icon,
-                BadgeColor = offer.BadgeColor,
-                MinimumOrderAmount = offer.MinimumOrderAmount,
-                RequiresFirstTimeCustomer = offer.RequiresFirstTimeCustomer,
-                DisplayOrder = offer.DisplayOrder,
-                CreatedAt = offer.CreatedAt,
-                UpdatedAt = offer.UpdatedAt,
-                CreatedByUserId = offer.CreatedByUserId
-            };
+            // Full scalar copy. Hand-listing the columns here was complete when it was
+            // written, but a column added to SpecialOffer later would silently drop out of it and
+            // read as a change from zero — the defect AuditSnapshot exists to prevent.
+            var originalOffer = AuditSnapshot.Of(offer);
 
             offer.IsActive = true;
             offer.UpdatedAt = DateTime.UtcNow;
@@ -312,27 +276,10 @@ namespace DreamCleaningBackend.Services
             if (offer == null)
                 return false;
 
-            // Create a copy of the original state for audit
-            var originalOffer = new SpecialOffer
-            {
-                Id = offer.Id,
-                Name = offer.Name,
-                Description = offer.Description,
-                IsPercentage = offer.IsPercentage,
-                DiscountValue = offer.DiscountValue,
-                IsActive = offer.IsActive,
-                Type = offer.Type,
-                ValidFrom = offer.ValidFrom,
-                ValidTo = offer.ValidTo,
-                Icon = offer.Icon,
-                BadgeColor = offer.BadgeColor,
-                MinimumOrderAmount = offer.MinimumOrderAmount,
-                RequiresFirstTimeCustomer = offer.RequiresFirstTimeCustomer,
-                DisplayOrder = offer.DisplayOrder,
-                CreatedAt = offer.CreatedAt,
-                UpdatedAt = offer.UpdatedAt,
-                CreatedByUserId = offer.CreatedByUserId
-            };
+            // Full scalar copy. Hand-listing the columns here was complete when it was
+            // written, but a column added to SpecialOffer later would silently drop out of it and
+            // read as a change from zero — the defect AuditSnapshot exists to prevent.
+            var originalOffer = AuditSnapshot.Of(offer);
 
             offer.IsActive = false;
             offer.UpdatedAt = DateTime.UtcNow;
@@ -407,6 +354,23 @@ namespace DreamCleaningBackend.Services
             }
 
             await _context.SaveChangesAsync();
+
+            // Granting is not a change to the OFFER, so it deliberately does not ride on the
+            // SpecialOffer update stream: an admin filtering for "what changed about this offer"
+            // must not see a row every time somebody was handed it. Recorded once for the whole
+            // sweep - a row per user would be thousands of rows describing one click.
+            if (count > 0)
+            {
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.SpecialOfferGrant, offerId, "GrantedToAllEligible", null, new
+                    {
+                        OfferName = offer.Name,
+                        UsersGranted = count,
+                        RequiresFirstTimeCustomer = offer.RequiresFirstTimeCustomer,
+                        ExpiresAt = offer.ValidTo
+                    });
+            }
+
             return count;
         }
 
@@ -433,6 +397,14 @@ namespace DreamCleaningBackend.Services
 
             _context.UserSpecialOffers.Add(userOffer);
             await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SpecialOfferGrant, offerId, "GrantedToUser", null, new
+                {
+                    OfferName = offer.Name,
+                    UserId = userId,
+                    ExpiresAt = offer.ValidTo
+                });
 
             return true;
         }

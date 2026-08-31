@@ -13,10 +13,12 @@ namespace DreamCleaningBackend.Controllers
     public class AdminBonusController : ControllerBase
     {
         private readonly IAdminBonusService _bonusService;
+        private readonly IAuditService _auditService;
 
-        public AdminBonusController(IAdminBonusService bonusService)
+        public AdminBonusController(IAdminBonusService bonusService, IAuditService auditService)
         {
             _bonusService = bonusService;
+            _auditService = auditService;
         }
 
         private int GetUserId()
@@ -81,7 +83,17 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
+                // Read first — the rate ripples into every future bonus computation, so what it
+                // moved FROM is the interesting half.
+                var previous = await _bonusService.GetRateAsync();
+
                 var updated = await _bonusService.SetRateAsync(dto.RatePerOrder, GetUserId());
+
+                await _auditService.LogActionAsync(
+                    DreamCleaningBackend.Services.AuditEntityTypes.RewardSetting, 0, "AdminBonusRateChanged",
+                    new { RatePerOrder = previous?.RatePerOrder },
+                    new { RatePerOrder = updated?.RatePerOrder });
+
                 return Ok(updated);
             }
             catch (InvalidOperationException ex)

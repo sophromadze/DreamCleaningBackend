@@ -26,11 +26,24 @@ namespace DreamCleaningBackend.Services
     public class OutgoingPaymentService : IOutgoingPaymentService
     {
         private readonly ApplicationDbContext _context;
+        private readonly Interfaces.IAuditService _audit;
 
-        public OutgoingPaymentService(ApplicationDbContext context)
+        public OutgoingPaymentService(ApplicationDbContext context, Interfaces.IAuditService audit)
         {
             _context = context;
+            _audit = audit;
         }
+
+        /// <summary>
+        /// Who a payout line is for, in a form an audit reader can act on. The cleaner's name is
+        /// captured INTO the audit row rather than looked up when it is read: an assignment can be
+        /// removed and a cleaner record deactivated, and "we paid #418 something" is not an
+        /// acceptable answer six months later.
+        /// </summary>
+        private static string DescribeCleaner(OrderCleaner assignment) =>
+            assignment.Cleaner == null
+                ? $"Cleaner #{assignment.CleanerId}"
+                : $"{assignment.Cleaner.FirstName} {assignment.Cleaner.LastName}".Trim();
 
         public async Task<OutgoingPaymentListDto> GetAsync(OutgoingPaymentQuery query)
         {
@@ -101,6 +114,13 @@ namespace DreamCleaningBackend.Services
             if (assignment.IsPaid)
                 throw new InvalidOperationException("This cleaner has already been paid for this order. Undo the payment first to change their rate or hours.");
 
+            // Captured BEFORE the write. A null here means "this line tracks the order rate/split"
+            // and is materially different from a value that happens to equal it, so the audit row
+            // records the null rather than resolving it to a number.
+            var beforeRate = assignment.SalaryHourlyRate;
+            var beforeMinutes = assignment.SalaryBillableMinutes;
+            var beforeTotal = order.CleanerTotalSalary;
+
             if (dto.UpdateHourlyRate)
                 assignment.SalaryHourlyRate = dto.HourlyRate;
 
@@ -111,6 +131,31 @@ namespace DreamCleaningBackend.Services
             order.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _audit.LogActionAsync(
+                AuditEntityTypes.CleanerPayrollOverride,
+                order.Id,
+                // "Reset" is a distinct action, not an update to null: it is the deliberate
+                // "follow the order again" decision, and an admin scanning the log should be able
+                // to filter for it.
+                (dto.UpdateHourlyRate && dto.HourlyRate == null) || (dto.UpdateBillableMinutes && dto.BillableMinutes == null)
+                    ? "PayrollOverrideReset"
+                    : "PayrollOverrideSet",
+                new
+                {
+                    Cleaner = DescribeCleaner(assignment),
+                    HourlyRate = beforeRate,
+                    BillableMinutes = beforeMinutes,
+                    CleanerTotalSalary = beforeTotal
+                },
+                new
+                {
+                    Cleaner = DescribeCleaner(assignment),
+                    HourlyRate = assignment.SalaryHourlyRate,
+                    BillableMinutes = assignment.SalaryBillableMinutes,
+                    CleanerTotalSalary = order.CleanerTotalSalary
+                });
+
             return BuildOrderRow(order);
         }
 
@@ -139,12 +184,25 @@ namespace DreamCleaningBackend.Services
             if (order == null) return null;
 
             var previousRate = order.CleanerHourlyRate;
+            var beforeTotal = order.CleanerTotalSalary;
+
+            // Named, not counted. "2 lines pinned" is not something anybody can check against the
+            // page six months later; "Ana Reyes, Marta Silva pinned to $21.00" is.
+            var pinnedToOldRate = new List<string>();
 
             foreach (var assignment in order.OrderCleaners)
             {
                 if (assignment.IsPaid && assignment.SalaryHourlyRate == null)
+                {
                     assignment.SalaryHourlyRate = previousRate;
+                    pinnedToOldRate.Add(DescribeCleaner(assignment));
+                }
             }
+
+            var keptOwnRate = order.OrderCleaners
+                .Where(oc => !oc.IsPaid && oc.SalaryHourlyRate != null)
+                .Select(DescribeCleaner)
+                .ToList();
 
             order.CleanerHourlyRate = OrderPricingCalculator.Round2(hourlyRate);
 
@@ -152,7 +210,40 @@ namespace DreamCleaningBackend.Services
             order.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _audit.LogActionAsync(
+                AuditEntityTypes.OrderCleanerHourlyRate,
+                order.Id,
+                "Update",
+                new
+                {
+                    CleanerHourlyRate = previousRate,
+                    CleanerTotalSalary = beforeTotal
+                },
+                new
+                {
+                    CleanerHourlyRate = order.CleanerHourlyRate,
+                    CleanerTotalSalary = order.CleanerTotalSalary,
+                    // The side effects of the change, recorded with it. Both are decisions the
+                    // rate change made on the admin's behalf, and neither is visible anywhere else.
+                    PaidLinesPinnedToOldRate = pinnedToOldRate.Count == 0 ? null : string.Join(", ", pinnedToOldRate),
+                    LinesKeepingTheirOwnRate = keptOwnRate.Count == 0 ? null : string.Join(", ", keptOwnRate)
+                },
+                // Listed explicitly. The rate and the total always appear, in that order, so the
+                // headline of the row is the change the admin made; the two side-effect fields
+                // join only when they actually happened, because a row full of "None -> None"
+                // is what made the old audit expansions unreadable.
+                BuildRateChangeFields(pinnedToOldRate, keptOwnRate));
+
             return BuildOrderRow(order);
+        }
+
+        private static List<string> BuildRateChangeFields(List<string> pinned, List<string> keptOwn)
+        {
+            var fields = new List<string> { nameof(Order.CleanerHourlyRate), nameof(Order.CleanerTotalSalary) };
+            if (pinned.Count > 0) fields.Add("PaidLinesPinnedToOldRate");
+            if (keptOwn.Count > 0) fields.Add("LinesKeepingTheirOwnRate");
+            return fields;
         }
 
         public async Task<OutgoingPaymentOrderDto?> MarkCleanerPaidAsync(
@@ -170,12 +261,45 @@ namespace DreamCleaningBackend.Services
             ApplyOrderTotalSalary(order);
 
             var line = BuildPayroll(order).Lines.FirstOrDefault(l => l.OrderCleanerId == orderCleanerId);
+            var wasAlreadyPaid = assignment.IsPaid;
             MarkPaid(assignment, line, dto.PaidVia, dto.PaymentNote, paidByUserId);
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            // MarkPaid is a no-op on an already-paid line; recording a payout that did not happen
+            // would be worse than recording none.
+            if (!wasAlreadyPaid)
+                await LogPayoutAsync(order, "PayoutRecorded", DescribeCleaner(assignment),
+                    assignment.PaidAmount, assignment.PaidVia, assignment.PaymentNote, paidByUserId);
+
             return BuildOrderRow(order);
         }
+
+        /// <summary>
+        /// One payout event. Deliberately a pseudo-entity (<see cref="AuditEntityTypes.CleanerPayout"/>)
+        /// rather than an OrderCleaner update: the row records money handed over, and it must never
+        /// be replayable by the generic Undo, which would flip IsPaid without anyone deciding to.
+        /// </summary>
+        private Task LogPayoutAsync(
+            Order order, string action, string who,
+            decimal? amount, CleanerPaymentMethod? via, string? note, int? actingUserId) =>
+            _audit.LogActionAsync(
+                AuditEntityTypes.CleanerPayout,
+                order.Id,
+                action,
+                null,
+                new
+                {
+                    Cleaner = who,
+                    PaidAmount = amount,
+                    PaidVia = via?.ToString(),
+                    PaymentNote = note,
+                    // The reported labour cost as it stood when the money went out, so a later
+                    // rate change cannot make this row look like it paid the wrong figure.
+                    CleanerTotalSalary = order.CleanerTotalSalary
+                },
+                actingUserId: actingUserId);
 
         public async Task<OutgoingPaymentOrderDto?> MarkOrderPaidAsync(
             int orderId, MarkOrderPaidDto dto, int paidByUserId)
@@ -187,22 +311,37 @@ namespace DreamCleaningBackend.Services
             ApplyOrderTotalSalary(order);
             var payroll = BuildPayroll(order);
 
+            // Each newly-paid line is audited individually, because "mark all paid" is one CLICK
+            // but several payments — the money reaches different people through different
+            // channels, and a single summary row could not answer "was Marta paid for #412".
+            var newlyPaid = new List<(string Who, decimal? Amount, CleanerPaymentMethod? Via)>();
+
             foreach (var assignment in order.OrderCleaners.Where(oc => !oc.IsPaid))
             {
                 var line = payroll.Lines.FirstOrDefault(l => l.OrderCleanerId == assignment.Id);
                 // Each cleaner is paid via their OWN saved method — a "pay all" is one action,
                 // not one payment channel.
                 MarkPaid(assignment, line, null, dto.PaymentNote, paidByUserId);
+                newlyPaid.Add((DescribeCleaner(assignment), assignment.PaidAmount, assignment.PaidVia));
             }
 
             // "Everyone on this order" includes the staffing slots with nobody on file — they
             // were paid too, and leaving them out would make "mark all paid" a lie.
             var unassignedPayout = UnassignedSlotPayout(payroll);
             for (var slot = 0; slot < payroll.UnassignedCount; slot++)
-                MarkSlotPaid(ResolveSlotRecord(order, slot), unassignedPayout, null, dto.PaymentNote, paidByUserId);
+            {
+                var record = ResolveSlotRecord(order, slot);
+                if (record.IsPaid) continue;
+                MarkSlotPaid(record, unassignedPayout, null, dto.PaymentNote, paidByUserId);
+                newlyPaid.Add(($"Unassigned slot #{slot + 1}", record.PaidAmount, record.PaidVia));
+            }
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            foreach (var (who, amount, via) in newlyPaid)
+                await LogPayoutAsync(order, "PayoutRecorded", who, amount, via, dto.PaymentNote, paidByUserId);
+
             return BuildOrderRow(order);
         }
 
@@ -223,11 +362,18 @@ namespace DreamCleaningBackend.Services
 
             if (slotIndex < 0 || slotIndex >= payroll.UnassignedCount) return null;
 
-            MarkSlotPaid(ResolveSlotRecord(order, slotIndex), UnassignedSlotPayout(payroll),
+            var slotRecord = ResolveSlotRecord(order, slotIndex);
+            var slotWasPaid = slotRecord.IsPaid;
+            MarkSlotPaid(slotRecord, UnassignedSlotPayout(payroll),
                 dto.PaidVia, dto.PaymentNote, paidByUserId);
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            if (!slotWasPaid)
+                await LogPayoutAsync(order, "PayoutRecorded", $"Unassigned slot #{slotIndex + 1}",
+                    slotRecord.PaidAmount, slotRecord.PaidVia, slotRecord.PaymentNote, paidByUserId);
+
             return BuildOrderRow(order);
         }
 
@@ -241,6 +387,12 @@ namespace DreamCleaningBackend.Services
             var record = order.UnassignedPayouts.FirstOrDefault(p => p.SlotIndex == slotIndex);
             if (record == null) return null;
 
+            // The reversal has to name what is being reversed. Clearing PaidAmount first and
+            // logging afterwards would record a payout reversal of "None".
+            var reversedAmount = record.PaidAmount;
+            var reversedVia = record.PaidVia;
+            var reversedNote = record.PaymentNote;
+
             record.IsPaid = false;
             record.PaidAmount = null;
             record.PaidVia = null;
@@ -250,6 +402,10 @@ namespace DreamCleaningBackend.Services
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            await LogPayoutAsync(order, "PayoutReversed", $"Unassigned slot #{slotIndex + 1}",
+                reversedAmount, reversedVia, reversedNote, null);
+
             return BuildOrderRow(order);
         }
 
@@ -267,6 +423,11 @@ namespace DreamCleaningBackend.Services
             var assignment = order.OrderCleaners.FirstOrDefault(oc => oc.Id == orderCleanerId);
             if (assignment == null) return null;
 
+            var reversedAmount = assignment.PaidAmount;
+            var reversedVia = assignment.PaidVia;
+            var reversedNote = assignment.PaymentNote;
+            var who = DescribeCleaner(assignment);
+
             assignment.IsPaid = false;
             assignment.PaidAmount = null;
             assignment.PaidVia = null;
@@ -276,6 +437,9 @@ namespace DreamCleaningBackend.Services
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            await LogPayoutAsync(order, "PayoutReversed", who, reversedAmount, reversedVia, reversedNote, null);
+
             return BuildOrderRow(order);
         }
 
@@ -574,63 +738,28 @@ namespace DreamCleaningBackend.Services
         }
 
         /// <summary>
-        /// Everything a SuperAdmin should look at before paying. These NEVER block a payout — the
-        /// job happened and the cleaner is owed either way; the warning exists so a mistake is
-        /// noticed at the moment somebody is looking at the money, which is the one moment it
-        /// reliably gets fixed.
+        /// Everything a SuperAdmin should look at before paying. Built by the SHARED
+        /// <see cref="OrderStaffingWarnings"/> since 2026-08-31, when the admin Orders panel grew
+        /// the same block — the two screens describe the same job, so they must not be free to
+        /// describe it differently. Nothing here ever blocks a payout.
         /// </summary>
         private static List<string> BuildWarnings(Order order, OutgoingPaymentOrderDto row, decimal expectedRate)
-        {
-            var warnings = new List<string>();
-
-            // The rate warning is per DISTINCT rate: with mixed rates on one job, naming each one
-            // is what tells the reader whether the odd one out was deliberate.
-            var offRates = row.Cleaners
-                .Where(c => c.HourlyRate != expectedRate)
-                .Select(c => c.HourlyRate)
-                .Distinct()
-                .OrderBy(r => r)
-                .ToList();
-
-            if (offRates.Count > 0)
+            => OrderStaffingWarnings.Build(new OrderStaffingWarnings.Input
             {
-                var listed = string.Join(", ", offRates.Select(r => $"${r:0.##}/hr"));
-                warnings.Add($"Hourly rate is {listed}, but {row.ServiceTypeName} should default to ${expectedRate:0.##}/hr. "
-                    + "Check whether this was intentional before paying.");
-            }
-
-            // Under-staffed on paper: those people worked and are owed, but there is no cleaner
-            // record naming them. The per-cleaner HOURS are unaffected — the split follows the
-            // count the job was staffed for — so this is about who, not about how much.
-            if (row.UnassignedCleaners.Count > 0)
-            {
-                var slots = row.UnassignedCleaners.Count;
-                warnings.Add(row.Cleaners.Count == 0
-                    ? $"Nobody on this order is in the system. It was staffed for {row.SplitCount} cleaner(s), "
-                      + $"so ${row.TotalSalary:0.00} of wages is owed — the payouts can still be recorded, "
-                      + "but not against a name."
-                    : $"{row.Cleaners.Count} of {row.SplitCount} cleaner(s) are in the system. The other {slots} "
-                      + $"payout(s) of ${row.UnassignedCleaners[0].Payout:0.00} each can be recorded, but not "
-                      + "against a name — add a note saying who was paid.");
-            }
-
-            // Over-assigned: more people on the job than it was priced for, so the work divides
-            // further and everyone's share drops.
-            if (row.Cleaners.Count > order.MaidsCount && order.MaidsCount > 0)
-            {
-                warnings.Add($"{row.Cleaners.Count} cleaner(s) are assigned but the order was priced for "
-                    + $"{order.MaidsCount}. The hours are split {row.Cleaners.Count} ways, so each share is smaller "
-                    + "than the booking assumed.");
-            }
-
-            if (order.TotalDuration <= 0)
-                warnings.Add("This order has no duration recorded, so every cleaner's pay calculates to $0.");
-
-            if (!row.IsPaidByCustomer)
-                warnings.Add("The customer has not paid for this order yet.");
-
-            return warnings;
-        }
+                ServiceTypeName = row.ServiceTypeName,
+                ExpectedHourlyRate = expectedRate,
+                AssignedHourlyRates = row.Cleaners.Select(c => c.HourlyRate).ToList(),
+                SplitCount = row.SplitCount,
+                UnassignedCount = row.UnassignedCleaners.Count,
+                TotalSalary = row.TotalSalary,
+                // The first slot's figure: every unstaffed slot is owed the same hours at the
+                // same rate, so they are interchangeable. 0 when there are none, which is the
+                // branch that never reads it.
+                UnassignedPayoutEach = row.UnassignedCleaners.Count > 0 ? row.UnassignedCleaners[0].Payout : 0m,
+                MaidsCount = order.MaidsCount,
+                TotalDuration = order.TotalDuration,
+                IsPaidByCustomer = row.IsPaidByCustomer
+            });
 
         private static OutgoingPaymentSummaryDto BuildSummary(List<OutgoingPaymentOrderDto> rows)
         {

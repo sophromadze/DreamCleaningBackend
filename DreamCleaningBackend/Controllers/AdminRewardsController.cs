@@ -66,7 +66,16 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
+                // Read first: a settings store has no before-image of its own to diff against.
+                var previous = await _settingsService.GetSetting(key, string.Empty);
+
                 await _settingsService.SetSetting(key, dto.Value);
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.RewardSetting, 0, "Update",
+                    new Dictionary<string, string?> { [key] = previous },
+                    new Dictionary<string, string?> { [key] = dto.Value });
+
                 return Ok(new { message = "Setting updated." });
             }
             catch (Exception ex)
@@ -82,7 +91,20 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
+                var previous = new Dictionary<string, string?>();
+                foreach (var u in updates)
+                    previous[u.Key] = await _settingsService.GetSetting(u.Key, string.Empty);
+
                 await _settingsService.BulkUpdateSettings(updates);
+
+                // One row for the whole save. The diff names only the keys that actually moved,
+                // so a form that posts all its fields on every save does not produce a wall of
+                // unchanged rows.
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.RewardSetting, 0, "Update",
+                    previous,
+                    updates.ToDictionary(u => u.Key, u => (string?)u.Value));
+
                 return Ok(new { message = $"Updated {updates.Count} settings." });
             }
             catch (Exception ex)
@@ -192,6 +214,17 @@ namespace DreamCleaningBackend.Controllers
                     return BadRequest(new { message = "Review bonus already granted for this user." });
 
                 await _pointsService.AdminGrantReviewBonus(userId);
+
+                // Reloaded rather than assumed: the service decides the amount, and recording the
+                // resulting balance is what makes the row checkable against the account.
+                await _context.Entry(user).ReloadAsync();
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.RewardAdjustment, userId, "ReviewBonusGranted", null, new
+                    {
+                        BubblePoints = user.BubblePoints,
+                        BubbleCredits = user.BubbleCredits
+                    });
+
                 return Ok(new { message = "Review bonus granted." });
             }
             catch (Exception ex)
@@ -209,7 +242,21 @@ namespace DreamCleaningBackend.Controllers
                 var user = await _context.Users.FindAsync(userId);
                 if (user == null) return NotFound();
 
+                var creditsBefore = user.BubbleCredits;
+
                 await _pointsService.AdminGrantCredit(userId, dto.Amount, dto.Description);
+
+                await _context.Entry(user).ReloadAsync();
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.RewardAdjustment, userId, "CreditGranted",
+                    new { BubbleCredits = creditsBefore },
+                    new
+                    {
+                        BubbleCredits = user.BubbleCredits,
+                        AmountGranted = dto.Amount,
+                        Description = dto.Description
+                    });
+
                 return Ok(new { message = $"Granted ${dto.Amount} credit to user {userId}." });
             }
             catch (Exception ex)
@@ -271,8 +318,18 @@ namespace DreamCleaningBackend.Controllers
                 if (referral.Referred != null)
                     referral.Referred.ReferredByUserId = null;
 
+                // Captured before the remove — the row is about to stop existing, and "which
+                // referral" is the only thing that makes the record useful.
+                var removedReferredId = referral.ReferredUserId;
+                var removedReferredEmail = referral.Referred?.Email;
+
                 _context.Referrals.Remove(referral);
                 await _context.SaveChangesAsync();
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.ReferralAdjustment, userId, "ReferredUserRemoved",
+                    new { ReferredUserId = removedReferredId, ReferredUserEmail = removedReferredEmail },
+                    null);
 
                 return Ok(new { message = "Referred user removed." });
             }
@@ -307,6 +364,12 @@ namespace DreamCleaningBackend.Controllers
                     _context.Referrals.Remove(referral);
 
                 await _context.SaveChangesAsync();
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.ReferralAdjustment, userId, "ReferredByRemoved",
+                    new { ReferredByUserId = referrerId },
+                    new { ReferredByUserId = (int?)null });
+
                 return Ok(new { message = "Referred-by link removed." });
             }
             catch (Exception ex)
@@ -358,6 +421,10 @@ namespace DreamCleaningBackend.Controllers
                 };
                 _context.Referrals.Add(referral);
                 await _context.SaveChangesAsync();
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.ReferralAdjustment, userId, "ReferredUserAdded", null,
+                    new { ReferredUserId = referred.Id, ReferredUserEmail = referred.Email });
 
                 return Ok(new { message = "Referred user added.", referredUserEmail = referred.Email, referredUserName = $"{referred.FirstName} {referred.LastName}" });
             }
@@ -438,6 +505,8 @@ namespace DreamCleaningBackend.Controllers
                 if (user.ReferredByUserId == newReferrer.Id)
                     return Ok(new { message = "User is already referred by this person.", referredByName = newReferrer.Email });
 
+                var previousReferrerId = user.ReferredByUserId;
+
                 // Remove the old Referral row, if any.
                 if (user.ReferredByUserId != null)
                 {
@@ -467,6 +536,12 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 await _context.SaveChangesAsync();
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.ReferralAdjustment, userId, "ReferredBySet",
+                    new { ReferredByUserId = previousReferrerId },
+                    new { ReferredByUserId = newReferrer.Id, ReferredByEmail = newReferrer.Email });
+
                 return Ok(new { message = "Referrer set.", referredByName = newReferrer.Email });
             }
             catch (Exception ex)

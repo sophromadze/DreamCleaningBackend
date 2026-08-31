@@ -23,8 +23,9 @@ namespace DreamCleaningBackend.DTOs
         public string LastName { get; set; }
         public string Email { get; set; }
 
-        // True when the cleaner can be assigned (no hard scheduling conflict).
-        // Busy-day cleaners are still "available" here — they're only soft-hidden in the UI.
+        // True when nothing about this cleaner's day argues against assigning them. Since
+        // 2026-08-31 a schedule conflict no longer BLOCKS the assignment, so this is a sorting
+        // and labelling signal only — never a permission.
         public bool IsAvailable { get; set; }
 
         public string? Location { get; set; }
@@ -36,8 +37,11 @@ namespace DreamCleaningBackend.DTOs
         public bool IsBusyDay { get; set; }
         public string? BusyDayReason { get; set; }
 
-        // Hard: already has another Active/Pending job that day within 1 hour of this one.
-        // Cannot be assigned (blocked client-side and server-side).
+        // Another Active/Pending job that day within 1 hour of this one. A WARNING, not a block
+        // (2026-08-31): the admin is the one who knows the two addresses are next door, or that
+        // the earlier job is running short. The modal surfaces it loudly and makes the admin
+        // acknowledge it; the server still refuses without that acknowledgement — see
+        // AssignCleanersDto.AcknowledgeScheduleConflicts.
         public bool HasScheduleConflict { get; set; }
         public string? ConflictReason { get; set; }
 
@@ -50,6 +54,16 @@ namespace DreamCleaningBackend.DTOs
         public List<int> CleanerIds { get; set; } = new();
         public string? TipsForCleaner { get; set; }
         public decimal? CleanerHourlyRate { get; set; }
+
+        /// <summary>
+        /// The admin has SEEN the same-day 1-hour-gap conflicts on the cleaners they picked and
+        /// wants them assigned regardless.
+        ///
+        /// Defaults to false, so a conflicting assignment arriving without one is still refused —
+        /// a direct API call, or a client that never put the warning in front of anybody. The gap
+        /// rule is still real scheduling advice; what changed is who gets to overrule it.
+        /// </summary>
+        public bool AcknowledgeScheduleConflicts { get; set; }
     }
 
     public class CleanerOrderDetailDto

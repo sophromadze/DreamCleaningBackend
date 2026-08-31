@@ -12,13 +12,16 @@ public class LiveChatAdminController : ControllerBase
 {
     private readonly LiveChatSessionManager _sessionManager;
     private readonly IHubContext<LiveChatHub> _hubContext;
+    private readonly DreamCleaningBackend.Services.Interfaces.IAuditService _auditService;
 
     public LiveChatAdminController(
         LiveChatSessionManager sessionManager,
-        IHubContext<LiveChatHub> hubContext)
+        IHubContext<LiveChatHub> hubContext,
+        DreamCleaningBackend.Services.Interfaces.IAuditService auditService)
     {
         _sessionManager = sessionManager;
         _hubContext = hubContext;
+        _auditService = auditService;
     }
 
     /// <summary>
@@ -45,6 +48,13 @@ public class LiveChatAdminController : ControllerBase
         // Notify all visitors who are currently connected to LiveChatHub
         var eventName = isEnabled ? "ChatWidgetEnabled" : "ChatWidgetDisabled";
         await _hubContext.Clients.All.SendAsync(eventName);
+
+        // The widget being off is indistinguishable from it being broken, so somebody having
+        // turned it off is worth being able to look up.
+        await _auditService.LogActionAsync(
+            AuditEntityTypes.SiteSetting, 0, "LiveChatToggled",
+            new { LiveChatEnabled = !isEnabled },
+            new { LiveChatEnabled = isEnabled });
 
         return Ok(new { isEnabled });
     }

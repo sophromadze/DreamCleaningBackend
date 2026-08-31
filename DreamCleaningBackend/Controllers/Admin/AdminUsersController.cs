@@ -1008,6 +1008,19 @@ namespace DreamCleaningBackend.Controllers
                 _logger.LogError(ex, $"Failed to notify user {id} before delete");
             }
 
+            // Written BEFORE the transaction, and deliberately so: the delete sweep below removes
+            // this user's own AuditLogs rows, and a row written inside the transaction would be
+            // caught by that sweep and vanish along with the account. The audit row is authored by
+            // the acting ADMIN (UserId = the admin), so it survives.
+            try
+            {
+                await _auditService.LogDeleteAsync(user);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit deletion of user {UserId}", id);
+            }
+
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
@@ -1044,6 +1057,16 @@ namespace DreamCleaningBackend.Controllers
             if (targetUser == null)
                 return NotFound();
 
+            // Its own stream rather than a generic User update: this is a consent decision about
+            // whether the company may contact somebody, and it has to be findable without wading
+            // through every other edit to the account.
+            var prefsBefore = new
+            {
+                targetUser.CanReceiveEmails,
+                targetUser.CanReceiveMessages,
+                targetUser.CanReceiveCommunications
+            };
+
             if (dto.CanReceiveEmails.HasValue)
                 targetUser.CanReceiveEmails = dto.CanReceiveEmails.Value;
             if (dto.CanReceiveMessages.HasValue)
@@ -1056,6 +1079,16 @@ namespace DreamCleaningBackend.Controllers
             }
             targetUser.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.UserCommunicationPreference, id, "Update",
+                prefsBefore,
+                new
+                {
+                    targetUser.CanReceiveEmails,
+                    targetUser.CanReceiveMessages,
+                    targetUser.CanReceiveCommunications
+                });
 
             return Ok(new { canReceiveEmails = targetUser.CanReceiveEmails, canReceiveMessages = targetUser.CanReceiveMessages, message = "Communication preference updated." });
         }
@@ -1079,6 +1112,8 @@ namespace DreamCleaningBackend.Controllers
             }
 
             var note = await _context.AdminUserNotes.FindAsync(id);
+            // Read before the write; afterwards nothing remains to say what the note used to say.
+            var previousNotes = note?.Notes;
             if (note == null)
             {
                 note = new AdminUserNote { UserId = id, Notes = dto.AdminNotes };
@@ -1087,6 +1122,17 @@ namespace DreamCleaningBackend.Controllers
             else
                 note.Notes = dto.AdminNotes;
             await _context.SaveChangesAsync();
+
+            // The text is stored in the audit row on purpose: "a note changed" without saying what
+            // it said before is not a usable record of what an admin wrote about a customer.
+            if (previousNotes != note.Notes)
+            {
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.UserAdminNote, id, previousNotes == null ? "Create" : "Update",
+                    previousNotes == null ? null : new { Notes = previousNotes },
+                    new { Notes = note.Notes },
+                    new[] { "Notes" });
+            }
 
             return Ok(new { adminNotes = note.Notes, message = "Admin notes updated." });
         }
@@ -1250,6 +1296,14 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var apartment = await _profileService.AddApartment(userId, dto);
+
+                // ProfileService does not audit — the customer-facing ProfileController does it at
+                // its own call site, so the admin path has to do the same or an address added on a
+                // customer's behalf leaves no trace.
+                var created = await _context.Apartments.FirstOrDefaultAsync(a => a.Id == apartment.Id);
+                if (created != null)
+                    await _auditService.LogCreateAsync(created);
+
                 return Ok(apartment);
             }
             catch (Exception ex)
@@ -1275,7 +1329,15 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "Apartment ID mismatch" });
             try
             {
+                var before = await _context.Apartments.AsNoTracking()
+                    .FirstOrDefaultAsync(a => a.Id == apartmentId && a.UserId == userId);
+
                 var apartment = await _profileService.UpdateApartment(userId, apartmentId, dto);
+
+                var after = await _context.Apartments.FirstOrDefaultAsync(a => a.Id == apartmentId);
+                if (before != null && after != null)
+                    await _auditService.LogUpdateAsync(before, after);
+
                 return Ok(apartment);
             }
             catch (Exception ex)
@@ -1299,7 +1361,15 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "Admins cannot modify SuperAdmin users" });
             try
             {
+                // Loaded and logged BEFORE the delete, while the row still carries its values.
+                var doomed = await _context.Apartments.AsNoTracking()
+                    .FirstOrDefaultAsync(a => a.Id == apartmentId && a.UserId == userId);
+
                 await _profileService.DeleteApartment(userId, apartmentId);
+
+                if (doomed != null)
+                    await _auditService.LogDeleteAsync(doomed);
+
                 return Ok(new { message = "Address deleted successfully" });
             }
             catch (Exception ex)
@@ -1619,7 +1689,31 @@ namespace DreamCleaningBackend.Controllers
                 ? $"Reminder sent via {string.Join(" and ", channels)}."
                 : "Reminder was logged, but no channel could be delivered — check the server logs.";
 
+            // Reaching out to a customer is a contact event, recorded on the same stream as the
+            // order-level notifications so "when did we last contact them" has one answer.
+            if (emailSent || smsSent)
+            {
+                var channelsUsed = emailSent && smsSent ? "email and SMS" : emailSent ? "email" : "SMS";
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.OrderNotification, userId, "CustomerReminderSent", null,
+                    new { Details = $"Booking reminder sent by {channelsUsed}" });
+            }
+
             return Ok(new { emailSent, smsSent, message });
+        }
+
+        /// <summary>
+        /// Current stored value of each named setting, as a plain key -> string map, so an audit
+        /// row can show what a bulk settings write moved FROM. Reading through the same service
+        /// the write goes through keeps the two sides comparable; reading the DB directly would
+        /// bypass whatever normalisation the service applies and report spurious changes.
+        /// </summary>
+        private async Task<Dictionary<string, string>> ReadSettingValuesAsync(List<string> keys)
+        {
+            var values = new Dictionary<string, string>();
+            foreach (var key in keys)
+                values[key] = await _bubbleRewardsSettingsService.GetSetting(key, string.Empty);
+            return values;
         }
 
         [HttpGet("loyalty-discount-settings")]
@@ -1670,7 +1764,15 @@ namespace DreamCleaningBackend.Controllers
                 new() { Key = "MinDaysFromLastUseBeforeReActivation", Value = body.MinDaysFromLastUseBeforeReActivation.ToString(System.Globalization.CultureInfo.InvariantCulture) },
             };
 
+            // Captured before the write so the audit row can show what each key moved FROM.
+            var settingsBefore = await ReadSettingValuesAsync(updates.Select(u => u.Key).ToList());
+
             await _bubbleRewardsSettingsService.BulkUpdateSettings(updates);
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.RewardSetting, 0, "Update",
+                settingsBefore,
+                updates.ToDictionary(u => u.Key, u => u.Value));
 
             // Re-read so the response reflects the persisted values (including any normalisation
             // BulkUpdateSettings might do).

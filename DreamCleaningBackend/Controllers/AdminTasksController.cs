@@ -6,6 +6,8 @@ using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Hubs;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
+using DreamCleaningBackend.Services.Interfaces;
 using System.Security.Claims;
 using System.Text.Json;
 
@@ -18,12 +20,20 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IHubContext<UserManagementHub> _hubContext;
+        private readonly IAuditService _auditService;
 
-        public AdminTasksController(ApplicationDbContext context, IHubContext<UserManagementHub> hubContext)
+        public AdminTasksController(ApplicationDbContext context, IHubContext<UserManagementHub> hubContext, IAuditService auditService)
         {
             _context = context;
             _hubContext = hubContext;
+            _auditService = auditService;
         }
+
+        // NOTE: this controller ALREADY keeps its own per-task activity feed (LogActivity), which
+        // is what the Tasks board renders inline. The audit rows added alongside it are a
+        // different question with a different reader: "what did anybody change anywhere today",
+        // answered on the Audits tab. Neither replaces the other, and the activity feed stays the
+        // richer one for a single task.
 
         private int GetUserId()
         {
@@ -209,6 +219,8 @@ namespace DreamCleaningBackend.Controllers
             _context.AdminTasks.Add(task);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(task);
+
             await _context.Entry(task).Reference(t => t.CreatedByAdmin).LoadAsync();
 
             await LogActivity("SharedTask", task.Id, task.Title, "Created", new Dictionary<string, object?>
@@ -231,6 +243,8 @@ namespace DreamCleaningBackend.Controllers
                 .FirstOrDefaultAsync(t => t.Id == id);
 
             if (task == null) return NotFound();
+
+            var beforeTask = AuditSnapshot.Of(task);
 
             // Capture old values before update
             var oldValues = new Dictionary<string, (object? oldVal, object? newVal)>();
@@ -273,6 +287,8 @@ namespace DreamCleaningBackend.Controllers
             task.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
+            await _auditService.LogUpdateAsync(beforeTask, task);
+
             var changes = TrackChanges(oldValues);
             if (changes.Count > 0)
                 await LogActivity("SharedTask", task.Id, task.Title, "Updated", changes);
@@ -293,6 +309,7 @@ namespace DreamCleaningBackend.Controllers
 
             var oldStatus = task.Status;
             var oldNote = task.CompletionNote;
+            var beforeTaskStatus = AuditSnapshot.Of(task);
 
             task.Status = dto.Status;
             task.CompletedAt = dto.Status == "Done" ? DateTime.UtcNow : null;
@@ -300,6 +317,8 @@ namespace DreamCleaningBackend.Controllers
             task.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeTaskStatus, task);
 
             var trackFields = new Dictionary<string, (object? oldVal, object? newVal)>
             {
@@ -320,6 +339,8 @@ namespace DreamCleaningBackend.Controllers
         {
             var task = await _context.AdminTasks.FindAsync(id);
             if (task == null) return NotFound();
+
+            await _auditService.LogDeleteAsync(task);
 
             var title = task.Title;
             _context.AdminTasks.Remove(task);
@@ -418,6 +439,9 @@ namespace DreamCleaningBackend.Controllers
             await _context.SaveChangesAsync();
 
             foreach (var task in createdTasks)
+                await _auditService.LogCreateAsync(task);
+
+            foreach (var task in createdTasks)
             {
                 await _context.Entry(task).Reference(t => t.AssignedToAdmin).LoadAsync();
                 await _context.Entry(task).Reference(t => t.CreatedByAdmin).LoadAsync();
@@ -468,9 +492,13 @@ namespace DreamCleaningBackend.Controllers
             if (task == null) return NotFound();
             if (task.CreatedByAdminId != userId) return Forbid();
 
+            var beforeChecked = AuditSnapshot.Of(task);
+
             task.CheckedByCreator = true;
             task.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeChecked, task);
 
             await _hubContext.Clients.Group("Admins").SendAsync("TasksUpdated", new { type = "personal" });
 
@@ -486,6 +514,8 @@ namespace DreamCleaningBackend.Controllers
                 .FirstOrDefaultAsync(t => t.Id == id);
 
             if (task == null) return NotFound();
+
+            var beforePersonalTask = AuditSnapshot.Of(task);
 
             var userId = GetUserId();
             var isCreator = task.CreatedByAdminId == userId;
@@ -538,6 +568,8 @@ namespace DreamCleaningBackend.Controllers
                 oldValues.Remove("AssignedToAdminId");
             }
 
+            await _auditService.LogUpdateAsync(beforePersonalTask, task);
+
             var changes = TrackChanges(oldValues);
             if (changes.Count > 0)
                 await LogActivity("PersonalTask", task.Id, task.Title, "Updated", changes);
@@ -557,6 +589,7 @@ namespace DreamCleaningBackend.Controllers
 
             if (task == null) return NotFound();
 
+            var beforePersonalStatus = AuditSnapshot.Of(task);
             var oldStatus = task.Status;
             var oldNote = task.CompletionNote;
 
@@ -573,6 +606,8 @@ namespace DreamCleaningBackend.Controllers
                 ["Status"] = (oldStatus, dto.Status)
             };
             if (dto.CompletionNote != null) trackFields2["CompletionNote"] = (oldNote, dto.CompletionNote);
+            await _auditService.LogUpdateAsync(beforePersonalStatus, task);
+
             var changes = TrackChanges(trackFields2);
             if (changes.Count > 0)
                 await LogActivity("PersonalTask", task.Id, task.Title, "StatusChanged", changes);
@@ -598,6 +633,8 @@ namespace DreamCleaningBackend.Controllers
 
             var title = task.Title;
             var assignedName = task.AssignedToAdmin != null ? $"{task.AssignedToAdmin.FirstName} {task.AssignedToAdmin.LastName}" : "Unknown";
+            await _auditService.LogDeleteAsync(task);
+
             _context.PersonalAdminTasks.Remove(task);
             await _context.SaveChangesAsync();
 
@@ -686,6 +723,8 @@ namespace DreamCleaningBackend.Controllers
             _context.ClientInteractions.Add(interaction);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(interaction);
+
             await _context.Entry(interaction).Reference(ci => ci.Admin).LoadAsync();
 
             await LogActivity("ClientInteraction", interaction.Id, interaction.ClientName, "Created", new Dictionary<string, object?>
@@ -710,6 +749,8 @@ namespace DreamCleaningBackend.Controllers
 
             if (interaction == null) return NotFound();
 
+            var beforeInteraction = AuditSnapshot.Of(interaction);
+
             var oldValues = new Dictionary<string, (object? oldVal, object? newVal)>();
             if (dto.ClientName != null) oldValues["ClientName"] = (interaction.ClientName, dto.ClientName);
             if (dto.ClientPhone != null) oldValues["ClientPhone"] = (interaction.ClientPhone, dto.ClientPhone);
@@ -727,6 +768,8 @@ namespace DreamCleaningBackend.Controllers
 
             await _context.SaveChangesAsync();
 
+            await _auditService.LogUpdateAsync(beforeInteraction, interaction);
+
             var changes = TrackChanges(oldValues);
             if (changes.Count > 0)
                 await LogActivity("ClientInteraction", interaction.Id, interaction.ClientName, "Updated", changes);
@@ -743,6 +786,9 @@ namespace DreamCleaningBackend.Controllers
             if (interaction == null) return NotFound();
 
             var clientName = interaction.ClientName;
+
+            await _auditService.LogDeleteAsync(interaction);
+
             _context.ClientInteractions.Remove(interaction);
             await _context.SaveChangesAsync();
 
@@ -793,6 +839,8 @@ namespace DreamCleaningBackend.Controllers
             _context.HandoverNotes.Add(note);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(note);
+
             await _context.Entry(note).Reference(n => n.Admin).LoadAsync();
 
             await LogActivity("HandoverNote", note.Id, note.Content.Length > 80 ? note.Content[..80] + "..." : note.Content, "Created", new Dictionary<string, object?>
@@ -817,6 +865,7 @@ namespace DreamCleaningBackend.Controllers
             if (note.AdminId != userId && role != "SuperAdmin")
                 return Forbid();
 
+            var beforeNote = AuditSnapshot.Of(note);
             var oldContent = note.Content;
             var oldAudience = note.TargetAudience;
 
@@ -824,6 +873,8 @@ namespace DreamCleaningBackend.Controllers
             if (dto.TargetAudience != null) note.TargetAudience = dto.TargetAudience;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeNote, note);
 
             var changes = TrackChanges(new Dictionary<string, (object? oldVal, object? newVal)>
             {
@@ -855,6 +906,8 @@ namespace DreamCleaningBackend.Controllers
                 return Forbid();
 
             var content = note.Content.Length > 80 ? note.Content[..80] + "..." : note.Content;
+            await _auditService.LogDeleteAsync(note);
+
             _context.HandoverNotes.Remove(note);
             await _context.SaveChangesAsync();
 

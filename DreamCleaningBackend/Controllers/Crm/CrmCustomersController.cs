@@ -3,6 +3,8 @@ using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
+using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +24,7 @@ namespace DreamCleaningBackend.Controllers.Crm
     public class CrmCustomersController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly IAuditService _auditService;
 
         // Segment thresholds. Kept as named constants so the rules are auditable in one place.
         private const int NewDays = 30;
@@ -30,9 +33,10 @@ namespace DreamCleaningBackend.Controllers.Crm
         private const decimal VipMinSpent = 1000m;
         private const int VipMinOrders = 5;
 
-        public CrmCustomersController(ApplicationDbContext context)
+        public CrmCustomersController(ApplicationDbContext context, IAuditService auditService)
         {
             _context = context;
+            _auditService = auditService;
         }
 
         // ─────────────────────────────────────────────────────────
@@ -238,6 +242,8 @@ namespace DreamCleaningBackend.Controllers.Crm
             _context.CustomerTags.Add(tag);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(tag);
+
             return Ok(MapTag(tag));
         }
 
@@ -247,6 +253,9 @@ namespace DreamCleaningBackend.Controllers.Crm
         {
             var tag = await _context.CustomerTags.FirstOrDefaultAsync(t => t.Id == tagId);
             if (tag == null) return NotFound(new { message = "Tag not found" });
+
+            await _auditService.LogDeleteAsync(tag);
+
             _context.CustomerTags.Remove(tag);
             await _context.SaveChangesAsync();
             return Ok(new { message = "Tag removed" });

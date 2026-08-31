@@ -29,17 +29,20 @@ namespace DreamCleaningBackend.Controllers
         private readonly BlogContentService _content;
         private readonly IBlogGenerationService _generation;
         private readonly IConfiguration _configuration;
+        private readonly IAuditService _auditService;
 
         public AdminBlogController(
             ApplicationDbContext context,
             BlogContentService content,
             IBlogGenerationService generation,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IAuditService auditService)
         {
             _context = context;
             _content = content;
             _generation = generation;
             _configuration = configuration;
+            _auditService = auditService;
         }
 
         // ─────────────────────────────────────────────────────────
@@ -108,6 +111,8 @@ namespace DreamCleaningBackend.Controllers
             _context.BlogPosts.Add(post);
             await _context.SaveChangesAsync();
 
+            await _auditService.LogCreateAsync(post);
+
             return Ok(MapAdminDto(post));
         }
 
@@ -118,8 +123,12 @@ namespace DreamCleaningBackend.Controllers
             var post = await _context.BlogPosts.FirstOrDefaultAsync(p => p.Id == id);
             if (post == null) return NotFound(new { message = "Post not found." });
 
+            var before = AuditSnapshot.Of(post);
+
             await ApplySaveDtoAsync(post, dto);
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(before, post);
 
             if (post.Status == BlogPostStatus.Published)
                 BlogCache.Invalidate();
@@ -137,10 +146,16 @@ namespace DreamCleaningBackend.Controllers
             if (string.IsNullOrWhiteSpace(post.ContentHtml))
                 return BadRequest(new { message = "Post has no content." });
 
+            // Publishing is the moment AI-drafted copy becomes public, which is the whole point
+            // of the human-review step. Who pressed it, and when, has to be on the record.
+            var beforePublish = AuditSnapshot.Of(post);
+
             post.Status = BlogPostStatus.Published;
             post.PublishedAt ??= DateTime.UtcNow;
             post.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforePublish, post);
 
             BlogCache.Invalidate();
             return Ok(MapAdminDto(post));
@@ -153,9 +168,13 @@ namespace DreamCleaningBackend.Controllers
             var post = await _context.BlogPosts.FirstOrDefaultAsync(p => p.Id == id);
             if (post == null) return NotFound(new { message = "Post not found." });
 
+            var beforeUnpublish = AuditSnapshot.Of(post);
+
             post.Status = BlogPostStatus.Draft;
             post.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeUnpublish, post);
 
             BlogCache.Invalidate();
             return Ok(MapAdminDto(post));
@@ -170,6 +189,8 @@ namespace DreamCleaningBackend.Controllers
         {
             var post = await _context.BlogPosts.FirstOrDefaultAsync(p => p.Id == id);
             if (post == null) return NotFound(new { message = "Post not found." });
+
+            await _auditService.LogDeleteAsync(post);
 
             DeleteFileIfExists(post.FeaturedImagePath);
             _context.BlogPosts.Remove(post);
@@ -236,6 +257,7 @@ namespace DreamCleaningBackend.Controllers
 
             _context.BlogTopics.Add(topic);
             await _context.SaveChangesAsync();
+            await _auditService.LogCreateAsync(topic);
             return Ok(MapTopicDto(topic));
         }
 
@@ -264,6 +286,10 @@ namespace DreamCleaningBackend.Controllers
 
             _context.BlogTopics.AddRange(created);
             await _context.SaveChangesAsync();
+
+            foreach (var topic in created)
+                await _auditService.LogCreateAsync(topic);
+
             return Ok(created.Select(MapTopicDto).ToList());
         }
 
@@ -274,10 +300,14 @@ namespace DreamCleaningBackend.Controllers
             var topic = await _context.BlogTopics.FirstOrDefaultAsync(t => t.Id == id);
             if (topic == null) return NotFound(new { message = "Topic not found." });
 
+            var beforeTopic = AuditSnapshot.Of(topic);
+
             topic.TopicTitle = dto.TopicTitle.Trim();
             topic.TargetKeyword = dto.TargetKeyword?.Trim();
             topic.Notes = dto.Notes?.Trim();
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(beforeTopic, topic);
 
             return Ok(MapTopicDto(topic));
         }
@@ -290,6 +320,8 @@ namespace DreamCleaningBackend.Controllers
         {
             var topic = await _context.BlogTopics.FirstOrDefaultAsync(t => t.Id == id);
             if (topic == null) return NotFound(new { message = "Topic not found." });
+
+            await _auditService.LogDeleteAsync(topic);
 
             _context.BlogTopics.Remove(topic);
             await _context.SaveChangesAsync();
@@ -304,6 +336,11 @@ namespace DreamCleaningBackend.Controllers
                 .Where(t => dto.TopicIds.Contains(t.Id))
                 .ToListAsync();
 
+            var previousOrder = topics
+                .OrderBy(t => t.Priority)
+                .Select(t => t.Id)
+                .ToList();
+
             for (var i = 0; i < dto.TopicIds.Count; i++)
             {
                 var topic = topics.FirstOrDefault(t => t.Id == dto.TopicIds[i]);
@@ -311,6 +348,14 @@ namespace DreamCleaningBackend.Controllers
             }
 
             await _context.SaveChangesAsync();
+
+            // The queue order decides what the generator writes next, so a reorder is a content
+            // decision. One row for the whole drag, not one per topic.
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SiteSetting, 0, "BlogTopicsReordered",
+                new { TopicOrder = string.Join(", ", previousOrder) },
+                new { TopicOrder = string.Join(", ", dto.TopicIds) });
+
             return Ok();
         }
 
@@ -340,6 +385,11 @@ namespace DreamCleaningBackend.Controllers
                 {
                     return BadRequest(new { message = "Provide either topicId or freeformTopic." });
                 }
+
+                // The generated post lands as PendingReview, so this row is "an admin spent a
+                // model call" rather than "something was published" — but it is still the origin
+                // of a post that a human will later publish under the company's name.
+                await _auditService.LogCreateAsync(post);
 
                 return Ok(MapAdminDto(post));
             }
@@ -412,6 +462,7 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "Unknown model. Pick one from the list." });
 
             var settings = await GetOrCreateSettingsAsync();
+            var beforeSettings = AuditSnapshot.Of(settings);
             var visibilityChanged = settings.PublicVisible != dto.PublicVisible;
 
             settings.AutoGenerateEnabled = dto.AutoGenerateEnabled;
@@ -421,6 +472,10 @@ namespace DreamCleaningBackend.Controllers
             settings.UpdatedAt = DateTime.UtcNow;
             settings.UpdatedByEmail = User.FindFirst(ClaimTypes.Email)?.Value;
             await _context.SaveChangesAsync();
+
+            // PublicVisible is the go-live switch for the whole blog (header link, pages,
+            // sitemap), so this row records a site-wide visibility decision, not a preference.
+            await _auditService.LogUpdateAsync(beforeSettings, settings);
 
             // Public list/detail/status/sitemap caches all key on BlogCache.Version —
             // flipping visibility must take effect immediately.

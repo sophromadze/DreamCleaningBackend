@@ -1,6 +1,8 @@
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
+using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -27,10 +29,13 @@ namespace DreamCleaningBackend.Controllers
         private const long MaxUploadSizeBytes = 10 * 1024 * 1024;
         private static readonly string[] AllowedImageExtensions = { ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp" };
 
-        public BeforeAfterPhotosController(ApplicationDbContext context, IConfiguration configuration)
+        private readonly IAuditService _auditService;
+
+        public BeforeAfterPhotosController(ApplicationDbContext context, IConfiguration configuration, IAuditService auditService)
         {
             _context = context;
             _configuration = configuration;
+            _auditService = auditService;
         }
 
         // ─────────────────────────────────────────────────────────
@@ -105,6 +110,8 @@ namespace DreamCleaningBackend.Controllers
                 _context.BeforeAfterPhotos.Add(entity);
                 await _context.SaveChangesAsync();
 
+                await _auditService.LogCreateAsync(entity);
+
                 return Ok(MapDto(entity));
             }
             catch (InvalidOperationException ex)
@@ -121,6 +128,8 @@ namespace DreamCleaningBackend.Controllers
             var entity = await _context.BeforeAfterPhotos.FirstOrDefaultAsync(p => p.Id == id);
             if (entity == null) return NotFound(new { message = "Before/after pair not found." });
 
+            var before = AuditSnapshot.Of(entity);
+
             if (body.Title != null)
             {
                 if (string.IsNullOrWhiteSpace(body.Title))
@@ -134,6 +143,9 @@ namespace DreamCleaningBackend.Controllers
             entity.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await _auditService.LogUpdateAsync(before, entity);
+
             return Ok(MapDto(entity));
         }
 
@@ -156,6 +168,10 @@ namespace DreamCleaningBackend.Controllers
             var entity = await _context.BeforeAfterPhotos.FirstOrDefaultAsync(p => p.Id == id);
             if (entity == null) return NotFound(new { message = "Before/after pair not found." });
 
+            // Taken before the swap: the replaced file is deleted from disk below, so this row is
+            // the only record that the previous image ever existed.
+            var beforeReplace = AuditSnapshot.Of(entity);
+
             try
             {
                 var saved = await SaveWebpImageAsync(file, "before-after",
@@ -177,6 +193,9 @@ namespace DreamCleaningBackend.Controllers
                 }
                 entity.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
+
+                await _auditService.LogUpdateAsync(beforeReplace, entity);
+
                 return Ok(MapDto(entity));
             }
             catch (InvalidOperationException ex)
@@ -192,6 +211,8 @@ namespace DreamCleaningBackend.Controllers
         {
             var entity = await _context.BeforeAfterPhotos.FirstOrDefaultAsync(p => p.Id == id);
             if (entity == null) return NotFound(new { message = "Before/after pair not found." });
+
+            await _auditService.LogDeleteAsync(entity);
 
             DeleteFileIfExists(entity.BeforePhotoUrl);
             DeleteFileIfExists(entity.AfterPhotoUrl);

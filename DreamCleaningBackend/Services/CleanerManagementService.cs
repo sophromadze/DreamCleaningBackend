@@ -13,14 +13,19 @@ namespace DreamCleaningBackend.Services
     {
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
+        private readonly Interfaces.IAuditService _audit;
 
         private const long MaxUploadSizeBytes = 10 * 1024 * 1024;
         private static readonly string[] AllowedImageExtensions = { ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp" };
 
-        public CleanerManagementService(ApplicationDbContext context, IConfiguration configuration)
+        public CleanerManagementService(
+            ApplicationDbContext context,
+            IConfiguration configuration,
+            Interfaces.IAuditService audit)
         {
             _context = context;
             _configuration = configuration;
+            _audit = audit;
         }
 
         public async Task<List<CleanerListItemDto>> GetAllAsync(bool includeInactive = false, string? search = null)
@@ -195,6 +200,8 @@ namespace DreamCleaningBackend.Services
             _context.Cleaners.Add(cleaner);
             await _context.SaveChangesAsync();
 
+            await _audit.LogCreateAsync(cleaner);
+
             var vacations = BuildVacations(cleaner.Id, dto.Vacations, adminId);
             if (vacations.Count > 0)
             {
@@ -212,6 +219,11 @@ namespace DreamCleaningBackend.Services
                 .FirstOrDefaultAsync(c => c.Id == id);
             if (cleaner == null)
                 return null;
+
+            // FULL scalar snapshot before any field moves. Never hand-pick: the "after" side is
+            // the live tracked entity, so any field this copy missed would be recorded as a change
+            // from its CLR default and Undo would replay those defaults. See AuditSnapshot.
+            var beforeCleaner = AuditSnapshot.Of(cleaner);
 
             cleaner.FirstName = dto.FirstName;
             cleaner.LastName = dto.LastName;
@@ -245,6 +257,9 @@ namespace DreamCleaningBackend.Services
                 _context.CleanerVacations.AddRange(newVacations);
 
             await _context.SaveChangesAsync();
+
+            await _audit.LogUpdateAsync(beforeCleaner, cleaner);
+
             return await GetByIdAsync(id);
         }
 
@@ -257,14 +272,23 @@ namespace DreamCleaningBackend.Services
             var hasAssignments = await _context.OrderCleaners.AnyAsync(oc => oc.CleanerId == id);
             if (hasAssignments)
             {
+                // A cleaner with work history is DEACTIVATED, not deleted. The audit row has to
+                // say which of the two happened, or an admin reading it later cannot tell whether
+                // the record still exists.
+                var beforeDeactivate = AuditSnapshot.Of(cleaner);
                 cleaner.IsActive = false;
                 cleaner.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
+                await _audit.LogUpdateAsync(beforeDeactivate, cleaner);
                 return true;
             }
 
             DeleteFileIfExists(cleaner.PhotoUrl);
             DeleteFileIfExists(cleaner.DocumentUrl);
+
+            // Logged BEFORE the remove, while the entity still carries its values — a delete row
+            // whose OldValues are empty documents nothing.
+            await _audit.LogDeleteAsync(cleaner);
 
             _context.Cleaners.Remove(cleaner);
             await _context.SaveChangesAsync();
@@ -287,6 +311,8 @@ namespace DreamCleaningBackend.Services
             _context.CleanerNotes.Add(note);
             await _context.SaveChangesAsync();
 
+            await _audit.LogCreateAsync(note);
+
             return new CleanerNoteDto
             {
                 Id = note.Id,
@@ -306,8 +332,11 @@ namespace DreamCleaningBackend.Services
             if (note == null)
                 return null;
 
+            var beforeNote = AuditSnapshot.Of(note);
             note.Text = dto.Text;
             await _context.SaveChangesAsync();
+
+            await _audit.LogUpdateAsync(beforeNote, note);
 
             return new CleanerNoteDto
             {
@@ -327,6 +356,8 @@ namespace DreamCleaningBackend.Services
             var note = await _context.CleanerNotes.FirstOrDefaultAsync(n => n.Id == noteId);
             if (note == null)
                 return false;
+
+            await _audit.LogDeleteAsync(note);
 
             _context.CleanerNotes.Remove(note);
             await _context.SaveChangesAsync();
@@ -349,6 +380,7 @@ namespace DreamCleaningBackend.Services
             {
                 if (existing != null)
                 {
+                    await _audit.LogDeleteAsync(existing);
                     _context.CleanerNotes.Remove(existing);
                     await _context.SaveChangesAsync();
                 }
@@ -357,11 +389,13 @@ namespace DreamCleaningBackend.Services
 
             if (existing != null)
             {
+                var beforeExisting = AuditSnapshot.Of(existing);
                 existing.OrderPerformance = hasPerformance ? dto.Performance : null;
                 existing.Text = hasText ? dto.Text : existing.Text;
                 existing.AdminId = adminId;
                 existing.AdminDisplayName = adminDisplayName;
                 await _context.SaveChangesAsync();
+                await _audit.LogUpdateAsync(beforeExisting, existing);
                 return MapNote(existing);
             }
 
@@ -378,6 +412,7 @@ namespace DreamCleaningBackend.Services
 
             _context.CleanerNotes.Add(note);
             await _context.SaveChangesAsync();
+            await _audit.LogCreateAsync(note);
             return MapNote(note);
         }
 
@@ -406,10 +441,18 @@ namespace DreamCleaningBackend.Services
             if (result == null)
                 return null;
 
+            var replacedPhoto = cleaner.PhotoUrl;
             DeleteFileIfExists(cleaner.PhotoUrl);
             cleaner.PhotoUrl = result.Url;
             cleaner.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            // A separate stream from the Cleaner update: the old file is deleted from disk, so
+            // this is not a field change anybody could revert, and the audit row is the only
+            // remaining record that the previous document existed at all.
+            await _audit.LogActionAsync(AuditEntityTypes.CleanerDocument, cleanerId, "PhotoUploaded",
+                new { PhotoUrl = replacedPhoto }, new { PhotoUrl = result.Url });
+
             return result;
         }
 
@@ -423,10 +466,15 @@ namespace DreamCleaningBackend.Services
             if (result == null)
                 return null;
 
+            var replacedDocument = cleaner.DocumentUrl;
             DeleteFileIfExists(cleaner.DocumentUrl);
             cleaner.DocumentUrl = result.Url;
             cleaner.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+
+            await _audit.LogActionAsync(AuditEntityTypes.CleanerDocument, cleanerId, "DocumentUploaded",
+                new { DocumentUrl = replacedDocument }, new { DocumentUrl = result.Url });
+
             return result;
         }
 

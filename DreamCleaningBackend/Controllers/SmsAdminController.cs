@@ -21,12 +21,14 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly ISmsService _smsService;
         private readonly ILogger<SmsAdminController> _logger;
+        private readonly IAuditService _auditService;
 
-        public SmsAdminController(ApplicationDbContext context, ISmsService smsService, ILogger<SmsAdminController> logger)
+        public SmsAdminController(ApplicationDbContext context, ISmsService smsService, ILogger<SmsAdminController> logger, IAuditService auditService)
         {
             _context = context;
             _smsService = smsService;
             _logger = logger;
+            _auditService = auditService;
         }
 
         [HttpGet]
@@ -88,7 +90,10 @@ namespace DreamCleaningBackend.Controllers
             {
                 _context.ScheduledSms.Add(sms);
                 await _context.SaveChangesAsync();
+                await _auditService.LogCreateAsync(sms);
                 await SendSmsNow(sms);
+                // Two rows on purpose: created, then SENT. The send is the irreversible half.
+                await LogCampaignActionAsync(sms.Id, "SmsSentNow", sms.RecipientCount);
                 return Ok(MapToDto(sms));
             }
             _context.ScheduledSms.Add(sms);
@@ -102,6 +107,7 @@ namespace DreamCleaningBackend.Controllers
                 sms.NextScheduledAt = ScheduleHelper.ComputeNextScheduled(sms.ScheduledDate, sms.ScheduledTime.Value, sms.Frequency, sms.DayOfWeek, sms.DayOfMonth, sms.ScheduleTimezone);
             }
             await _context.SaveChangesAsync();
+            await _auditService.LogCreateAsync(sms);
             return Ok(MapToDto(sms));
         }
 
@@ -112,6 +118,7 @@ namespace DreamCleaningBackend.Controllers
             var sms = await _context.ScheduledSms.Include(s => s.CreatedBy).FirstOrDefaultAsync(s => s.Id == id);
             if (sms == null) return NotFound();
             if (sms.Status != MailStatus.Draft && sms.Status != MailStatus.Scheduled) return BadRequest("Cannot update SMS that is already sent.");
+            var before = AuditSnapshot.Of(sms);
             if (dto.Content != null) sms.Content = dto.Content.Length > 1600 ? dto.Content[..1600] : dto.Content;
             if (dto.TargetRoles != null) { sms.TargetRoles = dto.TargetRoles; sms.RecipientCount = await CountSmsRecipients(ParseRoleNames(dto.TargetRoles)); }
             if (dto.ScheduleType.HasValue) sms.ScheduleType = (ScheduleType)dto.ScheduleType.Value;
@@ -131,6 +138,7 @@ namespace DreamCleaningBackend.Controllers
                  sms.Frequency != MailFrequency.Once && sms.ScheduledDate.HasValue))
                 sms.NextScheduledAt = ScheduleHelper.ComputeNextScheduled(sms.ScheduledDate, sms.ScheduledTime.Value, sms.Frequency, sms.DayOfWeek, sms.DayOfMonth, sms.ScheduleTimezone);
             await _context.SaveChangesAsync();
+            await _auditService.LogUpdateAsync(before, sms);
             return Ok(MapToDto(sms));
         }
 
@@ -141,6 +149,7 @@ namespace DreamCleaningBackend.Controllers
             var sms = await _context.ScheduledSms.FindAsync(id);
             if (sms == null) return NotFound();
             if (sms.Status != MailStatus.Draft && sms.Status != MailStatus.Scheduled && sms.Status != MailStatus.Cancelled) return BadRequest("Cannot delete sent SMS.");
+            await _auditService.LogDeleteAsync(sms);
             _context.ScheduledSms.Remove(sms);
             await _context.SaveChangesAsync();
             return NoContent();
@@ -156,6 +165,7 @@ namespace DreamCleaningBackend.Controllers
             if (!_smsService.IsSmsEnabled())
                 return BadRequest("SMS is not configured or enabled.");
             await SendSmsNow(sms);
+            await LogCampaignActionAsync(sms.Id, "SmsSentNow", sms.RecipientCount);
             return Ok(MapToDto(sms));
         }
 
@@ -166,9 +176,11 @@ namespace DreamCleaningBackend.Controllers
             var sms = await _context.ScheduledSms.Include(s => s.CreatedBy).FirstOrDefaultAsync(s => s.Id == id);
             if (sms == null) return NotFound();
             if (sms.Status != MailStatus.Scheduled) return BadRequest("Only scheduled SMS can be disabled.");
+            var beforeDisable = AuditSnapshot.Of(sms);
             sms.IsActive = false;
             sms.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await _auditService.LogUpdateAsync(beforeDisable, sms);
             return Ok(MapToDto(sms));
         }
 
@@ -179,10 +191,29 @@ namespace DreamCleaningBackend.Controllers
             var sms = await _context.ScheduledSms.Include(s => s.CreatedBy).FirstOrDefaultAsync(s => s.Id == id);
             if (sms == null) return NotFound();
             if (sms.Status != MailStatus.Scheduled) return BadRequest("Only scheduled SMS can be enabled.");
+            var beforeEnable = AuditSnapshot.Of(sms);
             sms.IsActive = true;
             sms.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await _auditService.LogUpdateAsync(beforeEnable, sms);
             return Ok(MapToDto(sms));
+        }
+
+        /// <summary>Mirrors MailAdminController.LogCampaignActionAsync - the text has already been
+        /// delivered to phones, so the row is undo-blocked.</summary>
+        private async Task LogCampaignActionAsync(int id, string action, int recipientCount)
+        {
+            try
+            {
+                await _auditService.LogActionAsync(AuditEntityTypes.CampaignAction, id, action, null, new
+                {
+                    RecipientCount = recipientCount
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit campaign action {Action} on SMS {SmsId}", action, id);
+            }
         }
 
         [HttpGet("stats")]

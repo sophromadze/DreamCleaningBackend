@@ -30,16 +30,19 @@ namespace DreamCleaningBackend.Controllers
         private readonly IConfiguration _configuration;
         private readonly IExpenseService _expenseService;
         private readonly IFinancialRateService _financialRateService;
+        private readonly IAuditService _auditService;
 
         public AdminStatisticsController(ApplicationDbContext context,
             IConfiguration configuration,
             IExpenseService expenseService,
-            IFinancialRateService financialRateService)
+            IFinancialRateService financialRateService,
+            IAuditService auditService)
         {
             _context = context;
             _configuration = configuration;
             _expenseService = expenseService;
             _financialRateService = financialRateService;
+            _auditService = auditService;
         }
 
         // Stripe US standard processing fee: 2.9% of the charged amount + $0.30 per transaction.
@@ -526,7 +529,17 @@ namespace DreamCleaningBackend.Controllers
             var userId = int.Parse(User.FindFirst("UserId")?.Value ?? "0");
             try
             {
+                // A manual FX rate re-denominates every GEL figure in that month's reporting, so
+                // what it was before is the load-bearing half of the record.
+                var previous = await _financialRateService.GetOrCreateAsync(year, month);
+
                 var result = await _financialRateService.SetManualFxAsync(year, month, dto.UsdPerGel, userId);
+
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.SiteSetting, 0, "FinancialRateSet",
+                    new { Year = year, Month = month, UsdPerGel = previous.UsdPerGel },
+                    new { Year = year, Month = month, UsdPerGel = result?.UsdPerGel, Source = "Manual" });
+
                 return Ok(result);
             }
             catch (InvalidOperationException ex)
@@ -543,7 +556,15 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "Month must be between 1 and 12." });
 
             var userId = int.Parse(User.FindFirst("UserId")?.Value ?? "0");
+
+            var previous = await _financialRateService.GetOrCreateAsync(year, month);
             var result = await _financialRateService.RefetchAsync(year, month, userId);
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.SiteSetting, 0, "FinancialRateRefetched",
+                new { Year = year, Month = month, UsdPerGel = previous.UsdPerGel },
+                new { Year = year, Month = month, UsdPerGel = result?.UsdPerGel, Source = "Refetched" });
+
             return Ok(result);
         }
 

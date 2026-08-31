@@ -49,7 +49,29 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 var byUserId = GetUserId();
+
+                // Read before the write: the assignment drives a bonus, so who held it before
+                // matters as much as who holds it now.
+                var previous = await _context.Orders
+                    .AsNoTracking()
+                    .Where(o => o.Id == orderId)
+                    .Select(o => o.AssignedAdminId)
+                    .FirstOrDefaultAsync();
+
                 var result = await _adminBonusService.AssignAdminAsync(orderId, dto.AdminId, byUserId);
+
+                try
+                {
+                    await _auditService.LogActionAsync(
+                        AuditEntityTypes.OrderAssignedAdmin, orderId, "Update",
+                        new { AssignedAdminId = previous },
+                        new { AssignedAdminId = result.AdminId, AssignedAdminName = result.DisplayName });
+                }
+                catch (Exception auditEx)
+                {
+                    _logger.LogError(auditEx, "Could not audit assigned-admin change on order {OrderId}", orderId);
+                }
+
                 return Ok(result);
             }
             catch (InvalidOperationException ex)

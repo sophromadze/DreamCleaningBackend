@@ -47,6 +47,12 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>The order's default hourly rate — what a line with no override is paid at.</summary>
         public decimal OrderHourlyRate { get; set; }
 
+        // NOTE: the staffing WARNINGS deliberately do not live here. This DTO is SuperAdmin-only
+        // because it carries wages, and the warnings have to reach Admins too — so they travel on
+        // their own Admin+SuperAdmin endpoint (`orders/staffing-warnings/bulk`, a map of order id
+        // to warning text). Shipping a copy here as well would give the detail panel two sources
+        // for one list, which is exactly the drift the shared builder exists to prevent.
+
         /// <summary>One line per assigned cleaner, in assignment order.</summary>
         public List<OrderCleanerPayrollLineDto> Lines { get; set; } = new();
 
