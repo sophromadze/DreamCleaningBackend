@@ -31,18 +31,21 @@ namespace DreamCleaningBackend.Controllers
         private readonly IExpenseService _expenseService;
         private readonly IFinancialRateService _financialRateService;
         private readonly IAuditService _auditService;
+        private readonly IAdminBonusService _adminBonusService;
 
         public AdminStatisticsController(ApplicationDbContext context,
             IConfiguration configuration,
             IExpenseService expenseService,
             IFinancialRateService financialRateService,
-            IAuditService auditService)
+            IAuditService auditService,
+            IAdminBonusService adminBonusService)
         {
             _context = context;
             _configuration = configuration;
             _expenseService = expenseService;
             _financialRateService = financialRateService;
             _auditService = auditService;
+            _adminBonusService = adminBonusService;
         }
 
         // Stripe US standard processing fee: 2.9% of the charged amount + $0.30 per transaction.
@@ -259,21 +262,29 @@ namespace DreamCleaningBackend.Controllers
                                 + stripeAgg.Count * StripeFixedFee, 2);
 
             // Admin bonuses (GEL), converted to USD per-month at each month's locked FX rate.
-            // Eligible = assigned + Done + (paid or manual), matching AdminBonusService.
-            // Fully-refunded orders are excluded: the order brought in no income, so it earns no
-            // bonus. A PARTIALLY refunded order keeps its bonus — the company kept some of the money.
-            var bonusByMonth = await windowed
-                .Where(o => o.AssignedAdminId != null && (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
-                    && o.Status != OrderStatuses.Refunded)
-                .GroupBy(o => new { o.ServiceDate.Year, o.ServiceDate.Month })
-                .Select(g => new { g.Key.Year, g.Key.Month, Count = g.Count() })
+            // Staff bonuses, taken from the SAME per-order figures the shifts panel pays out
+            // (AdminBonusAttribution). One order can owe two people — the administrator who took
+            // the booking and the manager they report to — at rates that differ by whether the
+            // customer was new, so a count times one rate stopped describing this cost.
+            //
+            // Fully-refunded orders earn nothing: a refund overwrites Status with "Refunded", which
+            // the eligibility predicate already excludes. A PARTIALLY refunded order keeps its
+            // bonus — the company kept some of the money. When the projection toggle is on, jobs
+            // that are booked and paid but not yet delivered are folded in as well, because they
+            // will cost these bonuses.
+            var bonusCosts = await _adminBonusService.GetOrderBonusCostsGelAsync(
+                from?.Date, to?.Date.AddDays(1), includeUnfinished: includeUpcoming);
+
+            var bonusOrderMonths = await _context.Orders
+                .Where(o => bonusCosts.Keys.Contains(o.Id))
+                .Select(o => new { o.Id, o.ServiceDate.Year, o.ServiceDate.Month })
                 .ToListAsync();
 
             decimal adminBonusGel = 0m, adminBonusUsd = 0m;
-            foreach (var b in bonusByMonth)
+            foreach (var g in bonusOrderMonths.GroupBy(m => new { m.Year, m.Month }))
             {
-                var snap = await _financialRateService.GetOrCreateAsync(b.Year, b.Month);
-                var gel = b.Count * snap.AdminBonusRatePerOrderGel;
+                var snap = await _financialRateService.GetOrCreateAsync(g.Key.Year, g.Key.Month);
+                var gel = g.Sum(m => bonusCosts[m.Id]);
                 adminBonusGel += gel;
                 adminBonusUsd += decimal.Round(gel * snap.UsdPerGel, 2);
             }
@@ -388,7 +399,6 @@ namespace DreamCleaningBackend.Controllers
                     o.Total,
                     o.IsPaid,
                     o.PaymentMethod,
-                    o.AssignedAdminId,
                     o.Status,
                     o.TotalRefundedAmount
                 })
@@ -425,9 +435,17 @@ namespace DreamCleaningBackend.Controllers
             var fixedFee = StripeFixedFee;
 
             decimal StripeFeeFor(decimal total) => decimal.Round(total * feePercent + fixedFee, 2);
-            decimal BonusUsdFor(int year, int month) =>
-                snaps.TryGetValue(year * 100 + month, out var s)
-                    ? decimal.Round(s.AdminBonusRatePerOrderGel * s.UsdPerGel, 2)
+            // Staff bonus per ORDER, in GEL, from the same source the totals page and the shifts
+            // panel use — an order can owe an administrator and their manager at different rates,
+            // so there is no per-order constant to multiply by any more. Orders that earn nothing
+            // (unassigned, refunded, unpaid) are simply absent from the dictionary.
+            var bonusCosts = await _adminBonusService.GetOrderBonusCostsGelAsync(
+                from?.Date, to?.Date.AddDays(1));
+
+            decimal BonusUsdFor(int orderId, int year, int month) =>
+                bonusCosts.TryGetValue(orderId, out var gel)
+                && snaps.TryGetValue(year * 100 + month, out var s)
+                    ? decimal.Round(gel * s.UsdPerGel, 2)
                     : 0m;
 
             // Per-day expense attribution: each projected occurrence is added to its own day,
@@ -447,10 +465,11 @@ namespace DreamCleaningBackend.Controllers
                                       .Sum(o => StripeFeeFor(o.Total
                                           - (manualAdditionalsByOrder.TryGetValue(o.Id, out var mAdd) ? mAdd : 0m)));
                     // Mirrors /statistics: a fully-refunded order earns no bonus, but a partially
-                    // refunded one does — the company kept part of the money.
-                    var adminBonuses = g.Where(o => o.AssignedAdminId != null
-                                                 && !OrderStatuses.IsRefunded(o.Status))
-                                        .Sum(o => BonusUsdFor(o.ServiceDate.Year, o.ServiceDate.Month));
+                    // refunded one does — the company kept part of the money. Both cases are
+                    // already decided by which orders bonusCosts contains, so there is nothing to
+                    // filter here; a second copy of that rule is exactly how the chart and the
+                    // totals card would come to disagree.
+                    var adminBonuses = g.Sum(o => BonusUsdFor(o.Id, o.ServiceDate.Year, o.ServiceDate.Month));
                     var computed = stripeFees + adminBonuses;
                     // ReportedRevenue, not Revenue: sales tax collected outside Stripe is company
                     // money (see OrderRevenueMath), so it rides inside Amount rather than Taxes.

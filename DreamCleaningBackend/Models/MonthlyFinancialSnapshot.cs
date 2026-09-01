@@ -28,10 +28,12 @@ namespace DreamCleaningBackend.Models
         [Column(TypeName = "decimal(18,6)")]
         public decimal UsdPerGel { get; set; }
 
-        // Snapshot of the admin bonus rate (GEL paid per eligible order) effective for this
-        // month. Frozen so a later rate change doesn't rewrite history.
-        [Column(TypeName = "decimal(18,2)")]
-        public decimal AdminBonusRatePerOrderGel { get; set; }
+        // There is deliberately NO frozen bonus rate here any more. A staff bonus is no longer one
+        // rate per order — it depends on the earner's position, whether the customer was new, and
+        // any per-person override (see AdminBonusAttribution) — so a single snapshotted figure
+        // could not describe a month's cost. The month's bonus total is computed live from those
+        // rates instead, which is also what the shifts panel shows; only the FX rate above is
+        // frozen, because an exchange rate genuinely belongs to the month it was in force.
 
         // "auto" — UsdPerGel came from the FX API and may refresh while the month is ongoing.
         // "manual" — a SuperAdmin set it explicitly; never auto-refreshed.

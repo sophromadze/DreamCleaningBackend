@@ -12,8 +12,10 @@ namespace DreamCleaningBackend.DTOs
         public string MonthKey { get; set; } = string.Empty;
         // USD value of 1 GEL.
         public decimal UsdPerGel { get; set; }
-        // GEL bonus rate frozen for the month.
-        public decimal AdminBonusRatePerOrderGel { get; set; }
+        // What the month's staff bonuses actually add up to, in GEL. Computed live from the
+        // current rates (see AdminBonusAttribution) rather than frozen — a bonus is no longer one
+        // rate per order, so there is no single rate left to freeze.
+        public decimal AdminBonusTotalGel { get; set; }
         // "auto" | "manual" | "fallback".
         public string FxSource { get; set; } = "auto";
         public bool IsFinalized { get; set; }

@@ -350,6 +350,52 @@ namespace DreamCleaningBackend.Models
         public virtual ICollection<OrderAdminAssignmentHistory> AdminAssignmentHistory { get; set; }
             = new List<OrderAdminAssignmentHistory>();
 
+        // ── Staff bonus attribution (snapshotted, never re-derived) ──
+        // Who earns what on this order. Written by AdminBonusAttribution.Resolve every time
+        // AssignedAdminId actually moves, and deliberately SEPARATE from AssignedAdminId — that
+        // column answers "who is responsible for this order" and drives the panel's
+        // "By: F. LastName" pill, while these answer "who gets paid for it". Snapshotting means
+        // promoting somebody, or moving them under a different manager, cannot rewrite who was owed
+        // for work already done.
+
+        /// <summary>
+        /// Staff member who BOOKED the order — whatever their position. Null on a self-service
+        /// booking, or when the assignment was cleared.
+        /// </summary>
+        public int? BonusBookerId { get; set; }
+
+        [ForeignKey("BonusBookerId")]
+        public virtual User? BonusBooker { get; set; }
+
+        /// <summary>
+        /// The booker's position AT THE TIME they were assigned. Load-bearing, not decoration: a
+        /// manager who books an order themselves is paid a different rate from an administrator who
+        /// books one, so the rate cannot be resolved without knowing which they were. Reading the
+        /// person's CURRENT position instead would re-price every order they ever took the moment
+        /// they were promoted.
+        /// </summary>
+        public AdminPosition BonusBookerPosition { get; set; } = AdminPosition.Administrator;
+
+        /// <summary>
+        /// The manager earning a share of somebody else's booking — the booker's manager. NULL when
+        /// a Manager booked the order themselves: that case is paid through the booker slot above,
+        /// at the manager's own-booking rate, and crediting the team slot as well would pay one
+        /// person two shares of one order.
+        /// </summary>
+        public int? BonusManagerId { get; set; }
+
+        [ForeignKey("BonusManagerId")]
+        public virtual User? BonusManager { get; set; }
+
+        /// <summary>
+        /// True when this order was the customer's FIRST-EVER real booking (same definition as the
+        /// Company → Customers tab's "New", via OrderBookedFilter.IsRealBooking), evaluated once at
+        /// creation and never recomputed. New- and existing-customer orders pay different bonus
+        /// rates, so this must not be able to change afterwards: a later cancellation or refund of
+        /// an earlier order would otherwise silently promote somebody's second booking to a first.
+        /// </summary>
+        public bool IsNewCustomerOrder { get; set; }
+
         // First-touch marketing attribution captured client-side (GA4-style channel grouping) and
         // sent with the booking. Populated only for self-service bookings; admin-created orders
         // (create-for-user, after a phone call) get AcquisitionChannel = "Phone/Unknown" with the

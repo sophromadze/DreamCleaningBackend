@@ -94,6 +94,9 @@ namespace DreamCleaningBackend.Controllers
                     IsActive = u.IsActive,
                     CreatedAt = u.CreatedAt,
                     CanEditOrdersWithoutApproval = u.CanEditOrdersWithoutApproval,
+                    AdminPosition = u.AdminPosition.ToString(),
+                    ManagerId = u.ManagerId,
+                    ManagerName = u.Manager != null ? u.Manager.FirstName + " " + u.Manager.LastName : null,
                     CanReceiveCommunications = u.CanReceiveCommunications,
                     CanReceiveEmails = u.CanReceiveEmails,
                     CanReceiveMessages = u.CanReceiveMessages,
@@ -558,6 +561,30 @@ namespace DreamCleaningBackend.Controllers
             if (!validationResult.IsValid)
                 return BadRequest(new { message = validationResult.ErrorMessage });
 
+            // Moving OUT of the Admin role disarms the bonus structure, the same way the role check
+            // in OrderEditApprovalPolicy disarms a stored grant: position and reporting line mean
+            // nothing off an Admin row, and anyone still reporting to this person is detached too —
+            // left pointing at somebody who is no longer a manager, their future orders would credit
+            // a manager side that never appears on the bonus panel and the share would vanish
+            // unnoticed. Orders already assigned keep their snapshotted attribution, so nothing
+            // already earned moves.
+            if (newRole != UserRole.Admin)
+            {
+                targetUser.AdminPosition = AdminPosition.Administrator;
+                targetUser.ManagerId = null;
+
+                var reports = await _context.Users.Where(u => u.ManagerId == id).ToListAsync();
+                foreach (var report in reports)
+                {
+                    report.ManagerId = null;
+                    report.UpdatedAt = DateTime.UtcNow;
+                }
+                if (reports.Count > 0)
+                    _logger.LogInformation(
+                        "Admin: detached {Count} administrator(s) from user {UserId} on role change to {Role}",
+                        reports.Count, id, newRole);
+            }
+
             targetUser.Role = newRole;
             targetUser.UpdatedAt = DateTime.UtcNow;
 
@@ -666,6 +693,90 @@ namespace DreamCleaningBackend.Controllers
             {
                 message = "Order edit access updated",
                 canEditOrdersWithoutApproval = targetUser.CanEditOrdersWithoutApproval
+            });
+        }
+
+        // Sets an Admin's position (Manager or Administrator) and, for an administrator, the
+        // manager they report to. SuperAdmin-only, because it decides who gets paid for what.
+        //
+        // The position is NOT a permission — it changes nothing about what the person may do (see
+        // Models/AdminPosition). It decides which side of the per-order bonus they earn, and only
+        // for orders assigned AFTER the change: attribution is snapshotted onto each order at
+        // assignment time, so moving somebody between managers never restates money already earned.
+        [HttpPut("users/{id}/admin-position")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> UpdateAdminPosition(int id, [FromBody] UpdateAdminPositionDto dto)
+        {
+            var targetUser = await _context.Users.FindAsync(id);
+            if (targetUser == null)
+                return NotFound();
+
+            // Only meaningful for the Admin role, same reasoning as the order-edit grant above:
+            // a SuperAdmin owns the company and a Moderator/Customer books nothing, so a position
+            // stored on them would be a stale value waiting to surprise somebody after a promotion.
+            if (targetUser.Role != UserRole.Admin)
+                return BadRequest(new { message = "Only users with the Admin role have a position." });
+
+            if (!Enum.TryParse<AdminPosition>(dto.Position, ignoreCase: true, out var newPosition))
+                return BadRequest(new { message = "Position must be Administrator or Manager." });
+
+            int? newManagerId = null;
+            if (newPosition == AdminPosition.Administrator && dto.ManagerId.HasValue)
+            {
+                if (dto.ManagerId.Value == id)
+                    return BadRequest(new { message = "An administrator cannot report to themselves." });
+
+                var manager = await _context.Users
+                    .Where(u => u.Id == dto.ManagerId.Value && !u.IsDeleted && u.IsActive)
+                    .Select(u => new { u.Id, u.Role, u.AdminPosition })
+                    .FirstOrDefaultAsync();
+
+                if (manager == null || manager.Role != UserRole.Admin || manager.AdminPosition != AdminPosition.Manager)
+                    return BadRequest(new { message = "The selected manager is not an active admin with the Manager position." });
+
+                newManagerId = manager.Id;
+            }
+
+            // Demoting a manager who still has a team would leave those administrators pointing at
+            // somebody who no longer earns a manager's share — their orders would credit a manager
+            // side that never shows up on the panel. Refuse and say how many need moving first,
+            // rather than silently detaching people's reporting lines.
+            if (targetUser.AdminPosition == AdminPosition.Manager && newPosition != AdminPosition.Manager)
+            {
+                var teamSize = await _context.Users.CountAsync(u =>
+                    u.ManagerId == id && !u.IsDeleted && u.IsActive && u.Role == UserRole.Admin);
+                if (teamSize > 0)
+                    return BadRequest(new
+                    {
+                        message = $"{teamSize} administrator(s) still report to this manager. " +
+                                  "Move them to another manager first."
+                    });
+            }
+
+            // Full scalar snapshot - see AuditSnapshot for why a hand-picked subset is a bug.
+            var originalUser = AuditSnapshot.Of(targetUser);
+
+            targetUser.AdminPosition = newPosition;
+            // A manager does not report to a manager, so promoting somebody clears their own link
+            // rather than leaving a dangling one behind for a later demotion to resurrect.
+            targetUser.ManagerId = newPosition == AdminPosition.Manager ? null : newManagerId;
+            targetUser.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _auditService.LogUpdateAsync(originalUser, targetUser);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Audit logging failed for admin-position update");
+            }
+
+            return Ok(new
+            {
+                message = "Position updated",
+                adminPosition = targetUser.AdminPosition.ToString(),
+                managerId = targetUser.ManagerId
             });
         }
 

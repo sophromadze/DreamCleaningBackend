@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260831164348_AddAdminPositionsAndBonusTiers")]
+    partial class AddAdminPositionsAndBonusTiers
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -72,16 +75,10 @@ namespace DreamCleaningBackend.Migrations
 
                     MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<decimal?>("OwnBookingExistingCustomerRate")
+                    b.Property<decimal?>("ExistingCustomerRate")
                         .HasColumnType("decimal(18,2)");
 
-                    b.Property<decimal?>("OwnBookingNewCustomerRate")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("TeamBookingExistingCustomerRate")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("TeamBookingNewCustomerRate")
+                    b.Property<decimal?>("NewCustomerRate")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<DateTime>("UpdatedAt")
@@ -123,16 +120,10 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(10)
                         .HasColumnType("varchar(10)");
 
-                    b.Property<decimal>("ManagerOwnBookingExistingCustomerRate")
+                    b.Property<decimal>("ManagerExistingCustomerRate")
                         .HasColumnType("decimal(18,2)");
 
-                    b.Property<decimal>("ManagerOwnBookingNewCustomerRate")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("ManagerTeamExistingCustomerRate")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("ManagerTeamNewCustomerRate")
+                    b.Property<decimal>("ManagerNewCustomerRate")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<DateTime>("UpdatedAt")
@@ -154,10 +145,8 @@ namespace DreamCleaningBackend.Migrations
                             AdministratorExistingCustomerRate = 10m,
                             AdministratorNewCustomerRate = 10m,
                             Currency = "GEL",
-                            ManagerOwnBookingExistingCustomerRate = 25m,
-                            ManagerOwnBookingNewCustomerRate = 15m,
-                            ManagerTeamExistingCustomerRate = 15m,
-                            ManagerTeamNewCustomerRate = 5m,
+                            ManagerExistingCustomerRate = 15m,
+                            ManagerNewCustomerRate = 5m,
                             UpdatedAt = new DateTime(2026, 5, 24, 0, 0, 0, 0, DateTimeKind.Utc)
                         });
                 });
@@ -2859,10 +2848,7 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<int?>("BedroomsQuantity")
                         .HasColumnType("int");
 
-                    b.Property<int?>("BonusBookerId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("BonusBookerPosition")
+                    b.Property<int?>("BonusAdministratorId")
                         .HasColumnType("int");
 
                     b.Property<int?>("BonusManagerId")
@@ -3140,8 +3126,8 @@ namespace DreamCleaningBackend.Migrations
                     b.HasIndex("AssignedAdminId")
                         .HasDatabaseName("IX_Orders_AssignedAdminId");
 
-                    b.HasIndex("BonusBookerId")
-                        .HasDatabaseName("IX_Orders_BonusBookerId");
+                    b.HasIndex("BonusAdministratorId")
+                        .HasDatabaseName("IX_Orders_BonusAdministratorId");
 
                     b.HasIndex("BonusManagerId")
                         .HasDatabaseName("IX_Orders_BonusManagerId");
@@ -5893,9 +5879,9 @@ namespace DreamCleaningBackend.Migrations
                         .HasForeignKey("AssignedAdminId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("DreamCleaningBackend.Models.User", "BonusBooker")
+                    b.HasOne("DreamCleaningBackend.Models.User", "BonusAdministrator")
                         .WithMany()
-                        .HasForeignKey("BonusBookerId")
+                        .HasForeignKey("BonusAdministratorId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("DreamCleaningBackend.Models.User", "BonusManager")
@@ -5934,7 +5920,7 @@ namespace DreamCleaningBackend.Migrations
 
                     b.Navigation("AssignedAdmin");
 
-                    b.Navigation("BonusBooker");
+                    b.Navigation("BonusAdministrator");
 
                     b.Navigation("BonusManager");
 

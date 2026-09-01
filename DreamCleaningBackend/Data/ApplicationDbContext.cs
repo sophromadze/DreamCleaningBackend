@@ -63,6 +63,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<AdminShift> AdminShifts { get; set; }
         public DbSet<OrderAdminAssignmentHistory> OrderAdminAssignmentHistories { get; set; }
         public DbSet<AdminBonusSetting> AdminBonusSettings { get; set; }
+        public DbSet<AdminBonusRateOverride> AdminBonusRateOverrides { get; set; }
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<GoogleAdsDailyStat> GoogleAdsDailyStats { get; set; }
@@ -423,6 +424,31 @@ namespace DreamCleaningBackend.Data
             modelBuilder.Entity<Order>()
                 .HasIndex(o => o.BookedByAdminUserId)
                 .HasDatabaseName("IX_Orders_BookedByAdminUserId");
+
+            // Order ↔ bonus attribution (who earns what on the order — see AdminBonusAttribution).
+            // Restrict for the same reason AssignedAdmin is Restrict: these columns are what a
+            // payout is computed from, so deleting the person they point at must be blocked until
+            // their orders are reassigned rather than quietly nulling out the record of who was
+            // owed. Both are indexed — the shifts panel groups a whole month by them.
+            modelBuilder.Entity<Order>()
+                .HasOne(o => o.BonusBooker)
+                .WithMany()
+                .HasForeignKey(o => o.BonusBookerId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<Order>()
+                .HasIndex(o => o.BonusBookerId)
+                .HasDatabaseName("IX_Orders_BonusBookerId");
+
+            modelBuilder.Entity<Order>()
+                .HasOne(o => o.BonusManager)
+                .WithMany()
+                .HasForeignKey(o => o.BonusManagerId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<Order>()
+                .HasIndex(o => o.BonusManagerId)
+                .HasDatabaseName("IX_Orders_BonusManagerId");
 
             // OrderCleaner configuration
             modelBuilder.Entity<OrderCleaner>(entity =>
@@ -1346,16 +1372,55 @@ namespace DreamCleaningBackend.Data
                     .OnDelete(DeleteBehavior.SetNull);
             });
 
+            // The owner's default rates, one pair per slot: an administrator booking (10/10), a
+            // manager booking it themselves (15/25), and a manager's share of their administrator's
+            // booking (5/15). SuperAdmins edit all six from the shifts panel, and can override an
+            // individual through AdminBonusRateOverrides.
             modelBuilder.Entity<AdminBonusSetting>().HasData(
                 new AdminBonusSetting
                 {
                     Id = 1,
-                    RatePerOrder = 10m,
+                    AdministratorNewCustomerRate = 10m,
+                    AdministratorExistingCustomerRate = 10m,
+                    ManagerOwnBookingNewCustomerRate = 15m,
+                    ManagerOwnBookingExistingCustomerRate = 25m,
+                    ManagerTeamNewCustomerRate = 5m,
+                    ManagerTeamExistingCustomerRate = 15m,
                     Currency = "GEL",
                     UpdatedByUserId = null,
                     UpdatedAt = new DateTime(2026, 5, 24, 0, 0, 0, DateTimeKind.Utc)
                 }
             );
+
+            // AdminBonusRateOverride configuration — at most one row per staff member. The unique
+            // index is what lets the service upsert by UserId without a race producing two rows
+            // that disagree about what somebody is paid.
+            modelBuilder.Entity<AdminBonusRateOverride>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.UserId).IsUnique().HasDatabaseName("IX_AdminBonusRateOverrides_UserId");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.UpdatedByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.UpdatedByUserId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // User ↔ Manager (an Administrator reports to a Manager; both are Admin-role users).
+            // Restrict so a manager with administrators still attached cannot be deleted out from
+            // under them — detach the team first, the same rule the assigned-admin link follows.
+            modelBuilder.Entity<User>()
+                .HasOne(u => u.Manager)
+                .WithMany()
+                .HasForeignKey(u => u.ManagerId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.ManagerId)
+                .HasDatabaseName("IX_Users_ManagerId");
 
             // ExpenseCategory configuration — user-manageable category list (was a fixed enum).
             // PK is ValueGeneratedNever: system rows are seeded with hand-picked Ids that match

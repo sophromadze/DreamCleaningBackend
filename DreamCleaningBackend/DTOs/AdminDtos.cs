@@ -494,6 +494,11 @@ namespace DreamCleaningBackend.DTOs
         public List<string> ViewablePages { get; set; } = new();
         /// <summary>True when a SuperAdmin has granted this Admin direct order-edit saves (no approval step).</summary>
         public bool CanEditOrdersWithoutApproval { get; set; }
+        /// <summary>"Administrator" or "Manager". Only meaningful on an Admin-role row.</summary>
+        public string AdminPosition { get; set; } = nameof(Models.AdminPosition.Administrator);
+        /// <summary>The Manager this Administrator reports to, if any.</summary>
+        public int? ManagerId { get; set; }
+        public string? ManagerName { get; set; }
         /// <summary>When true, user can receive emails and (in future) SMS from the company.</summary>
         public bool CanReceiveCommunications { get; set; }
         public bool CanReceiveEmails { get; set; }
@@ -593,6 +598,17 @@ namespace DreamCleaningBackend.DTOs
     {
         [Required]
         public string Role { get; set; }
+    }
+
+    /// <summary>
+    /// Manager-vs-Administrator and, for an administrator, who they report to. SuperAdmin-only.
+    /// ManagerId is ignored when Position is Manager — a manager does not report to a manager.
+    /// </summary>
+    public class UpdateAdminPositionDto
+    {
+        [Required]
+        public string Position { get; set; } = string.Empty;
+        public int? ManagerId { get; set; }
     }
 
     /// <summary>Restricted-admin-page keys to grant a regular Admin read-only access to.</summary>

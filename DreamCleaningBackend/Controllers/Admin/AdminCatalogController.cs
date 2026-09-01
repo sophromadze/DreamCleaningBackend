@@ -19,7 +19,10 @@ using System.Security.Claims;
 namespace DreamCleaningBackend.Controllers
 {
     /// <summary>Catalog management: service types, services, extra services, subscriptions, promo codes.
-    /// Split out of the monolithic AdminController; same api/admin route prefix, so URLs are unchanged.</summary>
+    /// Split out of the monolithic AdminController; same api/admin route prefix, so URLs are unchanged.
+    /// NOTE: the service-catalogue half (service types / services / thresholds / rate tiers /
+    /// extra services / pricing configuration — the panel's "Services" tab) is SuperAdmin-only per
+    /// action; the discounts half stays open to Admins. See the comment above GetServiceTypes.</summary>
     [Route("api/admin")]
     [ApiController]
     [Authorize(Roles = "Admin,SuperAdmin,Moderator")]
@@ -42,7 +45,20 @@ namespace DreamCleaningBackend.Controllers
         }
 
         // Service Types Management
+        //
+        // Everything from here down to the Subscriptions section — service types, services,
+        // thresholds, rate tiers, extra services and the pricing-configuration import/export —
+        // is the admin panel's "Services" tab, and it is SuperAdmin-only (2026-09). These
+        // endpoints edit the PRICE CATALOGUE every quote is built from, so a mistake here
+        // re-prices the whole site rather than one order. The attribute is on each action
+        // rather than on the controller because the rest of this file (subscriptions, promo
+        // codes, special offers) is the Discounts tab, which regular Admins keep.
+        //
+        // The GETs are gated too: nothing outside that tab reads them — every other surface
+        // (booking, order edit, admin orders, recreate-order) goes through the public
+        // api/booking/service-types instead.
         [HttpGet("service-types")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<ServiceTypeDto>>> GetServiceTypes()
         {
@@ -75,6 +91,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("service-types")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceTypeDto>> CreateServiceType(CreateServiceTypeDto dto)
         {
@@ -135,6 +152,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("service-types/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<ServiceTypeDto>> UpdateServiceType(int id, UpdateServiceTypeDto dto)
         {
@@ -212,6 +230,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("service-types/{id}/deactivate")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Deactivate)]
         public async Task<ActionResult> DeactivateServiceType(int id)
         {
@@ -236,6 +255,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("service-types/{id}/activate")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Activate)]
         public async Task<ActionResult> ActivateServiceType(int id)
         {
@@ -259,6 +279,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpDelete("service-types/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Delete)]
         public async Task<ActionResult> DeleteServiceType(int id)
         {
@@ -292,6 +313,7 @@ namespace DreamCleaningBackend.Controllers
 
         /// <summary>Snapshot of pricing configuration. Omit serviceTypeId to export everything.</summary>
         [HttpGet("pricing-configuration/export")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<PricingConfigurationDto>> ExportPricingConfiguration(
             [FromQuery] int? serviceTypeId = null)
@@ -306,6 +328,7 @@ namespace DreamCleaningBackend.Controllers
         /// the two can't drift apart in who is allowed to use them.
         /// </summary>
         [HttpPost("pricing-configuration/preview")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<PricingConfigurationDiffDto>> PreviewPricingConfiguration(
             [FromBody] PricingConfigurationDto payload)
@@ -321,6 +344,7 @@ namespace DreamCleaningBackend.Controllers
         /// this without previewing first is safe — it just skips showing the admin the diff.
         /// </summary>
         [HttpPost("pricing-configuration/apply")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<ApplyPricingConfigurationResultDto>> ApplyPricingConfiguration(
             [FromBody] PricingConfigurationDto payload)
@@ -352,6 +376,7 @@ namespace DreamCleaningBackend.Controllers
 
         // Services Management
         [HttpGet("services")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<ServiceDto>>> GetServices()
         {
@@ -369,6 +394,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("services")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceDto>> CreateService(CreateServiceDto dto)
         {
@@ -436,6 +462,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("services/copy")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceDto>> CopyService(CopyServiceDto dto)
         {
@@ -511,6 +538,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("services/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<ServiceDto>> UpdateService(int id, UpdateServiceDto dto)
         {
@@ -609,6 +637,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("services/{id}/deactivate")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Deactivate)]
         public async Task<ActionResult> DeactivateService(int id)
         {
@@ -680,6 +709,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("services/{id}/activate")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Activate)]
         public async Task<ActionResult> ActivateService(int id)
         {
@@ -751,6 +781,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpDelete("services/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Delete)]
         public async Task<ActionResult> DeleteService(int id)
         {
@@ -818,6 +849,7 @@ namespace DreamCleaningBackend.Controllers
         // message rather than surfacing as a 1062 duplicate-key 500.
 
         [HttpGet("services/{serviceId}/thresholds")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<ServiceThresholdDto>>> GetServiceThresholds(int serviceId)
         {
@@ -834,6 +866,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("services/{serviceId}/thresholds")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceThresholdDto>> CreateServiceThreshold(
             int serviceId, SaveServiceThresholdDto dto)
@@ -859,6 +892,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("services/{serviceId}/thresholds/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<ServiceThresholdDto>> UpdateServiceThreshold(
             int serviceId, int id, SaveServiceThresholdDto dto)
@@ -888,6 +922,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpDelete("services/{serviceId}/thresholds/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Delete)]
         public async Task<ActionResult> DeleteServiceThreshold(int serviceId, int id)
         {
@@ -934,6 +969,7 @@ namespace DreamCleaningBackend.Controllers
         // ===== Rate tiers (ServiceRateTier) =====
 
         [HttpGet("services/{serviceId}/rate-tiers")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<ServiceRateTierDto>>> GetServiceRateTiers(int serviceId)
         {
@@ -949,6 +985,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("services/{serviceId}/rate-tiers")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceRateTierDto>> CreateServiceRateTier(
             int serviceId, SaveServiceRateTierDto dto)
@@ -974,6 +1011,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("services/{serviceId}/rate-tiers/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<ServiceRateTierDto>> UpdateServiceRateTier(
             int serviceId, int id, SaveServiceRateTierDto dto)
@@ -1000,6 +1038,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpDelete("services/{serviceId}/rate-tiers/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Delete)]
         public async Task<ActionResult> DeleteServiceRateTier(int serviceId, int id)
         {
@@ -1069,6 +1108,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpGet("extra-services")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<ExtraServiceDto>>> GetExtraServices()
         {
@@ -1098,6 +1138,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("extra-services")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ExtraServiceDto>> CreateExtraService(CreateExtraServiceDto dto)
         {
@@ -1192,6 +1233,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("extra-services/copy")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ExtraServiceDto>> CopyExtraService(CopyExtraServiceDto dto)
         {
@@ -1251,6 +1293,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("extra-services/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<ExtraServiceDto>> UpdateExtraService(int id, UpdateExtraServiceDto dto)
         {
@@ -1354,6 +1397,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("extra-services/{id}/deactivate")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Deactivate)]
         public async Task<ActionResult> DeactivateExtraService(int id)
         {
@@ -1427,6 +1471,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("extra-services/{id}/activate")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Activate)]
         public async Task<ActionResult> ActivateExtraService(int id)
         {
@@ -1500,6 +1545,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpDelete("extra-services/{id}")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Delete)]
         public async Task<ActionResult> DeleteExtraService(int id)
         {

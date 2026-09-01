@@ -4,27 +4,34 @@ namespace DreamCleaningBackend.Services.Interfaces
 {
     public interface IAdminBonusService
     {
-        // Sets, changes, or clears (when adminId == null) the assigned admin on an order.
-        // Always writes a row to OrderAdminAssignmentHistory so the change stays auditable.
         Task<OrderAssignedAdminDto> AssignAdminAsync(int orderId, int? adminId, int byUserId);
 
-        // Returns the current bonus rate setting (single-row, seeded at 10 GEL).
-        Task<AdminBonusRateDto> GetRateAsync();
+        /// <summary>Company-wide defaults: three slots x new-vs-returning customer.</summary>
+        Task<AdminBonusRatesDto> GetRatesAsync();
+        Task<AdminBonusRatesDto> SetRatesAsync(SetAdminBonusRatesDto dto, int byUserId);
 
-        // Updates the rate. SuperAdmin-only check is enforced at the controller layer.
-        Task<AdminBonusRateDto> SetRateAsync(decimal newRate, int byUserId);
+        /// <summary>
+        /// Per-person rates: one pair for their own bookings, one for a manager's team share.
+        /// Nulls on every field clear the override. Returns what was there before, so the caller
+        /// can audit the change without re-reading it.
+        /// </summary>
+        Task<SetAdminBonusOverrideDto> SetRateOverrideAsync(int adminId, SetAdminBonusOverrideDto dto, int byUserId);
 
-        // Returns one row per admin within [from, to). When viewer is not SuperAdmin only
-        // their own row is returned. Window is filtered on Order.ServiceDate so the data
-        // lines up with the shifts calendar.
         Task<List<AdminBonusSummaryDto>> GetBonusesAsync(
-            DateTime from,
-            DateTime to,
-            int viewerUserId,
-            bool viewerIsSuperAdmin,
-            int? adminIdFilter = null);
+            DateTime from, DateTime to, int viewerUserId, bool viewerIsSuperAdmin, int? adminIdFilter = null);
 
-        // Returns a single admin's lifetime/period totals, used by the admin user-profile page.
         Task<AdminBonusSummaryDto> GetSummaryForAdminAsync(int adminId, DateTime? from, DateTime? to);
+
+        /// <summary>
+        /// What each order in the window actually costs the company in staff bonuses (GEL), keyed
+        /// by order id. Both slots are included — the booker's share and their manager's — which is
+        /// why statistics cannot get this from an order count times one rate any more.
+        /// Only bonus-eligible orders appear; everything else costs nothing and is absent.
+        /// </summary>
+        /// <param name="includeUnfinished">
+        /// Widens the set to booked-but-undelivered jobs (the finances page's projection toggle).
+        /// Never true on a path that pays somebody — a bonus is earned on delivery.
+        /// </param>
+        Task<Dictionary<int, decimal>> GetOrderBonusCostsGelAsync(DateTime? from, DateTime? to, bool includeUnfinished = false);
     }
 }

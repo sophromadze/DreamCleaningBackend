@@ -309,9 +309,21 @@ namespace DreamCleaningBackend.Services
             if (options.SuppressAutomaticDiscounts)
                 subscriptionDiscountAmount = 0m;
 
+            // Was this the customer's FIRST-EVER real booking? Snapshotted onto the order here and
+            // never recomputed: the staff bonus pays a different rate for a new customer (see
+            // AdminBonusAttribution), and a later cancellation or refund of an EARLIER order would
+            // otherwise retroactively promote this one to a first booking and move somebody's pay.
+            // Uses the same IsRealBooking predicate as the CRM's "New customer", so the two screens
+            // agree, and runs before the insert so the order can never count itself.
+            var isNewCustomerOrder = !await _context.Orders
+                .Where(o => o.UserId == orderUserId)
+                .Where(OrderBookedFilter.IsRealBooking)
+                .AnyAsync();
+
             var order = new Order
             {
                 UserId = orderUserId,
+                IsNewCustomerOrder = isNewCustomerOrder,
                 ServiceTypeId = dto.ServiceTypeId,
                 // Per-order display label, only meaningful for the custom service type.
                 CustomServiceDisplayName = serviceType.IsCustom

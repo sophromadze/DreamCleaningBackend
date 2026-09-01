@@ -1726,34 +1726,19 @@ namespace DreamCleaningBackend.Controllers
         [HttpPost("orders/{orderId}/pending-edit")]
         [Authorize(Roles = "Admin")]
         public async Task<ActionResult<PendingOrderEditListDto>> SubmitPendingOrderEdit(
-            int orderId, [FromBody] Newtonsoft.Json.Linq.JObject body)
+            int orderId, [FromBody] System.Text.Json.JsonElement body)
         {
             var order = await _context.Orders.FindAsync(orderId);
             if (order == null)
                 return NotFound(new { message = "Order not found" });
 
-            // TWO accepted body shapes, and the older one still works. Before 2026-08-31 the body
-            // WAS the SuperAdminUpdateOrderDto; it is now a wrapper carrying the same DTO under
-            // "changes" plus the submit-time field payload and a reason. A body with no "changes"
-            // key is read the old way, so a stale client (or a direct API caller) submits a
-            // request with no readable payload rather than a 400 — the same shape as the legacy
-            // rows already in the table.
-            SubmitPendingOrderEditDto submission;
-            if (body?.GetValue("changes", StringComparison.OrdinalIgnoreCase) != null)
-            {
-                submission = body.ToObject<SubmitPendingOrderEditDto>() ?? new SubmitPendingOrderEditDto();
-            }
-            else
-            {
-                submission = new SubmitPendingOrderEditDto
-                {
-                    Changes = body?.ToObject<SuperAdminUpdateOrderDto>()
-                };
-            }
-
-            var dto = submission.Changes;
-            if (dto == null)
+            // Both accepted body shapes (the current wrapper and the pre-2026-08-31 bare DTO) are
+            // read by PendingOrderEditSubmissionReader — see that file for why the parameter is a
+            // System.Text.Json JsonElement and not a Newtonsoft JObject.
+            if (!PendingOrderEditSubmissionReader.TryRead(body, out var submission))
                 return BadRequest(new { message = "No proposed changes were supplied." });
+
+            var dto = submission.Changes!;
 
             var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
             var proposedJson = JsonConvert.SerializeObject(dto);
@@ -1780,7 +1765,8 @@ namespace DreamCleaningBackend.Controllers
                 FieldChangesJson = fieldChanges == null || fieldChanges.Count == 0
                     ? null
                     : JsonConvert.SerializeObject(fieldChanges),
-                Reason = string.IsNullOrWhiteSpace(submission.Reason) ? null : submission.Reason.Trim(),
+                // Already trimmed, blank-nulled and capped to the column width by the reader.
+                Reason = submission.Reason,
                 Status = "Pending"
             };
             _context.PendingOrderEdits.Add(pending);

@@ -54,6 +54,24 @@ namespace DreamCleaningBackend.Models
         /// </summary>
         public bool CanEditOrdersWithoutApproval { get; set; }
 
+        /// <summary>
+        /// Manager vs Administrator, for Admin-role staff only. Drives the per-order bonus split and
+        /// nothing else — no permission anywhere reads it. See <see cref="Models.AdminPosition"/>.
+        /// </summary>
+        public AdminPosition AdminPosition { get; set; } = AdminPosition.Administrator;
+
+        /// <summary>
+        /// The Manager this Administrator reports to. When an administrator books an order, their
+        /// manager earns the manager-side bonus for it. Null = this administrator has no manager
+        /// (nobody earns the manager side), and always null on a Manager row — a manager does not
+        /// report to another manager. Self-referencing FK, Restrict on delete like every other
+        /// User → User link here.
+        /// </summary>
+        public int? ManagerId { get; set; }
+
+        [ForeignKey("ManagerId")]
+        public virtual User? Manager { get; set; }
+
         // Refresh token for JWT
         public string? RefreshToken { get; set; }
         public DateTime? RefreshTokenExpiryTime { get; set; }

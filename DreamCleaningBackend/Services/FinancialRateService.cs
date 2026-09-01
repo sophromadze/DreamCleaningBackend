@@ -13,6 +13,7 @@ namespace DreamCleaningBackend.Services
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly ILogger<FinancialRateService> _logger;
+        private readonly IAdminBonusService _adminBonusService;
 
         // Shared client. IPv4 is forced because the production VPS has IPv6 disabled — outbound
         // HTTP over IPv6 hangs (see CLAUDE.md operational quirk #2 / TelegramBotService).
@@ -35,11 +36,13 @@ namespace DreamCleaningBackend.Services
         public FinancialRateService(
             ApplicationDbContext context,
             IConfiguration configuration,
-            ILogger<FinancialRateService> logger)
+            ILogger<FinancialRateService> logger,
+            IAdminBonusService adminBonusService)
         {
             _context = context;
             _configuration = configuration;
             _logger = logger;
+            _adminBonusService = adminBonusService;
         }
 
         public async Task<MonthlyFinancialSnapshot> GetOrCreateAsync(int year, int month)
@@ -53,14 +56,12 @@ namespace DreamCleaningBackend.Services
             if (snap == null)
             {
                 var (fx, source) = await FetchFxForMonthAsync(year, month);
-                var bonusRate = await GetCurrentBonusRateGelAsync();
 
                 snap = new MonthlyFinancialSnapshot
                 {
                     Year = year,
                     Month = month,
                     UsdPerGel = fx,
-                    AdminBonusRatePerOrderGel = bonusRate,
                     FxSource = source,
                     IsFinalized = isPast,
                     CreatedAt = now,
@@ -83,12 +84,11 @@ namespace DreamCleaningBackend.Services
                 return snap;
             }
 
-            // Ongoing month: periodically refresh the live bonus snapshot, and the FX too unless
-            // a SuperAdmin pinned it manually.
+            // Ongoing month: periodically refresh the FX rate unless a SuperAdmin pinned it
+            // manually. Bonus figures are not snapshotted at all any more — they are computed live
+            // from the current rates, so there is nothing here to keep in step.
             if (now - snap.UpdatedAt >= RefreshInterval)
             {
-                snap.AdminBonusRatePerOrderGel = await GetCurrentBonusRateGelAsync();
-
                 if (snap.FxSource != "manual")
                 {
                     var (fx, source) = await FetchFxForMonthAsync(year, month);
@@ -142,7 +142,7 @@ namespace DreamCleaningBackend.Services
             snap.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            return ToDto(snap, await ResolveUserNameAsync(byUserId));
+            return ToDto(snap, await ResolveUserNameAsync(byUserId), await BonusTotalGelForMonthAsync(year, month));
         }
 
         public async Task<MonthlyFinancialRateDto> RefetchAsync(int year, int month, int byUserId)
@@ -155,7 +155,7 @@ namespace DreamCleaningBackend.Services
             snap.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            return ToDto(snap, await ResolveUserNameAsync(byUserId));
+            return ToDto(snap, await ResolveUserNameAsync(byUserId), await BonusTotalGelForMonthAsync(year, month));
         }
 
         public async Task<List<MonthlyFinancialRateDto>> ListAsync(DateTime fromInclusive, DateTime toExclusive)
@@ -167,24 +167,68 @@ namespace DreamCleaningBackend.Services
                 .Select(u => new { u.Id, Name = u.FirstName + " " + u.LastName })
                 .ToDictionaryAsync(x => x.Id, x => x.Name);
 
+            // One pass over the whole window rather than a query per month — a 12-month listing is
+            // the default view of this table.
+            var bonusTotals = await BonusTotalsGelByMonthAsync(fromInclusive, toExclusive);
+
             return map.Values
                 .OrderByDescending(s => s.Year).ThenByDescending(s => s.Month)
-                .Select(s => ToDto(s, s.UpdatedByUserId.HasValue && names.TryGetValue(s.UpdatedByUserId.Value, out var n) ? n : null))
+                .Select(s => ToDto(
+                    s,
+                    s.UpdatedByUserId.HasValue && names.TryGetValue(s.UpdatedByUserId.Value, out var n) ? n : null,
+                    bonusTotals.TryGetValue(s.Year * 100 + s.Month, out var gel) ? gel : 0m))
                 .ToList();
         }
 
-        public MonthlyFinancialRateDto ToDto(MonthlyFinancialSnapshot snap, string? updatedByUserName = null) => new()
+        public MonthlyFinancialRateDto ToDto(
+            MonthlyFinancialSnapshot snap,
+            string? updatedByUserName = null,
+            decimal adminBonusTotalGel = 0m) => new()
         {
             Year = snap.Year,
             Month = snap.Month,
             MonthKey = $"{snap.Year:D4}-{snap.Month:D2}",
             UsdPerGel = snap.UsdPerGel,
-            AdminBonusRatePerOrderGel = snap.AdminBonusRatePerOrderGel,
+            AdminBonusTotalGel = adminBonusTotalGel,
             FxSource = snap.FxSource,
             IsFinalized = snap.IsFinalized,
             UpdatedAt = snap.UpdatedAt,
             UpdatedByUserName = updatedByUserName
         };
+
+        /// <summary>Staff bonuses owed for one month, in GEL, at today's rates.</summary>
+        public async Task<decimal> BonusTotalGelForMonthAsync(int year, int month)
+        {
+            var start = new DateTime(year, month, 1, 0, 0, 0, DateTimeKind.Utc);
+            var totals = await BonusTotalsGelByMonthAsync(start, start.AddMonths(1));
+            return totals.TryGetValue(year * 100 + month, out var gel) ? gel : 0m;
+        }
+
+        /// <summary>
+        /// Staff bonuses owed per month across a window, keyed year*100+month. Both sides of every
+        /// order (administrator + manager) are already inside the per-order figures — see
+        /// IAdminBonusService.GetOrderBonusCostsGelAsync — so nothing here may add a manager share
+        /// on top.
+        /// </summary>
+        private async Task<Dictionary<int, decimal>> BonusTotalsGelByMonthAsync(DateTime fromInclusive, DateTime toExclusive)
+        {
+            var costs = await _adminBonusService.GetOrderBonusCostsGelAsync(fromInclusive, toExclusive);
+            if (costs.Count == 0)
+                return new Dictionary<int, decimal>();
+
+            var months = await _context.Orders
+                .Where(o => costs.Keys.Contains(o.Id))
+                .Select(o => new { o.Id, o.ServiceDate })
+                .ToListAsync();
+
+            var totals = new Dictionary<int, decimal>();
+            foreach (var m in months)
+            {
+                var key = m.ServiceDate.Year * 100 + m.ServiceDate.Month;
+                totals[key] = totals.TryGetValue(key, out var running) ? running + costs[m.Id] : costs[m.Id];
+            }
+            return totals;
+        }
 
         // ──────────────────────────────────────────────────────────────────────────────
 
@@ -193,12 +237,6 @@ namespace DreamCleaningBackend.Services
             return year < nowUtc.Year || (year == nowUtc.Year && month < nowUtc.Month);
         }
 
-        private async Task<decimal> GetCurrentBonusRateGelAsync()
-        {
-            var setting = await _context.AdminBonusSettings.FirstOrDefaultAsync();
-            // Mirror AdminBonusService's default (10 GEL/order) when unconfigured.
-            return setting?.RatePerOrder ?? 10m;
-        }
 
         private async Task<string?> ResolveUserNameAsync(int userId)
         {

@@ -69,32 +69,102 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        [HttpGet("rate")]
-        public async Task<ActionResult<AdminBonusRateDto>> GetRate()
+        // The company-wide defaults — SuperAdmin only (owner's call, 2026-08-31). This is the whole
+        // pay table: what an administrator earns, what a manager earns, and therefore what every
+        // colleague is on. A staff member sees their OWN rates on their own row of GET
+        // /api/admin-bonus (which already narrows to the viewer for anyone who is not a SuperAdmin),
+        // and that is the only rate that is theirs to know.
+        //
+        // The role check has to live here, not only on the panel: the endpoint is the thing that
+        // discloses, and a hidden block in the UI is not access control.
+        [HttpGet("rates")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<AdminBonusRatesDto>> GetRates()
         {
-            return Ok(await _bonusService.GetRateAsync());
+            return Ok(await _bonusService.GetRatesAsync());
         }
 
-        // SuperAdmin only — changing the rate ripples into future bonus computations.
-        // Historical decisions remain readable via OrderAdminAssignmentHistory.BonusRateAtChange.
-        [HttpPut("rate")]
+        // SuperAdmin only — rates ripple into every future AND past bonus computation, which is
+        // what makes correcting a mistyped rate actually fix the affected payouts.
+        // OrderAdminAssignmentHistory.BonusRateAtChange keeps what was in force at assignment time.
+        [HttpPut("rates")]
         [Authorize(Roles = "SuperAdmin")]
-        public async Task<ActionResult<AdminBonusRateDto>> SetRate([FromBody] SetAdminBonusRateDto dto)
+        public async Task<ActionResult<AdminBonusRatesDto>> SetRates([FromBody] SetAdminBonusRatesDto dto)
         {
             try
             {
-                // Read first — the rate ripples into every future bonus computation, so what it
-                // moved FROM is the interesting half.
-                var previous = await _bonusService.GetRateAsync();
-
-                var updated = await _bonusService.SetRateAsync(dto.RatePerOrder, GetUserId());
+                // Read first — what the rates moved FROM is the interesting half of the audit entry.
+                var previous = await _bonusService.GetRatesAsync();
+                var updated = await _bonusService.SetRatesAsync(dto, GetUserId());
 
                 await _auditService.LogActionAsync(
-                    DreamCleaningBackend.Services.AuditEntityTypes.RewardSetting, 0, "AdminBonusRateChanged",
-                    new { RatePerOrder = previous?.RatePerOrder },
-                    new { RatePerOrder = updated?.RatePerOrder });
+                    DreamCleaningBackend.Services.AuditEntityTypes.RewardSetting, 0, "AdminBonusRatesChanged",
+                    new
+                    {
+                        previous.AdministratorNewCustomerRate,
+                        previous.AdministratorExistingCustomerRate,
+                        previous.ManagerOwnBookingNewCustomerRate,
+                        previous.ManagerOwnBookingExistingCustomerRate,
+                        previous.ManagerTeamNewCustomerRate,
+                        previous.ManagerTeamExistingCustomerRate
+                    },
+                    new
+                    {
+                        updated.AdministratorNewCustomerRate,
+                        updated.AdministratorExistingCustomerRate,
+                        updated.ManagerOwnBookingNewCustomerRate,
+                        updated.ManagerOwnBookingExistingCustomerRate,
+                        updated.ManagerTeamNewCustomerRate,
+                        updated.ManagerTeamExistingCustomerRate
+                    });
 
                 return Ok(updated);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // SuperAdmin only — one person's own rates, overriding the company default per field. Two
+        // pairs: orders they book themselves, and (for a manager) their share of their
+        // administrators' bookings. Sending nulls on every field puts them back on the defaults.
+        [HttpPut("admin/{adminId}/rates")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<AdminBonusSummaryDto>> SetOverride(
+            int adminId,
+            [FromBody] SetAdminBonusOverrideDto dto,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to)
+        {
+            try
+            {
+                // The service hands back what it replaced, so the audit entry costs nothing extra.
+                // Nulls on either side mean the person was on the company default — worth recording
+                // as such rather than as whatever figure that happened to be.
+                var previous = await _bonusService.SetRateOverrideAsync(adminId, dto, GetUserId());
+
+                await _auditService.LogActionAsync(
+                    DreamCleaningBackend.Services.AuditEntityTypes.RewardSetting, adminId, "AdminBonusOverrideChanged",
+                    new
+                    {
+                        previous.OwnBookingNewCustomerRate,
+                        previous.OwnBookingExistingCustomerRate,
+                        previous.TeamBookingNewCustomerRate,
+                        previous.TeamBookingExistingCustomerRate
+                    },
+                    new
+                    {
+                        dto.OwnBookingNewCustomerRate,
+                        dto.OwnBookingExistingCustomerRate,
+                        dto.TeamBookingNewCustomerRate,
+                        dto.TeamBookingExistingCustomerRate
+                    });
+
+                // Answer with the row the panel is about to redraw, over the SAME window it is
+                // showing, so a rate edit does not need a second round trip to restate the month.
+                var (fromDate, toDate) = ResolveMonthRange(from, to);
+                return Ok(await _bonusService.GetSummaryForAdminAsync(adminId, fromDate, toDate));
             }
             catch (InvalidOperationException ex)
             {
