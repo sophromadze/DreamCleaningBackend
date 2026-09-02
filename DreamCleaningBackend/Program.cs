@@ -184,6 +184,7 @@ builder.Services.AddScoped<ISpecialOfferService, SpecialOfferService>();
 builder.Services.AddScoped<ICleanerService, CleanerService>();
 builder.Services.AddScoped<ICleanerManagementService, CleanerManagementService>();
 builder.Services.AddScoped<IOutgoingPaymentService, OutgoingPaymentService>();
+builder.Services.AddScoped<IAdminSalaryPayoutService, AdminSalaryPayoutService>();
 builder.Services.AddScoped<IUserCleaningPhotoService, UserCleaningPhotoService>();
 builder.Services.AddHostedService<CleanerNotificationService>();
 builder.Services.AddHostedService<CustomerNotificationService>();

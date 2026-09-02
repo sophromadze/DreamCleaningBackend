@@ -24,6 +24,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         // Grouped Category → Name → entries view for a single calendar month.
         Task<GroupedExpensesDto> GetGroupedAsync(int year, int month);
 
+        // People a salary can be recorded against: current staff, plus anyone who already has
+        // salary rows so a leaver's final payment can still be entered against them.
+        Task<List<ExpenseStaffMemberDto>> GetStaffMembersAsync();
+
         // ── Category management ──
         Task<List<ExpenseCategoryDto>> GetCategoriesAsync();
         Task<ExpenseCategoryDto> CreateCategoryAsync(SaveExpenseCategoryDto dto);

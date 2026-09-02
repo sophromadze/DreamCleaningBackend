@@ -261,6 +261,26 @@ namespace DreamCleaningBackend.Services
         }
 
         /// <summary>
+        /// Whether removing a cleaner from an order should tell them so. The whole rule, as a
+        /// pure function, so it can be asserted without a database.
+        ///
+        /// Assigning a cleaner does NOT notify them — the assignment mail/SMS is a separate,
+        /// deliberate admin action (SendPendingCleanerAssignmentMailsAsync), and
+        /// OrderCleaner.AssignmentNotificationSentAt is the record that it happened. So a null
+        /// there means the cleaner has never heard of this job, and a removal email would be the
+        /// FIRST thing they were ever told about it: "you have been removed from a job" for work
+        /// they were never offered. Admins staff and re-staff an order several times before the
+        /// mails go out, and every one of those shuffles used to page the cleaners involved.
+        ///
+        /// The removal notice is email-only, so a cleaner with no email address has nothing to
+        /// receive either.
+        /// </summary>
+        public static bool ShouldNotifyOfRemoval(DateTime? assignmentNotificationSentAt, string? cleanerEmail)
+        {
+            return assignmentNotificationSentAt.HasValue && !string.IsNullOrWhiteSpace(cleanerEmail);
+        }
+
+        /// <summary>
         /// Applies <see cref="ResolveMaidsCountAfterAssignment"/> to the order. Runs after the
         /// assignment rows are saved, so the count it reads is the post-assignment one.
         ///
@@ -557,7 +577,7 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        public async Task<bool> UnassignCleanerFromOrderAsync(int orderId, int cleanerId, int removedBy)
+        public async Task<UnassignCleanerResultDto> UnassignCleanerFromOrderAsync(int orderId, int cleanerId, int removedBy)
         {
             var assignment = await _context.OrderCleaners
                 .Include(oc => oc.Order)
@@ -566,7 +586,7 @@ namespace DreamCleaningBackend.Services
                 .FirstOrDefaultAsync(oc => oc.OrderId == orderId && oc.CleanerId == cleanerId);
 
             if (assignment == null)
-                return false;
+                return new UnassignCleanerResultDto { Found = false };
 
             // Store cleaner info before removing
             var cleanerEmail = assignment.Cleaner.Email;
@@ -574,6 +594,9 @@ namespace DreamCleaningBackend.Services
             var serviceDate = assignment.Order.ServiceDate;
             var serviceTime = assignment.Order.ServiceTime.ToString();
             var serviceTypeName = assignment.Order.GetDisplayServiceTypeName();
+
+            // Read BEFORE the row is removed: whether this cleaner was ever told about the job.
+            var notifyOfRemoval = ShouldNotifyOfRemoval(assignment.AssignmentNotificationSentAt, cleanerEmail);
 
             // LOG CLEANER REMOVAL TO AUDIT BEFORE REMOVING
             try
@@ -609,8 +632,10 @@ namespace DreamCleaningBackend.Services
             await RecalculateOrderSalaryFromAssignmentsAsync(assignment.Order);
             await _context.SaveChangesAsync();
 
-            // OPTIMIZED: Send removal notification in background (fire and forget)
-            if (!string.IsNullOrWhiteSpace(cleanerEmail))
+            // Send removal notification in background (fire and forget) — but ONLY to a cleaner
+            // who was actually told about this job. See ShouldNotifyOfRemoval: an unnotified
+            // cleaner would otherwise learn of the order only by being removed from it.
+            if (notifyOfRemoval)
             {
                 _ = Task.Run(async () =>
                 {
@@ -631,7 +656,7 @@ namespace DreamCleaningBackend.Services
                 });
             }
 
-            return true;
+            return new UnassignCleanerResultDto { Found = true, RemovalNotificationSent = notifyOfRemoval };
         }
 
         public async Task<SendCleanerAssignmentMailsResultDto?> SendPendingCleanerAssignmentMailsAsync(int orderId)

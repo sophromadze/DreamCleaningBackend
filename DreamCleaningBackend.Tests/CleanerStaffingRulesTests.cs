@@ -5,11 +5,12 @@ using Xunit;
 namespace DreamCleaningBackend.Tests
 {
     /// <summary>
-    /// The two staffing rules the admin Orders panel leans on (2026-08-31):
+    /// The staffing rules the admin Orders panel leans on (2026-08-31):
     ///
     /// 1. Assigning cleaners RAISES Order.MaidsCount to match, and never lowers it.
     /// 2. The staffing warnings an admin reads on an order are built once, so the Orders panel
     ///    and Outgoing Payments cannot describe the same job differently.
+    /// 3. Unassigning a cleaner only notifies them if they were told about the job to begin with.
     /// </summary>
     public class CleanerStaffingRulesTests
     {
@@ -278,6 +279,46 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains("2 cleaner(s)", warning);
             // 720 min over 2 = 6h each at $20 = $120 a head, $240 owed.
             Assert.Contains("$240.00", warning);
+        }
+
+        // ===== 3. A cleaner who was never told about the job is not told it was taken away =====
+
+        /// <summary>
+        /// The case this was built for. Assigning does not notify — the assignment mail is a
+        /// separate admin action — so an admin who staffs an order, changes their mind and
+        /// unassigns before sending anything has told the cleaner nothing. A removal email there
+        /// would be the first and only thing that cleaner ever heard about the order.
+        /// </summary>
+        [Fact]
+        public void RemovingACleanerWhoWasNeverSentTheAssignmentMail_NotifiesNobody()
+        {
+            Assert.False(CleanerService.ShouldNotifyOfRemoval(null, "cleaner@example.com"));
+        }
+
+        /// <summary>
+        /// Once the assignment mail has gone out the cleaner is expecting the job, so being taken
+        /// off it is news they need.
+        /// </summary>
+        [Fact]
+        public void RemovingACleanerWhoWasSentTheAssignmentMail_StillNotifiesThem()
+        {
+            Assert.True(CleanerService.ShouldNotifyOfRemoval(
+                new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc), "cleaner@example.com"));
+        }
+
+        /// <summary>
+        /// The removal notice is email-only, so a cleaner with no address has nothing to receive
+        /// even when they were notified of the assignment (by SMS, which is what a cleaner with a
+        /// phone and no email gets).
+        /// </summary>
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public void ACleanerWithNoEmailAddress_IsNeverEmailedAboutTheRemoval(string? email)
+        {
+            Assert.False(CleanerService.ShouldNotifyOfRemoval(
+                new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc), email));
         }
     }
 }

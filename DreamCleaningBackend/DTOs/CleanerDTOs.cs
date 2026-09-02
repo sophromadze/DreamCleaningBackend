@@ -98,4 +98,15 @@ namespace DreamCleaningBackend.DTOs
         public int EmailsSent { get; set; }
         public string Message { get; set; } = "";
     }
+
+    /// <summary>
+    /// Outcome of removing one cleaner from an order. RemovalNotificationSent is false whenever
+    /// the cleaner was never told about the job in the first place, so the panel can report what
+    /// actually happened instead of promising an email nobody sent.
+    /// </summary>
+    public class UnassignCleanerResultDto
+    {
+        public bool Found { get; set; }
+        public bool RemovalNotificationSent { get; set; }
+    }
 }

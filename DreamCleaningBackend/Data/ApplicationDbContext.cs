@@ -66,6 +66,8 @@ namespace DreamCleaningBackend.Data
         public DbSet<AdminBonusRateOverride> AdminBonusRateOverrides { get; set; }
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
+        public DbSet<AdminSalaryPayment> AdminSalaryPayments { get; set; }
+        public DbSet<AdminSalaryPayee> AdminSalaryPayees { get; set; }
         public DbSet<GoogleAdsDailyStat> GoogleAdsDailyStats { get; set; }
         public DbSet<GoogleAdsKeywordDailyStat> GoogleAdsKeywordDailyStats { get; set; }
         public DbSet<SearchConsoleDailyStat> SearchConsoleDailyStats { get; set; }
@@ -1468,6 +1470,62 @@ namespace DreamCleaningBackend.Data
                 entity.HasOne(e => e.CreatedByUser)
                     .WithMany()
                     .HasForeignKey(e => e.CreatedByUserId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
+                // Indexed but NOT a foreign key, on purpose — see Expense.StaffUserId. A salary row
+                // has to survive the deletion of the person it names, which both Restrict (blocks
+                // the delete) and SetNull (erases who it was) refuse to do.
+                entity.HasIndex(e => e.StaffUserId).HasDatabaseName("IX_Expenses_StaffUserId");
+            });
+
+            // AdminSalaryPayment — the record that one of a staff member's two monthly salary
+            // instalments has been paid. Rows are created lazily; what is OWED is derived from the
+            // salary expenses, so this table holds decisions rather than arithmetic.
+            modelBuilder.Entity<AdminSalaryPayment>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+
+                // One payment per person per instalment. UNIQUE because the pay endpoint is a
+                // create — a double-click, or two SuperAdmins on the page at once, must collide
+                // here rather than quietly record the same salary as paid twice.
+                entity.HasIndex(e => new { e.PayeeKey, e.Year, e.Month, e.Half })
+                    .IsUnique()
+                    .HasDatabaseName("IX_AdminSalaryPayments_Payee_Period");
+
+                // The month being viewed is the page's main filter.
+                entity.HasIndex(e => new { e.Year, e.Month })
+                    .HasDatabaseName("IX_AdminSalaryPayments_Year_Month");
+
+                // Indexed but NOT a foreign key, same rule as Expense.StaffUserId: a payment that
+                // has already been made must survive the deletion of the account it was made to.
+                entity.HasIndex(e => e.StaffUserId).HasDatabaseName("IX_AdminSalaryPayments_StaffUserId");
+
+                // Who recorded it, by contrast, IS a real FK on Restrict — it is an audit fact
+                // about an administrator of this system, and the acting user must not vanish.
+                entity.HasOne(e => e.PaidByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.PaidByUserId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // AdminSalaryPayee — where an employee's salary is sent. One row per payee, created
+            // the first time a destination is filled in.
+            modelBuilder.Entity<AdminSalaryPayee>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+
+                // One destination per person, and the key the upsert matches on.
+                entity.HasIndex(e => e.PayeeKey)
+                    .IsUnique()
+                    .HasDatabaseName("IX_AdminSalaryPayees_PayeeKey");
+
+                // Indexed, no FK — the destination must outlive the account it belonged to, which
+                // is exactly when somebody is being settled up. Same rule as Expense.StaffUserId.
+                entity.HasIndex(e => e.StaffUserId).HasDatabaseName("IX_AdminSalaryPayees_StaffUserId");
+
+                entity.HasOne(e => e.UpdatedByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.UpdatedByUserId)
                     .OnDelete(DeleteBehavior.Restrict);
             });
 

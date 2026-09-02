@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Models
 {
@@ -10,8 +11,9 @@ namespace DreamCleaningBackend.Models
     //   - cancelling means setting EndDate (history is preserved)
     //   - the DB stays tiny even for years of monthly subscriptions
     //
-    // Amount is in USD to match the company-revenue currency (admin per-order bonus stays
-    // in GEL and is unrelated to this).
+    // Amount is in USD to match the company-revenue currency, EXCEPT on a salary, which may be
+    // entered in GEL and is converted for reporting at read time — see the Currency column. (The
+    // admin per-order bonus is a separate GEL cost entirely and is not an Expense row at all.)
     public class Expense
     {
         [Key]
@@ -31,6 +33,32 @@ namespace DreamCleaningBackend.Models
 
         [ForeignKey(nameof(CategoryId))]
         public virtual ExpenseCategory? Category { get; set; }
+
+        // The staff member this salary is paid to. Only meaningful on the Salaries category (see
+        // SalaryExpenseRules); forced to null on every other category, so a link can never be left
+        // behind by moving a row to Supplies.
+        //
+        // Deliberately carries NO foreign key. Every other User reference in this model is Restrict,
+        // which BLOCKS deleting the person — right for an order's bonus attribution, wrong here: the
+        // owner wants to remove someone from Users and still see what the company paid them, and a
+        // Restrict would answer that with "use Block instead". SetNull is no better, because it
+        // erases the one thing that keeps a deleted person's rows grouped together. So the id stays
+        // as a plain historical reference that outlives the row it names, and Name carries the
+        // snapshot displayed once the account is gone. Auto-increment ids are never reused, so a
+        // stale id can only fail to resolve — it can never resolve to somebody else.
+        public int? StaffUserId { get; set; }
+
+        // The currency Amount was ENTERED in — "USD" or "GEL" (see ExpenseCurrency). Only a salary
+        // may be anything but USD; every other category is forced to USD on write.
+        //
+        // Amount is NEVER stored converted. The owner pays their admins a round number of lari, and
+        // that number has to stay legible on the page they typed it into; the USD figure that
+        // reaches Statistics and Finances is derived at read time from the month's locked FX
+        // snapshot. Storing dollars instead would freeze one month's rate into the row and make a
+        // corrected rate unable to restate the months it applied to.
+        [Required]
+        [StringLength(3)]
+        public string Currency { get; set; } = ExpenseCurrency.Usd;
 
         // For one-time expenses this is the expense date.
         // For recurring expenses this is the *first* occurrence; subsequent occurrences are

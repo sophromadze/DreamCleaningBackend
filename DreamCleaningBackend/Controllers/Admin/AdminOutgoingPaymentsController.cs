@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -24,13 +25,16 @@ namespace DreamCleaningBackend.Controllers
     public class AdminOutgoingPaymentsController : AdminControllerBase
     {
         private readonly IOutgoingPaymentService _service;
+        private readonly IAdminSalaryPayoutService _salaries;
         private readonly ILogger<AdminOutgoingPaymentsController> _logger;
 
         public AdminOutgoingPaymentsController(
             IOutgoingPaymentService service,
+            IAdminSalaryPayoutService salaries,
             ILogger<AdminOutgoingPaymentsController> logger)
         {
             _service = service;
+            _salaries = salaries;
             _logger = logger;
         }
 
@@ -211,6 +215,116 @@ namespace DreamCleaningBackend.Controllers
                 orderId, slotIndex, GetCurrentUserId());
 
             return Ok(order);
+        }
+
+        // ── Staff salaries ─────────────────────────────────────────────────────────
+        //
+        // A salary is per PERSON per MONTH and paid in two instalments, so it takes its own
+        // endpoints rather than being squeezed into the per-order shape above. What is OWED is
+        // derived from the Salaries expenses (never stored); only the payments are recorded.
+
+        /// <summary>Every staff salary for one month, split into its two instalments.</summary>
+        [HttpGet("salaries")]
+        public async Task<ActionResult<AdminSalaryPayoutListDto>> GetSalaries(
+            [FromQuery] int? year = null, [FromQuery] int? month = null)
+        {
+            var now = DateTime.UtcNow;
+            try
+            {
+                return Ok(await _salaries.GetAsync(year ?? now.Year, month ?? now.Month));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Records one instalment as paid, freezing what was handed over. The payee is addressed by
+        /// key rather than by user id because a salary can be owed to somebody with no account.
+        /// </summary>
+        [HttpPost("salaries/{year:int}/{month:int}/{half:int}/pay")]
+        public async Task<ActionResult<AdminSalaryPayoutListDto>> MarkSalaryPaid(
+            int year, int month, int half, [FromQuery] string payeeKey, [FromBody] MarkSalaryPaidDto? dto)
+        {
+            if (string.IsNullOrWhiteSpace(payeeKey))
+                return BadRequest(new { message = "Which salary is being paid was not supplied." });
+
+            try
+            {
+                var result = await _salaries.MarkPaidAsync(
+                    year, month, payeeKey, half, dto ?? new MarkSalaryPaidDto(), GetCurrentUserId());
+
+                _logger.LogInformation(
+                    "Salary payment recorded: {PayeeKey} {Year}-{Month} instalment {Half}, by user {UserId}",
+                    payeeKey, year, month, half, GetCurrentUserId());
+
+                return Ok(result);
+            }
+            catch (DbUpdateException)
+            {
+                // The UNIQUE index caught a double-submit. Reported as the rule it is, not a 500.
+                return BadRequest(new { message = "That payment has already been recorded." });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Sets where an employee's salary is sent — an IBAN, a card or an ID number. Free text:
+        /// the format differs by country and by person, and validating one we cannot know would
+        /// block a real payment. Blank clears it.
+        /// </summary>
+        [HttpPut("salaries/{year:int}/{month:int}/payee-details")]
+        public async Task<ActionResult<AdminSalaryPayoutListDto>> UpdateSalaryPayeeDetails(
+            int year, int month, [FromQuery] string payeeKey, [FromBody] UpdateSalaryPayeeDetailsDto dto)
+        {
+            if (string.IsNullOrWhiteSpace(payeeKey))
+                return BadRequest(new { message = "Whose payment details these are was not supplied." });
+
+            try
+            {
+                var result = await _salaries.UpdatePayeeDetailsAsync(
+                    year, month, payeeKey, dto ?? new UpdateSalaryPayeeDetailsDto(), GetCurrentUserId());
+
+                // The value itself is a bank destination and is deliberately NOT logged here — the
+                // audit row records the change, and application logs are a wider audience.
+                _logger.LogInformation(
+                    "Salary payment details updated for {PayeeKey} by user {UserId}",
+                    payeeKey, GetCurrentUserId());
+
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>Undoes a recorded salary payment — for the case where it was ticked by mistake.</summary>
+        [HttpPost("salaries/{year:int}/{month:int}/{half:int}/unpay")]
+        public async Task<ActionResult<AdminSalaryPayoutListDto>> UndoSalaryPayment(
+            int year, int month, int half, [FromQuery] string payeeKey)
+        {
+            if (string.IsNullOrWhiteSpace(payeeKey))
+                return BadRequest(new { message = "Which salary is being undone was not supplied." });
+
+            try
+            {
+                var result = await _salaries.UndoPaymentAsync(year, month, payeeKey, half);
+
+                _logger.LogInformation(
+                    "Salary payment REVERSED: {PayeeKey} {Year}-{Month} instalment {Half}, by user {UserId}",
+                    payeeKey, year, month, half, GetCurrentUserId());
+
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
         }
 
         /// <summary>Undoes a payout marking — for the case where it was ticked by mistake.</summary>

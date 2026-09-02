@@ -2193,12 +2193,20 @@ namespace DreamCleaningBackend.Controllers
             // Pass current user ID to the service for audit logging
             var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
 
-            var success = await _cleanerService.UnassignCleanerFromOrderAsync(orderId, cleanerId, currentUserId);
+            var result = await _cleanerService.UnassignCleanerFromOrderAsync(orderId, cleanerId, currentUserId);
 
-            if (success)
-                return Ok(new { message = "Cleaner removed successfully and notified via email" });
+            if (!result.Found)
+                return NotFound(new { message = "Cleaner assignment not found" });
 
-            return NotFound(new { message = "Cleaner assignment not found" });
+            // The message says what actually happened: a cleaner who never received the
+            // assignment mail is not emailed about the removal either.
+            return Ok(new
+            {
+                message = result.RemovalNotificationSent
+                    ? "Cleaner removed successfully and notified via email"
+                    : "Cleaner removed successfully. No email was sent — they had not been notified about this job.",
+                removalNotificationSent = result.RemovalNotificationSent
+            });
         }
 
         [HttpGet("orders/{orderId}/update-history")]

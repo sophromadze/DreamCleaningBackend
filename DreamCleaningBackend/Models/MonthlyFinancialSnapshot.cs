@@ -35,9 +35,13 @@ namespace DreamCleaningBackend.Models
         // rates instead, which is also what the shifts panel shows; only the FX rate above is
         // frozen, because an exchange rate genuinely belongs to the month it was in force.
 
-        // "auto" — UsdPerGel came from the FX API and may refresh while the month is ongoing.
+        // "market" — the market mid-rate, the one a bank or Google quotes. What an ongoing month
+        //             uses, and it may refresh while that month is still running.
+        // "auto"   — the National Bank of Georgia's OFFICIAL rate. Used for a closed month (the
+        //             only source that answers for a historical date) and as the live fallback.
+        //             It runs a little off the market, which is why it is no longer first.
         // "manual" — a SuperAdmin set it explicitly; never auto-refreshed.
-        // "fallback" — the API was unreachable and a default was used; treat as needs-attention.
+        // "fallback" — every lookup failed and a configured default was used; needs attention.
         [Required]
         [StringLength(20)]
         public string FxSource { get; set; } = "auto";

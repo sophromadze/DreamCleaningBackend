@@ -111,6 +111,15 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        // People a salary can be recorded against. Read-only and gated like the rest of the page —
+        // it exposes staff names and emails, which the expenses page already shows.
+        [HttpGet("staff")]
+        [RequirePageView(AdminViewablePages.Expenses)]
+        public async Task<ActionResult<List<ExpenseStaffMemberDto>>> GetStaffMembers()
+        {
+            return Ok(await _expenseService.GetStaffMembersAsync());
+        }
+
         // ── Category management ────────────────────────────────────────────────
 
         [HttpGet("categories")]

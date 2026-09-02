@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260902180722_AddExpenseStaffUser")]
+    partial class AddExpenseStaffUser
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -180,120 +183,6 @@ namespace DreamCleaningBackend.Migrations
                     b.HasKey("OrderId");
 
                     b.ToTable("AdminOrderNotes");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.AdminSalaryPayee", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("PayeeKey")
-                        .IsRequired()
-                        .HasMaxLength(220)
-                        .HasColumnType("varchar(220)");
-
-                    b.Property<string>("PaymentDetails")
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<int?>("StaffUserId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<int>("UpdatedByUserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("PayeeKey")
-                        .IsUnique()
-                        .HasDatabaseName("IX_AdminSalaryPayees_PayeeKey");
-
-                    b.HasIndex("StaffUserId")
-                        .HasDatabaseName("IX_AdminSalaryPayees_StaffUserId");
-
-                    b.HasIndex("UpdatedByUserId");
-
-                    b.ToTable("AdminSalaryPayees");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.AdminSalaryPayment", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasMaxLength(3)
-                        .HasColumnType("varchar(3)");
-
-                    b.Property<int>("Half")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Month")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("PaidAmount")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal>("PaidAmountUsd")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<DateTime>("PaidAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<decimal>("PaidBonusAmount")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<int>("PaidByUserId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("PayeeKey")
-                        .IsRequired()
-                        .HasMaxLength(220)
-                        .HasColumnType("varchar(220)");
-
-                    b.Property<string>("PayeeName")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("PaymentNote")
-                        .HasMaxLength(500)
-                        .HasColumnType("varchar(500)");
-
-                    b.Property<int?>("StaffUserId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal?>("UsdPerGel")
-                        .HasColumnType("decimal(18,6)");
-
-                    b.Property<int>("Year")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("PaidByUserId");
-
-                    b.HasIndex("StaffUserId")
-                        .HasDatabaseName("IX_AdminSalaryPayments_StaffUserId");
-
-                    b.HasIndex("Year", "Month")
-                        .HasDatabaseName("IX_AdminSalaryPayments_Year_Month");
-
-                    b.HasIndex("PayeeKey", "Year", "Month", "Half")
-                        .IsUnique()
-                        .HasDatabaseName("IX_AdminSalaryPayments_Payee_Period");
-
-                    b.ToTable("AdminSalaryPayments");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.AdminShift", b =>
@@ -2005,11 +1894,6 @@ namespace DreamCleaningBackend.Migrations
 
                     b.Property<int>("CreatedByUserId")
                         .HasColumnType("int");
-
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasMaxLength(3)
-                        .HasColumnType("varchar(3)");
 
                     b.Property<DateTime?>("EndDate")
                         .HasColumnType("datetime(6)");
@@ -5635,28 +5519,6 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired();
 
                     b.Navigation("Order");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.AdminSalaryPayee", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.User", "UpdatedByUser")
-                        .WithMany()
-                        .HasForeignKey("UpdatedByUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("UpdatedByUser");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.AdminSalaryPayment", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.User", "PaidByUser")
-                        .WithMany()
-                        .HasForeignKey("PaidByUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("PaidByUser");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.AdminShift", b =>
