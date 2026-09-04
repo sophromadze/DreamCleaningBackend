@@ -99,11 +99,31 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>Human-readable problems a SuperAdmin should look at before paying. Never blocks paying.</summary>
         public List<string> Warnings { get; set; } = new();
 
-        /// <summary>True when every assigned cleaner has been paid (and there is at least one).</summary>
+        /// <summary>
+        /// True when every payout line is SETTLED — paid, and still covered by what was paid.
+        /// A line whose hours grew after payment un-settles it, so an order that gained an hour
+        /// after everyone was paid stops reading "Paid" and goes back to "Part paid".
+        /// </summary>
         public bool IsFullyPaid { get; set; }
 
-        /// <summary>True when at least one, but not every, cleaner has been paid.</summary>
+        /// <summary>
+        /// True when some money has gone out on this order but something is still owed —
+        /// including the case where every line was paid and a later edit left a shortfall on it.
+        /// </summary>
         public bool IsPartiallyPaid { get; set; }
+
+        /// <summary>Everything still to hand over on this order: unpaid lines plus any shortfalls.</summary>
+        public decimal OutstandingPayout { get; set; }
+
+        /// <summary>
+        /// The part of <see cref="OutstandingPayout"/> owed on lines that were ALREADY PAID —
+        /// the extra money the order's edit created. Zero on an order nobody has been paid for,
+        /// which is what keeps top-up wording off a plainly unpaid order.
+        /// </summary>
+        public decimal TopUpPayout { get; set; }
+
+        /// <summary>Any line paid above what it is now worth. Advisory; nothing is clawed back.</summary>
+        public decimal OverpaidAmount { get; set; }
     }
 
     /// <summary>What one cleaner is owed for one order, and whether they have had it.</summary>
@@ -149,12 +169,43 @@ namespace DreamCleaningBackend.DTOs
 
         public bool IsPaid { get; set; }
 
-        /// <summary>What was actually handed over, frozen at pay time. Null until paid.</summary>
+        /// <summary>
+        /// What was actually handed over, frozen at pay time and never re-derived. Null until
+        /// paid. A TOP-UP adds to it, so it always reads as the total this person has had for
+        /// this order — see <see cref="Helpers.CleanerPayoutSettlement"/>.
+        /// </summary>
         public decimal? PaidAmount { get; set; }
         public CleanerPaymentMethod? PaidVia { get; set; }
         public DateTime? PaidAt { get; set; }
         public string? PaidByName { get; set; }
         public string? PaymentNote { get; set; }
+
+        // ===== Settlement: is the money that went out still enough? =====
+        //
+        // Derived from PaidAmount vs Payout by Helpers.CleanerPayoutSettlement, which is also
+        // what decides the order's pill and the header total. The component renders these and
+        // recomputes nothing.
+
+        /// <summary>
+        /// Still to hand over: the whole payout on an unpaid line, the SHORTFALL on a line whose
+        /// hours grew after it was paid. Never negative.
+        /// </summary>
+        public decimal OutstandingPayout { get; set; }
+
+        /// <summary>
+        /// Paid ABOVE what the line is now worth — hours edited down after payment. Reported so
+        /// somebody can sort it out; nothing nets it off another line.
+        /// </summary>
+        public decimal OverpaidAmount { get; set; }
+
+        /// <summary>Nothing left to pay on this line.</summary>
+        public bool IsSettled { get; set; }
+
+        /// <summary>
+        /// Already paid once and worth more now. This is what turns on the "still to pay"
+        /// wording — an ordinary unpaid line must never show it.
+        /// </summary>
+        public bool IsTopUp { get; set; }
     }
 
     /// <summary>Totals across everything the current filter matched — the page header.</summary>
@@ -166,9 +217,18 @@ namespace DreamCleaningBackend.DTOs
         public decimal TotalTips { get; set; }
         public decimal TotalPayout { get; set; }
 
-        /// <summary>Still owed — the number that says how much money has to leave today.</summary>
+        /// <summary>
+        /// Still owed — the number that says how much money has to leave today. Counts unpaid
+        /// lines in full AND the shortfall on lines paid before their hours grew, so a top-up
+        /// created by an order edit cannot hide from the header.
+        /// </summary>
         public decimal UnpaidPayout { get; set; }
         public decimal PaidPayout { get; set; }
+
+        /// <summary>The part of <see cref="UnpaidPayout"/> owed on already-paid lines.</summary>
+        public decimal TopUpPayout { get; set; }
+
+        /// <summary>How many lines still owe something — unpaid ones and shortfalls alike.</summary>
         public int UnpaidCleanerCount { get; set; }
 
         /// <summary>How many orders in range carry at least one warning.</summary>

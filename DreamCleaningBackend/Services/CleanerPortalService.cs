@@ -98,7 +98,16 @@ namespace DreamCleaningBackend.Services
                 .OrderByDescending(o => o.ServiceDate).ThenByDescending(o => o.ServiceTime)
                 .ToListAsync();
 
-            return orders.Select(order =>
+            // A cleaning that never happened is on nobody's calendar - cancelled, and refunded
+            // before service, are dropped here exactly as they are from the cleaner's own month.
+            // Filtered in memory rather than in the query so it is the SAME predicate the
+            // cleaner's view splits on: a SQL rewrite of it would be a second copy of the rule,
+            // free to disagree with the one it mirrors, and this is the screen where such a
+            // disagreement shows up as a job one audience can see and the other cannot.
+            var cleanings = orders
+                .Where(o => CleanerJobView.BelongsOnTheCalendar(o.Status, o.StatusBeforeRefund));
+
+            return cleanings.Select(order =>
             {
                 // Widen the cleaner's own projection rather than re-listing its fields: a field
                 // added to BuildJob has to reach this list too, and a hand-copied initializer is

@@ -16,6 +16,13 @@ namespace DreamCleaningBackend.Services
     /// hourly rate comes from <see cref="OrderPricingCalculator.GetDefaultCleanerHourlyRate"/> so a
     /// rate somebody set wrong shows up as a warning instead of as a wrong payment.
     ///
+    /// Paying is not a one-shot event. A line records what was HANDED OVER; if the order is later
+    /// edited so the line is worth more — cleaners reporting they worked four hours rather than
+    /// three and a half is the routine case — the difference is reported as still to pay and the
+    /// order drops back out of "Paid". <see cref="Helpers.CleanerPayoutSettlement"/> is the single
+    /// rule for that, and paying the difference tops the frozen amount up rather than replacing
+    /// it. Nothing of the sort is ever shown for a line nobody has paid yet.
+    ///
     /// Which orders qualify: <b>Done, with no refund of any size</b> (owner's call, 2026-08).
     /// Cancelled, fully refunded and part-refunded orders are all out — the page is a list of
     /// finished jobs to settle, and an order whose money went back is a conversation rather than
@@ -109,10 +116,13 @@ namespace DreamCleaningBackend.Services
             var assignment = order.OrderCleaners.FirstOrDefault(oc => oc.Id == orderCleanerId);
             if (assignment == null) return null;
 
-            // A paid line is a historical record. Editing it would move a figure that has already
-            // been handed over, so it is refused here as well as disabled in the UI.
-            if (assignment.IsPaid)
-                throw new InvalidOperationException("This cleaner has already been paid for this order. Undo the payment first to change their rate or hours.");
+            // A PAID line used to be refused here ("undo the payment first"). It is allowed since
+            // 2026-09, because the thing that made it unsafe is gone: PaidAmount is a frozen
+            // record of what was handed over, and raising this line's hours now leaves the
+            // difference showing as still to pay rather than silently restating the payment.
+            // Cleaners routinely report longer hours after they have been settled, and the undo /
+            // re-pay dance that used to be required threw away the record of the first payment —
+            // which is the one thing that must survive. See Helpers/CleanerPayoutSettlement.
 
             // Captured BEFORE the write. A null here means "this line tracks the order rate/split"
             // and is materially different from a value that happens to equal it, so the audit row
@@ -262,16 +272,18 @@ namespace DreamCleaningBackend.Services
 
             var line = BuildPayroll(order).Lines.FirstOrDefault(l => l.OrderCleanerId == orderCleanerId);
             var wasAlreadyPaid = assignment.IsPaid;
-            MarkPaid(assignment, line, dto.PaidVia, dto.PaymentNote, paidByUserId);
+            var recorded = MarkPaid(assignment, line, dto.PaidVia, dto.PaymentNote, paidByUserId);
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            // MarkPaid is a no-op on an already-paid line; recording a payout that did not happen
-            // would be worse than recording none.
-            if (!wasAlreadyPaid)
-                await LogPayoutAsync(order, "PayoutRecorded", DescribeCleaner(assignment),
-                    assignment.PaidAmount, assignment.PaidVia, assignment.PaymentNote, paidByUserId);
+            // MarkPaid returns null on a line that was already covered; recording a payout that
+            // did not happen would be worse than recording none. A line that WAS paid and is
+            // short is a second, separate payment, so it gets its own row under its own action.
+            if (recorded.HasValue)
+                await LogPayoutAsync(order, wasAlreadyPaid ? "PayoutToppedUp" : "PayoutRecorded",
+                    DescribeCleaner(assignment), recorded.Value, assignment.PaidAmount,
+                    assignment.PaidVia, assignment.PaymentNote, paidByUserId);
 
             return BuildOrderRow(order);
         }
@@ -281,9 +293,18 @@ namespace DreamCleaningBackend.Services
         /// rather than an OrderCleaner update: the row records money handed over, and it must never
         /// be replayable by the generic Undo, which would flip IsPaid without anyone deciding to.
         /// </summary>
+        /// <param name="amount">
+        /// What moved in THIS event — the shortfall on a top-up, not the running total. An audit
+        /// row for a $10.50 top-up that read "$84.00" would look like the whole job was paid twice.
+        /// </param>
+        /// <param name="totalPaidForLine">
+        /// What the line has had in total once this event is applied, so a reader can see both
+        /// "what went out today" and "where that leaves us" without adding up the log.
+        /// </param>
         private Task LogPayoutAsync(
             Order order, string action, string who,
-            decimal? amount, CleanerPaymentMethod? via, string? note, int? actingUserId) =>
+            decimal? amount, decimal? totalPaidForLine,
+            CleanerPaymentMethod? via, string? note, int? actingUserId) =>
             _audit.LogActionAsync(
                 AuditEntityTypes.CleanerPayout,
                 order.Id,
@@ -293,6 +314,7 @@ namespace DreamCleaningBackend.Services
                 {
                     Cleaner = who,
                     PaidAmount = amount,
+                    TotalPaidForLine = totalPaidForLine,
                     PaidVia = via?.ToString(),
                     PaymentNote = note,
                     // The reported labour cost as it stood when the money went out, so a later
@@ -314,15 +336,22 @@ namespace DreamCleaningBackend.Services
             // Each newly-paid line is audited individually, because "mark all paid" is one CLICK
             // but several payments — the money reaches different people through different
             // channels, and a single summary row could not answer "was Marta paid for #412".
-            var newlyPaid = new List<(string Who, decimal? Amount, CleanerPaymentMethod? Via)>();
+            var newlyPaid = new List<(string Who, string Action, decimal Amount, decimal? Total, CleanerPaymentMethod? Via)>();
 
-            foreach (var assignment in order.OrderCleaners.Where(oc => !oc.IsPaid))
+            // Every line that still owes something, not merely every UNPAID line: an order edited
+            // after payday leaves paid lines short, and "Mark all paid" has to settle those too
+            // or the button would leave the order it just settled still showing money owed.
+            foreach (var assignment in order.OrderCleaners)
             {
                 var line = payroll.Lines.FirstOrDefault(l => l.OrderCleanerId == assignment.Id);
+                var wasAlreadyPaid = assignment.IsPaid;
                 // Each cleaner is paid via their OWN saved method — a "pay all" is one action,
                 // not one payment channel.
-                MarkPaid(assignment, line, null, dto.PaymentNote, paidByUserId);
-                newlyPaid.Add((DescribeCleaner(assignment), assignment.PaidAmount, assignment.PaidVia));
+                var recorded = MarkPaid(assignment, line, null, dto.PaymentNote, paidByUserId);
+                if (recorded.HasValue)
+                    newlyPaid.Add((DescribeCleaner(assignment),
+                        wasAlreadyPaid ? "PayoutToppedUp" : "PayoutRecorded",
+                        recorded.Value, assignment.PaidAmount, assignment.PaidVia));
             }
 
             // "Everyone on this order" includes the staffing slots with nobody on file — they
@@ -331,16 +360,19 @@ namespace DreamCleaningBackend.Services
             for (var slot = 0; slot < payroll.UnassignedCount; slot++)
             {
                 var record = ResolveSlotRecord(order, slot);
-                if (record.IsPaid) continue;
-                MarkSlotPaid(record, unassignedPayout, null, dto.PaymentNote, paidByUserId);
-                newlyPaid.Add(($"Unassigned slot #{slot + 1}", record.PaidAmount, record.PaidVia));
+                var slotWasPaid = record.IsPaid;
+                var recorded = MarkSlotPaid(record, unassignedPayout, null, dto.PaymentNote, paidByUserId);
+                if (recorded.HasValue)
+                    newlyPaid.Add(($"Unassigned slot #{slot + 1}",
+                        slotWasPaid ? "PayoutToppedUp" : "PayoutRecorded",
+                        recorded.Value, record.PaidAmount, record.PaidVia));
             }
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            foreach (var (who, amount, via) in newlyPaid)
-                await LogPayoutAsync(order, "PayoutRecorded", who, amount, via, dto.PaymentNote, paidByUserId);
+            foreach (var (who, action, amount, total, via) in newlyPaid)
+                await LogPayoutAsync(order, action, who, amount, total, via, dto.PaymentNote, paidByUserId);
 
             return BuildOrderRow(order);
         }
@@ -364,15 +396,16 @@ namespace DreamCleaningBackend.Services
 
             var slotRecord = ResolveSlotRecord(order, slotIndex);
             var slotWasPaid = slotRecord.IsPaid;
-            MarkSlotPaid(slotRecord, UnassignedSlotPayout(payroll),
+            var recorded = MarkSlotPaid(slotRecord, UnassignedSlotPayout(payroll),
                 dto.PaidVia, dto.PaymentNote, paidByUserId);
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            if (!slotWasPaid)
-                await LogPayoutAsync(order, "PayoutRecorded", $"Unassigned slot #{slotIndex + 1}",
-                    slotRecord.PaidAmount, slotRecord.PaidVia, slotRecord.PaymentNote, paidByUserId);
+            if (recorded.HasValue)
+                await LogPayoutAsync(order, slotWasPaid ? "PayoutToppedUp" : "PayoutRecorded",
+                    $"Unassigned slot #{slotIndex + 1}", recorded.Value, slotRecord.PaidAmount,
+                    slotRecord.PaidVia, slotRecord.PaymentNote, paidByUserId);
 
             return BuildOrderRow(order);
         }
@@ -404,7 +437,7 @@ namespace DreamCleaningBackend.Services
             await _context.SaveChangesAsync();
 
             await LogPayoutAsync(order, "PayoutReversed", $"Unassigned slot #{slotIndex + 1}",
-                reversedAmount, reversedVia, reversedNote, null);
+                reversedAmount, 0m, reversedVia, reversedNote, null);
 
             return BuildOrderRow(order);
         }
@@ -438,7 +471,9 @@ namespace DreamCleaningBackend.Services
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            await LogPayoutAsync(order, "PayoutReversed", who, reversedAmount, reversedVia, reversedNote, null);
+            // A reversal clears the whole line, top-ups included — the running total it leaves
+            // behind is zero, and saying so is what stops a reader adding the events up wrong.
+            await LogPayoutAsync(order, "PayoutReversed", who, reversedAmount, 0m, reversedVia, reversedNote, null);
 
             return BuildOrderRow(order);
         }
@@ -468,39 +503,73 @@ namespace DreamCleaningBackend.Services
             return record;
         }
 
-        private static void MarkSlotPaid(
+        /// <summary>
+        /// Records a payout against an unassigned staffing slot — the first one, or a TOP-UP when
+        /// the slot's hours grew after it was settled. Same rules as <see cref="MarkPaid"/>.
+        /// Returns what was handed over NOW, or null when the line was already covered.
+        /// </summary>
+        private static decimal? MarkSlotPaid(
             OrderUnassignedPayout record,
             decimal payout,
             CleanerPaymentMethod? paidVia,
             string? note,
             int paidByUserId)
         {
-            if (record.IsPaid) return;
+            var settlement = CleanerPayoutSettlement.Resolve(record.IsPaid, record.PaidAmount, payout);
+            if (settlement.IsSettled) return null;
+
+            var amount = settlement.Outstanding;
 
             record.IsPaid = true;
-            record.PaidAmount = payout;
-            record.PaidVia = paidVia;
+            record.PaidAmount = OrderPricingCalculator.Round2(settlement.PaidAmount + amount);
+            record.PaidVia = paidVia ?? record.PaidVia;
             record.PaidAt = DateTime.UtcNow;
             record.PaidByUserId = paidByUserId;
-            record.PaymentNote = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+            if (!string.IsNullOrWhiteSpace(note)) record.PaymentNote = note.Trim();
+            return amount;
         }
 
-        private static void MarkPaid(
+        /// <summary>
+        /// Records a payout against one cleaner — the first one, or a TOP-UP when the line is
+        /// worth more now than what was handed over (2026-09). Returns the amount recorded NOW,
+        /// or null when the line was already covered and nothing happened.
+        ///
+        /// Three details are load-bearing on the top-up path:
+        ///
+        /// * <see cref="OrderCleaner.PaidAmount"/> is ADDED to, never replaced. It reads as the
+        ///   running total this person has had for this order, so the shortfall can still be
+        ///   computed after the top-up and the first payment is not lost. Each payment is its own
+        ///   audit row, which is where the two events stay separable.
+        /// * The amount recorded is the SHORTFALL, not the whole payout — paying $84.00 again on
+        ///   a line already paid $73.50 would double-count $73.50 of real money.
+        /// * A blank note or method leaves the existing one in place rather than wiping the
+        ///   record of the first payment.
+        ///
+        /// A never-paid line with a $0 payout is still marked paid: "nothing was owed and that
+        /// has been checked off" is a decision worth recording, which is why the guard is
+        /// "already settled" rather than "amount is zero".
+        /// </summary>
+        private static decimal? MarkPaid(
             OrderCleaner assignment,
             CleanerPayrollCalculator.CleanerLine? line,
             CleanerPaymentMethod? paidVia,
             string? note,
             int paidByUserId)
         {
-            if (assignment.IsPaid) return;
+            // Salary + tips: the cleaner is handed one figure, and that is what we record.
+            var payout = line?.Payout ?? 0m;
+            var settlement = CleanerPayoutSettlement.Resolve(assignment.IsPaid, assignment.PaidAmount, payout);
+            if (settlement.IsSettled) return null;
+
+            var amount = settlement.Outstanding;
 
             assignment.IsPaid = true;
-            // Salary + tips: the cleaner is handed one figure, and that is what we record.
-            assignment.PaidAmount = line?.Payout ?? 0m;
-            assignment.PaidVia = paidVia ?? assignment.Cleaner?.PaymentMethod;
+            assignment.PaidAmount = OrderPricingCalculator.Round2(settlement.PaidAmount + amount);
+            assignment.PaidVia = paidVia ?? assignment.PaidVia ?? assignment.Cleaner?.PaymentMethod;
             assignment.PaidAt = DateTime.UtcNow;
             assignment.PaidByUserId = paidByUserId;
-            assignment.PaymentNote = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+            if (!string.IsNullOrWhiteSpace(note)) assignment.PaymentNote = note.Trim();
+            return amount;
         }
 
         private IQueryable<Order> PerformedOrdersWithIncludes() =>
@@ -612,6 +681,8 @@ namespace DreamCleaningBackend.Services
             {
                 var assignment = assignmentsById[line.OrderCleanerId];
                 var cleaner = assignment.Cleaner;
+                var settlement = CleanerPayoutSettlement.Resolve(
+                    assignment.IsPaid, assignment.PaidAmount, line.Payout);
 
                 return new OutgoingPaymentCleanerDto
                 {
@@ -636,7 +707,11 @@ namespace DreamCleaningBackend.Services
                     PaidByName = assignment.PaidByUser != null
                         ? $"{assignment.PaidByUser.FirstName} {assignment.PaidByUser.LastName}".Trim()
                         : null,
-                    PaymentNote = assignment.PaymentNote
+                    PaymentNote = assignment.PaymentNote,
+                    OutstandingPayout = settlement.Outstanding,
+                    OverpaidAmount = settlement.Overpaid,
+                    IsSettled = settlement.IsSettled,
+                    IsTopUp = settlement.IsTopUp
                 };
             }).ToList();
 
@@ -655,6 +730,10 @@ namespace DreamCleaningBackend.Services
                 // A slot only has a row once somebody has acted on it; until then it is unpaid.
                 slotRecords.TryGetValue(i, out var record);
 
+                var slotPayout = OrderPricingCalculator.Round2(payroll.UnassignedSalaryEach + tipShare);
+                var slotSettlement = CleanerPayoutSettlement.Resolve(
+                    record?.IsPaid ?? false, record?.PaidAmount, slotPayout);
+
                 unassigned.Add(new OutgoingPaymentCleanerDto
                 {
                     // SlotIndex travels in CleanerId's place — it is the id the pay/unpay
@@ -671,7 +750,7 @@ namespace DreamCleaningBackend.Services
                     RateDiffersFromDefault = order.CleanerHourlyRate != expectedRate,
                     Salary = payroll.UnassignedSalaryEach,
                     Tips = tipShare,
-                    Payout = OrderPricingCalculator.Round2(payroll.UnassignedSalaryEach + tipShare),
+                    Payout = slotPayout,
                     IsPaid = record?.IsPaid ?? false,
                     PaidAmount = record?.PaidAmount,
                     PaidVia = record?.PaidVia,
@@ -679,7 +758,11 @@ namespace DreamCleaningBackend.Services
                     PaidByName = record?.PaidByUser != null
                         ? $"{record.PaidByUser.FirstName} {record.PaidByUser.LastName}".Trim()
                         : null,
-                    PaymentNote = record?.PaymentNote
+                    PaymentNote = record?.PaymentNote,
+                    OutstandingPayout = slotSettlement.Outstanding,
+                    OverpaidAmount = slotSettlement.Overpaid,
+                    IsSettled = slotSettlement.IsSettled,
+                    IsTopUp = slotSettlement.IsTopUp
                 });
             }
 
@@ -729,9 +812,21 @@ namespace DreamCleaningBackend.Services
 
             // Paid state spans BOTH lists. An unassigned slot is a real payout that can be
             // recorded, so an order is only "Paid" once every line — named or not — is settled.
+            //
+            // SETTLED, not merely paid: a line whose hours grew after the money went out is
+            // short, and an order carrying a shortfall must stop reading "Paid" or the money
+            // still owed is invisible on every screen (2026-09). That is why these read
+            // IsSettled rather than IsPaid — see Helpers/CleanerPayoutSettlement.
             var allLines = cleaners.Concat(unassigned).ToList();
-            row.IsFullyPaid = allLines.Count > 0 && allLines.All(c => c.IsPaid);
-            row.IsPartiallyPaid = allLines.Any(c => c.IsPaid) && allLines.Any(c => !c.IsPaid);
+            row.IsFullyPaid = allLines.Count > 0 && allLines.All(c => c.IsSettled);
+            row.IsPartiallyPaid = allLines.Any(c => c.IsPaid) && allLines.Any(c => !c.IsSettled);
+
+            row.OutstandingPayout = OrderPricingCalculator.Round2(allLines.Sum(c => c.OutstandingPayout));
+            // The already-paid half of it, kept separate so the panel can say "$10.50 still to
+            // pay" on an edited order without ever using that wording on a plainly unpaid one.
+            row.TopUpPayout = OrderPricingCalculator.Round2(
+                allLines.Where(c => c.IsTopUp).Sum(c => c.OutstandingPayout));
+            row.OverpaidAmount = OrderPricingCalculator.Round2(allLines.Sum(c => c.OverpaidAmount));
 
             row.Warnings = BuildWarnings(order, row, expectedRate);
             return row;
@@ -779,8 +874,14 @@ namespace DreamCleaningBackend.Services
                 // now — that is the whole reason PaidAmount is stored.
                 PaidPayout = OrderPricingCalculator.Round2(
                     lines.Where(l => l.IsPaid).Sum(l => l.PaidAmount ?? l.Payout)),
-                UnpaidPayout = OrderPricingCalculator.Round2(lines.Where(l => !l.IsPaid).Sum(l => l.Payout)),
-                UnpaidCleanerCount = lines.Count(l => !l.IsPaid),
+                // Every line's OWN outstanding figure, summed — the full payout on an unpaid
+                // line, the shortfall on one whose hours grew after payment. Summing only the
+                // unpaid lines (as this did until 2026-09) hid a top-up from the one header
+                // figure that is supposed to say how much money has to go out.
+                UnpaidPayout = OrderPricingCalculator.Round2(lines.Sum(l => l.OutstandingPayout)),
+                TopUpPayout = OrderPricingCalculator.Round2(
+                    lines.Where(l => l.IsTopUp).Sum(l => l.OutstandingPayout)),
+                UnpaidCleanerCount = lines.Count(l => l.OutstandingPayout > 0m),
                 OrdersWithWarnings = rows.Count(r => r.Warnings.Count > 0)
             };
         }

@@ -209,5 +209,25 @@ namespace DreamCleaningBackend.Helpers
         /// </summary>
         public static bool IsPastJob(string? status, string? statusBeforeRefund) =>
             OrderStatuses.WasPerformed(status, statusBeforeRefund);
+
+        /// <summary>
+        /// Does this cleaning belong on a cleaner-facing calendar AT ALL? Exactly
+        /// <see cref="IsCurrentJob"/> OR <see cref="IsPastJob"/> - the two lists the cleaner's own
+        /// view builds - so the system-wide month can never contain a job the cleaner's month
+        /// would have dropped.
+        ///
+        /// What it drops is a cleaning that never happened: a CANCELLED order, and one REFUNDED
+        /// BEFORE service (Refunded with anything but Done behind it). Neither is work, and both
+        /// used to reach the system-wide calendar unfiltered, wearing the red pulsing dot that
+        /// means work still ahead - a job called off months ago pulsing at an admin as though
+        /// somebody still had to turn up for it.
+        ///
+        /// A job DONE and later refunded stays, as a COMPLETED one: the crew worked it, and the
+        /// refund is a matter between the company and the customer. That is the same rule the
+        /// payroll uses (<see cref="OrderStatuses.WasPerformed"/>) and the same one the cleaner's
+        /// own history follows, so the three surfaces agree about which cleanings ever existed.
+        /// </summary>
+        public static bool BelongsOnTheCalendar(string? status, string? statusBeforeRefund) =>
+            IsCurrentJob(status) || IsPastJob(status, statusBeforeRefund);
     }
 }

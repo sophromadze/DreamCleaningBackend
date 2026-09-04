@@ -66,9 +66,16 @@ namespace DreamCleaningBackend.Models
         public bool IsPaid { get; set; } = false;
 
         /// <summary>
-        /// What was handed over, frozen at the moment of payment. Deliberately NOT re-derived on
-        /// read: the rate or the order's duration can change afterwards, and the record of what
+        /// What has been handed over, frozen at the moment of payment. Deliberately NOT re-derived
+        /// on read: the rate or the order's duration can change afterwards, and the record of what
         /// left the company must not move with it.
+        ///
+        /// It is a RUNNING TOTAL, not a single payment. When the order's hours grow after the
+        /// cleaner was paid, the Outgoing Payments page reports the difference as still owed
+        /// (Helpers/CleanerPayoutSettlement) and paying it ADDS to this figure — so it always
+        /// answers "how much has this person had for this order", which is exactly what the
+        /// shortfall has to be measured against. The individual payment events live in the audit
+        /// log, under CleanerPayout / PayoutRecorded and PayoutToppedUp.
         /// </summary>
         [Column(TypeName = "decimal(18,2)")]
         public decimal? PaidAmount { get; set; }

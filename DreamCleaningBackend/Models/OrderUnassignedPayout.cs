@@ -46,8 +46,8 @@ namespace DreamCleaningBackend.Models
         public bool IsPaid { get; set; } = false;
 
         /// <summary>
-        /// What was handed over, frozen at the moment of payment — same rule as
-        /// <see cref="OrderCleaner.PaidAmount"/>. Never re-derived on read.
+        /// What has been handed over, frozen at the moment of payment — same rule as
+        /// <see cref="OrderCleaner.PaidAmount"/>, top-ups included. Never re-derived on read.
         /// </summary>
         [Column(TypeName = "decimal(18,2)")]
         public decimal? PaidAmount { get; set; }

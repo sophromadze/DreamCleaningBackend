@@ -276,6 +276,47 @@ namespace DreamCleaningBackend.Tests
         }
 
         [Fact]
+        public void ACleaningThatNeverHappenedIsOnNobodysCalendar()
+        {
+            // The system-wide month used to be every order in the date range, so a cancelled or
+            // refunded-before-service job sat in the grid wearing the RED PULSING dot that means
+            // work still ahead - months after it was called off. It is the same rule the cleaner's
+            // own view already applied, so the two audiences can never be shown different months.
+            Assert.False(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Cancelled, null));
+            Assert.False(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Cancelled, OrderStatuses.Active));
+            Assert.False(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Refunded, null));
+            Assert.False(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Refunded, OrderStatuses.Active));
+            Assert.False(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Refunded, OrderStatuses.Pending));
+
+            // Work stays: ahead of the crew, and behind them.
+            Assert.True(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Pending, null));
+            Assert.True(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Active, null));
+            Assert.True(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Done, null));
+
+            // Worked and later refunded is still a cleaning that happened - it stays, as a
+            // COMPLETED one (the quiet green dot), never as work outstanding.
+            Assert.True(CleanerJobView.BelongsOnTheCalendar(OrderStatuses.Refunded, OrderStatuses.Done));
+            Assert.True(CleanerJobView.IsPastJob(OrderStatuses.Refunded, OrderStatuses.Done));
+
+            // It is exactly the union of the two lists the cleaner's own view builds - not a third
+            // opinion about which jobs exist.
+            foreach (var (status, before) in new[]
+            {
+                (OrderStatuses.Pending, (string?)null),
+                (OrderStatuses.Active, null),
+                (OrderStatuses.Done, null),
+                (OrderStatuses.Cancelled, null),
+                (OrderStatuses.Refunded, OrderStatuses.Done),
+                (OrderStatuses.Refunded, OrderStatuses.Active)
+            })
+            {
+                Assert.Equal(
+                    CleanerJobView.IsCurrentJob(status) || CleanerJobView.IsPastJob(status, before),
+                    CleanerJobView.BelongsOnTheCalendar(status, before));
+            }
+        }
+
+        [Fact]
         public void AFinishedJobStopsCarryingTheCustomersAddress()
         {
             // The reason a cleaner was ever given the address was to get there, and that reason

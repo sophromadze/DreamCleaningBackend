@@ -117,7 +117,10 @@ namespace DreamCleaningBackend.Controllers
             }
             catch (InvalidOperationException ex)
             {
-                // Already-paid line: a real, actionable rule, so it is reported as one.
+                // A rule the service refused on — reported verbatim, because these are written to
+                // be actionable by the admin who typed the value. (An already-PAID line is no
+                // longer one of them: since 2026-09 raising its hours is allowed and shows the
+                // difference as still to pay instead.)
                 return BadRequest(new { message = ex.Message });
             }
         }
