@@ -237,7 +237,10 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>The account's real address, or null for a no-email account (NoEmailHelper).</summary>
         public string? Email { get; set; }
 
+        /// <summary>The ACCOUNT's own phone, which is routinely null: it is optional at
+        /// registration and social sign-in never supplies one. See CleanerPhone.</summary>
         public string? Phone { get; set; }
+
         public string? ProfilePictureUrl { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -249,6 +252,15 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>The cleaner record's email - after a link it always equals Email, because
         /// linking overwrites it with the address the account actually signs in with.</summary>
         public string? CleanerEmail { get; set; }
+
+        /// <summary>
+        /// The linked cleaner RECORD's phone. Sent alongside Phone rather than merged into it
+        /// because they are two different facts about one person: Phone is what the account was
+        /// registered with (often nothing at all), this is the number the office dials, entered on
+        /// the Cleaners Dashboard. The tab renders whichever it has - a column reading "-" beside a
+        /// record that plainly shows a mobile number reads as a bug in the panel.
+        /// </summary>
+        public string? CleanerPhone { get; set; }
 
         public bool CleanerIsActive { get; set; }
 

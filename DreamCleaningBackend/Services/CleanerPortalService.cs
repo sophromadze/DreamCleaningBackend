@@ -209,6 +209,10 @@ namespace DreamCleaningBackend.Services
                 ServiceTypeName = CleanerJobView.ResolveCleaningTypeName(order, "Cleaning"),
                 Services = (order.OrderServices ?? new List<Models.OrderService>())
                     .Where(os => os.Service != null && !string.IsNullOrWhiteSpace(os.Service.Name))
+                    // Levels prices as an ordinary service row but is REPORTED by the gated chip
+                    // built from Order.LevelsQuantity, so the generic loop must not print it a
+                    // second time. See CleanerJobView.IsServiceLineHiddenFromCleaners.
+                    .Where(os => !CleanerJobView.IsServiceLineHiddenFromCleaners(os.Service!.ServiceKey))
                     .OrderBy(os => os.Id)
                     .Select(os => new CleanerPortalServiceLineDto
                     {

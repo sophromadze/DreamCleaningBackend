@@ -229,6 +229,30 @@ namespace DreamCleaningBackend.Tests
         }
 
         [Fact]
+        public void LevelsIsReportedByItsOwnChip_SoItLeavesTheGenericServiceList()
+        {
+            // Levels prices as an ordinary Service row but every cleaner-facing surface reads the
+            // count off Order.LevelsQuantity - the mail and SMS have their own Levels row, the
+            // portal its own chip beside the property type. Left in the generic loop as well, the
+            // portal printed "House · 2 Levels · 2 Bedrooms · 1 Bathroom · 1,000 sq ft · 2 Levels".
+            Assert.True(CleanerJobView.IsServiceLineHiddenFromCleaners("levels"));
+            // Matched on the KEY and case-insensitively; the Name and the Id both differ between
+            // dev and production, which is why neither may be matched on.
+            Assert.True(CleanerJobView.IsServiceLineHiddenFromCleaners("  Levels "));
+
+            // Everything else the customer was priced for is work the cleaner is doing.
+            Assert.False(CleanerJobView.IsServiceLineHiddenFromCleaners("bedrooms"));
+            Assert.False(CleanerJobView.IsServiceLineHiddenFromCleaners("bathrooms"));
+            Assert.False(CleanerJobView.IsServiceLineHiddenFromCleaners("sqft"));
+            Assert.False(CleanerJobView.IsServiceLineHiddenFromCleaners("cleaners"));
+            Assert.False(CleanerJobView.IsServiceLineHiddenFromCleaners("hours"));
+            // An unkeyed row is shown rather than dropped: hiding a line nobody anticipated is
+            // worse than printing its stored name.
+            Assert.False(CleanerJobView.IsServiceLineHiddenFromCleaners(null));
+            Assert.False(CleanerJobView.IsServiceLineHiddenFromCleaners("  "));
+        }
+
+        [Fact]
         public void CurrentAndPastAreDisjoint_AndACancelledJobIsNeither()
         {
             // Staffed and not finished - including an unpaid Pending order, because the customer's

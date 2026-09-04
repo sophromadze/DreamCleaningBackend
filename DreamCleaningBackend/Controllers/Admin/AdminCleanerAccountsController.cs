@@ -81,6 +81,7 @@ namespace DreamCleaningBackend.Controllers
                     c.FirstName,
                     c.LastName,
                     c.Email,
+                    c.Phone,
                     c.IsActive
                 })
                 .ToListAsync();
@@ -112,6 +113,10 @@ namespace DreamCleaningBackend.Controllers
                     CleanerId = cleaner?.CleanerId,
                     CleanerName = cleaner == null ? null : $"{cleaner.FirstName} {cleaner.LastName}".Trim(),
                     CleanerEmail = cleaner?.Email,
+                    // The number the office actually dials. A cleaner who registered their own
+                    // login usually left the optional phone field blank, so without this the row
+                    // shows no number for somebody whose mobile is on their cleaner record.
+                    CleanerPhone = cleaner?.Phone,
                     CleanerIsActive = cleaner?.IsActive ?? false,
                     AssignedOrdersCount = cleaner != null && assignmentCounts.TryGetValue(cleaner.CleanerId, out var n) ? n : 0
                 };
@@ -395,6 +400,7 @@ namespace DreamCleaningBackend.Controllers
                 CleanerId = cleaner?.Id,
                 CleanerName = cleaner == null ? null : $"{cleaner.FirstName} {cleaner.LastName}".Trim(),
                 CleanerEmail = cleaner?.Email,
+                CleanerPhone = cleaner?.Phone,
                 CleanerIsActive = cleaner?.IsActive ?? false,
                 AssignedOrdersCount = assignedCount
             };

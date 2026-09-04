@@ -11,7 +11,8 @@ namespace DreamCleaningBackend.Helpers
     /// be able to describe it differently. Three questions were being answered inline in
     /// EmailService and would have been answered a second time here; they live in one place now:
     ///
-    ///   1. Which extras does a cleaner see?  (<see cref="IsExtraHiddenFromCleaners"/>)
+    ///   1. Which extras does a cleaner see?  (<see cref="IsExtraHiddenFromCleaners"/>), and which
+    ///      priced service lines?             (<see cref="IsServiceLineHiddenFromCleaners"/>)
     ///   2. What is the address, on one line? (<see cref="BuildFullAddress"/>)
     ///   3. Must they bring cleaning supplies? (<see cref="RequiresCleanerToBringSupplies"/>)
     ///   4. What kind of cleaning is it?      (<see cref="ResolveCleaningTypeName"/>)
@@ -45,6 +46,31 @@ namespace DreamCleaningBackend.Helpers
             // task list as well would have the same job named twice on one screen.
             if (name.Contains("deep cleaning", StringComparison.OrdinalIgnoreCase)) return true;
             return false;
+        }
+
+        /// <summary>
+        /// Priced service lines that are never listed as their own row for a cleaner, because
+        /// something else on the same screen already answers them.
+        ///
+        /// LEVELS is the whole list. It is an ordinary Service row (ServiceKey "levels") so that it
+        /// prices through the normal threshold machinery, but every cleaner-facing surface reads
+        /// the count off the denormalized <c>Order.LevelsQuantity</c> column instead - the
+        /// assignment mail and SMS have their own Levels row, and the portal has its own gated
+        /// chip beside the property type. Left in the generic loop as well, the portal printed
+        /// "House · 2 Levels · 2 Bedrooms · 1 Bathroom · 1,000 sq ft · 2 Levels": the same fact
+        /// twice, in one row of chips, which reads as two different measurements.
+        ///
+        /// This is the same rule the booking page, the user order-edit page and the home hero
+        /// already follow - levels is filtered out of every generic service loop because it has a
+        /// gated block of its own. The portal was the one cleaner-facing surface that had both.
+        ///
+        /// Matched on the KEY, never the Id or the Name: both differ between dev and production.
+        /// </summary>
+        public static bool IsServiceLineHiddenFromCleaners(string? serviceKey)
+        {
+            var key = serviceKey?.Trim();
+            if (string.IsNullOrWhiteSpace(key)) return false;
+            return string.Equals(key, "levels", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

@@ -126,6 +126,27 @@ namespace DreamCleaningBackend.Tests
             }
         }
 
+        /// <summary>
+        /// The list ships BOTH numbers, because they are two different facts about one person and
+        /// only one of them is usually filled in: a cleaner who registered her own login left the
+        /// optional phone field blank (a Google or Apple sign-in never supplies one), while her
+        /// mobile sits on her cleaner record where an admin typed it. Sending only the account's
+        /// left the row printing nothing beside a linked record that plainly showed a number.
+        /// </summary>
+        [Fact]
+        public async Task TheList_CarriesTheLinkedCleanerRecordsPhone_NotJustTheAccounts()
+        {
+            Account(11, "Teona", "Axobadze", "axobadze1011@example.com");
+            CleanerRecord(1, "Teo", "Akhobadze", "axobadze1011@example.com", "7185731923", userId: 11);
+
+            var rows = Assert.IsType<List<CleanerAccountDto>>(
+                Assert.IsType<OkObjectResult>((await _controller.GetCleanerAccounts()).Result).Value);
+
+            var row = Assert.Single(rows);
+            Assert.Null(row.Phone);
+            Assert.Equal("7185731923", row.CleanerPhone);
+        }
+
         [Fact]
         public async Task LinkPickerSearch_MatchesTheFullNameAcrossTheGap()
         {
