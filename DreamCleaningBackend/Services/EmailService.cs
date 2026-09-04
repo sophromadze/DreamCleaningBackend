@@ -892,7 +892,10 @@ namespace DreamCleaningBackend.Services
             var assignment = order.OrderCleaners
                 .FirstOrDefault(oc => oc.Cleaner != null && oc.Cleaner.Email == email);
             var cleanerAdditionalInstructions = assignment?.TipsForCleaner;
-            var cleanerLanguage = ResolveCleanerLanguage(assignment?.Cleaner?.Nationality);
+            // A cleaner who has picked a language in their portal is mailed in it too - being
+            // believed about which language you read should not depend on which surface is talking.
+            var cleanerLanguage = CleanerLanguage.Resolve(
+                assignment?.Cleaner?.Nationality, assignment?.Cleaner?.PortalLanguage);
 
             // THE hours this cleaner will be paid for, straight off the payroll calculator —
             // the same object the Outgoing Payments page renders. Never re-derive them here:
@@ -948,17 +951,13 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        private static string ResolveCleanerLanguage(string? nationality)
-        {
-            var n = (nationality ?? string.Empty).Trim().ToLowerInvariant();
-            return n switch
-            {
-                "georgian" => "ka",
-                "russian" => "ru",
-                "spanish" => "es",
-                _ => "en"
-            };
-        }
+        /// <summary>
+        /// Delegates to <see cref="CleanerLanguage"/>. The mapping used to live here as the only
+        /// copy; the portal needed the same answer, and two copies would let the same person be
+        /// mailed in Georgian and shown an English page.
+        /// </summary>
+        private static string ResolveCleanerLanguage(string? nationality) =>
+            CleanerLanguage.FromNationality(nationality);
 
         private (string subject, string body) BuildCleanerAssignmentEmail(
             string language,
@@ -992,7 +991,9 @@ namespace DreamCleaningBackend.Services
             string tipsValue = perCleanerTips > 0 ? $"${perCleanerTips:F2}" : "—";
 
             var rows = new System.Text.StringBuilder();
-            rows.Append(BuildRow(labels["cleaningType"], order.GetDisplayServiceTypeName("—")));
+            // Deep / Regular, not "Residential Cleaning" - the shared cleaner-facing rule, so the
+            // mail and the portal name the same job the same way.
+            rows.Append(BuildRow(labels["cleaningType"], CleanerJobView.ResolveCleaningTypeName(order, "—")));
             // Bedrooms / bathrooms are stored on the order as nullable ints when the customer
             // picked them at booking time. Only emit a row when set (0 is still meaningful — a
             // studio shows "0 bedrooms" — so we check HasValue, not the count).
@@ -1097,7 +1098,8 @@ namespace DreamCleaningBackend.Services
         // priced — cleaners are told what work is included, not what the customer paid for it.
         // Two entries are deliberately left out: "Cleaning Supplies" (it already has its own
         // Supplies row, so listing it again reads as a second task) and "Extra Cleaners" (staffing,
-        // not work to do on site).
+        // not work to do on site). That exclusion rule now lives in CleanerJobView so the cleaner
+        // PORTAL lists exactly the extras this mail does — the portal exists to show the same job.
         private List<string> BuildCleanerExtraServiceItems(Models.Order order, string language)
         {
             var items = new List<string>();
@@ -1107,11 +1109,7 @@ namespace DreamCleaningBackend.Services
                          .ThenBy(oes => oes.Id))
             {
                 var name = orderExtra.ExtraService?.Name?.Trim();
-                if (string.IsNullOrWhiteSpace(name))
-                    continue;
-                if (name.ToLowerInvariant().Contains("cleaning supplies"))
-                    continue;
-                if (string.Equals(name, OrderPricingCalculator.ExtraCleanersName, StringComparison.OrdinalIgnoreCase))
+                if (CleanerJobView.IsExtraHiddenFromCleaners(name))
                     continue;
 
                 var extraService = orderExtra.ExtraService!;
@@ -1158,7 +1156,7 @@ namespace DreamCleaningBackend.Services
                 return null;
             }
 
-            var language = ResolveCleanerLanguage(cleaner.Nationality);
+            var language = CleanerLanguage.Resolve(cleaner.Nationality, cleaner.PortalLanguage);
             var labels = GetCleanerEmailLabels(language);
             var culture = language switch
             {
@@ -1194,7 +1192,7 @@ namespace DreamCleaningBackend.Services
             var perCleanerTips = Math.Round(order.Tips / maidsCount, 2);
 
             var lines = new List<string>();
-            lines.Add($"#{order.Id} {order.GetDisplayServiceTypeName("—")}");
+            lines.Add($"#{order.Id} {CleanerJobView.ResolveCleaningTypeName(order, "—")}");
 
             // Compact bed/bath line — fits both in one row when set, e.g. "2 bd / 1 ba".
             var bb = new List<string>();

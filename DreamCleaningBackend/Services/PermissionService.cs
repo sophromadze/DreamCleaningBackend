@@ -20,7 +20,13 @@ namespace DreamCleaningBackend.Services
             { UserRole.Moderator, Permission.View },
         
             // Customer has no admin permissions
-            { UserRole.Customer, 0 }
+            { UserRole.Customer, 0 },
+
+            // Cleaner has no admin permissions either. Listed explicitly rather than left to the
+            // TryGetValue miss below: a cleaner account is a LOGIN for the read-only cleaner
+            // portal, not a staff role, and the next person reading this table should not have to
+            // work that out from an absence.
+            { UserRole.Cleaner, 0 }
         };
 
         public bool HasPermission(UserRole role, Permission permission)

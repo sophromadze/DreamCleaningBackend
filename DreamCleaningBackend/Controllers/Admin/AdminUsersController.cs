@@ -76,7 +76,13 @@ namespace DreamCleaningBackend.Controllers
         {
             var currentUserRole = GetCurrentUserRole();
 
+            // Cleaner-role accounts are deliberately absent: they are staff logins for the
+            // read-only cleaner portal, not customers, and they have their own admin tab
+            // (the Cleaners tab) where the thing that matters about them - which Cleaner record
+            // they drive - is actually visible. Leaving them here would put rows in the customer
+            // list that no customer-care action makes sense against.
             var users = await _context.Users
+                .Where(u => u.Role != UserRole.Cleaner)
                 .Include(u => u.Subscription)
                 .Select(u => new UserAdminDto
                 {
@@ -550,10 +556,12 @@ namespace DreamCleaningBackend.Controllers
             // PasswordHash. See AuditSnapshot.
             var originalUser = AuditSnapshot.Of(targetUser);
 
-            // Cleaner role is deprecated — cleaners are managed via the standalone Cleaners table/dashboard.
-            if (string.Equals(dto.Role, "Cleaner", StringComparison.OrdinalIgnoreCase))
-                return BadRequest(new { message = "The Cleaner role is no longer assignable. Add cleaners via the Cleaner Dashboard instead." });
-
+            // The Cleaner role is assignable again (2026-09), but it means something different from
+            // the one that was retired here: it is a LOGIN for the read-only cleaner portal, not a
+            // way to record a cleaner. The person is still a row in the Cleaners table and orders
+            // are still assigned to that row - this only says whose account it is. Moving somebody
+            // onto it drops them out of the Users tab and into the Cleaners tab, where the link to
+            // their cleaner record is set.
             if (!Enum.TryParse<UserRole>(dto.Role, out var newRole))
                 return BadRequest("Invalid role");
 
@@ -585,6 +593,26 @@ namespace DreamCleaningBackend.Controllers
                         reports.Count, id, newRole);
             }
 
+            // Moving OUT of the Cleaner role releases the cleaner record this account drove. The
+            // record itself and all its assignments are untouched - only the login attachment goes,
+            // because an account that can no longer open the portal has no business holding the
+            // unique link that stops anybody else being attached to that cleaner.
+            var releasedCleaners = new List<(Cleaner Cleaner, Cleaner Before)>();
+            if (newRole != UserRole.Cleaner)
+            {
+                var released = await _context.Cleaners.Where(c => c.UserId == id).ToListAsync();
+                foreach (var cleaner in released)
+                {
+                    releasedCleaners.Add((cleaner, AuditSnapshot.Of(cleaner)));
+                    cleaner.UserId = null;
+                    cleaner.UpdatedAt = DateTime.UtcNow;
+                }
+                if (released.Count > 0)
+                    _logger.LogInformation(
+                        "Admin: released cleaner record(s) {CleanerIds} from user {UserId} on role change to {Role}",
+                        string.Join(",", released.Select(c => c.Id)), id, newRole);
+            }
+
             targetUser.Role = newRole;
             targetUser.UpdatedAt = DateTime.UtcNow;
 
@@ -594,6 +622,26 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 await _auditService.LogUpdateAsync(originalUser, targetUser);
+
+                // Losing the Cleaner role silently detaches the cleaner record this account drove,
+                // and that detach is the change somebody notices later - the person signs in and
+                // sees no jobs. So it gets its own row on the CleanerAccountLink stream, the same
+                // one the Cleaners tab writes, rather than being inferable only from a Cleaner
+                // row whose UserId went null for no stated reason.
+                foreach (var (cleaner, before) in releasedCleaners)
+                {
+                    await _auditService.LogUpdateAsync(before, cleaner);
+                    await _auditService.LogActionAsync(
+                        AuditEntityTypes.CleanerAccountLink, id, "ReleasedOnRoleChange", null, new
+                        {
+                            AccountName = $"{targetUser.FirstName} {targetUser.LastName}".Trim(),
+                            AccountEmail = NoEmailHelper.ResolveRealEmail(targetUser),
+                            NewRole = newRole.ToString(),
+                            CleanerId = cleaner.Id,
+                            CleanerName = $"{cleaner.FirstName} {cleaner.LastName}".Trim(),
+                            CleanerEmailKept = cleaner.Email
+                        });
+                }
             }
             catch (Exception ex)
             {
@@ -1607,9 +1655,14 @@ namespace DreamCleaningBackend.Controllers
         //
         // User-scoped endpoints sit under /admin/users/{userId}/loyalty-discount and require
         // Permission.View for read, Permission.Update for write. The Moderator role has only
-        // View by default, which matches the spec (read-only). Settings endpoints sit under
-        // /admin/loyalty-discount-settings and are hidden from Moderator (Update-only writes,
-        // View-gated reads).
+        // View by default, which matches the spec (read-only).
+        //
+        // The SETTINGS endpoints (/admin/loyalty-discount-settings) are SuperAdmin-only, GET
+        // included (2026-09). Those seven values decide who gets a standing discount and how
+        // large it is, so an edit there re-prices the customer base rather than one order --
+        // the same reasoning that made the Services tab SuperAdmin-only. The GET is gated too
+        // because nothing outside that panel reads them; the frontend hides the panel as a
+        // convenience, the attributes are the control.
 
         [HttpGet("users/{userId}/loyalty-discount")]
         [RequirePermission(Permission.View)]
@@ -1828,6 +1881,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpGet("loyalty-discount-settings")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<LoyaltyDiscountSettingsDto>> GetLoyaltyDiscountSettings()
         {
@@ -1848,6 +1902,7 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPut("loyalty-discount-settings")]
+        [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<LoyaltyDiscountSettingsDto>> UpdateLoyaltyDiscountSettings([FromBody] LoyaltyDiscountSettingsDto body)
         {

@@ -264,6 +264,24 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(c => c.CreatedByAdminId)
                     .OnDelete(DeleteBehavior.SetNull);
+
+                // The cleaner's login account (cleaner portal). UNIQUE, so one account can never
+                // back two cleaner records and one cleaner can never have two accounts - the
+                // portal resolves "whose jobs am I looking at" through this column, and an
+                // ambiguous answer there would show somebody another person's schedule. MySQL
+                // permits many NULLs in a unique index, which is what keeps the normal case (no
+                // account at all) working.
+                entity.HasIndex(e => e.UserId)
+                    .IsUnique()
+                    .HasDatabaseName("IX_Cleaners_UserId");
+
+                // SetNull, not Restrict: deleting the account must not be blocked by, nor delete,
+                // the cleaner record. The cleaner keeps their history and simply stops having
+                // anybody able to sign in for them.
+                entity.HasOne(c => c.User)
+                    .WithMany()
+                    .HasForeignKey(c => c.UserId)
+                    .OnDelete(DeleteBehavior.SetNull);
             });
 
             modelBuilder.Entity<CleanerNote>(entity =>

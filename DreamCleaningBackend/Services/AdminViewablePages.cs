@@ -9,12 +9,15 @@ namespace DreamCleaningBackend.Services
     ///
     /// Adding a future page = add a const here + mirror it on the frontend + apply
     /// <c>[RequirePageView(...)]</c> to that page's GET endpoints + wire its read-only mode.
+    ///
+    /// Bubble Rewards was removed from this list (2026-09) when it became a SuperAdmin-only tab
+    /// in the admin panel: a grant that unlocks nothing is a trap. Parse() drops the stale key
+    /// from any grant list still carrying it, so nothing has to be migrated.
     /// </summary>
     public static class AdminViewablePages
     {
         public const string Statistics = "statistics";
         public const string Expenses = "expenses";
-        public const string BubbleRewards = "bubble-rewards";
         public const string Finances = "finances";
         public const string Ads = "ads";
         public const string Traffic = "traffic";
@@ -25,7 +28,6 @@ namespace DreamCleaningBackend.Services
         {
             Statistics,
             Expenses,
-            BubbleRewards,
             Finances,
             Ads,
             Traffic,

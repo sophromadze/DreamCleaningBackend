@@ -183,6 +183,10 @@ builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<ISpecialOfferService, SpecialOfferService>();
 builder.Services.AddScoped<ICleanerService, CleanerService>();
 builder.Services.AddScoped<ICleanerManagementService, CleanerManagementService>();
+// Cleaner LOGIN accounts (the read-only cleaner portal), distinct from the two above: those manage
+// cleaners as people and as staffing, this one manages the account-to-cleaner link.
+builder.Services.AddScoped<ICleanerAccountService, CleanerAccountService>();
+builder.Services.AddScoped<ICleanerPortalService, CleanerPortalService>();
 builder.Services.AddScoped<IOutgoingPaymentService, OutgoingPaymentService>();
 builder.Services.AddScoped<IAdminSalaryPayoutService, AdminSalaryPayoutService>();
 builder.Services.AddScoped<IUserCleaningPhotoService, UserCleaningPhotoService>();

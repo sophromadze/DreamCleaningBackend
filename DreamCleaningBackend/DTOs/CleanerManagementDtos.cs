@@ -49,6 +49,25 @@ namespace DreamCleaningBackend.DTOs
         public List<CleanerNoteDto> Notes { get; set; } = new();
         public List<CleanerAssignedOrderDto> AssignedOrders { get; set; } = new();
         public List<CleanerVacationDto> Vacations { get; set; } = new();
+
+        // ── The login account behind this cleaner, if any (Cleaner.UserId) ──
+        //
+        // Present so the dashboard can say who signs in as this person AND lock the email field:
+        // linking copies the account address onto the record, and editing it here afterwards would
+        // send the assignment mail somewhere the person does not read while the portal kept working.
+
+        public int? LinkedUserId { get; set; }
+        public string? LinkedAccountName { get; set; }
+
+        /// <summary>The address that account signs in with; null for a no-email account.</summary>
+        public string? LinkedAccountEmail { get; set; }
+
+        /// <summary>
+        /// Whether Email is read-only, answered by CleanerAccountLink.EmailIsManagedByAccount. The
+        /// SERVER decides and the client renders the answer - the same predicate rejects a write, so
+        /// a second client-side copy of the rule could only disagree with what the API will accept.
+        /// </summary>
+        public bool IsEmailManagedByAccount { get; set; }
     }
 
     public class CleanerVacationDto

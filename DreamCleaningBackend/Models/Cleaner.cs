@@ -63,6 +63,15 @@ namespace DreamCleaningBackend.Models
         [StringLength(100)]
         public string? Nationality { get; set; }
 
+        /// <summary>
+        /// The language this cleaner has CHOSEN for their portal, or null to follow their
+        /// nationality (CleanerLanguage.Resolve). Null rather than "en" is load-bearing: it is the
+        /// difference between "has expressed no preference" and "asked for English", and only the
+        /// first of those should start following a nationality that is corrected later.
+        /// </summary>
+        [StringLength(5)]
+        public string? PortalLanguage { get; set; }
+
         public CleanerRanking Ranking { get; set; } = CleanerRanking.Standard;
 
         [StringLength(500)]
@@ -111,6 +120,25 @@ namespace DreamCleaningBackend.Models
         public virtual User? CreatedByAdmin { get; set; }
 
         public int? MigratedFromUserId { get; set; }
+
+        /// <summary>
+        /// The LOGIN ACCOUNT this cleaner uses to open the cleaner portal, when one exists. Null is
+        /// the normal state - most cleaners have no account at all, and a cleaner is a cleaner
+        /// whether or not they ever sign in.
+        ///
+        /// This is the authoritative link, deliberately stronger than the email match that creates
+        /// it: a cleaner row may carry no email, or a stale one, and matching on a mutable string
+        /// would silently re-point somebody's schedule the day an admin corrected a typo. The email
+        /// match is only how a link is DISCOVERED (on registration, and by the one-time backfill);
+        /// once this column is set it is what Helpers/CleanerAccountLink resolves through.
+        ///
+        /// Unique - one account per cleaner and one cleaner per account. SetNull on delete: if the
+        /// account goes, the cleaner record stays and simply has nobody signing in for it.
+        /// </summary>
+        public int? UserId { get; set; }
+
+        [ForeignKey("UserId")]
+        public virtual User? User { get; set; }
 
         public virtual ICollection<CleanerNote> Notes { get; set; } = new List<CleanerNote>();
 

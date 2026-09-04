@@ -2,6 +2,7 @@ using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
+using DreamCleaningBackend.Helpers;
 using Microsoft.EntityFrameworkCore;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
@@ -164,7 +165,7 @@ namespace DreamCleaningBackend.Services
                 .OrderByDescending(dto => dto.ServiceDate)
                 .ToListAsync();
 
-            return MapToDetail(cleaner, assignments);
+            return MapToDetail(cleaner, assignments, await LoadLinkedAccountAsync(cleaner));
         }
 
         public async Task<CleanerDetailDto> CreateAsync(CreateCleanerDto dto, int adminId)
@@ -224,6 +225,27 @@ namespace DreamCleaningBackend.Services
             // the live tracked entity, so any field this copy missed would be recorded as a change
             // from its CLR default and Undo would replay those defaults. See AuditSnapshot.
             var beforeCleaner = AuditSnapshot.Of(cleaner);
+
+            // A linked cleaner's email belongs to their LOGIN ACCOUNT, and the dashboard renders it
+            // read-only for that reason. REFUSED here rather than silently ignored: the admin who
+            // got past the read-only field has typed an address on purpose, and quietly keeping the
+            // old one would tell them the change saved. Same predicate the DTO's flag comes from, so
+            // the form can never offer an edit this rejects.
+            var linkedAccount = await LoadLinkedAccountAsync(cleaner);
+            var accountEmail = linkedAccount == null ? null : NoEmailHelper.ResolveRealEmail(linkedAccount);
+            // Compared NORMALIZED on both sides, so case, surrounding space and "both blank" are
+            // not changes: a read-only field still round-trips its value, and a save that touched
+            // something else entirely must not be refused.
+            var incomingEmail = CleanerAccountLink.NormalizeEmail(dto.Email);
+            var storedEmail = CleanerAccountLink.NormalizeEmail(cleaner.Email);
+            if (CleanerAccountLink.EmailIsManagedByAccount(cleaner.UserId, accountEmail) &&
+                incomingEmail != storedEmail)
+            {
+                throw new InvalidOperationException(
+                    $"This cleaner signs in as {accountEmail}, so their email is set from that " +
+                    "account. Change the address on the account, then re-link them on the Cleaners " +
+                    "tab - that copies it across.");
+            }
 
             cleaner.FirstName = dto.FirstName;
             cleaner.LastName = dto.LastName;
@@ -554,8 +576,22 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        private static CleanerDetailDto MapToDetail(Cleaner cleaner, List<CleanerAssignedOrderDto> assignedOrders)
+        /// <summary>
+        /// The login account attached to this cleaner, or null. Read as a whole entity rather than a
+        /// projection so NoEmailHelper.ResolveRealEmail can answer "has this account a sendable
+        /// address" - re-deriving the placeholder rule from a couple of columns is how the two would
+        /// drift. One row, only on a linked cleaner.
+        /// </summary>
+        private async Task<User?> LoadLinkedAccountAsync(Cleaner cleaner) =>
+            cleaner.UserId == null
+                ? null
+                : await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == cleaner.UserId.Value);
+
+        private static CleanerDetailDto MapToDetail(
+            Cleaner cleaner, List<CleanerAssignedOrderDto> assignedOrders, User? linkedAccount)
         {
+            var accountEmail = linkedAccount == null ? null : NoEmailHelper.ResolveRealEmail(linkedAccount);
+
             return new CleanerDetailDto
             {
                 Id = cleaner.Id,
@@ -603,7 +639,14 @@ namespace DreamCleaningBackend.Services
                     OrderPerformance = n.OrderPerformance,
                     CreatedAt = n.CreatedAt
                 }).ToList(),
-                AssignedOrders = assignedOrders
+                AssignedOrders = assignedOrders,
+                LinkedUserId = cleaner.UserId,
+                LinkedAccountName = linkedAccount == null
+                    ? null
+                    : $"{linkedAccount.FirstName} {linkedAccount.LastName}".Trim(),
+                LinkedAccountEmail = accountEmail,
+                IsEmailManagedByAccount =
+                    CleanerAccountLink.EmailIsManagedByAccount(cleaner.UserId, accountEmail)
             };
         }
     }

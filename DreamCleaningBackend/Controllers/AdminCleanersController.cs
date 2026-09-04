@@ -60,10 +60,20 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(ModelState);
 
             var adminId = GetUserId();
-            var result = await _service.UpdateAsync(id, dto, adminId);
-            if (result == null)
-                return NotFound();
-            return Ok(result);
+            try
+            {
+                var result = await _service.UpdateAsync(id, dto, adminId);
+                if (result == null)
+                    return NotFound();
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // A refused edit an admin can act on - currently only "this cleaner's email belongs
+                // to their login account". Surfaced as a message rather than a ModelState blob
+                // because the dashboard renders it verbatim.
+                return BadRequest(new { message = ex.Message });
+            }
         }
 
         [HttpDelete("{id}")]

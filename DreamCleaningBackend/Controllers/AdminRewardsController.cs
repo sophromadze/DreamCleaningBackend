@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
@@ -44,8 +43,14 @@ namespace DreamCleaningBackend.Controllers
 
         // ─── Settings ───────────────────────────────────────────────────────────
 
+        // SuperAdmin-only, GET included (2026-09), and the same is true of the stats read below.
+        // These two are what the Rewards TAB in the admin panel loads, and the settings behind
+        // them set the points economy every customer earns and spends against -- editing one
+        // re-prices every reward on the site rather than one account. The old grantable
+        // "bubble-rewards" page-view key is gone with it. The per-user reward endpoints further
+        // down stay open to Admins: those are the Users tab's work on one customer at a time.
         [HttpGet("settings")]
-        [RequirePageView(AdminViewablePages.BubbleRewards)]
+        [Authorize(Roles = "SuperAdmin")]
         public async Task<ActionResult<List<BubbleRewardsSettingDto>>> GetSettings()
         {
             try
@@ -848,7 +853,7 @@ namespace DreamCleaningBackend.Controllers
         // ─── Stats ───────────────────────────────────────────────────────────────
 
         [HttpGet("stats")]
-        [RequirePageView(AdminViewablePages.BubbleRewards)]
+        [Authorize(Roles = "SuperAdmin")]
         public async Task<ActionResult<RewardsStatsDto>> GetStats()
         {
             try

@@ -38,6 +38,16 @@ namespace DreamCleaningBackend.Services
             _logger = logger;
         }
 
+        /// <summary>
+        /// Which roles must clear a 2FA challenge and keep a PIN. An ALLOWLIST on purpose, so a new
+        /// role is never silently swept into a staff-only flow.
+        ///
+        /// UserRole.Cleaner is EXCLUDED, deliberately and explicitly. A cleaner account opens one
+        /// read-only page listing that person's own jobs - it can move no money, edit no order and
+        /// see no customer or admin data. The PIN exists for accounts that can, and forcing it here
+        /// would put a mandatory setup screen between a cleaner on a phone and the address they are
+        /// standing outside of. UserRole.Customer is excluded for the same reason.
+        /// </summary>
         public bool RequiresTwoFactor(User user) =>
             user.Role == UserRole.Admin
             || user.Role == UserRole.SuperAdmin

@@ -29,9 +29,11 @@ namespace DreamCleaningBackend.Services
         private readonly IUserRepository _userRepository;
         private readonly IReferralService _referralService;
         private readonly IBubblePointsService _bubblePointsService;
+        private readonly ICleanerAccountService _cleanerAccountService;
 
-        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService, IUserRepository userRepository, IReferralService referralService, IBubblePointsService bubblePointsService)
+        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService, IUserRepository userRepository, IReferralService referralService, IBubblePointsService bubblePointsService, ICleanerAccountService cleanerAccountService)
         {
+            _cleanerAccountService = cleanerAccountService;
             _context = context;
             _configuration = configuration;
             _emailService = emailService;
@@ -41,6 +43,47 @@ namespace DreamCleaningBackend.Services
             _userRepository = userRepository;
             _referralService = referralService;
             _bubblePointsService = bubblePointsService;
+        }
+
+        /// <summary>
+        /// Every self-service registration path runs this: when the address being registered is
+        /// already on a cleaner record, the account is created on the Cleaner role and linked to
+        /// that record, so the person lands in the cleaner portal on their very first login instead
+        /// of a customer dashboard an admin then has to fix by hand.
+        ///
+        /// Two account-creation paths deliberately do NOT call it - see the note in
+        /// CleanerAccountService: the guest auto-account behind a booking, and the admin "Register
+        /// Customer" form. Both exist to produce a CUSTOMER to book a cleaning for, and promoting
+        /// that account mid-flow would route the very person being served away from their booking.
+        ///
+        /// Never allowed to fail a registration: a cleaner who lands as a customer is one click to
+        /// fix in the Cleaners tab, while a rejected sign-up is a lost account.
+        /// </summary>
+        private async Task<int?> TryApplyCleanerRoleAsync(User user)
+        {
+            try
+            {
+                return await _cleanerAccountService.ApplyCleanerRoleIfEmailMatchesAsync(user);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Cleaner-role detection failed for {Email}", user.Email);
+                return null;
+            }
+        }
+
+        /// <summary>Completes the FK link once the freshly-created account has an Id.</summary>
+        private async Task TryLinkCleanerRecordAsync(int? cleanerId, int userId)
+        {
+            if (cleanerId == null) return;
+            try
+            {
+                await _cleanerAccountService.LinkOnRegistrationAsync(cleanerId.Value, userId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to link cleaner {CleanerId} to user {UserId}", cleanerId, userId);
+            }
         }
 
         private async Task TryGrantWelcomeBonusAsync(int userId)
@@ -84,8 +127,14 @@ namespace DreamCleaningBackend.Services
                     IsEmailVerified = false
                 };
 
+                // Before the insert: a registering address that is already on a cleaner record
+                // creates a Cleaner-role account, never a Customer one.
+                var matchedCleanerId = await TryApplyCleanerRoleAsync(user);
+
                 _context.Users.Add(user);
                 await _context.SaveChangesAsync();
+
+                await TryLinkCleanerRecordAsync(matchedCleanerId, user.Id);
 
                 // Generate referral code for new user
                 try
@@ -221,6 +270,7 @@ namespace DreamCleaningBackend.Services
                     .FirstOrDefaultAsync(u => u.Email == email.ToLower());
 
                 var isNewGoogleUser = false;
+                int? matchedCleanerId = null;
                 if (user == null)
                 {
                     // Create new user
@@ -238,6 +288,10 @@ namespace DreamCleaningBackend.Services
                         IsActive = true,
                         IsEmailVerified = true
                     };
+
+                    // Same rule as local registration: a Google sign-up whose address is already on
+                    // a cleaner record becomes a Cleaner account, not a Customer one.
+                    matchedCleanerId = await TryApplyCleanerRoleAsync(user);
 
                     _context.Users.Add(user);
                 }
@@ -298,6 +352,7 @@ namespace DreamCleaningBackend.Services
 
                 if (isNewGoogleUser)
                 {
+                    await TryLinkCleanerRecordAsync(matchedCleanerId, user.Id);
                     await TryGrantWelcomeBonusAsync(user.Id);
                     try
                     {
@@ -371,7 +426,8 @@ namespace DreamCleaningBackend.Services
             // PRIMARY: Find user by email (email is the main identifier - same email = same user)
             // SECONDARY: Find by Apple ID only if email is not available (private relay email case)
             User? user = null;
-            
+            int? matchedCleanerId = null;
+
             if (!string.IsNullOrEmpty(email))
             {
                 user = await _context.Users
@@ -406,6 +462,12 @@ namespace DreamCleaningBackend.Services
                     IsEmailVerified = !isRelayEmail,
                     RequiresRealEmail = isRelayEmail
                 };
+
+                // A relay address can never match a cleaner record (it is per-app and unknown to
+                // anyone here), so this only ever fires for an Apple sign-up on a real address -
+                // which is exactly the case worth catching.
+                matchedCleanerId = await TryApplyCleanerRoleAsync(user);
+
                 _context.Users.Add(user);
             }
             else
@@ -490,6 +552,7 @@ namespace DreamCleaningBackend.Services
             var isNewUser = user.CreatedAt > DateTime.UtcNow.AddMinutes(-1); // Created within last minute
             if (isNewUser)
             {
+                await TryLinkCleanerRecordAsync(matchedCleanerId, user.Id);
                 await TryGrantWelcomeBonusAsync(user.Id);
                 try
                 {

@@ -82,6 +82,17 @@ namespace DreamCleaningBackend.Services
         // --- Cleaners ----------------------------------------------------------------------
         /// <summary>Photo or document uploaded against a cleaner profile. EntityId = cleaner id.</summary>
         public const string CleanerDocument = "CleanerDocument";
+        /// <summary>
+        /// The Cleaners tab account work: a login account attached to or detached from a cleaner
+        /// record, and the automatic release that happens when such an account leaves the Cleaner
+        /// role. EntityId = the USER id, because the account is what an admin acted on and what they
+        /// will search the trail by; the cleaner record is named in the payload.
+        ///
+        /// It rides ALONGSIDE the generic Cleaner update the same write produces. The Cleaner row
+        /// records that UserId and Email moved, which is what that cleaner history needs; this row
+        /// records who did what to whose login, which is the question the tab is asked.
+        /// </summary>
+        public const string CleanerAccountLink = "CleanerAccountLink";
         /// <summary>Per-order cleaner performance rating. EntityId = cleaner id.</summary>
         public const string CleanerPerformance = "CleanerPerformance";
 
@@ -163,6 +174,7 @@ namespace DreamCleaningBackend.Services
                 [RewardSetting] = "Settings are global; set the value back from the Rewards tab.",
                 [BubblePointsResetSnapshot] = "Use \"Undo last reset\" on the Rewards tab — it replays this snapshot across every affected customer.",
                 [CleanerDocument] = "Files are stored on disk; re-upload or delete the file itself.",
+                [CleanerAccountLink] = "Re-link or unlink the account from the Cleaners tab instead.",
                 [CleanerPerformance] = "Re-rate the cleaner on the order instead.",
                 [PricingConfiguration] = "A pricing import rewrites many rows at once. Re-import the previous configuration instead.",
                 [CatalogueCopy] = "Delete the copied row from the catalogue instead.",
