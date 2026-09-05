@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
@@ -51,6 +52,11 @@ namespace DreamCleaningBackend.Tests
         // Priced extras used to prove they contribute nothing on a custom-priced order.
         private const int WindowsExtraId = 10;
         private const int OrganizingExtraId = 11;
+
+        // The two supply extras. Informational like every other custom-mode extra, but the ONLY
+        // extras whose presence changes what the cleaner is told to put in the car.
+        private const int CleaningSuppliesExtraId = 12;
+        private const int CleaningEssentialsExtraId = 13;
 
         private const int CustomerUserId = 100;
         private const int AdminUserId = 200;
@@ -121,6 +127,26 @@ namespace DreamCleaningBackend.Tests
                     Duration = 60m,
                     PriceMultiplier = 1m,
                     HasHours = true,
+                    IsActive = true,
+                    IsAvailableForAll = true
+                },
+                new ExtraService
+                {
+                    Id = CleaningSuppliesExtraId,
+                    Name = "Cleaning Supplies",
+                    Price = 30m,
+                    Duration = 0m,
+                    PriceMultiplier = 1m,
+                    IsActive = true,
+                    IsAvailableForAll = true
+                },
+                new ExtraService
+                {
+                    Id = CleaningEssentialsExtraId,
+                    Name = "Cleaning Essentials",
+                    Price = 15m,
+                    Duration = 0m,
+                    PriceMultiplier = 1m,
                     IsActive = true,
                     IsAvailableForAll = true
                 });
@@ -510,6 +536,77 @@ namespace DreamCleaningBackend.Tests
                 Assert.Equal(0m, oes.Cost);
                 Assert.Equal(0m, oes.Duration);
             });
+        }
+
+        /// <summary>
+        /// THE SUPPLY EXTRAS STILL REACH THE CLEANER ON A PRE-ARRANGED ORDER.
+        ///
+        /// Cleaning Supplies and Cleaning Essentials are informational on a custom-priced order
+        /// like every other extra — $0 and 0 minutes, because the admin-entered amount IS the
+        /// quote. What is NOT informational is their meaning: the extra being on the order is the
+        /// customer paying US to bring the products, so the row is what puts the Supplies and
+        /// Essentials lines in the assignment email and SMS and the banners in the cleaner portal.
+        /// Those three surfaces resolve it through CleanerJobView, which matches on the extra's
+        /// NAME and knows nothing about service types or cost — this test pins that a $0 line is
+        /// as loud as a $30 one, so a future "skip the free lines" shortcut fails here instead of
+        /// silently sending a crew out empty-handed.
+        ///
+        /// The same rows are also why the CUSTOMER's "please provide" checklist comes back empty:
+        /// both halves of the arrangement are read from one source and cannot contradict.
+        /// </summary>
+        [Fact]
+        public async Task CustomPricing_SupplyExtras_StillTellTheCleanerWhatToBring()
+        {
+            var serviceType = await LoadTypeAsync(CustomTypeId);
+            var dto = CustomPricingDto(CustomTypeId, 300m);
+            dto.ExtraServices = new List<BookingExtraServiceDto>
+            {
+                new() { ExtraServiceId = CleaningSuppliesExtraId, Quantity = 1, Hours = 0 },
+                new() { ExtraServiceId = CleaningEssentialsExtraId, Quantity = 1, Hours = 0 }
+            };
+
+            var quote = OrderPricingCalculator.CalculateQuote(
+                await BuildAsync(serviceType, dto, allowCustomPricing: true));
+
+            // Free, as on every other custom-mode extra — the typed amount is the whole quote.
+            Assert.Equal(300m, quote.SubTotal + quote.TaxOverride!.Value);
+            Assert.All(quote.ExtraServiceLines, line =>
+            {
+                Assert.Equal(0m, line.Cost);
+                Assert.Equal(0m, line.Duration);
+            });
+
+            var order = new Order { ServiceType = serviceType };
+            OrderPricingCalculator.AddOrderLinesFromQuote(order, quote);
+            // The calculator writes ids; the cleaner surfaces read the order with the extras
+            // Included, so attach the navigations the same way EF would.
+            foreach (var line in order.OrderExtraServices)
+            {
+                line.ExtraService = await _context.ExtraServices
+                    .FirstAsync(e => e.Id == line.ExtraServiceId);
+            }
+
+            // What the cleaner is told: load the car with both.
+            Assert.True(CleanerJobView.RequiresCleanerToBringSupplies(order));
+            Assert.True(CleanerJobView.RequiresCleanerToBringEssentials(order));
+
+            // ...and neither is repeated in the task list, since each has its own row.
+            Assert.All(order.OrderExtraServices, line =>
+                Assert.True(CleanerJobView.IsExtraHiddenFromCleaners(line.ExtraService!.Name)));
+
+            // The customer's own checklist is the other half of the same fact: nothing to prepare.
+            Assert.Empty(CustomerSupplyChecklist.BuildItems(CustomerSupplyChecklist.Resolve(order)));
+
+            // ...whereas the same pre-arranged order WITHOUT the Essentials extra still asks for
+            // that group by hand. That is the whole reason the card had to become reachable here:
+            // the booking page's supplies modal never opens on a custom-priced order, so before
+            // this there was no way to tell a pre-arranged customer we were bringing them.
+            order.OrderExtraServices.Remove(order.OrderExtraServices
+                .Single(l => l.ExtraServiceId == CleaningEssentialsExtraId));
+            var withoutEssentials = CustomerSupplyChecklist.BuildItems(
+                CustomerSupplyChecklist.Resolve(order));
+            Assert.Contains("Paper towels", withoutEssentials);
+            Assert.Contains("Toilet brush", withoutEssentials);
         }
 
         // ── Test doubles ─────────────────────────────────────────────────────────────────────
