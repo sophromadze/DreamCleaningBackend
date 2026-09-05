@@ -99,8 +99,8 @@ namespace DreamCleaningBackend.Helpers
         }
 
         /// <summary>
-        /// True when the CLEANER has to bring the essentials - paper towels, garbage bags and a
-        /// toilet brush.
+        /// True when the CLEANER has to bring the essentials - paper towels, garbage bags, a
+        /// toilet brush and a broom.
         ///
         /// Same direction and same reasoning as <see cref="RequiresCleanerToBringSupplies"/>:
         /// buying the "Cleaning Essentials" extra is the customer paying US to bring those three
@@ -110,9 +110,9 @@ namespace DreamCleaningBackend.Helpers
         /// source, so the mail, the SMS, the portal and the customer's checklist cannot disagree
         /// about who is bringing the paper towels.
         ///
-        /// NOTE it is not the broom or vacuum: that is never included (a cleaner cannot carry one
-        /// to every job), so the customer is still asked for one unless they bought the separate
-        /// Vacuum Cleaner extra.
+        /// NOTE the broom IS included as of 2026-09 (it was not before), which is why the
+        /// customer's own checklist stops asking for "a broom or vacuum cleaner" the moment this
+        /// extra is bought. A VACUUM is still the separate Vacuum Cleaner extra.
         /// </summary>
         public static bool RequiresCleanerToBringEssentials(Order order)
         {

@@ -11,9 +11,8 @@ namespace DreamCleaningBackend.Helpers
         /// <summary>Customer bought "Cleaning Supplies" - WE bring the solutions and the cloths.</summary>
         public bool HasCleaningSupplies { get; init; }
 
-        /// <summary>Customer bought "Cleaning Essentials" - WE bring paper towels, garbage bags
-        /// and a toilet brush. Deliberately NOT the broom/vacuum: see
-        /// <see cref="CustomerSupplyChecklist.BuildItems"/>.</summary>
+        /// <summary>Customer bought "Cleaning Essentials" - WE bring paper towels, garbage bags,
+        /// a toilet brush and a broom.</summary>
         public bool HasCleaningEssentials { get; init; }
 
         /// <summary>Customer bought the "Vacuum Cleaner" extra - we bring one, so they are not
@@ -38,13 +37,18 @@ namespace DreamCleaningBackend.Helpers
     /// THREE EXTRAS TAKE ITEMS OFF THE LIST, and they take off different things:
     ///   "Cleaning Supplies"   -> the products we would otherwise ask them to buy (Zep, Windex,
     ///                            cloths, sponge, mop).
-    ///   "Cleaning Essentials" -> paper towels, garbage bags, toilet brush. NEVER the broom or
-    ///                            vacuum: a cleaner cannot carry one to every job, so the customer
-    ///                            either owns one or buys the Vacuum Cleaner extra.
+    ///   "Cleaning Essentials" -> paper towels, garbage bags, toilet brush AND A BROOM. The broom
+    ///                            was added 2026-09; before that the customer was always asked for
+    ///                            a broom or vacuum, so anything still saying "never included" is
+    ///                            stale.
     ///   "Vacuum Cleaner"      -> the broom-or-vacuum line, and only that line.
-    /// A customer holding all three is asked for nothing, which is why BuildItems can legitimately
-    /// return an EMPTY list and every surface has to render that case as "nothing to prepare"
-    /// rather than as an empty bulleted box.
+    /// Because Essentials now covers the broom, that line comes off for EITHER of the last two -
+    /// we bring a broom, or we bring a vacuum, and the customer was only ever asked for one of
+    /// the pair.
+    ///
+    /// Supplies + Essentials together therefore leave NOTHING, which is why BuildItems can
+    /// legitimately return an EMPTY list and every surface has to render that case as "nothing to
+    /// prepare" rather than as an empty bulleted box.
     /// </summary>
     public static class CustomerSupplyChecklist
     {
@@ -55,8 +59,10 @@ namespace DreamCleaningBackend.Helpers
         public const string CleaningEssentialsMatch = "cleaning essentials";
         public const string VacuumMatch = "vacuum";
 
-        /// <summary>What "Cleaning Essentials" buys the customer out of, in checklist order.</summary>
-        private static readonly string[] EssentialsItems = { "Paper towels", "Garbage bags", "Toilet brush" };
+        /// <summary>What "Cleaning Essentials" buys the customer out of - the four items WE bring
+        /// when they take it. The broom joined the set in 2026-09.</summary>
+        public static readonly string[] EssentialsItems =
+            { "Paper towels", "Garbage bags", "Toilet brush", "Broom" };
 
         /// <summary>The line the Vacuum Cleaner extra buys the customer out of.</summary>
         private const string BroomOrVacuumItem = "Broom or vacuum cleaner";
@@ -111,12 +117,13 @@ namespace DreamCleaningBackend.Helpers
         }
 
         /// <summary>
-        /// The checklist itself - what the CUSTOMER has to have on site. Each extra removes only
-        /// its own items, so the combinations read:
+        /// The checklist itself - what the CUSTOMER has to have on site. The combinations read:
         ///   nothing bought        -> everything;
         ///   Cleaning Supplies     -> paper towels, garbage bags, broom/vacuum, toilet brush;
-        ///   Cleaning Essentials   -> broom/vacuum, plus all the products we would have brought;
-        ///   Supplies + Essentials -> broom or vacuum cleaner, and nothing else.
+        ///   Cleaning Essentials   -> only the products we would have brought (it covers the
+        ///                            broom as well now, so nothing from this group survives);
+        ///   Supplies + Essentials -> NOTHING AT ALL;
+        ///   Vacuum Cleaner        -> drops the broom/vacuum line on its own.
         /// A custom ("Pre-Arranged") service type does not use the supplies workflow, so it never
         /// gets the products block regardless.
         /// </summary>
@@ -124,17 +131,16 @@ namespace DreamCleaningBackend.Helpers
         {
             var items = new List<string>();
 
+            // Cleaning Essentials covers this whole group, broom included.
             if (!facts.HasCleaningEssentials)
             {
-                items.Add(EssentialsItems[0]);
-                items.Add(EssentialsItems[1]);
+                items.Add("Paper towels");
+                items.Add("Garbage bags");
+                // ...unless we are bringing a vacuum instead, which answers the same need.
+                if (!facts.WeBringVacuum)
+                    items.Add(BroomOrVacuumItem);
+                items.Add("Toilet brush");
             }
-
-            if (!facts.WeBringVacuum)
-                items.Add(BroomOrVacuumItem);
-
-            if (!facts.HasCleaningEssentials)
-                items.Add(EssentialsItems[2]);
 
             if (facts.HasCleaningSupplies || facts.IsCustomServiceType)
                 return items;

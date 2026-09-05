@@ -92,11 +92,11 @@ namespace DreamCleaningBackend.DTOs
         public bool BringCleaningSupplies { get; set; }
 
         /// <summary>
-        /// Whether the cleaner has to bring the essentials - paper towels, garbage bags and a
-        /// toilet brush. Same shape and same source as <see cref="BringCleaningSupplies"/>
+        /// Whether the cleaner has to bring the essentials - paper towels, garbage bags, a toilet
+        /// brush and a broom. Same shape and same source as <see cref="BringCleaningSupplies"/>
         /// (CleanerJobView.RequiresCleanerToBringEssentials): the customer bought the "Cleaning
-        /// Essentials" extra, so we bring those three items and their own checklist no longer
-        /// lists them. Never the broom or vacuum - that is a separate extra.
+        /// Essentials" extra, so we bring those four items and their own checklist no longer
+        /// lists them. A VACUUM is still the separate Vacuum Cleaner extra.
         /// </summary>
         public bool BringCleaningEssentials { get; set; }
 

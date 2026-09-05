@@ -10,13 +10,13 @@ namespace DreamCleaningBackend.Tests
     /// Three extras take items off the checklist, and each takes off a DIFFERENT thing:
     ///
     ///   "Cleaning Supplies"   -> the products (Zep, Windex, cloths, sponge, mop)
-    ///   "Cleaning Essentials" -> paper towels, garbage bags, toilet brush
+    ///   "Cleaning Essentials" -> paper towels, garbage bags, toilet brush, broom
     ///   "Vacuum Cleaner"      -> the broom-or-vacuum line, and only that line
     ///
-    /// The rule that is easy to get wrong: Cleaning Essentials does NOT cover the broom or
-    /// vacuum. A cleaner cannot carry one to every job, so the customer either owns one or buys
-    /// the Vacuum Cleaner extra - and the checklist has to keep saying so even when they have
-    /// bought everything else.
+    /// The broom moved INTO Cleaning Essentials in 2026-09 (it used to be a permanent ask), so
+    /// the broom-or-vacuum line now comes off for EITHER of the last two extras - we bring a
+    /// broom, or we bring a vacuum, and the customer was only ever asked for one of the pair.
+    /// Supplies + Essentials consequently leaves nothing at all.
     ///
     /// These assertions mirror `shared/booking/supply-checklist.utils.spec.ts` case for case.
     /// The two files are the contract that the confirmation email, the SMS, the booking modal
@@ -63,12 +63,15 @@ namespace DreamCleaningBackend.Tests
             }, ChecklistFor("Cleaning Supplies"));
         }
 
+        /// <summary>
+        /// Essentials covers the broom now, so NOTHING from that group survives - only the
+        /// products Cleaning Supplies would have brought.
+        /// </summary>
         [Fact]
-        public void CleaningEssentialsOnly_LeavesTheBroomPlusTheProductsWeWouldHaveBrought()
+        public void CleaningEssentialsOnly_LeavesOnlyTheProductsWeWouldHaveBrought()
         {
             Assert.Equal(new[]
             {
-                "Broom or vacuum cleaner",
                 "Zep liquids: Green, Floor (or similar)",
                 "Windex liquid (or similar)",
                 "Cleaning cloths, Sponge and Mop"
@@ -76,10 +79,17 @@ namespace DreamCleaningBackend.Tests
         }
 
         [Fact]
-        public void SuppliesPlusEssentials_LeavesOnlyTheBroomOrVacuum()
+        public void SuppliesPlusEssentials_LeaveNothingAtAll()
         {
-            Assert.Equal(new[] { "Broom or vacuum cleaner" },
-                ChecklistFor("Cleaning Supplies", "Cleaning Essentials"));
+            Assert.Empty(ChecklistFor("Cleaning Supplies", "Cleaning Essentials"));
+        }
+
+        /// <summary>The broom is part of the set we bring, so it is never also asked for.</summary>
+        [Fact]
+        public void TheBroomIsOneOfTheItemsCleaningEssentialsCovers()
+        {
+            Assert.Contains("Broom", CustomerSupplyChecklist.EssentialsItems);
+            Assert.DoesNotContain("Broom or vacuum cleaner", ChecklistFor("Cleaning Essentials"));
         }
 
         [Fact]
@@ -104,9 +114,10 @@ namespace DreamCleaningBackend.Tests
         }
 
         /// <summary>
-        /// All three bought leaves nothing to prepare. Every surface has to render this as good
+        /// An empty checklist leaves nothing to prepare. Every surface has to render this as good
         /// news - the email and SMS say so in words rather than printing an empty bulleted box
-        /// under a "please provide the following items" heading.
+        /// under a "please provide the following items" heading. Note it now takes only TWO
+        /// extras to reach: Supplies + Essentials, with or without the vacuum.
         /// </summary>
         [Fact]
         public void AllThreeExtras_LeaveAnEmptyChecklist()
@@ -118,9 +129,15 @@ namespace DreamCleaningBackend.Tests
         public void CustomServiceType_NeverGetsTheProductsBlock()
         {
             var items = CustomerSupplyChecklist.BuildItems(
-                CustomerSupplyChecklist.Resolve(new[] { "Cleaning Essentials" }, isCustomServiceType: true));
+                CustomerSupplyChecklist.Resolve(Array.Empty<string>(), isCustomServiceType: true));
 
-            Assert.Equal(new[] { "Broom or vacuum cleaner" }, items);
+            Assert.Equal(new[]
+            {
+                "Paper towels",
+                "Garbage bags",
+                "Broom or vacuum cleaner",
+                "Toilet brush"
+            }, items);
         }
 
         /// <summary>
