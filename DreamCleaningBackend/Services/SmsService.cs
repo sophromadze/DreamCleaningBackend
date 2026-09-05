@@ -162,11 +162,11 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task SendBookingConfirmationSmsAsync(string phoneNumber, string customerName, DateTime serviceDate, string serviceTime,
-            bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType, bool isUpdate = false)
+            SupplyChecklistFacts supplyChecklist, bool isUpdate = false)
         {
             var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
 
-            var items = CustomerSupplyChecklist.BuildItems(hasCleaningSupplies, requiresOvenCleaner, isCustomServiceType);
+            var items = CustomerSupplyChecklist.BuildItems(supplyChecklist);
 
             // isUpdate: re-send after an admin changed the order. Same body, but the lead line
             // says "updated" so it doesn't read as a duplicate of the original confirmation.
@@ -174,10 +174,16 @@ namespace DreamCleaningBackend.Services
                 ? $"Hi {firstName}! Your Dream Cleaning appointment has been updated and is now confirmed for {serviceDate:MMM dd} at {serviceTime}."
                 : $"Hi {firstName}! Your Dream Cleaning appointment is confirmed for {serviceDate:MMM dd} at {serviceTime}.";
 
+            // Cleaning Supplies + Cleaning Essentials + Vacuum Cleaner together leave the customer
+            // nothing to prepare. A "Please provide the following items:" header with no items
+            // under it reads as a broken message, so that case says the good news instead.
+            var checklistLines = items.Count == 0
+                ? "\nEverything is covered - we bring all the supplies, so there is nothing for you to provide."
+                : "\nPlease provide the following items:" + $"\n- {string.Join("\n- ", items)}";
+
             var msg =
                 leadLine +
-                $"\nPlease provide the following items:" +
-                $"\n- {string.Join("\n- ", items)}" +
+                checklistLines +
                 $"\nAll changes, requests, and concerns must go through Dream Cleaning. Do not make any arrangements directly with your cleaner." +
                 $"\nBy booking with us, you agree to our Privacy Policy: https://dreamcleaningnyc.com/privacy-policy. We're committed to keeping your information safe." +
                 $"\nReply STOP to opt-out.";

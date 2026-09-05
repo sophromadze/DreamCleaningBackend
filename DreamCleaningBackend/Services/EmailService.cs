@@ -906,9 +906,11 @@ namespace DreamCleaningBackend.Services
 
             var formattedDuration = FormatDurationLocalized((int)durationPerCleaner, cleanerLanguage);
 
-            var hasCleaningSupplies = order.OrderExtraServices
-                .Select(oes => oes.ExtraService?.Name ?? "")
-                .Any(n => n.ToLowerInvariant().Contains("cleaning supplies"));
+            // Both read through CleanerJobView, which reads the same extras the customer's own
+            // "please provide" checklist reads — so what goes in the car and what the customer
+            // was told to have ready are two halves of one answer.
+            var hasCleaningSupplies = CleanerJobView.RequiresCleanerToBringSupplies(order);
+            var hasCleaningEssentials = CleanerJobView.RequiresCleanerToBringEssentials(order);
 
             var fullAddressParts = new List<string>();
             if (!string.IsNullOrEmpty(order.ServiceAddress))
@@ -933,6 +935,7 @@ namespace DreamCleaningBackend.Services
                 formattedDuration,
                 fullAddress,
                 hasCleaningSupplies,
+                hasCleaningEssentials,
                 cleanerAdditionalInstructions);
 
             await SendEmailAsync(email, subject, body);
@@ -966,6 +969,7 @@ namespace DreamCleaningBackend.Services
             string formattedDuration,
             string fullAddress,
             bool hasCleaningSupplies,
+            bool hasCleaningEssentials,
             string? cleanerAdditionalInstructions)
         {
             var culture = language switch
@@ -983,6 +987,12 @@ namespace DreamCleaningBackend.Services
             var labels = GetCleanerEmailLabels(language);
 
             string suppliesValue = hasCleaningSupplies ? labels["suppliesRequired"] : labels["suppliesNotRequired"];
+            // The long-form surface names the three items the first time a cleaner sees the row —
+            // "Essentials: required" alone doesn't tell somebody what to put in the car. The SMS
+            // keeps the bare required/not-required, because every line there costs segment budget.
+            string essentialsValue = hasCleaningEssentials
+                ? $"{labels["essentialsRequired"]} ({labels["essentialsItems"]})"
+                : labels["essentialsNotRequired"];
             string firstName = order.ContactFirstName ?? string.Empty;
             string addressValue = string.IsNullOrWhiteSpace(fullAddress) ? "—" : fullAddress;
             string entryValue = string.IsNullOrWhiteSpace(order.EntryMethod) ? "—" : order.EntryMethod;
@@ -1013,6 +1023,7 @@ namespace DreamCleaningBackend.Services
             rows.Append(BuildRow(labels["serviceDuration"], formattedDuration));
             rows.Append(BuildRow(labels["dateAndTime"], dateTimeText));
             rows.Append(BuildRow(labels["supplies"], suppliesValue));
+            rows.Append(BuildRow(labels["essentials"], essentialsValue));
             rows.Append(BuildListRow(labels["extraServices"], BuildCleanerExtraServiceItems(order, language)));
             rows.Append(BuildRow(labels["tips"], tipsValue));
             rows.Append("<p style='margin:18px 0 6px 0;'></p>");
@@ -1175,10 +1186,12 @@ namespace DreamCleaningBackend.Services
                 order, cleaner.Id);
             var formattedDuration = FormatDurationLocalized((int)durationPerCleaner, language);
 
-            var hasCleaningSupplies = order.OrderExtraServices
-                .Select(oes => oes.ExtraService?.Name ?? "")
-                .Any(n => n.ToLowerInvariant().Contains("cleaning supplies"));
+            // Same two questions the email asks, read from the same place — the SMS stands in for
+            // the mail when a cleaner has no email, so it must not answer either one differently.
+            var hasCleaningSupplies = CleanerJobView.RequiresCleanerToBringSupplies(order);
+            var hasCleaningEssentials = CleanerJobView.RequiresCleanerToBringEssentials(order);
             var suppliesValue = hasCleaningSupplies ? labels["suppliesRequired"] : labels["suppliesNotRequired"];
+            var essentialsValue = hasCleaningEssentials ? labels["essentialsRequired"] : labels["essentialsNotRequired"];
 
             var addressParts = new List<string>();
             if (!string.IsNullOrEmpty(order.ServiceAddress)) addressParts.Add(order.ServiceAddress);
@@ -1225,6 +1238,7 @@ namespace DreamCleaningBackend.Services
             if (!string.IsNullOrWhiteSpace(order.EntryMethod))
                 lines.Add($"{labels["entryInstruction"]}: {order.EntryMethod}");
             lines.Add($"{labels["supplies"]}: {suppliesValue}");
+            lines.Add($"{labels["essentials"]}: {essentialsValue}");
 
             // Same extras the email lists (prices stripped there too); comma-joined on one line
             // because each SMS line costs segment budget.
@@ -1304,6 +1318,12 @@ namespace DreamCleaningBackend.Services
                     ["supplies"] = "ხსნარები",
                     ["suppliesRequired"] = "საჭიროა",
                     ["suppliesNotRequired"] = "არ არის საჭირო",
+                    // "Cleaning Essentials" for a Georgian-reading cleaner. Deliberately NOT a
+                    // transliteration: the row has to say what goes in the car.
+                    ["essentials"] = "საწმენდი ნივთები",
+                    ["essentialsRequired"] = "საჭიროა",
+                    ["essentialsNotRequired"] = "არ არის საჭირო",
+                    ["essentialsItems"] = "ხელსახოცები, ნაგვის პარკები, უნიტაზის ჯაგრისი",
                     ["extraServices"] = "დამატებითი სერვისები",
                     ["tips"] = "თიფსი",
                     ["customerName"] = "მომხმარებლის სახელი",
@@ -1338,6 +1358,10 @@ namespace DreamCleaningBackend.Services
                     ["supplies"] = "Чистящие средства",
                     ["suppliesRequired"] = "требуются",
                     ["suppliesNotRequired"] = "не требуются",
+                    ["essentials"] = "Расходные материалы",
+                    ["essentialsRequired"] = "требуются",
+                    ["essentialsNotRequired"] = "не требуются",
+                    ["essentialsItems"] = "бумажные полотенца, мусорные пакеты, ёршик для унитаза",
                     ["extraServices"] = "Дополнительные услуги",
                     ["tips"] = "Чаевые",
                     ["customerName"] = "Имя клиента",
@@ -1372,6 +1396,10 @@ namespace DreamCleaningBackend.Services
                     ["supplies"] = "Productos de limpieza",
                     ["suppliesRequired"] = "se requieren",
                     ["suppliesNotRequired"] = "no se requieren",
+                    ["essentials"] = "Artículos básicos",
+                    ["essentialsRequired"] = "se requieren",
+                    ["essentialsNotRequired"] = "no se requieren",
+                    ["essentialsItems"] = "toallas de papel, bolsas de basura, escobilla de inodoro",
                     ["extraServices"] = "Servicios adicionales",
                     ["tips"] = "Propina",
                     ["customerName"] = "Nombre del cliente",
@@ -1406,6 +1434,10 @@ namespace DreamCleaningBackend.Services
                     ["supplies"] = "Supplies",
                     ["suppliesRequired"] = "required",
                     ["suppliesNotRequired"] = "not required",
+                    ["essentials"] = "Essentials",
+                    ["essentialsRequired"] = "required",
+                    ["essentialsNotRequired"] = "not required",
+                    ["essentialsItems"] = "paper towels, garbage bags, toilet brush",
                     ["extraServices"] = "Extra services",
                     ["tips"] = "Tips",
                     ["customerName"] = "Customer name",
@@ -1777,7 +1809,11 @@ namespace DreamCleaningBackend.Services
 
         public async Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
-            bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType,
+            // The whole "please provide the following items" answer, resolved once by
+            // CustomerSupplyChecklist.Resolve - see that helper for why the three supply extras
+            // (Cleaning Supplies, Cleaning Essentials, Vacuum Cleaner) each remove a different
+            // part of the list.
+            SupplyChecklistFacts supplyChecklist,
             string? floorTypes = null, string? floorTypeOther = null,
             // Phase 1 manual payment: when false, drop the "and payment processed successfully"
             // phrasing because the customer will pay the cleaners on arrival (Cash/Zelle/Check/
@@ -1797,7 +1833,7 @@ namespace DreamCleaningBackend.Services
                 ? $"Updated Confirmation - Dream Cleaning Order #{orderId}"
                 : "Booking Confirmed - Dream Cleaning Service Scheduled";
 
-            var itemsHtml = BuildCustomerSupplyChecklistHtml(hasCleaningSupplies, requiresOvenCleaner, isCustomServiceType);
+            var itemsHtml = BuildCustomerSupplyChecklistHtml(supplyChecklist);
 
             // Rendered only when we actually know. An apartment shows the property type but no
             // level count; a legacy order shows neither.
@@ -1882,9 +1918,20 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(email, subject, body);
         }
 
-        private static string BuildCustomerSupplyChecklistHtml(bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType)
+        private static string BuildCustomerSupplyChecklistHtml(SupplyChecklistFacts supplyChecklist)
         {
-            var items = CustomerSupplyChecklist.BuildItems(hasCleaningSupplies, requiresOvenCleaner, isCustomServiceType);
+            var items = CustomerSupplyChecklist.BuildItems(supplyChecklist);
+
+            // Cleaning Supplies + Cleaning Essentials + Vacuum Cleaner together leave nothing for
+            // the customer to prepare, and an empty bulleted box under a "please provide" heading
+            // reads as a rendering bug rather than as good news.
+            if (items.Count == 0)
+            {
+                return @"
+        <div style='background: #eafaf1; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid rgba(22, 101, 52, 0.25);'>
+            <p style='margin: 0; font-weight: 700; color: #166534;'>Nothing to prepare - we bring all the supplies for this cleaning.</p>
+        </div>";
+            }
 
             return $@"
         <div style='background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid rgba(133, 100, 4, 0.25);'>

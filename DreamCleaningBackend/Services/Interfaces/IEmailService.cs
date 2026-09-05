@@ -1,4 +1,5 @@
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Services.Interfaces
@@ -34,7 +35,11 @@ namespace DreamCleaningBackend.Services.Interfaces
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, bool isDaysBefore);
         Task SendCustomerBookingConfirmationAsync(string email, string customerName,
             DateTime serviceDate, string serviceTime, string serviceTypeName, string address, int orderId,
-            bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType,
+            // The whole "please provide the following items" answer, resolved once by
+            // CustomerSupplyChecklist.Resolve. Carried as one object rather than as loose bools:
+            // three supply extras now feed it, and five positional booleans in a row is a
+            // transposition nobody would notice.
+            SupplyChecklistFacts supplyChecklist,
             string? floorTypes = null, string? floorTypeOther = null,
             bool paymentAlreadyProcessed = true, bool isUpdate = false,
             // Property type / levels. Optional and null-defaulted so a caller without the order

@@ -1,3 +1,5 @@
+using DreamCleaningBackend.Helpers;
+
 namespace DreamCleaningBackend.Services.Interfaces
 {
     /// <summary>
@@ -14,7 +16,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// Booking confirmation SMS template. Optional: use from OrderService when SMS is enabled.
         /// </summary>
         Task SendBookingConfirmationSmsAsync(string phoneNumber, string customerName, DateTime serviceDate, string serviceTime,
-            bool hasCleaningSupplies, bool requiresOvenCleaner, bool isCustomServiceType, bool isUpdate = false);
+            SupplyChecklistFacts supplyChecklist, bool isUpdate = false);
 
         /// <summary>
         /// Cleaner assignment SMS template. Optional: use when assigning cleaners.

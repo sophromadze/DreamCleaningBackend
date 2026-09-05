@@ -750,9 +750,8 @@ namespace DreamCleaningBackend.Controllers
                         .Select(x => x.ExtraService?.Name ?? "")
                         .Where(n => !string.IsNullOrWhiteSpace(n))
                         .ToList();
-                    var manualHasCleaningSupplies = CustomerSupplyChecklist.HasCleaningSuppliesExtra(manualExtraNames);
-                    var manualRequiresOvenCleaner = CustomerSupplyChecklist.RequiresOvenCleaner(manualExtraNames);
                     var manualIsCustomServiceType = order.ServiceType?.IsCustom ?? false;
+                    var manualSupplyChecklist = CustomerSupplyChecklist.Resolve(manualExtraNames, manualIsCustomServiceType);
 
                     // Fire-and-forget email (skip Apple hidden mail). Same isAppleHiddenMail
                     // check the Stripe path uses below — keep behavior aligned.
@@ -769,7 +768,7 @@ namespace DreamCleaningBackend.Controllers
                                     await _emailService.SendCustomerBookingConfirmationAsync(
                                         manualContactEmail, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
                                         order.GetDisplayServiceTypeName(), manualAddressDisplay, order.Id,
-                                        manualHasCleaningSupplies, manualRequiresOvenCleaner, manualIsCustomServiceType,
+                                        manualSupplyChecklist,
                                         order.FloorTypes, order.FloorTypeOther,
                                         // Manual payment path: customer pays cleaners on arrival, so drop
                                         // the "payment processed successfully" phrasing from the greeting.
@@ -797,7 +796,7 @@ namespace DreamCleaningBackend.Controllers
                             {
                                 await _smsService.SendBookingConfirmationSmsAsync(
                                     manualContactPhone, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
-                                    manualHasCleaningSupplies, manualRequiresOvenCleaner, manualIsCustomServiceType);
+                                    manualSupplyChecklist);
                                 _logger.LogInformation($"Manual-payment booking confirmation SMS sent to {manualContactPhone} for order {order.Id}");
                             }
                             catch (InvalidPhoneNumberException)
@@ -1849,9 +1848,8 @@ namespace DreamCleaningBackend.Controllers
                     .Where(n => !string.IsNullOrWhiteSpace(n))
                     .ToList();
 
-                var hasCleaningSupplies = CustomerSupplyChecklist.HasCleaningSuppliesExtra(extraNames);
-                var requiresOvenCleaner = CustomerSupplyChecklist.RequiresOvenCleaner(extraNames);
                 var isCustomServiceType = order.ServiceType.IsCustom;
+                var supplyChecklist = CustomerSupplyChecklist.Resolve(extraNames, isCustomServiceType);
 
                 _ = Task.Run(async () =>
                 {
@@ -1871,9 +1869,7 @@ namespace DreamCleaningBackend.Controllers
                                 order.GetDisplayServiceTypeName(),
                                 addressDisplay,
                                 order.Id,
-                                hasCleaningSupplies,
-                                requiresOvenCleaner,
-                                isCustomServiceType,
+                                supplyChecklist,
                                 order.FloorTypes,
                                 order.FloorTypeOther,
                                 propertyType: order.PropertyType,
@@ -1904,9 +1900,7 @@ namespace DreamCleaningBackend.Controllers
                                 customerName,
                                 order.ServiceDate,
                                 serviceTimeStr,
-                                hasCleaningSupplies,
-                                requiresOvenCleaner,
-                                isCustomServiceType
+                                supplyChecklist
                             );
                             _logger.LogInformation($"Booking confirmation SMS sent to {contactPhone} for order {order.Id}");
                         }

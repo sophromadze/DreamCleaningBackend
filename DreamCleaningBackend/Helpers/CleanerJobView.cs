@@ -31,15 +31,18 @@ namespace DreamCleaningBackend.Helpers
         /// Extras that are never listed as work for the cleaner to do.
         ///
         /// "Cleaning Supplies" is answered by its own Supplies line, so repeating it in the task
-        /// list reads as a second job. "Extra Cleaners" is staffing, not work on site. Both
-        /// exclusions predate the portal - they were in the assignment email - and matching them
-        /// here is why the portal's list is the same list the cleaner was sent.
+        /// list reads as a second job. "Cleaning Essentials" is the same shape of thing and gets
+        /// the same treatment - its own Essentials line answers it. "Extra Cleaners" is staffing,
+        /// not work on site. These exclusions predate the portal - they were in the assignment
+        /// email - and matching them here is why the portal's list is the same list the cleaner
+        /// was sent.
         /// </summary>
         public static bool IsExtraHiddenFromCleaners(string? extraServiceName)
         {
             var name = extraServiceName?.Trim();
             if (string.IsNullOrWhiteSpace(name)) return true;
-            if (name.Contains("cleaning supplies", StringComparison.OrdinalIgnoreCase)) return true;
+            if (name.Contains(CustomerSupplyChecklist.CleaningSuppliesMatch, StringComparison.OrdinalIgnoreCase)) return true;
+            if (name.Contains(CustomerSupplyChecklist.CleaningEssentialsMatch, StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(name, OrderPricingCalculator.ExtraCleanersName, StringComparison.OrdinalIgnoreCase)) return true;
             // Deep / Super Deep is the CLEANING TYPE (see ResolveCleaningTypeName), the same rule
             // the booking page follows - it is never an extras card there either. Leaving it in the
@@ -93,6 +96,29 @@ namespace DreamCleaningBackend.Helpers
             var names = (order.OrderExtraServices ?? new List<OrderExtraService>())
                 .Select(oes => oes.ExtraService?.Name);
             return CustomerSupplyChecklist.HasCleaningSuppliesExtra(names);
+        }
+
+        /// <summary>
+        /// True when the CLEANER has to bring the essentials - paper towels, garbage bags and a
+        /// toilet brush.
+        ///
+        /// Same direction and same reasoning as <see cref="RequiresCleanerToBringSupplies"/>:
+        /// buying the "Cleaning Essentials" extra is the customer paying US to bring those three
+        /// items, so the extra being present means the cleaner LOADS THE CAR - and it is exactly
+        /// why CustomerSupplyChecklist.BuildItems drops them from the customer's own
+        /// "please provide" list in that case. The two halves of one arrangement, read from one
+        /// source, so the mail, the SMS, the portal and the customer's checklist cannot disagree
+        /// about who is bringing the paper towels.
+        ///
+        /// NOTE it is not the broom or vacuum: that is never included (a cleaner cannot carry one
+        /// to every job), so the customer is still asked for one unless they bought the separate
+        /// Vacuum Cleaner extra.
+        /// </summary>
+        public static bool RequiresCleanerToBringEssentials(Order order)
+        {
+            var names = (order.OrderExtraServices ?? new List<OrderExtraService>())
+                .Select(oes => oes.ExtraService?.Name);
+            return CustomerSupplyChecklist.HasCleaningEssentialsExtra(names);
         }
 
         /// <summary>

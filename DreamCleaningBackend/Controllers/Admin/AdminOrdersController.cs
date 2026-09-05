@@ -2552,9 +2552,8 @@ namespace DreamCleaningBackend.Controllers
                 .Select(x => x.ExtraService?.Name ?? "")
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .ToList();
-            var hasCleaningSupplies = CustomerSupplyChecklist.HasCleaningSuppliesExtra(extraNames);
-            var requiresOvenCleaner = CustomerSupplyChecklist.RequiresOvenCleaner(extraNames);
             var isCustom = order.ServiceType?.IsCustom == true;
+            var supplyChecklist = CustomerSupplyChecklist.Resolve(extraNames, isCustom);
             var customerName = string.IsNullOrWhiteSpace(order.ContactFirstName)
                 ? "there"
                 : char.ToUpperInvariant(order.ContactFirstName.Trim()[0]) + order.ContactFirstName.Trim()[1..];
@@ -2573,7 +2572,7 @@ namespace DreamCleaningBackend.Controllers
                     await _emailService.SendCustomerBookingConfirmationAsync(
                         order.ContactEmail, customerName, order.ServiceDate, serviceTimeStr,
                         order.GetDisplayServiceTypeName(), addressDisplay, order.Id,
-                        hasCleaningSupplies, requiresOvenCleaner, isCustom, order.FloorTypes, order.FloorTypeOther,
+                        supplyChecklist, order.FloorTypes, order.FloorTypeOther,
                         paymentAlreadyProcessed: order.IsPaid, isUpdate: isUpdate,
                         propertyType: order.PropertyType, levelsQuantity: order.LevelsQuantity);
                     result.EmailSent = true;
@@ -2606,7 +2605,7 @@ namespace DreamCleaningBackend.Controllers
                     {
                         await _smsService.SendBookingConfirmationSmsAsync(
                             order.ContactPhone, customerName, order.ServiceDate, serviceTimeStr,
-                            hasCleaningSupplies, requiresOvenCleaner, isCustom, isUpdate: isUpdate);
+                            supplyChecklist, isUpdate: isUpdate);
                         result.SmsSent = true;
                     }
                     catch (Exception ex)

@@ -124,6 +124,7 @@ namespace DreamCleaningBackend.Services
                     CustomerName = job.CustomerName,
                     Address = job.Address,
                     BringCleaningSupplies = job.BringCleaningSupplies,
+                    BringCleaningEssentials = job.BringCleaningEssentials,
                     ServiceDurationMinutes = job.ServiceDurationMinutes,
                     PropertyType = job.PropertyType,
                     LevelsQuantity = job.LevelsQuantity,
@@ -239,6 +240,7 @@ namespace DreamCleaningBackend.Services
                 CustomerName = CleanerJobView.ResolveCustomerDisplayName(order),
                 Address = CleanerJobView.BuildFullAddress(order),
                 BringCleaningSupplies = CleanerJobView.RequiresCleanerToBringSupplies(order),
+                BringCleaningEssentials = CleanerJobView.RequiresCleanerToBringEssentials(order),
                 // THEIR payroll line - the hours they were told and are paid for. Falls back to the
                 // automatic per-cleaner split when nobody in particular is being addressed.
                 ServiceDurationMinutes = (int)CleanerPayrollCalculator

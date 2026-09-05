@@ -92,6 +92,15 @@ namespace DreamCleaningBackend.DTOs
         public bool BringCleaningSupplies { get; set; }
 
         /// <summary>
+        /// Whether the cleaner has to bring the essentials - paper towels, garbage bags and a
+        /// toilet brush. Same shape and same source as <see cref="BringCleaningSupplies"/>
+        /// (CleanerJobView.RequiresCleanerToBringEssentials): the customer bought the "Cleaning
+        /// Essentials" extra, so we bring those three items and their own checklist no longer
+        /// lists them. Never the broom or vacuum - that is a separate extra.
+        /// </summary>
+        public bool BringCleaningEssentials { get; set; }
+
+        /// <summary>
         /// The hours this cleaner is actually expected to work: THEIR payroll line, straight from
         /// CleanerPayrollCalculator, so the figure on the page is the figure they are paid for and
         /// the one their assignment email already quoted. Never Order.TotalDuration, which is total
