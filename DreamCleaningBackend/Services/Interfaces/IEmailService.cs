@@ -49,6 +49,15 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendRealEmailVerificationCodeAsync(string email, string firstName, string code);
         Task SendAccountMergeConfirmationAsync(string email, string firstName, string code);
         Task SendEmailAsync(string to, string subject, string html);
+
+        /// <summary>
+        /// Same guards and SMTP settings as <see cref="SendEmailAsync"/>, with one file attached.
+        /// Added for the executed-contract notice, which has to carry the signed PDF itself - a
+        /// link alone means the counterparty holds nothing if the link later expires.
+        /// Falls back to sending the email WITHOUT the attachment rather than not at all.
+        /// </summary>
+        Task SendEmailWithAttachmentAsync(string to, string subject, string html,
+            byte[] attachmentBytes, string attachmentFileName, string attachmentMimeType);
         Task SendCompanyBookingNotificationAsync(string contactFirstName, string contactLastName, string contactEmail, string contactPhone, DateTime serviceDate,
             string serviceTime, string serviceTypeName, string serviceAddress, string aptSuite, string city, string state, string zipCode,
             int orderId, bool isCustomServiceType, string? serviceDescription, List<PhotoUploadDto> uploadedPhotos = null);

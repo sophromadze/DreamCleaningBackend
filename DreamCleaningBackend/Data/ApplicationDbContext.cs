@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Models.Contracts;
 
 namespace DreamCleaningBackend.Data
 {
@@ -122,6 +123,25 @@ namespace DreamCleaningBackend.Data
         public DbSet<BlogTopic> BlogTopics { get; set; }
         public DbSet<BlogSettings> BlogSettings { get; set; }
 
+        // Commercial contracts + e-signature. Deliberately NOT seeded through HasData: the
+        // template body and scope checklists are admin-editable rows, and a HasData entry would
+        // emit an UpdateData that silently reverts an edit on the next migration. They are
+        // bootstrapped idempotently at startup instead - see ContractSeedService.
+        public DbSet<ContractorProfile> ContractorProfiles { get; set; }
+        public DbSet<ContractContact> ContractContacts { get; set; }
+        public DbSet<ContractClient> ContractClients { get; set; }
+        public DbSet<ContractServiceLocation> ContractServiceLocations { get; set; }
+        public DbSet<ScopeTemplate> ScopeTemplates { get; set; }
+        public DbSet<ContractTemplate> ContractTemplates { get; set; }
+        public DbSet<Contract> Contracts { get; set; }
+        public DbSet<ContractVersion> ContractVersions { get; set; }
+        public DbSet<ContractSigner> ContractSigners { get; set; }
+        public DbSet<ContractSignature> ContractSignatures { get; set; }
+        public DbSet<ContractAuditLog> ContractAuditLogs { get; set; }
+        public DbSet<ContractFile> ContractFiles { get; set; }
+        /// <summary>Survives the contract it describes — see ContractDeletionLog.</summary>
+        public DbSet<ContractDeletionLog> ContractDeletionLogs { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -172,6 +192,163 @@ namespace DreamCleaningBackend.Data
                     .WithMany()
                     .HasForeignKey(e => e.GeneratedBlogPostId)
                     .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // ── Commercial contracts + e-signature ──────────────────────────────────────
+            // Delete behaviour is the point of this block. A contract is a legal record, so every
+            // path that could quietly erase evidence is Restricted: a client or contact with a
+            // contract cannot be deleted out from under it, and a signed version cannot lose its
+            // signature. Cascades exist only DOWN the contract itself (contract -> version ->
+            // signer -> signature), which is what "delete this contract" legitimately means.
+            modelBuilder.Entity<ContractorProfile>(entity =>
+            {
+                entity.HasIndex(e => e.IsDefault).HasDatabaseName("IX_ContractorProfiles_IsDefault");
+            });
+
+            modelBuilder.Entity<ContractClient>(entity =>
+            {
+                entity.HasIndex(e => e.LegalEntityName).HasDatabaseName("IX_ContractClients_LegalEntityName");
+                entity.HasIndex(e => e.IsActive).HasDatabaseName("IX_ContractClients_IsActive");
+                // The My Contracts portal filters on this on every request.
+                entity.HasIndex(e => e.SourceUserId).HasDatabaseName("IX_ContractClients_SourceUserId");
+                // Restrict, not Cascade: deleting a customer account must never take a commercial
+                // contract's counterparty record with it. Unlinking is a deliberate act.
+                entity.HasOne(e => e.SourceUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.SourceUserId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ContractContact>(entity =>
+            {
+                entity.HasIndex(e => e.Email).HasDatabaseName("IX_ContractContacts_Email");
+                entity.HasIndex(e => e.ContractClientId).HasDatabaseName("IX_ContractContacts_ClientId");
+                entity.HasIndex(e => e.UserId).HasDatabaseName("IX_ContractContacts_UserId");
+                entity.HasOne(e => e.ContractClient)
+                    .WithMany()
+                    .HasForeignKey(e => e.ContractClientId)
+                    .OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<ContractServiceLocation>(entity =>
+            {
+                entity.HasIndex(e => e.ContractClientId).HasDatabaseName("IX_ContractServiceLocations_ClientId");
+                entity.HasOne(e => e.ContractClient)
+                    .WithMany(c => c.ServiceLocations)
+                    .HasForeignKey(e => e.ContractClientId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<ScopeTemplate>(entity =>
+            {
+                entity.HasIndex(e => e.SortOrder).HasDatabaseName("IX_ScopeTemplates_SortOrder");
+                entity.Property(e => e.StructureJson).HasColumnType("LONGTEXT");
+            });
+
+            modelBuilder.Entity<ContractTemplate>(entity =>
+            {
+                entity.HasIndex(e => e.IsActive).HasDatabaseName("IX_ContractTemplates_IsActive");
+                entity.Property(e => e.BodyText).HasColumnType("LONGTEXT");
+            });
+
+            modelBuilder.Entity<Contract>(entity =>
+            {
+                entity.HasIndex(e => e.ContractNumber).IsUnique().HasDatabaseName("IX_Contracts_ContractNumber");
+                entity.HasIndex(e => e.Status).HasDatabaseName("IX_Contracts_Status");
+                entity.HasIndex(e => e.ContractClientId).HasDatabaseName("IX_Contracts_ClientId");
+                entity.HasIndex(e => e.CreatedAt).HasDatabaseName("IX_Contracts_CreatedAt");
+                // The default list filters on this on every load.
+                entity.HasIndex(e => e.IsHidden).HasDatabaseName("IX_Contracts_IsHidden");
+                entity.HasOne(e => e.HiddenByUser).WithMany()
+                    .HasForeignKey(e => e.HiddenByUserId).OnDelete(DeleteBehavior.SetNull);
+                // The review link is looked up by token on every client page load.
+                entity.HasIndex(e => e.ClientReviewToken).HasDatabaseName("IX_Contracts_ClientReviewToken");
+                entity.Property(e => e.DraftSnapshotJson).HasColumnType("LONGTEXT");
+
+                entity.HasOne(e => e.ContractClient).WithMany()
+                    .HasForeignKey(e => e.ContractClientId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.ServiceLocation).WithMany()
+                    .HasForeignKey(e => e.ContractServiceLocationId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.ContractorProfile).WithMany()
+                    .HasForeignKey(e => e.ContractorProfileId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.ContractTemplate).WithMany()
+                    .HasForeignKey(e => e.ContractTemplateId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.ScopeTemplate).WithMany()
+                    .HasForeignKey(e => e.ScopeTemplateId).OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(e => e.CreatedByAdmin).WithMany()
+                    .HasForeignKey(e => e.CreatedByAdminId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ContractVersion>(entity =>
+            {
+                entity.HasIndex(e => new { e.ContractId, e.VersionNumber }).IsUnique()
+                    .HasDatabaseName("IX_ContractVersions_Contract_Version");
+                entity.Property(e => e.FullSnapshotJson).HasColumnType("LONGTEXT");
+                entity.Property(e => e.RenderedDocumentHtml).HasColumnType("LONGTEXT");
+
+                entity.HasOne(e => e.Contract).WithMany(c => c.Versions)
+                    .HasForeignKey(e => e.ContractId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.GeneratedByAdmin).WithMany()
+                    .HasForeignKey(e => e.GeneratedByAdminId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ContractSigner>(entity =>
+            {
+                entity.HasIndex(e => e.SigningToken).IsUnique().HasDatabaseName("IX_ContractSigners_Token");
+                entity.HasIndex(e => e.ContractVersionId).HasDatabaseName("IX_ContractSigners_VersionId");
+
+                entity.HasOne(e => e.ContractVersion).WithMany(v => v.Signers)
+                    .HasForeignKey(e => e.ContractVersionId).OnDelete(DeleteBehavior.Cascade);
+                // A contact who has been asked to sign can no longer be hard-deleted; the signer
+                // row is the record of who was invited.
+                entity.HasOne(e => e.Contact).WithMany()
+                    .HasForeignKey(e => e.ContractContactId).OnDelete(DeleteBehavior.Restrict);
+                // Same reasoning for the account authorized to sign in-app.
+                entity.HasIndex(e => e.UserId).HasDatabaseName("IX_ContractSigners_UserId");
+                entity.HasOne(e => e.User).WithMany()
+                    .HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ContractSignature>(entity =>
+            {
+                entity.HasIndex(e => e.ContractSignerId).IsUnique()
+                    .HasDatabaseName("IX_ContractSignatures_SignerId");
+                entity.Property(e => e.SignatureImageOrTypedText).HasColumnType("LONGTEXT");
+                entity.HasOne(e => e.ContractSigner).WithOne(s => s.Signature)
+                    .HasForeignKey<ContractSignature>(e => e.ContractSignerId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                // A signature is evidence: the account behind an authenticated signature must
+                // survive that account being deleted, so this never cascades.
+                entity.HasOne(e => e.SignedByUser).WithMany()
+                    .HasForeignKey(e => e.SignedByUserId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ContractAuditLog>(entity =>
+            {
+                entity.HasIndex(e => new { e.ContractId, e.Timestamp })
+                    .HasDatabaseName("IX_ContractAuditLogs_Contract_Timestamp");
+                entity.HasOne(e => e.Contract).WithMany()
+                    .HasForeignKey(e => e.ContractId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<ContractFile>(entity =>
+            {
+                entity.HasIndex(e => new { e.ContractVersionId, e.FileType })
+                    .HasDatabaseName("IX_ContractFiles_Version_Type");
+                entity.HasOne(e => e.ContractVersion).WithMany(v => v.Files)
+                    .HasForeignKey(e => e.ContractVersionId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // Deliberately NO foreign key to Contracts: this row outlives the contract it
+            // describes, which is the entire reason it exists.
+            modelBuilder.Entity<ContractDeletionLog>(entity =>
+            {
+                entity.HasIndex(e => e.ContractNumber).HasDatabaseName("IX_ContractDeletionLogs_Number");
+                entity.HasIndex(e => e.DeletedAt).HasDatabaseName("IX_ContractDeletionLogs_DeletedAt");
             });
 
             // AuditLog configuration

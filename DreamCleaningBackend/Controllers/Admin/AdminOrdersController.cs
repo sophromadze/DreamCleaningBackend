@@ -42,6 +42,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IOrderRefundService _orderRefundService;
         private readonly IOrderPaymentStatusReconciler _reconciler;
         private readonly IOrderReorderPreviewService _reorderPreviewService;
+        private readonly ICleanerPayrollEditService _payrollEditService;
         private readonly ILogger<AdminOrdersController> _logger;
 
         public AdminOrdersController(ApplicationDbContext context,
@@ -60,8 +61,10 @@ namespace DreamCleaningBackend.Controllers
             IOrderRefundService orderRefundService,
             IOrderPaymentStatusReconciler reconciler,
             IOrderReorderPreviewService reorderPreviewService,
+            ICleanerPayrollEditService payrollEditService,
             ILogger<AdminOrdersController> logger)
         {
+            _payrollEditService = payrollEditService;
             _logger = logger;
             _context = context;
             _orderService = orderService;
@@ -833,37 +836,165 @@ namespace DreamCleaningBackend.Controllers
         /// TotalDuration x MaidsCount x rate — which cannot see a per-cleaner rate or hours
         /// override, and had order #315 reading $200 against a $175 payout sheet (2026-08-31).
         ///
-        /// SuperAdmin, matching the existing gate on the figure it explains: the "Cleaners Total
-        /// Salary" row and its edit input are both `*ngIf="isSuperAdmin"` in the Orders panel, so
-        /// this neither widens nor narrows who can see cleaner wages.
+        /// **Admin and SuperAdmin** (2026-09, owner's call). It used to be SuperAdmin-only,
+        /// matching the gate on the figure it explains. Admins are the people who staff the jobs
+        /// and take the "we actually worked till six" phone call, so a wage breakdown they cannot
+        /// see is a number they have to ask somebody else to check. Moderators stay out: this is
+        /// behind Permission.View like the rest of the panel's reads, and the WRITES below need
+        /// Update, which a Moderator does not hold. The SuperAdmin-only page it mirrors —
+        /// Outgoing Payments — keeps its own gate, because that one is where money is recorded
+        /// as leaving the business, which is a different question from what a job cost.
         ///
         /// Deliberately NOT the Outgoing Payments endpoint, which filters to Done-and-unrefunded
         /// orders and would 404 on exactly the orders an admin is looking at while staffing one.
         /// Both derive from CleanerPayrollCalculator, so they cannot disagree.
         /// </summary>
         [HttpGet("orders/{orderId}/cleaner-payroll")]
-        [Authorize(Roles = "SuperAdmin")]
+        // The role attribute is what keeps Moderators out: they DO hold Permission.View (that is
+        // what View-only means), so the permission alone would have widened wages to them as a
+        // side effect of widening them to Admins. The writes below need Update, which a Moderator
+        // does not hold, so they carry the permission gate alone.
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        [RequirePermission(Permission.View)]
         public async Task<ActionResult<OrderCleanerPayrollDto>> GetOrderCleanerPayroll(int orderId)
         {
-            var order = await _context.Orders
-                .AsNoTracking()
-                // OrderServices -> Service is what HasCleanerHoursService reads; without it every
-                // cleaner-hours order would have its duration divided a second time.
+            var order = await LoadOrderForPayrollAsync(orderId, tracked: false);
+            if (order == null)
+                return NotFound();
+
+            return Ok(BuildOrderCleanerPayrollDto(order));
+        }
+
+        /// <summary>
+        /// Changes ONE cleaner's rate and/or paid hours on this order, from the Orders panel.
+        ///
+        /// The rules and the audit row are <see cref="ICleanerPayrollEditService"/>'s, shared with
+        /// the Outgoing Payments page which offers the same edit — so the two screens record the
+        /// same change identically, and a figure edited here is the figure that page pays.
+        ///
+        /// Unlike that page this works on ANY order, finished or not: an admin staffing a job
+        /// tomorrow is exactly who knows it needs four and a quarter hours a head.
+        /// </summary>
+        [HttpPut("orders/{orderId}/cleaner-payroll/cleaner/{orderCleanerId}")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<OrderCleanerPayrollDto>> UpdateOrderCleanerPayroll(
+            int orderId, int orderCleanerId, [FromBody] UpdateCleanerPayrollDto dto)
+        {
+            if (dto == null || (!dto.UpdateHourlyRate && !dto.UpdateBillableMinutes))
+                return BadRequest(new { message = "No changes were supplied." });
+
+            if (dto.UpdateHourlyRate && dto.HourlyRate is < 0)
+                return BadRequest(new { message = "An hourly rate cannot be negative." });
+
+            if (dto.UpdateBillableMinutes && dto.BillableMinutes is < 0)
+                return BadRequest(new { message = "Hours cannot be negative." });
+
+            var order = await LoadOrderForPayrollAsync(orderId, tracked: true);
+            if (order == null)
+                return NotFound(new { message = "That order was not found." });
+
+            var applied = await _payrollEditService.SetCleanerOverridesAsync(order, orderCleanerId, dto);
+            if (!applied)
+                return NotFound(new { message = "That cleaner is not assigned to this order." });
+
+            return Ok(BuildOrderCleanerPayrollDto(order));
+        }
+
+        /// <summary>
+        /// Sets the paid hours for EVERY assigned cleaner on this order in one go — "the crew all
+        /// stayed another quarter of an hour", which is the change that actually happens and used
+        /// to mean opening each line in turn.
+        ///
+        /// A null clears the overrides and puts the order back on the automatic split. Unassigned
+        /// staffing slots are not moved: an override lives on the assignment row, and there is
+        /// nobody behind those slots to hang one on.
+        ///
+        /// It does NOT touch <c>Order.TotalDuration</c>. That is the duration the CUSTOMER was
+        /// quoted and priced on; what the cleaners are paid for is a separate fact, and conflating
+        /// them would re-price the job every time somebody recorded an extra fifteen minutes.
+        /// </summary>
+        [HttpPut("orders/{orderId}/cleaner-payroll/hours")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<OrderCleanerPayrollDto>> UpdateOrderCleanerHours(
+            int orderId, [FromBody] UpdateOrderCleanerHoursDto dto)
+        {
+            if (dto == null)
+                return BadRequest(new { message = "No hours were supplied." });
+
+            if (dto.BillableMinutes is < 0)
+                return BadRequest(new { message = "Hours cannot be negative." });
+
+            var order = await LoadOrderForPayrollAsync(orderId, tracked: true);
+            if (order == null)
+                return NotFound(new { message = "That order was not found." });
+
+            if (order.OrderCleaners.Count == 0)
+                return BadRequest(new { message = "Nobody is assigned to this order yet, so there are no hours to set." });
+
+            await _payrollEditService.SetHoursForEveryCleanerAsync(order, dto.BillableMinutes);
+
+            return Ok(BuildOrderCleanerPayrollDto(order));
+        }
+
+        /// <summary>
+        /// Changes the ORDER's cleaner hourly rate — the default every assigned cleaner without
+        /// their own rate is paid at — and writes it onto the order, so Statistics and Finances
+        /// follow with nothing else to do.
+        ///
+        /// The panel's edit form also carries a "Cleaner $/hr" box, but that one only lands as
+        /// part of a full order save (which for an Admin without the direct-save grant goes to
+        /// the approval queue). This is the same standalone control Outgoing Payments has: it
+        /// moves no customer-facing price, so it does not belong in a change request.
+        /// </summary>
+        [HttpPut("orders/{orderId}/cleaner-payroll/hourly-rate")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<OrderCleanerPayrollDto>> UpdateOrderCleanerHourlyRate(
+            int orderId, [FromBody] UpdateOrderHourlyRateDto dto)
+        {
+            if (dto == null || dto.HourlyRate < 0)
+                return BadRequest(new { message = "An hourly rate cannot be negative." });
+
+            var order = await LoadOrderForPayrollAsync(orderId, tracked: true);
+            if (order == null)
+                return NotFound(new { message = "That order was not found." });
+
+            await _payrollEditService.SetOrderHourlyRateAsync(order, dto.HourlyRate);
+
+            return Ok(BuildOrderCleanerPayrollDto(order));
+        }
+
+        /// <summary>
+        /// The order with everything the payroll calculator needs. Tracked for the writes, not for
+        /// the read. OrderServices -> Service is what HasCleanerHoursService reads; without it
+        /// every cleaner-hours order would have its duration divided a second time.
+        /// </summary>
+        private Task<Order?> LoadOrderForPayrollAsync(int orderId, bool tracked)
+        {
+            var query = _context.Orders
                 .Include(o => o.OrderServices)
                     .ThenInclude(os => os.Service)
                 .Include(o => o.OrderCleaners)
                     .ThenInclude(oc => oc.Cleaner)
-                .FirstOrDefaultAsync(o => o.Id == orderId);
+                .AsQueryable();
 
-            if (order == null)
-                return NotFound();
+            if (!tracked) query = query.AsNoTracking();
 
+            return query.FirstOrDefaultAsync(o => o.Id == orderId);
+        }
+
+        /// <summary>
+        /// The breakdown as the panel renders it. Shared by the read and by every write, so a
+        /// write answers with the whole sheet and the panel redraws from one response instead of
+        /// patching itself in place and hoping it matches what was stored.
+        /// </summary>
+        private static OrderCleanerPayrollDto BuildOrderCleanerPayrollDto(Order order)
+        {
             var hasCleanerService = CleanerPayrollCalculator.HasCleanerHoursService(order);
             var payroll = CleanerPayrollCalculator.Build(order, hasCleanerService, order.OrderCleaners);
 
             var assignmentsById = order.OrderCleaners.ToDictionary(oc => oc.Id);
 
-            var dto = new OrderCleanerPayrollDto
+            return new OrderCleanerPayrollDto
             {
                 OrderId = order.Id,
                 TotalSalary = payroll.TotalSalary,
@@ -877,6 +1008,7 @@ namespace DreamCleaningBackend.Controllers
                     var cleaner = assignmentsById.TryGetValue(line.OrderCleanerId, out var a) ? a.Cleaner : null;
                     return new OrderCleanerPayrollLineDto
                     {
+                        OrderCleanerId = line.OrderCleanerId,
                         CleanerId = line.CleanerId,
                         FirstName = cleaner?.FirstName ?? string.Empty,
                         LastName = cleaner?.LastName ?? string.Empty,
@@ -899,8 +1031,6 @@ namespace DreamCleaningBackend.Controllers
                         Salary = payroll.UnassignedSalaryEach
                     }).ToList()
             };
-
-            return Ok(dto);
         }
 
         /// <summary>

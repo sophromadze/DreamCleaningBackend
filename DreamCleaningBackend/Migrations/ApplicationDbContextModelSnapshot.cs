@@ -1957,6 +1957,793 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("ClientInteractions");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.Contract", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ClientReviewToken")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTime?>("ClientReviewTokenExpiresAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("ContractClientId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ContractNumber")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<int>("ContractServiceLocationId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ContractTemplateId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ContractorProfileId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("CreatedByAdminId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CurrentVersionId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DraftSnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<int?>("DuplicatedFromContractId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("HiddenAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("HiddenByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsHidden")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int?>("ScopeTemplateId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("VoidReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClientReviewToken")
+                        .HasDatabaseName("IX_Contracts_ClientReviewToken");
+
+                    b.HasIndex("ContractClientId")
+                        .HasDatabaseName("IX_Contracts_ClientId");
+
+                    b.HasIndex("ContractNumber")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Contracts_ContractNumber");
+
+                    b.HasIndex("ContractServiceLocationId");
+
+                    b.HasIndex("ContractTemplateId");
+
+                    b.HasIndex("ContractorProfileId");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("IX_Contracts_CreatedAt");
+
+                    b.HasIndex("CreatedByAdminId");
+
+                    b.HasIndex("HiddenByUserId");
+
+                    b.HasIndex("IsHidden")
+                        .HasDatabaseName("IX_Contracts_IsHidden");
+
+                    b.HasIndex("ScopeTemplateId");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("IX_Contracts_Status");
+
+                    b.ToTable("Contracts");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractAuditLog", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ActorIdentifier")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<int>("ActorType")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ContractId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ContractVersionId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("EventDescription")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(45)
+                        .HasColumnType("varchar(45)");
+
+                    b.Property<DateTime>("Timestamp")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractId", "Timestamp")
+                        .HasDatabaseName("IX_ContractAuditLogs_Contract_Timestamp");
+
+                    b.ToTable("ContractAuditLogs");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractClient", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("City")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)");
+
+                    b.Property<string>("FormationState")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("LegalEntityName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("NoticeEmail")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<string>("PrincipalAddress")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<int?>("SourceUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Zip")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsActive")
+                        .HasDatabaseName("IX_ContractClients_IsActive");
+
+                    b.HasIndex("LegalEntityName")
+                        .HasDatabaseName("IX_ContractClients_LegalEntityName");
+
+                    b.HasIndex("SourceUserId")
+                        .HasDatabaseName("IX_ContractClients_SourceUserId");
+
+                    b.ToTable("ContractClients");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractContact", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ContractClientId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("FirstName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("LastName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<int>("Role")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractClientId")
+                        .HasDatabaseName("IX_ContractContacts_ClientId");
+
+                    b.HasIndex("Email")
+                        .HasDatabaseName("IX_ContractContacts_Email");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_ContractContacts_UserId");
+
+                    b.ToTable("ContractContacts");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractDeletionLog", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ClientLegalName")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<int>("ContractId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ContractNumber")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<DateTime>("DeletedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("DeletedBy")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)");
+
+                    b.Property<int>("FileCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("HiddenAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("HiddenBy")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<int>("SignatureCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StatusAtDeletion")
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
+                    b.Property<int>("VersionCount")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractNumber")
+                        .HasDatabaseName("IX_ContractDeletionLogs_Number");
+
+                    b.HasIndex("DeletedAt")
+                        .HasDatabaseName("IX_ContractDeletionLogs_DeletedAt");
+
+                    b.ToTable("ContractDeletionLogs");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractFile", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("ContractVersionId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("FilePath")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<long>("FileSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("FileType")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractVersionId", "FileType")
+                        .HasDatabaseName("IX_ContractFiles_Version_Type");
+
+                    b.ToTable("ContractFiles");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractServiceLocation", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Address")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<string>("BusinessBrand")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("City")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<int>("ContractClientId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("LocationName")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Zip")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractClientId")
+                        .HasDatabaseName("IX_ContractServiceLocations_ClientId");
+
+                    b.ToTable("ContractServiceLocations");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractSignature", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("ConsentAccepted")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int>("ContractSignerId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DocumentHashAtSigning")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(45)
+                        .HasColumnType("varchar(45)");
+
+                    b.Property<string>("SignatureImageOrTypedText")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<int>("SignatureMethod")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("SignedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("SignedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SignerEmailAtSigning")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("SignerNameAtSigning")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("SignerTitleAtSigning")
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)");
+
+                    b.Property<int>("SigningChannel")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractSignerId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ContractSignatures_SignerId");
+
+                    b.HasIndex("SignedByUserId");
+
+                    b.ToTable("ContractSignatures");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractSigner", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ContractContactId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ContractVersionId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("InviteSentAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("InvitedEmail")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("InvitedName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("InvitedTitle")
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)");
+
+                    b.Property<int>("Role")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SigningToken")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("TokenExpiresAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractContactId");
+
+                    b.HasIndex("ContractVersionId")
+                        .HasDatabaseName("IX_ContractSigners_VersionId");
+
+                    b.HasIndex("SigningToken")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ContractSigners_Token");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_ContractSigners_UserId");
+
+                    b.ToTable("ContractSigners");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractTemplate", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("BodyText")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsActive")
+                        .HasDatabaseName("IX_ContractTemplates_IsActive");
+
+                    b.ToTable("ContractTemplates");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractVersion", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("ContractId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DocumentHashSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("FullSnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<DateTime>("GeneratedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("GeneratedByAdminId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsSuperseded")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("RenderedDocumentHtml")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<string>("RenderedDocumentPath")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<int>("VersionNumber")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GeneratedByAdminId");
+
+                    b.HasIndex("ContractId", "VersionNumber")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ContractVersions_Contract_Version");
+
+                    b.ToTable("ContractVersions");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractorProfile", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Address")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<string>("City")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Dba")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("LegalEntityName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("NoticeEmail")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Zip")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsDefault")
+                        .HasDatabaseName("IX_ContractorProfiles_IsDefault");
+
+                    b.ToTable("ContractorProfiles");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ScopeTemplate", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("AllowsCustomRows")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)");
+
+                    b.Property<string>("PremisesType")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StructureJson")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SortOrder")
+                        .HasDatabaseName("IX_ScopeTemplates_SortOrder");
+
+                    b.ToTable("ScopeTemplates");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.CustomerTag", b =>
                 {
                     b.Property<int>("Id")
@@ -5265,6 +6052,9 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<bool>("IsBusiness")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("tinyint(1)");
 
@@ -5311,6 +6101,9 @@ namespace DreamCleaningBackend.Migrations
                         .HasColumnType("decimal(5,2)");
 
                     b.Property<int?>("ManagerId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("OrgTitle")
                         .HasColumnType("int");
 
                     b.Property<string>("PasswordHash")
@@ -5898,6 +6691,185 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired();
 
                     b.Navigation("Admin");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.Contract", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractClient", "ContractClient")
+                        .WithMany()
+                        .HasForeignKey("ContractClientId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractServiceLocation", "ServiceLocation")
+                        .WithMany()
+                        .HasForeignKey("ContractServiceLocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractTemplate", "ContractTemplate")
+                        .WithMany()
+                        .HasForeignKey("ContractTemplateId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractorProfile", "ContractorProfile")
+                        .WithMany()
+                        .HasForeignKey("ContractorProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "CreatedByAdmin")
+                        .WithMany()
+                        .HasForeignKey("CreatedByAdminId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "HiddenByUser")
+                        .WithMany()
+                        .HasForeignKey("HiddenByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ScopeTemplate", "ScopeTemplate")
+                        .WithMany()
+                        .HasForeignKey("ScopeTemplateId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("ContractClient");
+
+                    b.Navigation("ContractTemplate");
+
+                    b.Navigation("ContractorProfile");
+
+                    b.Navigation("CreatedByAdmin");
+
+                    b.Navigation("HiddenByUser");
+
+                    b.Navigation("ScopeTemplate");
+
+                    b.Navigation("ServiceLocation");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractAuditLog", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.Contract", "Contract")
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Contract");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractClient", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.User", "SourceUser")
+                        .WithMany()
+                        .HasForeignKey("SourceUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("SourceUser");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractContact", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractClient", "ContractClient")
+                        .WithMany()
+                        .HasForeignKey("ContractClientId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("ContractClient");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractFile", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractVersion", "ContractVersion")
+                        .WithMany("Files")
+                        .HasForeignKey("ContractVersionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ContractVersion");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractServiceLocation", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractClient", "ContractClient")
+                        .WithMany("ServiceLocations")
+                        .HasForeignKey("ContractClientId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ContractClient");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractSignature", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractSigner", "ContractSigner")
+                        .WithOne("Signature")
+                        .HasForeignKey("DreamCleaningBackend.Models.Contracts.ContractSignature", "ContractSignerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "SignedByUser")
+                        .WithMany()
+                        .HasForeignKey("SignedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("ContractSigner");
+
+                    b.Navigation("SignedByUser");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractSigner", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractContact", "Contact")
+                        .WithMany()
+                        .HasForeignKey("ContractContactId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.ContractVersion", "ContractVersion")
+                        .WithMany("Signers")
+                        .HasForeignKey("ContractVersionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Contact");
+
+                    b.Navigation("ContractVersion");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractVersion", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.Contract", "Contract")
+                        .WithMany("Versions")
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "GeneratedByAdmin")
+                        .WithMany()
+                        .HasForeignKey("GeneratedByAdminId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Contract");
+
+                    b.Navigation("GeneratedByAdmin");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.CustomerTag", b =>
@@ -6652,6 +7624,28 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("Notes");
 
                     b.Navigation("Vacations");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.Contract", b =>
+                {
+                    b.Navigation("Versions");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractClient", b =>
+                {
+                    b.Navigation("ServiceLocations");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractSigner", b =>
+                {
+                    b.Navigation("Signature");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Contracts.ContractVersion", b =>
+                {
+                    b.Navigation("Files");
+
+                    b.Navigation("Signers");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.ExpenseCategory", b =>

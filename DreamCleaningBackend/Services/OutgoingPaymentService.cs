@@ -34,11 +34,16 @@ namespace DreamCleaningBackend.Services
     {
         private readonly ApplicationDbContext _context;
         private readonly Interfaces.IAuditService _audit;
+        private readonly ICleanerPayrollEditService _payrollEdits;
 
-        public OutgoingPaymentService(ApplicationDbContext context, Interfaces.IAuditService audit)
+        public OutgoingPaymentService(
+            ApplicationDbContext context,
+            Interfaces.IAuditService audit,
+            ICleanerPayrollEditService payrollEdits)
         {
             _context = context;
             _audit = audit;
+            _payrollEdits = payrollEdits;
         }
 
         /// <summary>
@@ -105,6 +110,11 @@ namespace DreamCleaningBackend.Services
         /// total back to <see cref="Order.CleanerTotalSalary"/>, which is what Statistics and
         /// Finances read. That write-back is the point of the page: the per-cleaner figures are
         /// the truth, and the order's single number has to follow them.
+        ///
+        /// The rules and the audit row live in <see cref="CleanerPayrollEditService"/>, shared
+        /// with the admin Orders panel, which offers the same edit on the order it is showing.
+        /// Two implementations of one payroll write is how the two screens would end up recording
+        /// the same change differently.
         /// </summary>
         public async Task<OutgoingPaymentOrderDto?> UpdateCleanerPayrollAsync(
             int orderId, int orderCleanerId, UpdateCleanerPayrollDto dto)
@@ -113,59 +123,26 @@ namespace DreamCleaningBackend.Services
                 .FirstOrDefaultAsync(o => o.Id == orderId);
             if (order == null) return null;
 
-            var assignment = order.OrderCleaners.FirstOrDefault(oc => oc.Id == orderCleanerId);
-            if (assignment == null) return null;
+            var applied = await _payrollEdits.SetCleanerOverridesAsync(order, orderCleanerId, dto);
+            return applied ? BuildOrderRow(order) : null;
+        }
 
-            // A PAID line used to be refused here ("undo the payment first"). It is allowed since
-            // 2026-09, because the thing that made it unsafe is gone: PaidAmount is a frozen
-            // record of what was handed over, and raising this line's hours now leaves the
-            // difference showing as still to pay rather than silently restating the payment.
-            // Cleaners routinely report longer hours after they have been settled, and the undo /
-            // re-pay dance that used to be required threw away the record of the first payment —
-            // which is the one thing that must survive. See Helpers/CleanerPayoutSettlement.
+        /// <summary>
+        /// Sets the paid hours for EVERY assigned cleaner on the order in one go — the counterpart
+        /// of the order-level hourly rate below, and the case the page was missing: the rate could
+        /// be moved for everybody but the hours had to be typed line by line, which is the change
+        /// that actually happens (the whole crew stayed another quarter of an hour).
+        ///
+        /// Null clears every override and puts the order back on the automatic split.
+        /// </summary>
+        public async Task<OutgoingPaymentOrderDto?> UpdateOrderCleanerHoursAsync(
+            int orderId, decimal? billableMinutes)
+        {
+            var order = await PerformedOrdersWithIncludes()
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null) return null;
 
-            // Captured BEFORE the write. A null here means "this line tracks the order rate/split"
-            // and is materially different from a value that happens to equal it, so the audit row
-            // records the null rather than resolving it to a number.
-            var beforeRate = assignment.SalaryHourlyRate;
-            var beforeMinutes = assignment.SalaryBillableMinutes;
-            var beforeTotal = order.CleanerTotalSalary;
-
-            if (dto.UpdateHourlyRate)
-                assignment.SalaryHourlyRate = dto.HourlyRate;
-
-            if (dto.UpdateBillableMinutes)
-                assignment.SalaryBillableMinutes = dto.BillableMinutes;
-
-            ApplyOrderTotalSalary(order);
-            order.UpdatedAt = DateTime.UtcNow;
-
-            await _context.SaveChangesAsync();
-
-            await _audit.LogActionAsync(
-                AuditEntityTypes.CleanerPayrollOverride,
-                order.Id,
-                // "Reset" is a distinct action, not an update to null: it is the deliberate
-                // "follow the order again" decision, and an admin scanning the log should be able
-                // to filter for it.
-                (dto.UpdateHourlyRate && dto.HourlyRate == null) || (dto.UpdateBillableMinutes && dto.BillableMinutes == null)
-                    ? "PayrollOverrideReset"
-                    : "PayrollOverrideSet",
-                new
-                {
-                    Cleaner = DescribeCleaner(assignment),
-                    HourlyRate = beforeRate,
-                    BillableMinutes = beforeMinutes,
-                    CleanerTotalSalary = beforeTotal
-                },
-                new
-                {
-                    Cleaner = DescribeCleaner(assignment),
-                    HourlyRate = assignment.SalaryHourlyRate,
-                    BillableMinutes = assignment.SalaryBillableMinutes,
-                    CleanerTotalSalary = order.CleanerTotalSalary
-                });
-
+            await _payrollEdits.SetHoursForEveryCleanerAsync(order, billableMinutes);
             return BuildOrderRow(order);
         }
 
@@ -175,17 +152,10 @@ namespace DreamCleaningBackend.Services
         /// so the order itself carries the new rate rather than the page holding a private view
         /// of it.
         ///
-        /// Two rules make the change safe:
-        ///
-        /// 1. **Already-PAID lines are pinned first.** Before the order moves, every paid
-        ///    assignment that was following the order rate has that rate written onto it as an
-        ///    explicit override. Their salary therefore stays exactly what was handed over —
-        ///    otherwise raising the rate would retroactively inflate the reported cost of work
-        ///    already settled at the old figure. This mirrors the refusal to edit a paid line
-        ///    directly; the money that left is not up for revision.
-        /// 2. **Explicit per-cleaner overrides are left alone.** Somebody set that cleaner's rate
-        ///    on purpose, and a change to the order's default is not an instruction to discard it.
-        ///    "Reset to automatic" on the line is how an override rejoins the order rate.
+        /// The two rules that make it safe — already-paid lines pinned to the old rate, explicit
+        /// per-cleaner overrides left alone — live in
+        /// <see cref="CleanerPayrollEditService.SetOrderHourlyRateAsync"/> with the rest of the
+        /// payroll writes.
         /// </summary>
         public async Task<OutgoingPaymentOrderDto?> UpdateOrderHourlyRateAsync(int orderId, decimal hourlyRate)
         {
@@ -193,67 +163,8 @@ namespace DreamCleaningBackend.Services
                 .FirstOrDefaultAsync(o => o.Id == orderId);
             if (order == null) return null;
 
-            var previousRate = order.CleanerHourlyRate;
-            var beforeTotal = order.CleanerTotalSalary;
-
-            // Named, not counted. "2 lines pinned" is not something anybody can check against the
-            // page six months later; "Ana Reyes, Marta Silva pinned to $21.00" is.
-            var pinnedToOldRate = new List<string>();
-
-            foreach (var assignment in order.OrderCleaners)
-            {
-                if (assignment.IsPaid && assignment.SalaryHourlyRate == null)
-                {
-                    assignment.SalaryHourlyRate = previousRate;
-                    pinnedToOldRate.Add(DescribeCleaner(assignment));
-                }
-            }
-
-            var keptOwnRate = order.OrderCleaners
-                .Where(oc => !oc.IsPaid && oc.SalaryHourlyRate != null)
-                .Select(DescribeCleaner)
-                .ToList();
-
-            order.CleanerHourlyRate = OrderPricingCalculator.Round2(hourlyRate);
-
-            ApplyOrderTotalSalary(order);
-            order.UpdatedAt = DateTime.UtcNow;
-
-            await _context.SaveChangesAsync();
-
-            await _audit.LogActionAsync(
-                AuditEntityTypes.OrderCleanerHourlyRate,
-                order.Id,
-                "Update",
-                new
-                {
-                    CleanerHourlyRate = previousRate,
-                    CleanerTotalSalary = beforeTotal
-                },
-                new
-                {
-                    CleanerHourlyRate = order.CleanerHourlyRate,
-                    CleanerTotalSalary = order.CleanerTotalSalary,
-                    // The side effects of the change, recorded with it. Both are decisions the
-                    // rate change made on the admin's behalf, and neither is visible anywhere else.
-                    PaidLinesPinnedToOldRate = pinnedToOldRate.Count == 0 ? null : string.Join(", ", pinnedToOldRate),
-                    LinesKeepingTheirOwnRate = keptOwnRate.Count == 0 ? null : string.Join(", ", keptOwnRate)
-                },
-                // Listed explicitly. The rate and the total always appear, in that order, so the
-                // headline of the row is the change the admin made; the two side-effect fields
-                // join only when they actually happened, because a row full of "None -> None"
-                // is what made the old audit expansions unreadable.
-                BuildRateChangeFields(pinnedToOldRate, keptOwnRate));
-
+            await _payrollEdits.SetOrderHourlyRateAsync(order, hourlyRate);
             return BuildOrderRow(order);
-        }
-
-        private static List<string> BuildRateChangeFields(List<string> pinned, List<string> keptOwn)
-        {
-            var fields = new List<string> { nameof(Order.CleanerHourlyRate), nameof(Order.CleanerTotalSalary) };
-            if (pinned.Count > 0) fields.Add("PaidLinesPinnedToOldRate");
-            if (keptOwn.Count > 0) fields.Add("LinesKeepingTheirOwnRate");
-            return fields;
         }
 
         public async Task<OutgoingPaymentOrderDto?> MarkCleanerPaidAsync(
@@ -911,6 +822,7 @@ namespace DreamCleaningBackend.Services
         Task<OutgoingPaymentListDto> GetAsync(OutgoingPaymentQuery query);
         Task<OutgoingPaymentOrderDto?> GetOrderAsync(int orderId);
         Task<OutgoingPaymentOrderDto?> UpdateCleanerPayrollAsync(int orderId, int orderCleanerId, UpdateCleanerPayrollDto dto);
+        Task<OutgoingPaymentOrderDto?> UpdateOrderCleanerHoursAsync(int orderId, decimal? billableMinutes);
         Task<OutgoingPaymentOrderDto?> UpdateOrderHourlyRateAsync(int orderId, decimal hourlyRate);
         Task<OutgoingPaymentOrderDto?> MarkCleanerPaidAsync(int orderId, int orderCleanerId, MarkCleanerPaidDto dto, int paidByUserId);
         Task<OutgoingPaymentOrderDto?> MarkOrderPaidAsync(int orderId, MarkOrderPaidDto dto, int paidByUserId);

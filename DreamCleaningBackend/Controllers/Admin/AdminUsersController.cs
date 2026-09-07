@@ -108,6 +108,8 @@ namespace DreamCleaningBackend.Controllers
                     CanReceiveMessages = u.CanReceiveMessages,
                     Flag = u.Flag.ToString(),
                     FlagReason = u.FlagReason,
+                    IsBusiness = u.IsBusiness,
+                    OrgTitle = u.OrgTitle.ToString(),
                     AdminNotes = null
                 })
                 .ToListAsync();

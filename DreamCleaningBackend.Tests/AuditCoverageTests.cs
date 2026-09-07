@@ -342,7 +342,7 @@ namespace DreamCleaningBackend.Tests
         }
 
         [Fact]
-        public async Task SettingAPerCleanerOverride_RecordsTheNullItReplaced()
+        public async Task SettingAPerCleanerOverride_RecordsWhatTheyWereBeingPaid()
         {
             var service = await SeedPayrollOrderAsync();
 
@@ -357,10 +357,13 @@ namespace DreamCleaningBackend.Tests
                 .ToListAsync());
 
             Assert.Equal("PayrollOverrideSet", log.Action);
-            // A null means "this line tracks the order rate", which is materially different from a
-            // value that happens to equal it — so the null is recorded rather than resolved.
-            Assert.Equal(JTokenType.Null, Values(log.OldValues)["HourlyRate"]!.Type);
+            // The EFFECTIVE rate, not the empty override column. Logging the column read as
+            // "Hourly Rate: None -> $30.00", i.e. "this cleaner had no rate" — they had the
+            // order's $21. Which figure it CAME from is carried in words instead.
+            Assert.Equal(21m, Values(log.OldValues)["HourlyRate"]!.Value<decimal>());
+            Assert.Equal("The order's rate", Values(log.OldValues)["RateSource"]!.Value<string>());
             Assert.Equal(30m, Values(log.NewValues)["HourlyRate"]!.Value<decimal>());
+            Assert.Equal("Set for this cleaner", Values(log.NewValues)["RateSource"]!.Value<string>());
         }
 
         [Fact]
@@ -453,7 +456,11 @@ namespace DreamCleaningBackend.Tests
             _context.OrderCleaners.Add(assignment);
             await _context.SaveChangesAsync();
 
-            return new OutgoingPaymentService(_context, _audit);
+            // The real payroll-edit service too: the override rules and their audit rows live
+            // there now and are shared with the admin Orders panel, so a double here would test
+            // the delegation rather than what actually gets written.
+            return new OutgoingPaymentService(
+                _context, _audit, new CleanerPayrollEditService(_context, _audit));
         }
     }
 }

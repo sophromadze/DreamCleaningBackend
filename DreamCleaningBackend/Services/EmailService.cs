@@ -272,6 +272,81 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        public async Task SendEmailWithAttachmentAsync(string to, string subject, string html,
+            byte[] attachmentBytes, string attachmentFileName, string attachmentMimeType)
+        {
+            // Same two guards as SendEmailAsync — a placeholder or blocked address never reaches SMTP.
+            if (Helpers.NoEmailHelper.IsPlaceholder(to))
+            {
+                _logger.LogInformation($"Skipping email to no-email placeholder address (subject: {subject})");
+                return;
+            }
+
+            if (await IsBlockedUserEmailAsync(to))
+            {
+                _logger.LogWarning("Suppressing email to blocked user {Email} (subject: {Subject})", to, subject);
+                return;
+            }
+
+            var emailEnabled = _configuration.GetValue<bool>("Email:EnableEmailSending", true);
+            if (!emailEnabled)
+            {
+                _logger.LogInformation($"Email sending is disabled. Would have sent email with attachment to {to} with subject: {subject}");
+                return;
+            }
+
+            const int timeoutMs = 60000; // attachments are slower than a plain body
+
+            try
+            {
+                var email = new MimeMessage();
+                email.From.Add(new MailboxAddress(
+                    _configuration["Email:FromName"],
+                    _configuration["Email:FromAddress"]
+                ));
+                email.To.Add(MailboxAddress.Parse(to));
+                email.Subject = subject;
+
+                var builder = new BodyBuilder { HtmlBody = html };
+                var mime = string.IsNullOrWhiteSpace(attachmentMimeType)
+                    ? "application/octet-stream"
+                    : attachmentMimeType;
+                var slash = mime.IndexOf('/');
+                var contentType = slash > 0
+                    ? new ContentType(mime.Substring(0, slash), mime.Substring(slash + 1))
+                    : new ContentType("application", "octet-stream");
+                builder.Attachments.Add(attachmentFileName, attachmentBytes, contentType);
+                email.Body = builder.ToMessageBody();
+
+                using var smtp = new SmtpClient();
+                smtp.Timeout = timeoutMs;
+                using var cts = new CancellationTokenSource(timeoutMs);
+
+                await smtp.ConnectAsync(
+                    _configuration["Email:SmtpHost"],
+                    int.Parse(_configuration["Email:SmtpPort"]),
+                    SecureSocketOptions.StartTls,
+                    cts.Token
+                );
+                await smtp.AuthenticateAsync(
+                    _configuration["Email:SmtpUser"],
+                    _configuration["Email:SmtpPassword"],
+                    cts.Token
+                );
+                await smtp.SendAsync(email, cts.Token);
+                await smtp.DisconnectAsync(true, cts.Token);
+
+                _logger.LogInformation($"Email with attachment {attachmentFileName} sent successfully to {to}");
+            }
+            catch (Exception ex)
+            {
+                // The notice matters more than the attachment — a bounced 3 MB PDF must not cost
+                // the counterparty the "your contract is executed" message and its link.
+                _logger.LogError(ex, $"Failed to send email with attachment to {to}; retrying without it");
+                await SendEmailAsync(to, subject, html);
+            }
+        }
+
         public async Task SendGiftCardNotificationAsync(string recipientEmail, string recipientName,
         string senderName, string giftCardCode, decimal amount, string message, string senderEmail)
         {

@@ -524,6 +524,21 @@ namespace DreamCleaningBackend.DTOs
         public string Flag { get; set; } = "None";
         /// <summary>Optional admin note on why this customer is flagged.</summary>
         public string? FlagReason { get; set; }
+
+        /// <summary>
+        /// Marks this customer account as a business. Edited from the Users tab's detail panel;
+        /// it is what allows the account to be linked to a commercial contract and, once one
+        /// exists, what opens their self-service My Contracts area. Toggling it is gated by the
+        /// Contracts permission matrix rather than the ordinary role hierarchy.
+        /// </summary>
+        public bool IsBusiness { get; set; }
+
+        /// <summary>
+        /// Officer title on a staff account: "None" | "CEO" | "CTO". Read-only here — assigning it
+        /// goes through PUT users/{id}/org-title, whose authority is the bootstrap/locked rule in
+        /// OrgTitlePolicy rather than the ordinary role hierarchy.
+        /// </summary>
+        public string OrgTitle { get; set; } = "None";
     }
 
     /// <summary>Admin sets/clears a customer's problem flag. Level is "None" | "Yellow" | "Red".</summary>

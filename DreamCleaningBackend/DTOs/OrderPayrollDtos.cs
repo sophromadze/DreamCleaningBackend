@@ -47,11 +47,12 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>The order's default hourly rate — what a line with no override is paid at.</summary>
         public decimal OrderHourlyRate { get; set; }
 
-        // NOTE: the staffing WARNINGS deliberately do not live here. This DTO is SuperAdmin-only
-        // because it carries wages, and the warnings have to reach Admins too — so they travel on
-        // their own Admin+SuperAdmin endpoint (`orders/staffing-warnings/bulk`, a map of order id
-        // to warning text). Shipping a copy here as well would give the detail panel two sources
-        // for one list, which is exactly the drift the shared builder exists to prevent.
+        // NOTE: the staffing WARNINGS deliberately do not live here, even though both are now
+        // Admin+SuperAdmin. They are bulk — one request answers for the whole table, including
+        // orders this breakdown was never asked about — and they travel on their own endpoint
+        // (`orders/staffing-warnings/bulk`, a map of order id to warning text). Shipping a copy
+        // here as well would give the detail panel two sources for one list, which is exactly the
+        // drift the shared builder exists to prevent.
 
         /// <summary>One line per assigned cleaner, in assignment order.</summary>
         public List<OrderCleanerPayrollLineDto> Lines { get; set; } = new();
@@ -68,6 +69,13 @@ namespace DreamCleaningBackend.DTOs
     /// <summary>What one cleaner (or one unstaffed slot) is owed in WAGES on this order.</summary>
     public class OrderCleanerPayrollLineDto
     {
+        /// <summary>
+        /// The ASSIGNMENT row's id — how a rate/hours edit addresses this line, and the same id
+        /// the Outgoing Payments page uses. Zero on an unassigned slot, which is exactly why
+        /// those lines cannot be edited: there is no row to hang an override on.
+        /// </summary>
+        public int OrderCleanerId { get; set; }
+
         public int CleanerId { get; set; }
         public string FirstName { get; set; } = string.Empty;
         public string LastName { get; set; } = string.Empty;

@@ -277,6 +277,23 @@ namespace DreamCleaningBackend.DTOs
         public decimal HourlyRate { get; set; }
     }
 
+    /// <summary>
+    /// Sets the paid hours for EVERY assigned cleaner on one order — the hours counterpart of
+    /// <see cref="UpdateOrderHourlyRateDto"/>.
+    ///
+    /// Nullable for the same reason the per-cleaner DTO is: null means "clear the overrides and
+    /// go back to the order's automatic split", which is a different instruction from typing the
+    /// automatic figure onto every line. There is no companion boolean here because the whole
+    /// request IS the hours field — nothing else can be sent, so an omitted body cannot silently
+    /// clear anything the way a partial update could.
+    /// </summary>
+    public class UpdateOrderCleanerHoursDto
+    {
+        /// <summary>Minutes every assigned cleaner is paid for. Null clears the overrides.</summary>
+        [Range(0, 10080)]
+        public decimal? BillableMinutes { get; set; }
+    }
+
     /// <summary>Marks one cleaner paid for one order.</summary>
     public class MarkCleanerPaidDto
     {

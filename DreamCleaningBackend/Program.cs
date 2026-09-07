@@ -27,7 +27,12 @@ builder.Services.AddScoped<IPageAccessService, PageAccessService>();
 builder.Services.AddMemoryCache();
 
 // Add services to the container.
-builder.Services.AddControllers()
+builder.Services.AddControllers(options =>
+    {
+        // Maps the Contracts module's permission refusals to 403 and its workflow violations to
+        // 400. Without it a matrix refusal would surface as a 500 from the generic handler.
+        options.Filters.Add<DreamCleaningBackend.Attributes.ContractExceptionFilter>();
+    })
     .AddJsonOptions(o => { o.JsonSerializerOptions.PropertyNameCaseInsensitive = true; });
 builder.Services.AddEndpointsApiExplorer();
 
@@ -187,6 +192,7 @@ builder.Services.AddScoped<ICleanerManagementService, CleanerManagementService>(
 // cleaners as people and as staffing, this one manages the account-to-cleaner link.
 builder.Services.AddScoped<ICleanerAccountService, CleanerAccountService>();
 builder.Services.AddScoped<ICleanerPortalService, CleanerPortalService>();
+builder.Services.AddScoped<ICleanerPayrollEditService, CleanerPayrollEditService>();
 builder.Services.AddScoped<IOutgoingPaymentService, OutgoingPaymentService>();
 builder.Services.AddScoped<IAdminSalaryPayoutService, AdminSalaryPayoutService>();
 builder.Services.AddScoped<IUserCleaningPhotoService, UserCleaningPhotoService>();
@@ -368,6 +374,20 @@ builder.Services.AddSingleton<BlogContentService>();
 builder.Services.AddScoped<IBlogGenerationService, BlogGenerationService>();
 builder.Services.AddHostedService<BlogGenerationBackgroundService>();
 
+// Commercial contracts + e-signature. QuestPDF runs under its Community licence (free for this
+// revenue tier); the flag must be set before the first document is composed, so it lives here
+// rather than in the PDF service where a first call could race it.
+QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
+builder.Services.AddSingleton<DreamCleaningBackend.Services.Contracts.ContractStorage>();
+builder.Services.AddSingleton<DreamCleaningBackend.Services.Contracts.ContractPdfService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractNotificationService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractAuthorizationService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractReadService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractSeedService>();
+// Daily sweep: hard-deletes contracts soft-deleted longer than ContractRetention:HiddenMonths.
+builder.Services.AddHostedService<DreamCleaningBackend.Services.Contracts.ContractRetentionService>();
+
 builder.Services.AddHttpClient();
 
 // CORS Configuration - Updated for cookie auth
@@ -500,6 +520,21 @@ using (var scope = app.Services.CreateScope())
     catch (Exception ex)
     {
         logger.LogError(ex, "Follow-up note sweep failed at startup.");
+    }
+
+    // Contract reference data (contractor profile, master agreement template, scope checklists).
+    // Bootstrapped here rather than through HasData: every one of those rows is admin-editable,
+    // and a HasData entry would emit an UpdateData that silently reverts an admin's edit on the
+    // next migration. This only ever inserts what is missing.
+    try
+    {
+        var contractSeed = scope.ServiceProvider
+            .GetRequiredService<DreamCleaningBackend.Services.Contracts.ContractSeedService>();
+        await contractSeed.SeedAsync();
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Contract reference data seeding failed at startup.");
     }
 }
 

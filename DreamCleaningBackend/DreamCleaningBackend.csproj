@@ -22,6 +22,7 @@
     <PackageReference Include="MimeKit" Version="4.12.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="8.0.2" />
+    <PackageReference Include="QuestPDF" Version="2024.12.3" />
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.10" />
     <PackageReference Include="RingCentral.Net" Version="6.4.0" />
     <PackageReference Include="Stripe.net" Version="48.3.0" />
@@ -32,6 +33,12 @@
   </ItemGroup>
 	<ItemGroup>
 		<Content Include="Migrations/**/*.*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+		</Content>
+		<!-- Branding embedded in generated contract PDFs. Must ship with the app rather than live
+		     under the uploads root, which is publicly served and admin-writable. -->
+		<Content Include="Assets/**/*.*">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
 		</Content>

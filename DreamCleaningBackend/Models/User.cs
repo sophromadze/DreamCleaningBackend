@@ -61,6 +61,17 @@ namespace DreamCleaningBackend.Models
         public AdminPosition AdminPosition { get; set; } = AdminPosition.Administrator;
 
         /// <summary>
+        /// Company officer title. Read by the CONTRACTS module only, where it overrides the normal
+        /// role hierarchy (a titled CEO/CTO outranks an untitled SuperAdmin there, and an untitled
+        /// SuperAdmin falls back to manager-level). Inert everywhere else in the app.
+        ///
+        /// Who may change it is deliberately not a plain role check — see
+        /// <see cref="DreamCleaningBackend.Helpers.Contracts.OrgTitlePolicy"/>: any SuperAdmin may
+        /// assign titles while no CTO exists (bootstrap), and once one does, only that CTO may.
+        /// </summary>
+        public OrgTitle OrgTitle { get; set; } = OrgTitle.None;
+
+        /// <summary>
         /// The Manager this Administrator reports to. When an administrator books an order, their
         /// manager earns the manager-side bonus for it. Null = this administrator has no manager
         /// (nobody earns the manager side), and always null on a Manager row — a manager does not
@@ -142,6 +153,18 @@ namespace DreamCleaningBackend.Models
         /// admin edit clears this flag.
         /// </summary>
         public bool IsNoEmailUser { get; set; } = false;
+
+        /// <summary>
+        /// Marks a CUSTOMER account as a business rather than a household. Set by staff from the
+        /// Users tab; it is not something a customer can claim for themselves.
+        ///
+        /// Its only job today is to open the self-service "My Contracts" area: that menu item and
+        /// portal are shown when this is true AND the account actually owns a contract (a
+        /// ContractClient carrying this user's id). It grants nothing on its own — a business flag
+        /// with no contract behind it shows nothing — and it does not change pricing, booking or
+        /// any other customer-facing behaviour.
+        /// </summary>
+        public bool IsBusiness { get; set; } = false;
 
         // Email verification
         public bool IsEmailVerified { get; set; } = false;

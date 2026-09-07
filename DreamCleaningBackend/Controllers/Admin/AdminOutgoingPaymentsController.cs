@@ -149,6 +149,37 @@ namespace DreamCleaningBackend.Controllers
             return Ok(order);
         }
 
+        /// <summary>
+        /// Sets the paid hours for EVERY assigned cleaner on one order at once — the hours
+        /// counterpart of the order rate above. The rate could already be moved for everybody
+        /// while the hours had to be retyped line by line, which is backwards: the whole crew
+        /// staying another quarter of an hour is the change that actually happens.
+        ///
+        /// Unassigned staffing slots are not moved — an override lives on the assignment row and
+        /// there is nobody behind those. They keep the automatic split.
+        /// </summary>
+        [HttpPut("order/{orderId}/cleaner-hours")]
+        public async Task<ActionResult<OutgoingPaymentOrderDto>> UpdateOrderCleanerHours(
+            int orderId, [FromBody] UpdateOrderCleanerHoursDto dto)
+        {
+            if (dto == null)
+                return BadRequest(new { message = "No hours were supplied." });
+
+            if (dto.BillableMinutes is < 0)
+                return BadRequest(new { message = "Hours cannot be negative." });
+
+            var order = await _service.UpdateOrderCleanerHoursAsync(orderId, dto.BillableMinutes);
+
+            if (order == null)
+                return NotFound(new { message = "That order was not found, or it is not finished yet." });
+
+            _logger.LogInformation(
+                "Order {OrderId} cleaner hours set to {Minutes} minutes for every assigned cleaner by user {UserId}",
+                orderId, dto.BillableMinutes, GetCurrentUserId());
+
+            return Ok(order);
+        }
+
         /// <summary>Marks ONE cleaner paid for one order, freezing what they were handed.</summary>
         [HttpPost("order/{orderId}/cleaner/{orderCleanerId}/pay")]
         public async Task<ActionResult<OutgoingPaymentOrderDto>> MarkCleanerPaid(
