@@ -169,6 +169,21 @@ namespace DreamCleaningBackend.Models.Contracts
         [ForeignKey("SourceUserId")]
         public virtual User? SourceUser { get; set; }
 
+        /// <summary>
+        /// The Stripe Customer representing this COMPANY, for online invoice payments.
+        ///
+        /// Deliberately its own column rather than reusing <c>SourceUser.StripeCustomerId</c>. The
+        /// two identify different things: that one is a residential booking customer (a person who
+        /// books cleanings and saves a card), this one is a commercial counterparty (a legal entity
+        /// that pays invoices by ACH). Sharing a Stripe Customer would put a company's bank mandate
+        /// and a person's saved card on the same object, and would mean a client with no account —
+        /// the common case, since SourceUserId is usually null — could not have one at all.
+        ///
+        /// Reused across every invoice for the client, never created per invoice.
+        /// </summary>
+        [StringLength(255)]
+        public string? StripeCustomerId { get; set; }
+
         public bool IsActive { get; set; } = true;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

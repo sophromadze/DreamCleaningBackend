@@ -8,6 +8,7 @@ using DreamCleaningBackend.DTOs;
 using System.Text.Json;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -19,17 +20,20 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly IOrderPaymentStatusReconciler _reconciler;
         private readonly ILogger<StripeWebhookController> _logger;
+        private readonly IHostEnvironment _environment;
 
         public StripeWebhookController(
             IConfiguration configuration,
             ApplicationDbContext context,
             IOrderPaymentStatusReconciler reconciler,
-            ILogger<StripeWebhookController> logger)
+            ILogger<StripeWebhookController> logger,
+            IHostEnvironment environment)
         {
             _configuration = configuration;
             _context = context;
             _reconciler = reconciler;
             _logger = logger;
+            _environment = environment;
         }
 
         [HttpPost]
@@ -72,20 +76,47 @@ namespace DreamCleaningBackend.Controllers
                     return StatusCode(500, "Webhook configuration error");
                 }
 
-                // Validate Stripe event with proper error handling
+                // Validate Stripe event with proper error handling.
+                //
+                // The signature is verified on every environment. Only the API-VERSION check is
+                // relaxed, and only in Development, so `stripe listen` can forward events formatted
+                // with the CLI account's older default version instead of 400-ing before the
+                // handler runs — a failure that reads exactly like a wrong signing secret.
+                // See Helpers/StripeWebhookEventParser.cs.
                 Event stripeEvent;
+                var tolerateApiVersionMismatch =
+                    StripeWebhookEventParser.TolerateApiVersionMismatch(_environment);
                 try
                 {
-                    stripeEvent = EventUtility.ConstructEvent(
+                    var parsed = StripeWebhookEventParser.Parse(
                         json,
                         stripeSignature,
-                        webhookSecret
-                    );
+                        webhookSecret,
+                        tolerateApiVersionMismatch);
+
+                    stripeEvent = parsed.Event;
+
+                    if (parsed.ApiVersionMismatched)
+                    {
+                        _logger.LogWarning(
+                            "DEVELOPMENT ONLY: processing Stripe event {EventId} formatted with API " +
+                            "version {ReceivedApiVersion} while Stripe.net expects {ExpectedApiVersion}. " +
+                            "Fields added or renamed between those two versions can deserialize as null, " +
+                            "so treat anything verified on this path as unconfirmed. Production rejects " +
+                            "this event outright — its webhook destination is pinned to the expected " +
+                            "version. Point `stripe listen` at a destination on that version to be sure.",
+                            parsed.Event.Id,
+                            parsed.ReceivedApiVersion,
+                            StripeWebhookEventParser.ExpectedApiVersion);
+                    }
                 }
                 catch (StripeException ex)
                 {
-                    _logger.LogError(ex, "Failed to construct Stripe event: {Message}", ex.Message);
-                    return BadRequest($"Invalid webhook signature: {ex.Message}");
+                    // Two different failures land here — a bad signature and an unexpected API
+                    // version — and calling both "invalid signature" is what sent people hunting
+                    // for a signing secret that was never wrong. Let the Stripe message say which.
+                    _logger.LogError(ex, "Failed to verify or parse Stripe event: {Message}", ex.Message);
+                    return BadRequest($"Webhook rejected: {ex.Message}");
                 }
                 catch (JsonException ex)
                 {
@@ -140,6 +171,38 @@ namespace DreamCleaningBackend.Controllers
                                 _logger.LogWarning("PaymentIntent object is null for event: {EventType}", stripeEvent.Type);
                             }
                             break;
+
+                        // ── Commercial invoicing (2026-09) ──────────────────────────────────
+                        // Three events the residential flow never needed, because a card charge is
+                        // synchronous and ACH is not. An ACH debit is authorized on one day and
+                        // settles days later, so the lifecycle has a middle that has to be tracked.
+                        //
+                        // All three are no-ops for residential payments: each one checks the
+                        // commercial metadata discriminator first and returns if it is absent.
+                        case "payment_intent.processing":
+                            var processingIntent = stripeEvent.Data.Object as PaymentIntent;
+                            if (processingIntent != null)
+                            {
+                                await HandleCommercialProcessing(processingIntent);
+                            }
+                            break;
+
+                        case "checkout.session.completed":
+                            var completedSession = stripeEvent.Data.Object as Stripe.Checkout.Session;
+                            if (completedSession != null)
+                            {
+                                await HandleCommercialCheckoutCompleted(completedSession);
+                            }
+                            break;
+
+                        case "checkout.session.expired":
+                            var expiredSession = stripeEvent.Data.Object as Stripe.Checkout.Session;
+                            if (expiredSession != null)
+                            {
+                                await HandleCommercialCheckoutExpired(expiredSession);
+                            }
+                            break;
+
                         default:
                             _logger.LogInformation("Unhandled event type: {EventType}", stripeEvent.Type);
                             break;
@@ -203,7 +266,16 @@ namespace DreamCleaningBackend.Controllers
                         case "gift_card":
                             await HandleGiftCardPayment(paymentIntent, cancellationToken);
                             break;
-                            
+
+                        // Commercial invoicing (2026-09). Slots in as another discriminator value
+                        // rather than a second webhook system, so there is one signature
+                        // verification, one idempotency table and one endpoint to configure —
+                        // while commercial events stay clearly distinguishable from residential
+                        // ones by this very switch.
+                        case Services.Commercial.StripeCommercialInvoiceMetadata.TypeValue:
+                            await HandleCommercialInvoicePayment(paymentIntent);
+                            break;
+
                         default:
                             _logger.LogWarning("Unknown payment type: {PaymentType}", type);
                             break;
@@ -323,8 +395,178 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        // ══════════════════════════════════════════════════════════════════════════════════════
+        //  Commercial invoicing
+        //
+        //  Every method here returns immediately unless the Stripe object carries the commercial
+        //  metadata discriminator, so residential payments pass through completely untouched.
+        //  Failures are logged and swallowed rather than rethrown: a commercial bookkeeping
+        //  problem must never make the endpoint 500 and cause Stripe to retry a residential
+        //  booking payment that already succeeded.
+        // ══════════════════════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Money settled on a commercial invoice. Delegates to the service that owns the
+        /// transaction, the ledger write and the idempotency guard.
+        /// </summary>
+        private async Task HandleCommercialInvoicePayment(PaymentIntent paymentIntent)
+        {
+            try
+            {
+                var commercial = HttpContext.RequestServices
+                    .GetRequiredService<Services.Commercial.InvoiceStripePaymentService>();
+
+                var sourceLabel = Services.Commercial.InvoiceStripePaymentService
+                    .BuildSourceLabel(paymentIntent);
+
+                var result = await commercial.RecordSucceededAsync(
+                    paymentIntent.Id,
+                    // AmountReceived is what actually settled, which is the figure to record.
+                    paymentIntent.AmountReceived > 0 ? paymentIntent.AmountReceived : paymentIntent.Amount,
+                    paymentIntent.Currency,
+                    paymentIntent.LatestChargeId,
+                    paymentIntent.Metadata,
+                    sourceLabel);
+
+                // Sent AFTER the transaction commits, and only when this delivery is the one that
+                // recorded the payment — so a Stripe retry cannot mail the customer twice.
+                if (result.Recorded && result.InvoiceBecamePaid && result.InvoiceId.HasValue)
+                {
+                    await SendCommercialPaymentReceiptAsync(result.InvoiceId.Value);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to record commercial invoice payment for {PaymentIntentId}.", paymentIntent.Id);
+            }
+        }
+
+        /// <summary>ACH authorized; Stripe is moving the money. Nothing is paid yet.</summary>
+        private async Task HandleCommercialProcessing(PaymentIntent paymentIntent)
+        {
+            if (!Services.Commercial.StripeCommercialInvoiceMetadata
+                    .IsCommercialInvoice(paymentIntent.Metadata))
+                return;
+
+            try
+            {
+                var commercial = HttpContext.RequestServices
+                    .GetRequiredService<Services.Commercial.InvoiceStripePaymentService>();
+
+                await commercial.HandleProcessingAsync(
+                    paymentIntent.Id,
+                    paymentIntent.Metadata,
+                    Services.Commercial.InvoiceStripePaymentService.BuildSourceLabel(paymentIntent));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to mark commercial payment {PaymentIntentId} as processing.", paymentIntent.Id);
+            }
+        }
+
+        /// <summary>
+        /// The customer finished Stripe's hosted flow. For ACH this is an AUTHORIZATION, not a
+        /// settlement — it records the PaymentIntent id and nothing more.
+        /// </summary>
+        private async Task HandleCommercialCheckoutCompleted(Stripe.Checkout.Session session)
+        {
+            if (!Services.Commercial.StripeCommercialInvoiceMetadata.IsCommercialInvoice(session.Metadata))
+                return;
+
+            try
+            {
+                var commercial = HttpContext.RequestServices
+                    .GetRequiredService<Services.Commercial.InvoiceStripePaymentService>();
+
+                await commercial.HandleCheckoutCompletedAsync(
+                    session.Id, session.PaymentIntentId, session.Metadata);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to handle commercial checkout completion for session {SessionId}.", session.Id);
+            }
+        }
+
+        /// <summary>The session lapsed unused. Frees the invoice for another attempt.</summary>
+        private async Task HandleCommercialCheckoutExpired(Stripe.Checkout.Session session)
+        {
+            if (!Services.Commercial.StripeCommercialInvoiceMetadata.IsCommercialInvoice(session.Metadata))
+                return;
+
+            try
+            {
+                var commercial = HttpContext.RequestServices
+                    .GetRequiredService<Services.Commercial.InvoiceStripePaymentService>();
+
+                await commercial.HandleCheckoutExpiredAsync(session.Id, session.Metadata);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to expire commercial checkout session {SessionId}.", session.Id);
+            }
+        }
+
+        /// <summary>
+        /// Mails the "payment received" confirmation. Guarded against duplicates by the email log:
+        /// Stripe retries deliveries, and a customer receiving three receipts for one payment
+        /// reads as a billing system that has lost track of itself.
+        /// </summary>
+        private async Task SendCommercialPaymentReceiptAsync(int invoiceId)
+        {
+            try
+            {
+                var alreadySent = await _context.CommercialInvoiceEmailLogs.AnyAsync(e =>
+                    e.CommercialInvoiceId == invoiceId
+                    && e.EmailType == Models.Commercial.InvoiceEmailType.PaymentReceipt
+                    && e.Status == Models.Commercial.InvoiceEmailStatus.Sent);
+
+                if (alreadySent) return;
+
+                var emails = HttpContext.RequestServices
+                    .GetRequiredService<Services.Commercial.InvoiceEmailService>();
+
+                await emails.SendPaymentReceiptAsync(invoiceId, 0);
+            }
+            catch (Exception ex)
+            {
+                // A failed receipt must never undo a recorded payment — the money is banked
+                // either way, and the admin can resend from the invoice page.
+                _logger.LogError(ex,
+                    "Payment recorded for invoice {InvoiceId}, but the receipt email failed.", invoiceId);
+            }
+        }
+
         private async Task HandlePaymentIntentFailed(PaymentIntent paymentIntent, CancellationToken cancellationToken = default)
         {
+            // Commercial ACH failures need the attempt marked so the customer can retry; the
+            // residential logging below is left exactly as it was.
+            if (Services.Commercial.StripeCommercialInvoiceMetadata
+                    .IsCommercialInvoice(paymentIntent?.Metadata))
+            {
+                try
+                {
+                    var commercial = HttpContext.RequestServices
+                        .GetRequiredService<Services.Commercial.InvoiceStripePaymentService>();
+
+                    await commercial.HandleFailedAsync(
+                        paymentIntent!.Id,
+                        paymentIntent.LastPaymentError?.Code,
+                        paymentIntent.LastPaymentError?.Message,
+                        paymentIntent.Metadata);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Failed to mark commercial payment {PaymentIntentId} as failed.", paymentIntent?.Id);
+                }
+
+                return;
+            }
+
             try
             {
                 _logger.LogWarning("Payment failed for intent: {PaymentIntentId}", paymentIntent?.Id);

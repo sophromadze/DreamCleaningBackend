@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers.Commercial;
 using DreamCleaningBackend.Helpers.Contracts;
 using DreamCleaningBackend.Models.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -557,7 +558,7 @@ namespace DreamCleaningBackend.Services.Contracts
                 contract.ContractNumber,
                 snapshot.Client.LegalEntityName,
                 modifications,
-                $"{_notifications.FrontendUrl}/admin/contracts/{contract.Id}");
+                $"{_notifications.FrontendUrl}/admin/commercial/contracts/{contract.Id}");
 
             return new ClientEditResultDto
             {
@@ -878,7 +879,7 @@ namespace DreamCleaningBackend.Services.Contracts
             var fileName = ContractNotificationService.ExecutedFileName(
                 contract.ContractNumber, snapshot.Client.LegalEntityName);
 
-            var adminUrl = $"{_notifications.FrontendUrl}/admin/contracts/{contract.Id}";
+            var adminUrl = $"{_notifications.FrontendUrl}/admin/commercial/contracts/{contract.Id}";
             var clientUrl = await BuildClientContractUrlAsync(contract);
 
             await _notifications.SendFullyExecutedAsync(
@@ -1156,33 +1157,47 @@ namespace DreamCleaningBackend.Services.Contracts
         }
 
         /// <summary>
-        /// DC-YYYY-NNNN, sequential within the calendar year. The unique index is the real guard;
-        /// this just picks the next free number and retries if two admins create at the same
-        /// instant.
+        /// DCC-YYYY-XXXXXXXX, with a cryptographically random 8-digit tail.
+        ///
+        /// REPLACED THE SEQUENTIAL DC-YYYY-NNNN FORMAT (2026-09). Three problems with the old one,
+        /// all of them structural rather than cosmetic:
+        ///
+        ///  - It was PREDICTABLE. Any client holding DC-2026-0007 could infer both how many
+        ///    agreements the business has signed this year and what their neighbour's reference
+        ///    is. A random 8-digit tail leaks neither.
+        ///  - It COLLIDED CONCEPTUALLY WITH INVOICES. "DC-2026-0007" did not say which document it
+        ///    named once commercial invoices existed; DCC and DCI always do.
+        ///  - It read the MAX and added one, so allocating a number needed every contract number
+        ///    for the year in memory and two concurrent creates would race on the same value.
+        ///
+        /// EXISTING CONTRACTS ARE NOT MIGRATED. A contract number is printed on an executed legal
+        /// document and quoted in email threads; rewriting one would orphan every reference to it
+        /// that already exists outside this database. Old contracts keep DC-YYYY-NNNN forever, new
+        /// ones get DCC-YYYY-XXXXXXXX, and nothing in the system parses the format to decide
+        /// anything - the number is only ever displayed and matched exactly.
+        ///
+        /// The unique index on ContractNumber remains the real guard; this pre-checks and retries.
         /// </summary>
         private async Task<string> GenerateContractNumberAsync()
         {
             var year = DateTime.UtcNow.Year;
-            var prefix = $"DC-{year}-";
 
-            for (var attempt = 0; attempt < 5; attempt++)
+            for (var attempt = 0; attempt < 10; attempt++)
             {
-                var numbers = await _context.Contracts
-                    .Where(c => c.ContractNumber.StartsWith(prefix))
-                    .Select(c => c.ContractNumber)
-                    .ToListAsync();
-
-                var next = numbers
-                    .Select(n => int.TryParse(n.Substring(prefix.Length), out var v) ? v : 0)
-                    .DefaultIfEmpty(0)
-                    .Max() + 1 + attempt;
-
-                var candidate = $"{prefix}{next:D4}";
+                var candidate = ReferenceNumberGenerator.NewContractNumber(year);
                 if (!await _context.Contracts.AnyAsync(c => c.ContractNumber == candidate))
                     return candidate;
+
+                _logger.LogWarning(
+                    "Contract number collision on {Candidate} (attempt {Attempt}); regenerating.",
+                    candidate, attempt + 1);
             }
-            // Falls back to a wider number rather than failing the create outright.
-            return $"{prefix}{DateTime.UtcNow.DayOfYear:D3}{DateTime.UtcNow:HHmmss}";
+
+            // Ten collisions against 90 million values means the RNG or the uniqueness check is
+            // broken, not that we were unlucky. Failing is correct - a duplicate contract
+            // reference on a signed agreement is not recoverable after the fact.
+            throw new ContractWorkflowException(
+                "Could not allocate a unique contract number. Please try again.");
         }
 
         private async Task<ContractClient> ResolveClientAsync(SaveContractDto dto)
@@ -1235,26 +1250,15 @@ namespace DreamCleaningBackend.Services.Contracts
 
         /// <summary>
         /// A commercial client may only be linked to an account that is actually flagged as a
-        /// business. Enforced here rather than in the UI because the link is what grants portal
-        /// access - pointing it at a residential customer would hand them a contracts area.
+        /// business. Enforced on the server rather than in the UI because the link is what grants
+        /// portal access - pointing it at a residential customer would hand them a contracts area.
+        ///
+        /// The rule itself lives in <see cref="BusinessAccountLinkPolicy"/> so that standalone
+        /// client creation (Commercial → Clients) applies the identical one; this stays as the
+        /// name the contract flow already calls.
         /// </summary>
-        private async Task<int?> ValidateSourceUserAsync(int? sourceUserId)
-        {
-            if (!sourceUserId.HasValue) return null;
-
-            var user = await _context.Users
-                .Where(u => u.Id == sourceUserId.Value)
-                .Select(u => new { u.Id, u.IsBusiness, u.IsActive })
-                .FirstOrDefaultAsync();
-
-            if (user == null)
-                throw new ContractWorkflowException("The linked customer account no longer exists.");
-            if (!user.IsBusiness)
-                throw new ContractWorkflowException(
-                    "That customer is not flagged as a business. Turn on the business flag on their account first.");
-
-            return user.Id;
-        }
+        private Task<int?> ValidateSourceUserAsync(int? sourceUserId) =>
+            BusinessAccountLinkPolicy.ResolveAsync(_context, sourceUserId);
 
         private async Task<ContractServiceLocation> ResolveServiceLocationAsync(SaveContractDto dto, int clientId)
         {

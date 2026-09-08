@@ -12,7 +12,19 @@ namespace DreamCleaningBackend.Models.Contracts
     {
         public int Id { get; set; }
 
-        /// <summary>DC-YYYY-NNNN, sequential within the calendar year. Unique.</summary>
+        /// <summary>
+        /// DCC-YYYY-XXXXXXXX with a cryptographically random 8-digit tail, e.g.
+        /// DCC-2026-48392175. Unique, and never reused - not even after a contract is deleted.
+        ///
+        /// LEGACY ROWS KEEP THE OLD DC-YYYY-NNNN FORMAT. Contracts created before 2026-09 are
+        /// deliberately not migrated: the number is printed on an executed legal document and
+        /// quoted in email threads, so rewriting it would orphan every reference that already
+        /// exists outside this database. Nothing parses this column - it is only displayed and
+        /// matched exactly - so the two formats coexist safely. See
+        /// ContractService.GenerateContractNumberAsync.
+        ///
+        /// 20 chars leaves headroom: the new format is 17.
+        /// </summary>
         [Required, StringLength(20)]
         public string ContractNumber { get; set; } = string.Empty;
 

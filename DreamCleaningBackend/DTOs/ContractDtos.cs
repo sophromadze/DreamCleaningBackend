@@ -81,6 +81,48 @@ namespace DreamCleaningBackend.DTOs
         public int? SourceUserId { get; set; }
     }
 
+    /// <summary>
+    /// The body of <c>POST api/crm/contract-directory/clients</c> — creating a commercial client
+    /// on its own, with no contract involved.
+    ///
+    /// It EXTENDS <see cref="SaveContractClientDto"/> rather than redeclaring its fields, so the
+    /// standalone form and the contract form can never end up validating the company differently.
+    /// The two additions are optional and exist because a client created here would otherwise have
+    /// no billing contact and no service location — the two things the invoice form reads off a
+    /// client — and there would be nowhere to enter them except by creating the contract we are
+    /// trying to avoid.
+    ///
+    /// <b>The nested <c>ContractClientId</c> fields are ignored.</b> The client is being created in
+    /// this same call, so its id does not exist when the body is written; the server sets both from
+    /// the row it just inserted.
+    /// </summary>
+    public class CreateCommercialClientDto : SaveContractClientDto
+    {
+        /// <summary>
+        /// Who the invoices are addressed to. Optional: a client can be created now and the
+        /// contact added later, and the invoice form already warns when one is missing.
+        /// </summary>
+        public SaveContractContactDto? BillingContact { get; set; }
+
+        /// <summary>
+        /// One premises. Optional, and deliberately singular — a client with several sites gets the
+        /// first one here and the rest through the contract flow, rather than this form growing
+        /// into a second location editor.
+        /// </summary>
+        public SaveContractServiceLocationDto? ServiceLocation { get; set; }
+    }
+
+    /// <summary>
+    /// Editing a commercial client from Commercial → Clients. Same body as creation minus one
+    /// thing: <b>the link cannot be re-pointed by an edit.</b> <c>SourceUserId</c> is inherited but
+    /// deliberately not read by <c>UpdateClient</c> — the link is made and unmade by the business
+    /// flag on the account (and by Delete), because it grants that customer sight of the client's
+    /// contracts, and a billing edit is not where that decision belongs.
+    /// </summary>
+    public class UpdateCommercialClientDto : CreateCommercialClientDto
+    {
+    }
+
     public class ContractServiceLocationDto
     {
         public int Id { get; set; }

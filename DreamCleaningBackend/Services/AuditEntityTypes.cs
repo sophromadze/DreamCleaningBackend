@@ -108,6 +108,42 @@ namespace DreamCleaningBackend.Services
         /// <summary>Special offer granted to one user or to everybody. EntityId = offer id.</summary>
         public const string SpecialOfferGrant = "SpecialOfferGrant";
 
+        // --- Commercial invoicing ----------------------------------------------------------
+        /// <summary>
+        /// A payment recorded against a commercial invoice, or an earlier one reversed.
+        /// EntityId = the INVOICE id, because that is what an admin searches the trail by.
+        ///
+        /// The invoice also keeps its own plain-language timeline
+        /// (<c>CommercialInvoiceActivityLog</c>) for the detail page; this row is the copy a
+        /// finance-wide audit search finds, alongside every other money movement in the app.
+        /// </summary>
+        public const string CommercialInvoicePaymentAction = "CommercialInvoicePaymentAction";
+
+        /// <summary>An invoice voided. EntityId = invoice id.</summary>
+        public const string CommercialInvoiceVoid = "CommercialInvoiceVoid";
+
+        /// <summary>
+        /// The company's billing/bank settings changed. EntityId = 0 (a single global row).
+        ///
+        /// Audited because changing the destination account is how invoice fraud is committed, and
+        /// the change is otherwise invisible: every future invoice simply starts printing
+        /// different numbers. The payload NAMES the fields that moved and never QUOTES the bank
+        /// values — see BillingSettingsService.DescribeChanges.
+        /// </summary>
+        public const string BillingSettingsChange = "BillingSettingsChange";
+
+        /// <summary>
+        /// The commercial CLIENT record itself — created (by hand or automatically from a
+        /// business-flagged account), edited, deactivated or reactivated. EntityId = client id.
+        ///
+        /// Worth its own stream because a commercial client is never hard-deleted: the only trace
+        /// of "this company stopped being one of our commercial customers" is a row here and an
+        /// IsActive flag, and the contracts and invoices carrying that client's name stay exactly
+        /// where they were. The payload names the company and the linked account and carries no
+        /// bank, card or payment data.
+        /// </summary>
+        public const string CommercialClient = "CommercialClient";
+
         // --- Site-wide toggles and integrations ---------------------------------------------
         /// <summary>Maintenance mode, live chat, chat-agent visibility, etc. EntityId = 0.</summary>
         public const string SiteSetting = "SiteSetting";
@@ -179,6 +215,10 @@ namespace DreamCleaningBackend.Services
                 [PricingConfiguration] = "A pricing import rewrites many rows at once. Re-import the previous configuration instead.",
                 [CatalogueCopy] = "Delete the copied row from the catalogue instead.",
                 [SpecialOfferGrant] = "Offers may already have been used. Withdraw the offer from the Special Offers tab.",
+                [CommercialInvoicePaymentAction] = "Money has already changed hands. Record a reversing payment on the invoice instead.",
+                [CommercialInvoiceVoid] = "A voided invoice number stays permanently reserved. Duplicate it to issue a corrected invoice.",
+                [BillingSettingsChange] = "Bank details are not stored in this row. Set them back from the billing settings page.",
+                [CommercialClient] = "Commercial clients are never deleted. Edit or restore the client from Commercial → Clients, or set the business flag back on the customer's account.",
                 [SiteSetting] = "Toggle the setting back from its own page.",
                 [DataSync] = "A sync rewrites imported figures; run the sync again for the corrected range.",
             };

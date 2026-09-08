@@ -4,6 +4,7 @@ using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260907185020_AddCommercialInvoicing")]
+    partial class AddCommercialInvoicing
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1989,10 +1992,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("varchar(20)");
 
-                    b.Property<string>("BankWireRoutingNumber")
-                        .HasMaxLength(20)
-                        .HasColumnType("varchar(20)");
-
                     b.Property<string>("CompanyAddress")
                         .HasMaxLength(300)
                         .HasColumnType("varchar(300)");
@@ -2045,15 +2044,6 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<string>("InvoiceFooterText")
                         .HasMaxLength(500)
                         .HasColumnType("varchar(500)");
-
-                    b.Property<bool>("ManualAchEnabled")
-                        .HasColumnType("tinyint(1)");
-
-                    b.Property<bool>("StripeAchEnabled")
-                        .HasColumnType("tinyint(1)");
-
-                    b.Property<bool>("StripeCardEnabled")
-                        .HasColumnType("tinyint(1)");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("datetime(6)");
@@ -2416,26 +2406,11 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<int>("PaymentMethod")
                         .HasColumnType("int");
 
-                    b.Property<int>("Provider")
-                        .HasColumnType("int");
-
-                    b.Property<string>("RecordedByLabel")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
-                    b.Property<int?>("RecordedByUserId")
+                    b.Property<int>("RecordedByUserId")
                         .HasColumnType("int");
 
                     b.Property<int?>("ReversesPaymentId")
                         .HasColumnType("int");
-
-                    b.Property<string>("StripeChargeId")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
-                    b.Property<string>("StripePaymentIntentId")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
 
                     b.Property<string>("TransactionReference")
                         .HasMaxLength(200)
@@ -2451,90 +2426,7 @@ namespace DreamCleaningBackend.Migrations
 
                     b.HasIndex("RecordedByUserId");
 
-                    b.HasIndex("StripePaymentIntentId")
-                        .IsUnique()
-                        .HasDatabaseName("IX_CommercialInvoicePayments_StripePaymentIntent");
-
                     b.ToTable("CommercialInvoicePayments");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.Commercial.CommercialInvoicePaymentAttempt", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<decimal>("Amount")
-                        .HasColumnType("decimal(10,2)");
-
-                    b.Property<int>("CommercialInvoiceId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("CommercialInvoicePaymentId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasMaxLength(3)
-                        .HasColumnType("varchar(3)");
-
-                    b.Property<string>("FailureCode")
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
-                    b.Property<string>("FailureMessage")
-                        .HasMaxLength(500)
-                        .HasColumnType("varchar(500)");
-
-                    b.Property<int>("PaymentMethod")
-                        .HasColumnType("int");
-
-                    b.Property<string>("PaymentSourceLabel")
-                        .HasMaxLength(120)
-                        .HasColumnType("varchar(120)");
-
-                    b.Property<int>("Provider")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.Property<string>("StripeCheckoutSessionId")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
-                    b.Property<string>("StripePaymentIntentId")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CommercialInvoiceId")
-                        .HasDatabaseName("IX_CommercialInvoicePaymentAttempts_InvoiceId");
-
-                    b.HasIndex("StripeCheckoutSessionId")
-                        .IsUnique()
-                        .HasDatabaseName("IX_CommercialInvoicePaymentAttempts_CheckoutSession");
-
-                    b.HasIndex("StripePaymentIntentId")
-                        .IsUnique()
-                        .HasDatabaseName("IX_CommercialInvoicePaymentAttempts_PaymentIntent");
-
-                    b.HasIndex("CommercialInvoiceId", "Status")
-                        .HasDatabaseName("IX_CommercialInvoicePaymentAttempts_Invoice_Status");
-
-                    b.ToTable("CommercialInvoicePaymentAttempts");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.Commercial.CommercialInvoiceReminder", b =>
@@ -2863,10 +2755,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)");
 
-                    b.Property<string>("StripeCustomerId")
-                        .HasMaxLength(255)
-                        .HasColumnType("varchar(255)");
-
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("datetime(6)");
 
@@ -2884,7 +2772,6 @@ namespace DreamCleaningBackend.Migrations
                         .HasDatabaseName("IX_ContractClients_LegalEntityName");
 
                     b.HasIndex("SourceUserId")
-                        .IsUnique()
                         .HasDatabaseName("IX_ContractClients_SourceUserId");
 
                     b.ToTable("ContractClients");
@@ -7486,22 +7373,12 @@ namespace DreamCleaningBackend.Migrations
                     b.HasOne("DreamCleaningBackend.Models.User", "RecordedByUser")
                         .WithMany()
                         .HasForeignKey("RecordedByUserId")
-                        .OnDelete(DeleteBehavior.Restrict);
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
 
                     b.Navigation("Invoice");
 
                     b.Navigation("RecordedByUser");
-                });
-
-            modelBuilder.Entity("DreamCleaningBackend.Models.Commercial.CommercialInvoicePaymentAttempt", b =>
-                {
-                    b.HasOne("DreamCleaningBackend.Models.Commercial.CommercialInvoice", "Invoice")
-                        .WithMany()
-                        .HasForeignKey("CommercialInvoiceId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Invoice");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.Commercial.CommercialInvoiceReminder", b =>

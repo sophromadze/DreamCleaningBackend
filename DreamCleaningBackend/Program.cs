@@ -388,6 +388,31 @@ builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractSeedS
 // Daily sweep: hard-deletes contracts soft-deleted longer than ContractRetention:HiddenMonths.
 builder.Services.AddHostedService<DreamCleaningBackend.Services.Contracts.ContractRetentionService>();
 
+// The User(IsBusiness) <-> ContractClient link. One owner for create/reactivate/deactivate, called
+// from the business-flag write path and from the one-shot startup backfill below - never from a
+// read endpoint.
+builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.BusinessClientService>();
+builder.Services.AddHostedService<DreamCleaningBackend.Services.Contracts.BusinessClientBackfillService>();
+
+// ── Commercial invoicing ────────────────────────────────────────────────────────────────────
+// Billed against a commercial contract, settled by ACH out of band, recorded by an admin. Shares
+// the QuestPDF licence set above and the app's IEmailService; touches no Stripe path.
+builder.Services.AddSingleton<DreamCleaningBackend.Services.Commercial.InvoicePdfService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.BillingSettingsService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceNumberService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoicePaymentService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceEmailService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceCheckoutService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceStripePaymentService>();
+
+// Registered as a singleton AND hosted, resolving the same instance both ways: it runs its own
+// daily sweep, and the SuperAdmin "run now" endpoint injects it to trigger a pass on demand.
+// AddHostedService<T>() alone would create a second, separate instance for the controller.
+builder.Services.AddSingleton<DreamCleaningBackend.Services.Commercial.InvoiceOverdueService>();
+builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<DreamCleaningBackend.Services.Commercial.InvoiceOverdueService>());
+
 builder.Services.AddHttpClient();
 
 // CORS Configuration - Updated for cookie auth

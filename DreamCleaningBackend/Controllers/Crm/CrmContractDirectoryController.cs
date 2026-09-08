@@ -1,9 +1,12 @@
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers.Contracts;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Models.Contracts;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Contracts;
+using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -23,13 +26,20 @@ namespace DreamCleaningBackend.Controllers.Crm
     [Route("api/crm/contract-directory")]
     [ApiController]
     [Authorize(Roles = "Admin,SuperAdmin")]
-    public class CrmContractDirectoryController : ControllerBase
+    public class CrmContractDirectoryController : AdminControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly BusinessClientService _businessClients;
+        private readonly IAuditService _auditService;
 
-        public CrmContractDirectoryController(ApplicationDbContext context)
+        public CrmContractDirectoryController(
+            ApplicationDbContext context,
+            BusinessClientService businessClients,
+            IAuditService auditService)
         {
             _context = context;
+            _businessClients = businessClients;
+            _auditService = auditService;
         }
 
         // ── contractor profiles ────────────────────────────────────────────────
@@ -107,6 +117,13 @@ namespace DreamCleaningBackend.Controllers.Crm
 
         // ── clients ────────────────────────────────────────────────────────────
 
+        /// <summary>
+        /// The client roster behind the Create Contract form.
+        ///
+        /// ACTIVE ONLY, and that is what makes a deactivated client disappear from contract
+        /// selection without any further work: it is one filter, in one place, shared by everyone
+        /// who picks a client to work with.
+        /// </summary>
         [HttpGet("clients")]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<ContractClientDto>>> GetClients([FromQuery] string? search)
@@ -133,9 +150,27 @@ namespace DreamCleaningBackend.Controllers.Crm
                 contacts.Where(x => x.ContractClientId == c.Id))).ToList());
         }
 
+        /// <summary>
+        /// Creates a commercial client ON ITS OWN — no contract, and therefore no DCC number
+        /// consumed and no document generated.
+        ///
+        /// WHY THIS IS REACHABLE FROM THE UI (2026-09). A commercial client and a contract are
+        /// separate facts: <c>CommercialInvoice.ContractId</c> is nullable precisely because plenty
+        /// of commercial work is billed before an agreement is signed, or without one. Until now
+        /// the only way to get a row into <c>ContractClients</c> was to save a contract draft, so
+        /// billing a trial clean meant fabricating an agreement nobody intended to sign just to
+        /// populate the invoice form's client dropdown. This endpoint existed already and had no
+        /// caller; Commercial → Clients and the invoice form now use it.
+        ///
+        /// CREATION ONLY. Editing an existing client stays where it was, on the contract, because
+        /// a rename there is governed by <see cref="Helpers.Contracts.ContractClientEditPolicy"/>
+        /// — a change to the counterparty's legal name is a contract modification, not a typo fix.
+        /// Nothing here touches an existing row, so none of that is weakened.
+        /// </summary>
         [HttpPost("clients")]
         [RequirePermission(Permission.Create)]
-        public async Task<ActionResult<ContractClientDto>> CreateClient([FromBody] SaveContractClientDto dto)
+        public async Task<ActionResult<ContractClientDto>> CreateClient(
+            [FromBody] CreateCommercialClientDto dto)
         {
             var client = new ContractClient
             {
@@ -147,19 +182,118 @@ namespace DreamCleaningBackend.Controllers.Crm
                 State = dto.State.Trim(),
                 Zip = dto.Zip.Trim(),
                 NoticeEmail = dto.NoticeEmail?.Trim(),
-                Phone = dto.Phone
+                Phone = dto.Phone,
+
+                // The same rule the contract form applies, from the same place. A link is an
+                // access grant to My Contracts, so it is only ever what staff explicitly chose -
+                // never inferred from NoticeEmail matching some account's address.
+                SourceUserId = await BusinessAccountLinkPolicy.ResolveAsync(_context, dto.SourceUserId)
             };
             _context.ContractClients.Add(client);
             await _context.SaveChangesAsync();
-            return Ok(MapClient(client, Array.Empty<ContractServiceLocation>(), Array.Empty<ContractContact>()));
+
+            // Saved after the client so both carry its id. Optional, and a client with neither is
+            // perfectly valid - it is simply one an admin has to complete before an invoice to it
+            // can be emailed.
+            var locations = new List<ContractServiceLocation>();
+            var contacts = new List<ContractContact>();
+
+            if (dto.ServiceLocation != null)
+            {
+                var location = new ContractServiceLocation
+                {
+                    ContractClientId = client.Id,
+                    BusinessBrand = dto.ServiceLocation.BusinessBrand?.Trim(),
+                    LocationName = dto.ServiceLocation.LocationName?.Trim(),
+                    Address = dto.ServiceLocation.Address.Trim(),
+                    City = dto.ServiceLocation.City.Trim(),
+                    State = dto.ServiceLocation.State.Trim(),
+                    Zip = dto.ServiceLocation.Zip.Trim()
+                };
+                _context.ContractServiceLocations.Add(location);
+                locations.Add(location);
+            }
+
+            if (dto.BillingContact != null)
+            {
+                var contact = new ContractContact
+                {
+                    ContractClientId = client.Id,
+                    FirstName = dto.BillingContact.FirstName.Trim(),
+                    LastName = dto.BillingContact.LastName.Trim(),
+                    Title = dto.BillingContact.Title?.Trim(),
+                    Email = dto.BillingContact.Email?.Trim(),
+                    Phone = dto.BillingContact.Phone,
+                    Role = dto.BillingContact.Role
+                };
+                _context.ContractContacts.Add(contact);
+                contacts.Add(contact);
+            }
+
+            if (locations.Count > 0 || contacts.Count > 0)
+                await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.CommercialClient, client.Id, "Create",
+                null,
+                new
+                {
+                    ClientId = client.Id,
+                    Company = client.LegalEntityName,
+                    LinkedAccountId = client.SourceUserId,
+                    Origin = client.SourceUserId == null ? "Standalone" : "Linked to a customer account"
+                },
+                new[] { "Company" },
+                GetCurrentUserId());
+
+            return Ok(MapClient(client, locations, contacts));
         }
 
+        /// <summary>
+        /// Edits a commercial client, from Commercial → Clients.
+        ///
+        /// ══ WHAT THIS CANNOT DO TO A CONTRACT ══
+        ///
+        /// Nothing, and that is structural rather than a rule enforced here. Every contract
+        /// VERSION renders from its own frozen <c>ContractSnapshot</c>, copied at generation time —
+        /// so an executed agreement keeps the counterparty name, address and signatures it was
+        /// signed with no matter what this row later says, and renaming a client affects FUTURE
+        /// contracts only. There is deliberately no second edit policy competing with that: the
+        /// snapshot freeze is the protection, and <c>ContractClientEditPolicy</c> continues to
+        /// govern the other direction — a CLIENT editing their own details on the review page,
+        /// where a legal-name change is a contract modification that needs re-approval.
+        ///
+        /// The UI warns when the client has contracts, so the admin knows the existing documents
+        /// are not being rewritten. Guarded by <c>ContractSnapshotIsFrozen…</c> in the specs.
+        ///
+        /// ══ THE ONE FIELD THAT SYNCS BACK ══
+        ///
+        /// For a client linked to a business account, the PHONE is written through to that
+        /// account in this same save, and nothing else is. See <see cref="BusinessClientMapper"/>
+        /// for why the other "overlapping" fields are not overlapping at all — a legal entity name
+        /// is not a person's name, and <c>User.Email</c> is a login identity with a verification
+        /// flow behind it that a billing screen must not reassign.
+        /// </summary>
         [HttpPut("clients/{id}")]
         [RequirePermission(Permission.Update)]
-        public async Task<ActionResult<ContractClientDto>> UpdateClient(int id, [FromBody] SaveContractClientDto dto)
+        public async Task<ActionResult<ContractClientDto>> UpdateClient(
+            int id, [FromBody] UpdateCommercialClientDto dto)
         {
             var client = await _context.ContractClients.FirstOrDefaultAsync(c => c.Id == id);
             if (client == null) return NotFound(new { message = "Client not found." });
+
+            var before = new
+            {
+                client.LegalEntityName,
+                client.EntityType,
+                client.PrincipalAddress,
+                client.City,
+                client.State,
+                client.Zip,
+                client.NoticeEmail,
+                client.Phone
+            };
+            var phoneBefore = client.Phone;
 
             client.LegalEntityName = dto.LegalEntityName.Trim();
             client.EntityType = dto.EntityType.Trim();
@@ -171,11 +305,250 @@ namespace DreamCleaningBackend.Controllers.Crm
             client.NoticeEmail = dto.NoticeEmail?.Trim();
             client.Phone = dto.Phone;
             client.UpdatedAt = DateTime.UtcNow;
+
+            // SourceUserId is NOT read off the DTO. The link is created and removed by the
+            // business flag on the account (and by Delete here); letting an edit re-point it would
+            // be a second, quieter way to grant somebody access to another company's contracts.
+
+            ApplyBillingContact(client, dto.BillingContact);
+            ApplyServiceLocation(client, dto.ServiceLocation);
+
+            // The one write-through, in the same SaveChanges as everything above.
+            if (client.SourceUserId.HasValue)
+            {
+                var account = await _context.Users
+                    .FirstOrDefaultAsync(u => u.Id == client.SourceUserId.Value);
+
+                if (account != null
+                    && BusinessClientMapper.ShouldWritePhoneThrough(account.Phone, phoneBefore))
+                {
+                    account.Phone = client.Phone;
+                    account.UpdatedAt = DateTime.UtcNow;
+                }
+            }
+
             await _context.SaveChangesAsync();
 
-            // NOTE: this does NOT rewrite any generated contract. Every version renders from its
-            // own frozen snapshot, so renaming a client here affects future contracts only.
-            return Ok(MapClient(client, Array.Empty<ContractServiceLocation>(), Array.Empty<ContractContact>()));
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.CommercialClient, client.Id, "Update",
+                before,
+                new
+                {
+                    client.LegalEntityName,
+                    client.EntityType,
+                    client.PrincipalAddress,
+                    client.City,
+                    client.State,
+                    client.Zip,
+                    client.NoticeEmail,
+                    client.Phone
+                },
+                actingUserId: GetCurrentUserId());
+
+            return Ok(await LoadClientDtoAsync(client));
+        }
+
+        /// <summary>
+        /// SOFT DELETE — the client is deactivated, never removed.
+        ///
+        /// Everything carrying its name stays exactly where it is: contracts, contract versions and
+        /// signatures, invoices, payments, payment history, activity logs and every DCC/DCI
+        /// reference number. They resolve the client by id and do not test IsActive, so a
+        /// historical invoice opened tomorrow still shows the company it was addressed to. What
+        /// changes is only that the client stops being offered — the invoice dropdown, the contract
+        /// client picker and the default Clients list all filter on IsActive.
+        ///
+        /// FOR A LINKED CLIENT this also clears the account's business designation, in the same
+        /// transaction, and the UI says so before it happens. Without that the deletion would not
+        /// stick: the account would still be flagged as a business, and the next flag save would
+        /// bring the client straight back. The USER IS NOT DELETED — they keep their account,
+        /// their bookings and their history, and re-ticking the business flag on the Users tab
+        /// brings this same client row back with its contracts and invoices intact.
+        ///
+        /// Permission.Deactivate, not Permission.Delete: this IS a deactivation, it is fully
+        /// reversible, and Delete is SuperAdmin-only — the people who run the commercial tab
+        /// (Admins) are the ones who retire a client.
+        /// </summary>
+        [HttpDelete("clients/{id}")]
+        [RequirePermission(Permission.Deactivate)]
+        public async Task<ActionResult> DeactivateClient(int id)
+        {
+            var client = await _context.ContractClients.FirstOrDefaultAsync(c => c.Id == id);
+            if (client == null) return NotFound(new { message = "Client not found." });
+
+            if (!client.IsActive)
+                return Ok(new { message = "That client is already inactive.", isActive = false });
+
+            if (client.SourceUserId.HasValue)
+            {
+                await _businessClients.RemoveBusinessClientAsync(client, GetCurrentUserId());
+
+                return Ok(new
+                {
+                    message = $"{client.LegalEntityName} was removed from Commercial → Clients, and the " +
+                              "business designation was taken off the linked customer account. " +
+                              "Their contracts and invoices are unchanged.",
+                    isActive = false,
+                    businessFlagRemoved = true
+                });
+            }
+
+            client.IsActive = false;
+            client.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.CommercialClient, client.Id,
+                BusinessClientService.ActionDeactivated,
+                null,
+                new { ClientId = client.Id, Company = client.LegalEntityName, Status = "Inactive" },
+                new[] { "Status" },
+                GetCurrentUserId());
+
+            return Ok(new
+            {
+                message = $"{client.LegalEntityName} was removed from Commercial → Clients. " +
+                          "Their contracts and invoices are unchanged.",
+                isActive = false,
+                businessFlagRemoved = false
+            });
+        }
+
+        /// <summary>
+        /// Brings a STANDALONE client back. Deliberately refuses a linked one: that client went
+        /// away because the account stopped being a business, so it comes back the same way — by
+        /// re-ticking the business flag on the Users tab, which reactivates this very row. Two
+        /// routes to the same state is how the two end up disagreeing.
+        /// </summary>
+        [HttpPost("clients/{id}/restore")]
+        [RequirePermission(Permission.Activate)]
+        public async Task<ActionResult> RestoreClient(int id)
+        {
+            var client = await _context.ContractClients.FirstOrDefaultAsync(c => c.Id == id);
+            if (client == null) return NotFound(new { message = "Client not found." });
+
+            if (client.SourceUserId.HasValue)
+                return BadRequest(new
+                {
+                    message = "This client belongs to a customer account. Turn the business flag " +
+                              "back on for that customer and it will be listed again."
+                });
+
+            if (client.IsActive)
+                return Ok(new { message = "That client is already active.", isActive = true });
+
+            client.IsActive = true;
+            client.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(
+                AuditEntityTypes.CommercialClient, client.Id,
+                BusinessClientService.ActionReactivated,
+                null,
+                new { ClientId = client.Id, Company = client.LegalEntityName, Status = "Active" },
+                new[] { "Status" },
+                GetCurrentUserId());
+
+            return Ok(new { message = $"{client.LegalEntityName} is listed again.", isActive = true });
+        }
+
+        // ── shared write helpers ───────────────────────────────────────────────
+
+        /// <summary>
+        /// Creates, updates or clears the client's primary billing contact from one optional
+        /// block. "Cleared" means deactivated, not deleted — a contact may be a contract's signer.
+        /// </summary>
+        private void ApplyBillingContact(ContractClient client, SaveContractContactDto? dto)
+        {
+            var existing = _context.ContractContacts
+                .Where(c => c.ContractClientId == client.Id && c.IsActive)
+                .OrderBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1).ThenBy(c => c.Id)
+                .FirstOrDefault();
+
+            if (dto == null)
+            {
+                if (existing != null)
+                {
+                    existing.IsActive = false;
+                    existing.UpdatedAt = DateTime.UtcNow;
+                }
+                return;
+            }
+
+            if (existing == null)
+            {
+                _context.ContractContacts.Add(new ContractContact
+                {
+                    ContractClientId = client.Id,
+                    FirstName = dto.FirstName.Trim(),
+                    LastName = dto.LastName.Trim(),
+                    Title = dto.Title?.Trim(),
+                    Email = dto.Email?.Trim(),
+                    Phone = dto.Phone,
+                    Role = dto.Role
+                });
+                return;
+            }
+
+            existing.FirstName = dto.FirstName.Trim();
+            existing.LastName = dto.LastName.Trim();
+            existing.Title = dto.Title?.Trim();
+            existing.Email = dto.Email?.Trim();
+            existing.Phone = dto.Phone;
+            existing.UpdatedAt = DateTime.UtcNow;
+        }
+
+        /// <summary>
+        /// Same shape for the client's first service location. A client with several keeps the
+        /// rest; this edits the one the Clients screen shows and adds one when there is none.
+        /// </summary>
+        private void ApplyServiceLocation(ContractClient client, SaveContractServiceLocationDto? dto)
+        {
+            if (dto == null) return;
+
+            var existing = _context.ContractServiceLocations
+                .Where(l => l.ContractClientId == client.Id && l.IsActive)
+                .OrderBy(l => l.Id)
+                .FirstOrDefault();
+
+            if (existing == null)
+            {
+                _context.ContractServiceLocations.Add(new ContractServiceLocation
+                {
+                    ContractClientId = client.Id,
+                    BusinessBrand = dto.BusinessBrand?.Trim(),
+                    LocationName = dto.LocationName?.Trim(),
+                    Address = dto.Address.Trim(),
+                    City = dto.City.Trim(),
+                    State = dto.State.Trim(),
+                    Zip = dto.Zip.Trim()
+                });
+                return;
+            }
+
+            existing.BusinessBrand = dto.BusinessBrand?.Trim();
+            existing.LocationName = dto.LocationName?.Trim();
+            existing.Address = dto.Address.Trim();
+            existing.City = dto.City.Trim();
+            existing.State = dto.State.Trim();
+            existing.Zip = dto.Zip.Trim();
+            existing.UpdatedAt = DateTime.UtcNow;
+        }
+
+        /// <summary>Re-reads the client's contacts and locations so the caller gets the saved truth.</summary>
+        private async Task<ContractClientDto> LoadClientDtoAsync(ContractClient client)
+        {
+            var locations = await _context.ContractServiceLocations
+                .Where(l => l.ContractClientId == client.Id && l.IsActive)
+                .OrderBy(l => l.Id)
+                .ToListAsync();
+
+            var contacts = await _context.ContractContacts
+                .Where(c => c.ContractClientId == client.Id && c.IsActive)
+                .OrderBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1).ThenBy(c => c.Id)
+                .ToListAsync();
+
+            return MapClient(client, locations, contacts);
         }
 
         // ── service locations ──────────────────────────────────────────────────
@@ -440,6 +813,12 @@ namespace DreamCleaningBackend.Controllers.Crm
             NoticeEmail = c.NoticeEmail,
             Phone = c.Phone,
             IsActive = c.IsActive,
+
+            // Returned so the caller can see WHICH account was linked, rather than having to trust
+            // that the one it asked for was accepted. The name and email stay unset here: nothing
+            // on this surface displays them, and filling them would cost a join on every row.
+            SourceUserId = c.SourceUserId,
+
             ServiceLocations = locations.Select(MapLocation).ToList(),
             Contacts = contacts.Select(MapContact).ToList()
         };

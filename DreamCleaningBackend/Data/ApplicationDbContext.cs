@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Models.Contracts;
+using DreamCleaningBackend.Models.Commercial;
 
 namespace DreamCleaningBackend.Data
 {
@@ -142,6 +143,20 @@ namespace DreamCleaningBackend.Data
         /// <summary>Survives the contract it describes — see ContractDeletionLog.</summary>
         public DbSet<ContractDeletionLog> ContractDeletionLogs { get; set; }
 
+        // Commercial invoicing. Billed against a commercial contract (or ad-hoc), settled by ACH
+        // bank transfer out of band, and recorded by an admin — it never touches the residential
+        // Stripe checkout. BillingSettings is a single row bootstrapped on first read rather than
+        // through HasData, for the same reason the contract reference data is.
+        public DbSet<CommercialInvoice> CommercialInvoices { get; set; }
+        public DbSet<CommercialInvoiceItem> CommercialInvoiceItems { get; set; }
+        public DbSet<CommercialInvoicePayment> CommercialInvoicePayments { get; set; }
+        public DbSet<CommercialInvoiceEmailLog> CommercialInvoiceEmailLogs { get; set; }
+        public DbSet<CommercialInvoiceActivityLog> CommercialInvoiceActivityLogs { get; set; }
+        public DbSet<CommercialInvoiceReminder> CommercialInvoiceReminders { get; set; }
+        public DbSet<CommercialInvoicePaymentAttempt> CommercialInvoicePaymentAttempts { get; set; }
+        public DbSet<CommercialRecurringInvoiceTemplate> CommercialRecurringInvoiceTemplates { get; set; }
+        public DbSet<BillingSettings> BillingSettings { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -209,8 +224,24 @@ namespace DreamCleaningBackend.Data
             {
                 entity.HasIndex(e => e.LegalEntityName).HasDatabaseName("IX_ContractClients_LegalEntityName");
                 entity.HasIndex(e => e.IsActive).HasDatabaseName("IX_ContractClients_IsActive");
-                // The My Contracts portal filters on this on every request.
-                entity.HasIndex(e => e.SourceUserId).HasDatabaseName("IX_ContractClients_SourceUserId");
+
+                // ONE BUSINESS ACCOUNT = ONE COMMERCIAL CLIENT, enforced by the database rather
+                // than by whoever remembers to check.
+                //
+                // UNIQUE is the correct MySQL/MariaDB spelling of "at most one non-null": the
+                // engine does not consider two NULLs equal, so any number of STANDALONE clients
+                // (SourceUserId null, no website account) still coexist, while a second row
+                // claiming an account that already has one is refused outright. No filtered index
+                // is needed — MySQL has none, and none is wanted.
+                //
+                // It is also what makes the sync idempotent: EnsureLinkedClientAsync reactivates
+                // the existing row instead of inserting, and if a race ever got past that check
+                // the insert fails rather than silently splitting a client's contracts and
+                // invoices across two records. The My Contracts portal filters on this column on
+                // every request, so the index earns its keep as a lookup too.
+                entity.HasIndex(e => e.SourceUserId)
+                    .IsUnique()
+                    .HasDatabaseName("IX_ContractClients_SourceUserId");
                 // Restrict, not Cascade: deleting a customer account must never take a commercial
                 // contract's counterparty record with it. Unlinking is a deliberate act.
                 entity.HasOne(e => e.SourceUser)
@@ -349,6 +380,160 @@ namespace DreamCleaningBackend.Data
             {
                 entity.HasIndex(e => e.ContractNumber).HasDatabaseName("IX_ContractDeletionLogs_Number");
                 entity.HasIndex(e => e.DeletedAt).HasDatabaseName("IX_ContractDeletionLogs_DeletedAt");
+            });
+
+            // ── Commercial invoicing ──────────────────────────────────────────────────────────
+            modelBuilder.Entity<CommercialInvoice>(entity =>
+            {
+                // THE UNIQUE INDEX IS THE REAL GUARD on the invoice number, not the existence
+                // check in InvoiceNumberService: that check and the insert are not atomic, so two
+                // concurrent creates can pick the same random number and only the database can
+                // settle it. The create path retries when this index rejects one of them.
+                entity.HasIndex(e => e.InvoiceNumber).IsUnique()
+                    .HasDatabaseName("IX_CommercialInvoices_InvoiceNumber");
+
+                // Unique because the token is the whole authorization for the public page - a
+                // duplicate would let one client's link resolve to another client's invoice.
+                entity.HasIndex(e => e.PublicToken).IsUnique()
+                    .HasDatabaseName("IX_CommercialInvoices_PublicToken");
+
+                entity.HasIndex(e => e.ContractClientId).HasDatabaseName("IX_CommercialInvoices_ClientId");
+                entity.HasIndex(e => e.ContractId).HasDatabaseName("IX_CommercialInvoices_ContractId");
+
+                // The overdue sweep and the summary cards both filter on exactly this pair.
+                entity.HasIndex(e => new { e.Status, e.DueDate })
+                    .HasDatabaseName("IX_CommercialInvoices_Status_DueDate");
+
+                entity.HasIndex(e => e.InvoiceDate).HasDatabaseName("IX_CommercialInvoices_InvoiceDate");
+
+                // Restrict, never cascade: deleting a commercial client must not silently take its
+                // billing history with it. The same rule the contract module applies to evidence.
+                entity.HasOne(e => e.Client).WithMany()
+                    .HasForeignKey(e => e.ContractClientId).OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.Contract).WithMany()
+                    .HasForeignKey(e => e.ContractId).OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(e => e.ServiceLocation).WithMany()
+                    .HasForeignKey(e => e.ContractServiceLocationId).OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(e => e.CreatedByUser).WithMany()
+                    .HasForeignKey(e => e.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.VoidedByUser).WithMany()
+                    .HasForeignKey(e => e.VoidedByUserId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<CommercialInvoiceItem>(entity =>
+            {
+                entity.HasIndex(e => e.CommercialInvoiceId)
+                    .HasDatabaseName("IX_CommercialInvoiceItems_InvoiceId");
+
+                // Cascade is correct here and only here: a line item has no meaning apart from its
+                // invoice, unlike a payment, which is financial history in its own right.
+                entity.HasOne(e => e.Invoice).WithMany(i => i.Items)
+                    .HasForeignKey(e => e.CommercialInvoiceId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CommercialInvoicePayment>(entity =>
+            {
+                entity.HasIndex(e => e.CommercialInvoiceId)
+                    .HasDatabaseName("IX_CommercialInvoicePayments_InvoiceId");
+
+                // "Paid this month" buckets by the date money actually arrived.
+                entity.HasIndex(e => e.PaymentDate)
+                    .HasDatabaseName("IX_CommercialInvoicePayments_PaymentDate");
+
+                entity.HasOne(e => e.Invoice).WithMany(i => i.Payments)
+                    .HasForeignKey(e => e.CommercialInvoiceId).OnDelete(DeleteBehavior.Cascade);
+
+                // Restrict: a payment recorded BY AN ADMIN must always be able to name them.
+                // Nullable since 2026-09 — a Stripe webhook payment has no user behind it and
+                // names itself through RecordedByLabel instead.
+                entity.HasOne(e => e.RecordedByUser).WithMany()
+                    .HasForeignKey(e => e.RecordedByUserId).OnDelete(DeleteBehavior.Restrict);
+
+                // UNIQUE. THE guarantee that a retried or concurrently-delivered
+                // payment_intent.succeeded cannot produce two payment rows for the same money.
+                // The webhook handler catches the violation and treats it as "already recorded".
+                entity.HasIndex(e => e.StripePaymentIntentId).IsUnique()
+                    .HasDatabaseName("IX_CommercialInvoicePayments_StripePaymentIntent");
+            });
+
+            modelBuilder.Entity<CommercialInvoicePaymentAttempt>(entity =>
+            {
+                entity.HasIndex(e => e.CommercialInvoiceId)
+                    .HasDatabaseName("IX_CommercialInvoicePaymentAttempts_InvoiceId");
+
+                // UNIQUE, and these two are the load-bearing idempotency guard for online
+                // payments. Stripe retries webhooks and can deliver the same event twice
+                // concurrently; the WebhookEvents check in StripeWebhookController is best-effort
+                // (it swallows its own exceptions), so the database is what actually guarantees one
+                // attempt per Stripe object.
+                //
+                // Filtered to non-null in MySQL/MariaDB by nature: a unique index permits many
+                // NULLs, which is exactly what a row needs between insert and the Stripe call
+                // returning.
+                entity.HasIndex(e => e.StripeCheckoutSessionId).IsUnique()
+                    .HasDatabaseName("IX_CommercialInvoicePaymentAttempts_CheckoutSession");
+
+                entity.HasIndex(e => e.StripePaymentIntentId).IsUnique()
+                    .HasDatabaseName("IX_CommercialInvoicePaymentAttempts_PaymentIntent");
+
+                // The duplicate-payment guard sweeps for in-flight attempts on one invoice.
+                entity.HasIndex(e => new { e.CommercialInvoiceId, e.Status })
+                    .HasDatabaseName("IX_CommercialInvoicePaymentAttempts_Invoice_Status");
+
+                entity.HasOne(e => e.Invoice).WithMany()
+                    .HasForeignKey(e => e.CommercialInvoiceId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CommercialInvoiceEmailLog>(entity =>
+            {
+                entity.HasIndex(e => e.CommercialInvoiceId)
+                    .HasDatabaseName("IX_CommercialInvoiceEmailLogs_InvoiceId");
+
+                entity.HasOne(e => e.Invoice).WithMany()
+                    .HasForeignKey(e => e.CommercialInvoiceId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CommercialInvoiceActivityLog>(entity =>
+            {
+                entity.HasIndex(e => new { e.CommercialInvoiceId, e.CreatedAt })
+                    .HasDatabaseName("IX_CommercialInvoiceActivityLogs_Invoice_CreatedAt");
+
+                entity.HasOne(e => e.Invoice).WithMany()
+                    .HasForeignKey(e => e.CommercialInvoiceId).OnDelete(DeleteBehavior.Cascade);
+
+                // The trail keeps the actor's NAME as a string, so it survives the account being
+                // removed; the FK is only a convenience link and is nulled rather than cascading.
+                entity.HasOne(e => e.User).WithMany()
+                    .HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<CommercialInvoiceReminder>(entity =>
+            {
+                // The duplicate guard reads exactly this: has this key gone out for this invoice
+                // since midnight?
+                entity.HasIndex(e => new { e.CommercialInvoiceId, e.ReminderKey, e.SentAt })
+                    .HasDatabaseName("IX_CommercialInvoiceReminders_Invoice_Key_SentAt");
+
+                entity.HasOne(e => e.Invoice).WithMany()
+                    .HasForeignKey(e => e.CommercialInvoiceId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CommercialRecurringInvoiceTemplate>(entity =>
+            {
+                // Indexed on the column the future generator will sweep, so switching recurring
+                // billing on later needs no migration at all.
+                entity.HasIndex(e => new { e.IsActive, e.NextInvoiceDate })
+                    .HasDatabaseName("IX_CommercialRecurringInvoiceTemplates_Active_NextDate");
+
+                entity.HasOne(e => e.Client).WithMany()
+                    .HasForeignKey(e => e.ContractClientId).OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.Contract).WithMany()
+                    .HasForeignKey(e => e.ContractId).OnDelete(DeleteBehavior.SetNull);
             });
 
             // AuditLog configuration

@@ -30,15 +30,18 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly ContractAuthorizationService _authorization;
         private readonly IAuditService _auditService;
+        private readonly BusinessClientService _businessClients;
 
         public AdminContractAccessController(
             ApplicationDbContext context,
             ContractAuthorizationService authorization,
-            IAuditService auditService)
+            IAuditService auditService,
+            BusinessClientService businessClients)
         {
             _context = context;
             _authorization = authorization;
             _auditService = auditService;
+            _businessClients = businessClients;
         }
 
         // ── officer titles ─────────────────────────────────────────────────────
@@ -139,6 +142,20 @@ namespace DreamCleaningBackend.Controllers
         /// <summary>
         /// Marks a customer account as a business. Gated by the contracts matrix, where this is one
         /// of only two places CEO and CTO differ: a CEO deliberately does not hold it.
+        ///
+        /// THIS IS THE SYNCHRONISATION POINT (2026-09). The flag and the account's commercial
+        /// client move together here, on the WRITE path, and nowhere else — no read endpoint
+        /// creates or changes a client as a side effect of being called. Turning the flag on makes
+        /// the client exist (or brings the existing one back); turning it off takes it out of
+        /// circulation without deleting anything. <see cref="BusinessClientService"/> owns the
+        /// whole state machine and the reasoning behind it.
+        ///
+        /// The old "unlink it from the contract first" refusal is deliberately GONE. It existed to
+        /// stop the flag being cleared out from under a contract relying on it for portal access,
+        /// but its effect was that the one place staff could say "this is a business" refused to
+        /// let them say otherwise — and the contract was never actually at risk: it keeps its
+        /// client, its snapshot and its signatures either way, and only the customer's
+        /// self-service view of it goes quiet.
         /// </summary>
         [HttpPut("users/{id}/business-flag")]
         [RequirePermission(Permission.Update)]
@@ -152,39 +169,37 @@ namespace DreamCleaningBackend.Controllers
             if (target.Role != UserRole.Customer)
                 return BadRequest(new { message = "The business flag applies to customer accounts only." });
 
-            // Turning the flag off would strand any contract already relying on it for portal
-            // access, so the link has to be removed deliberately first rather than silently broken.
-            if (!dto.IsBusiness)
-            {
-                var linkedClients = await _context.ContractClients
-                    .CountAsync(c => c.SourceUserId == target.Id);
-                if (linkedClients > 0)
-                    return BadRequest(new
-                    {
-                        message = "This customer is linked to a commercial contract. " +
-                                  "Unlink it from the contract's client record before removing the business flag."
-                    });
-            }
-
             if (target.IsBusiness == dto.IsBusiness)
                 return Ok(new { message = "No change.", isBusiness = target.IsBusiness });
 
             var originalUser = AuditSnapshot.Of(target);
 
-            target.IsBusiness = dto.IsBusiness;
-            target.UpdatedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync();
+            // Flag + client in one save. ApplyBusinessFlagAsync is idempotent, so a repeated call
+            // or a re-tick is a no-op rather than a duplicate client.
+            var outcome = await _businessClients.ApplyBusinessFlagAsync(target, dto.IsBusiness, GetCurrentUserId());
 
             await _auditService.LogUpdateAsync(originalUser, target);
 
             return Ok(new
             {
                 message = dto.IsBusiness
-                    ? $"{target.FirstName} {target.LastName} is now flagged as a business.".Trim()
-                    : $"Removed the business flag from {target.FirstName} {target.LastName}.".Trim(),
+                    ? $"{target.FirstName} {target.LastName} is now flagged as a business{DescribeClient(outcome)}.".Trim()
+                    : $"Removed the business flag from {target.FirstName} {target.LastName}{DescribeClient(outcome)}.".Trim(),
                 isBusiness = target.IsBusiness
             });
         }
+
+        /// <summary>
+        /// Says what happened to the commercial client, so the toast explains the side effect the
+        /// admin is about to see on the Clients tab rather than leaving them to discover it.
+        /// </summary>
+        private static string DescribeClient(BusinessClientService.LinkOutcome outcome) => outcome switch
+        {
+            BusinessClientService.LinkOutcome.Created => " and now appears under Commercial → Clients",
+            BusinessClientService.LinkOutcome.Reactivated => " and their commercial client is active again",
+            BusinessClientService.LinkOutcome.Deactivated => ", and their commercial client is no longer listed",
+            _ => string.Empty
+        };
 
         /// <summary>
         /// Business-flagged customers, for the "link this contract to an account" picker on the

@@ -34,6 +34,16 @@ namespace DreamCleaningBackend.Attributes
                     context.Result = new BadRequestObjectResult(new { message = workflow.Message });
                     context.ExceptionHandled = true;
                     break;
+
+                // Commercial invoicing shares this filter rather than registering a second one:
+                // its workflow violations are the same kind of thing ("send this invoice before
+                // recording a payment against it") and want the same 400 with a message an admin
+                // can act on. Permission refusals there are attribute-driven, so there is no
+                // invoice equivalent of ContractForbiddenException to map.
+                case Services.Commercial.InvoiceWorkflowException invoice:
+                    context.Result = new BadRequestObjectResult(new { message = invoice.Message });
+                    context.ExceptionHandled = true;
+                    break;
             }
         }
     }
