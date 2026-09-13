@@ -10,13 +10,29 @@ namespace DreamCleaningBackend.DTOs
         public bool IsManualOverride { get; set; }
         public DateTime? ActivatedAt { get; set; }
         public DateTime? LastUsedAt { get; set; }
-        public string Status { get; set; } = "None"; // "None" | "Auto" | "Manual" | "Used"
+        public string Status { get; set; } = "None"; // "None" | "Auto" | "Manual" | "Lifetime" | "Used"
+
+        /// <summary>
+        /// LIFETIME mode: the discount is not consumed by an order and the inactivity automation
+        /// is suspended for this customer until an admin clears it. See
+        /// <c>User.LoyaltyDiscountIsLifetime</c> for the full rule set.
+        /// </summary>
+        public bool IsLifetime { get; set; }
     }
 
     public class SetLoyaltyDiscountDto
     {
         [Range(0, 100, ErrorMessage = "Percentage must be between 0 and 100")]
         public decimal Percentage { get; set; }
+
+        /// <summary>
+        /// Assign this as a LIFETIME discount rather than the default one-time one.
+        ///
+        /// Defaults to false, so every existing caller — the admin loyalty panel before this
+        /// feature, any script, the Users tab — keeps producing exactly the one-time discount it
+        /// always did. Lifetime has to be asked for.
+        /// </summary>
+        public bool IsLifetime { get; set; }
     }
 
     public class LoyaltyDiscountSettingsDto

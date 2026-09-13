@@ -1,6 +1,7 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models.Contracts;
+using DreamCleaningBackend.Helpers.Commercial;
 using Microsoft.EntityFrameworkCore;
 
 namespace DreamCleaningBackend.Services.Contracts
@@ -105,7 +106,16 @@ namespace DreamCleaningBackend.Services.Contracts
                         : $"{c.CreatedByAdmin.FirstName} {c.CreatedByAdmin.LastName}".Trim(),
                     SignerCount = signers.Count,
                     SignedCount = signers.Count(s => s.Status == ContractSignerStatus.Signed),
-                    IsHidden = c.IsHidden
+                    IsHidden = c.IsHidden,
+                    // The SAME rule the create-next-invoice endpoint enforces, resolved here so
+                    // the button cannot offer something the server will refuse — and, just as
+                    // importantly, cannot hide something the server would allow. Note that having
+                    // NO previous invoice is not a reason to refuse: a signed contract with
+                    // nothing billed yet is exactly the case that needs its first draft.
+                    CanCreateNextInvoice =
+                        ContractInvoiceEligibility.CanCreateNextInvoice(c.Status, c.IsHidden),
+                    CannotCreateNextInvoiceReason =
+                        ContractInvoiceEligibility.Check(c.Status, c.IsHidden)
                 };
             }).ToList();
         }
@@ -242,6 +252,10 @@ namespace DreamCleaningBackend.Services.Contracts
                     contract.Status is ContractStatus.PreviewGenerated
                         or ContractStatus.AwaitingClientReview or ContractStatus.NeedsRevision,
                 IsHidden = contract.IsHidden,
+                CanCreateNextInvoice =
+                    ContractInvoiceEligibility.CanCreateNextInvoice(contract.Status, contract.IsHidden),
+                CannotCreateNextInvoiceReason =
+                    ContractInvoiceEligibility.Check(contract.Status, contract.IsHidden),
                 HiddenAt = contract.HiddenAt,
                 // Delete replaced Void: available on any visible contract, including an executed
                 // one — the document and its files survive the retention window either way.

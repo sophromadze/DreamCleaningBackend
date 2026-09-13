@@ -633,7 +633,7 @@ namespace DreamCleaningBackend.Tests
             public Task ReverseFromOrderAsync(int orderId) => Task.CompletedTask;
 
             public Task<LoyaltyDiscountDto> GetForUserAsync(int userId) => throw new NotSupportedException();
-            public Task<LoyaltyDiscountDto> SetManualAsync(int userId, decimal percentage, int adminUserId) => throw new NotSupportedException();
+            public Task<LoyaltyDiscountDto> SetManualAsync(int userId, decimal percentage, int adminUserId, bool isLifetime = false) => throw new NotSupportedException();
             public Task<LoyaltyDiscountDto> ClearAsync(int userId, int adminUserId) => throw new NotSupportedException();
         }
 

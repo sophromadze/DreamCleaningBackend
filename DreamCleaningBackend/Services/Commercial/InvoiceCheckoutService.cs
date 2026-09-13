@@ -117,22 +117,47 @@ namespace DreamCleaningBackend.Services.Commercial
                 throw new InvoiceCheckoutUnavailableException(
                     "This invoice is above the limit for online bank payment. Please use the alternative payment method.");
 
-            // ── No conflicting attempt already in flight ──
-            var inFlight = await FindInFlightAttemptAsync(invoice.Id);
-            if (inFlight != null)
+            // ── Is money already moving? ──
+            //
+            // ONLY a SETTLING payment blocks a new one. An attempt merely sitting at CheckoutOpen
+            // means the customer opened Stripe and we have heard nothing since - most often
+            // because they closed the tab - and refusing them a retry over that stranded the
+            // invoice for 24 hours.
+            var settling = await FindSettlingAttemptAsync(invoice.Id);
+            if (settling != null)
             {
                 throw new InvoiceWorkflowException(
                     "A payment for this invoice is already being processed. You do not need to "
                     + "submit another payment while it completes.");
             }
 
+            // ── Retire any Checkout Session still open before opening another ──
+            //
+            // The duplicate-charge risk is real but it is NOT "two attempt rows exist": it is
+            // "two Stripe Sessions could each be completed". So the old session is EXPIRED AT
+            // STRIPE, not just marked closed locally - a customer with the previous tab still open
+            // must not be able to authorize a second debit from it. No money has moved for a
+            // CheckoutOpen attempt, so expiring it costs nothing.
+            await ExpireOpenSessionsAsync(invoice.Id, "Replaced by a new checkout attempt.");
+
             var amount = invoice.BalanceDue;
+
+            // THE FEE IS RECOMPUTED HERE, SERVER-SIDE, from the invoice's own balance and the
+            // configured rules. StartInvoiceCheckoutDto has no field a fee could arrive in, so the
+            // browser can change what it DISPLAYS and nothing else; this is the figure Stripe is
+            // actually told to debit, and it is frozen onto the attempt so settlement days later
+            // records what the customer agreed to rather than whatever the settings say by then.
+            var processingFee = AchProcessingFeeCalculator.Resolve(amount, settings, method);
+            var totalCharge = AchProcessingFeeCalculator.ResolveTotalCharge(amount, processingFee);
+
             var attempt = new CommercialInvoicePaymentAttempt
             {
                 CommercialInvoiceId = invoice.Id,
                 Provider = InvoicePaymentProvider.Stripe,
                 PaymentMethod = method,
                 Amount = amount,
+                ProcessingFee = processingFee,
+                TotalCharged = totalCharge,
                 Currency = "USD",
                 Status = InvoicePaymentAttemptStatus.Created,
                 CreatedAt = DateTime.UtcNow,
@@ -144,7 +169,7 @@ namespace DreamCleaningBackend.Services.Commercial
 
             try
             {
-                var session = await CreateStripeSessionAsync(invoice, attempt, method, amount, settings);
+                var session = await CreateStripeSessionAsync(invoice, attempt, method, amount, processingFee);
 
                 attempt.StripeCheckoutSessionId = session.Id;
                 attempt.StripePaymentIntentId = session.PaymentIntentId;
@@ -153,7 +178,11 @@ namespace DreamCleaningBackend.Services.Commercial
                 await _context.SaveChangesAsync();
 
                 await _invoices.LogActivityAsync(invoice.Id, "stripe_checkout_created",
-                    $"Customer started a {MethodLabel(method)} payment of {amount:C} online.",
+                    $"Customer started a {MethodLabel(method)} payment of {amount:C} online."
+                    + (processingFee > 0m
+                        ? $" A {AchProcessingFeeCalculator.CustomerFacingLabel} of {processingFee:C} "
+                          + $"was quoted, for {totalCharge:C} in total."
+                        : string.Empty),
                     null, "Customer", clientIp);
 
                 // Stripe always returns a URL for a session created in "payment" mode; treating a
@@ -192,7 +221,7 @@ namespace DreamCleaningBackend.Services.Commercial
             CommercialInvoicePaymentAttempt attempt,
             InvoicePaymentRecordMethod method,
             decimal amount,
-            BillingSettings settings)
+            decimal processingFee)
         {
             var customerId = await ResolveStripeCustomerAsync(invoice);
 
@@ -209,8 +238,52 @@ namespace DreamCleaningBackend.Services.Commercial
                 ["commercial_invoice_id"] = invoice.Id.ToString(),
                 ["invoice_number"] = invoice.InvoiceNumber,
                 ["commercial_client_id"] = invoice.ContractClientId.ToString(),
-                ["payment_attempt_id"] = attempt.Id.ToString()
+                ["payment_attempt_id"] = attempt.Id.ToString(),
+                // Both halves of the debit, so the settlement handler and anyone reading the Stripe
+                // dashboard can tell what was the bill and what was the payment-method charge
+                // without opening this database.
+                [StripeCommercialInvoiceMetadata.BaseAmountKey] = amount.ToString("0.00"),
+                [StripeCommercialInvoiceMetadata.ProcessingFeeKey] = processingFee.ToString("0.00")
             };
+
+            // TWO LINES, NOT ONE. The fee gets its own named line so the customer sees exactly what
+            // they saw on the invoice page again on Stripe's own screen, and so the amount is not a
+            // single unexplained figure five dollars above the invoice they were looking at.
+            var lineItems = new List<SessionLineItemOptions>
+            {
+                new()
+                {
+                    Quantity = 1,
+                    PriceData = new SessionLineItemPriceDataOptions
+                    {
+                        Currency = "usd",
+                        UnitAmount = ToCents(amount),
+                        ProductData = new SessionLineItemPriceDataProductDataOptions
+                        {
+                            Name = $"Invoice {invoice.InvoiceNumber}",
+                            Description = BuildLineDescription(invoice)
+                        }
+                    }
+                }
+            };
+
+            if (processingFee > 0m)
+            {
+                lineItems.Add(new SessionLineItemOptions
+                {
+                    Quantity = 1,
+                    PriceData = new SessionLineItemPriceDataOptions
+                    {
+                        Currency = "usd",
+                        UnitAmount = ToCents(processingFee),
+                        ProductData = new SessionLineItemPriceDataProductDataOptions
+                        {
+                            Name = AchProcessingFeeCalculator.CustomerFacingLabel,
+                            Description = "Bank payment processing fee. Not applied to the invoice balance."
+                        }
+                    }
+                });
+            }
 
             var options = new SessionCreateOptions
             {
@@ -219,23 +292,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 {
                     method == InvoicePaymentRecordMethod.Card ? "card" : "us_bank_account"
                 },
-                LineItems = new List<SessionLineItemOptions>
-                {
-                    new()
-                    {
-                        Quantity = 1,
-                        PriceData = new SessionLineItemPriceDataOptions
-                        {
-                            Currency = "usd",
-                            UnitAmount = ToCents(amount),
-                            ProductData = new SessionLineItemPriceDataProductDataOptions
-                            {
-                                Name = $"Invoice {invoice.InvoiceNumber}",
-                                Description = BuildLineDescription(invoice)
-                            }
-                        }
-                    }
-                },
+                LineItems = lineItems,
                 // Both carry the PUBLIC TOKEN, never the row id — the customer returns to the same
                 // page they came from, addressed the only way that page is addressable.
                 //
@@ -343,36 +400,73 @@ namespace DreamCleaningBackend.Services.Commercial
         // ── In-flight attempts ────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// The attempt currently holding money in flight for this invoice, if any.
+        /// The attempt whose money is genuinely moving, if any — the ONLY thing that may stop a
+        /// customer paying.
         ///
-        /// This is what stops a customer paying twice. ACH takes days to settle, during which the
-        /// invoice still reads as unpaid — without this guard an impatient customer would quite
-        /// reasonably press the button again and be debited a second time.
-        ///
-        /// A CheckoutOpen attempt older than a day is ignored: Stripe expires sessions at 24h, and
-        /// the expiry webhook may never arrive if the customer simply closed the tab. Leaving one
-        /// to block payment forever would be worse than the duplicate it prevents.
+        /// ACH takes days to settle, during which the invoice still reads unpaid; without this
+        /// guard an impatient customer would reasonably press the button again and be debited
+        /// twice. <c>CheckoutOpen</c> is deliberately excluded: no debit has been submitted, and
+        /// treating it as in-flight locked abandoned checkouts out of retrying for 24 hours.
         /// </summary>
-        public async Task<CommercialInvoicePaymentAttempt?> FindInFlightAttemptAsync(int invoiceId)
-        {
-            var attempts = await _context.CommercialInvoicePaymentAttempts
+        public Task<CommercialInvoicePaymentAttempt?> FindSettlingAttemptAsync(int invoiceId) =>
+            _context.CommercialInvoicePaymentAttempts
                 .Where(a => a.CommercialInvoiceId == invoiceId
-                            && (a.Status == InvoicePaymentAttemptStatus.CheckoutOpen
-                                || a.Status == InvoicePaymentAttemptStatus.Processing))
+                            && a.Status == InvoicePaymentAttemptStatus.Processing)
                 .OrderByDescending(a => a.Id)
+                .FirstOrDefaultAsync();
+
+        /// <summary>
+        /// Closes every still-open Checkout Session for an invoice, AT STRIPE and locally.
+        ///
+        /// Expiring at Stripe is the part that matters: a customer who left the old tab open must
+        /// not be able to complete it after starting a new one, which is the only way this flow
+        /// could produce two real debits. A Stripe failure here is logged and swallowed — the
+        /// session may already have expired on its own, and blocking a retry over a bookkeeping
+        /// call would reintroduce the very lockout being fixed.
+        /// </summary>
+        public async Task ExpireOpenSessionsAsync(int invoiceId, string reason)
+        {
+            var open = await _context.CommercialInvoicePaymentAttempts
+                .Where(a => a.CommercialInvoiceId == invoiceId
+                            && a.Status == InvoicePaymentAttemptStatus.CheckoutOpen)
                 .ToListAsync();
 
-            var cutoff = DateTime.UtcNow.AddHours(-24);
+            if (open.Count == 0) return;
 
-            return attempts.FirstOrDefault(a =>
-                a.Status == InvoicePaymentAttemptStatus.Processing
-                || a.CreatedAt >= cutoff);
+            var sessions = new SessionService();
+
+            foreach (var attempt in open)
+            {
+                if (!string.IsNullOrWhiteSpace(attempt.StripeCheckoutSessionId))
+                {
+                    try
+                    {
+                        await sessions.ExpireAsync(attempt.StripeCheckoutSessionId);
+                    }
+                    catch (StripeException ex)
+                    {
+                        _logger.LogInformation(ex,
+                            "Could not expire Stripe session {SessionId}; it has most likely expired already.",
+                            attempt.StripeCheckoutSessionId);
+                    }
+                }
+
+                attempt.Status = InvoicePaymentAttemptStatus.Expired;
+                attempt.FailureMessage = Truncate(reason, 500);
+                attempt.CompletedAt = DateTime.UtcNow;
+                attempt.UpdatedAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
         }
 
         /// <summary>
-        /// Sweeps stale CheckoutOpen attempts to Expired so the button unblocks even if Stripe's
-        /// expiry webhook never arrives. Called on read from the public page — cheap, and it means
-        /// the page a customer is looking at is the thing that unsticks them.
+        /// Sweeps CheckoutOpen attempts Stripe has certainly abandoned (older than its own 24h
+        /// session lifetime) to Expired, so the attempt history reads honestly even when the
+        /// expiry webhook never arrives. Called on read from the public page.
+        ///
+        /// This no longer unblocks anything — an open session stopped blocking payment — so it is
+        /// purely housekeeping and does not touch Stripe.
         /// </summary>
         public async Task ExpireStaleAttemptsAsync(int invoiceId)
         {
@@ -427,6 +521,12 @@ namespace DreamCleaningBackend.Services.Commercial
         public const string InvoiceNumberKey = "invoice_number";
         public const string ClientIdKey = "commercial_client_id";
         public const string AttemptIdKey = "payment_attempt_id";
+
+        /// <summary>What the invoice was billed, before the payment-method fee.</summary>
+        public const string BaseAmountKey = "base_invoice_amount";
+
+        /// <summary>The ACH processing fee collected on top. Never applied to the invoice.</summary>
+        public const string ProcessingFeeKey = "ach_processing_fee";
 
         /// <summary>True when this Stripe object belongs to the commercial invoicing flow.</summary>
         public static bool IsCommercialInvoice(IDictionary<string, string>? metadata) =>

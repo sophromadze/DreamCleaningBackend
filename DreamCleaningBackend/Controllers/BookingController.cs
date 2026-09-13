@@ -92,7 +92,7 @@ namespace DreamCleaningBackend.Controllers
         // Mirrors AuthController.SetAuthCookies — used by the guest auto-registration path in
         // cookie-auth mode so a freshly created guest gets the same httpOnly session cookies a
         // normal login would. Kept in sync with AuthController (HttpOnly, Secure off only when
-        // Development:UseHttp, SameSite=Strict, 7-day expiry to match the refresh token).
+        // Development:UseHttp, SameSite=Strict, 30-day expiry to match the refresh token).
         private void SetGuestAuthCookies(string token, string refreshToken)
         {
             var secure = !_configuration.GetValue<bool>("Development:UseHttp", false);
@@ -101,7 +101,7 @@ namespace DreamCleaningBackend.Controllers
                 HttpOnly = true,
                 Secure = secure,
                 SameSite = SameSiteMode.Strict,
-                Expires = DateTime.UtcNow.AddDays(7)
+                Expires = DateTime.UtcNow.AddDays(30)
             };
 
             Response.Cookies.Append("access_token", token, cookieOptions);
@@ -586,7 +586,30 @@ namespace DreamCleaningBackend.Controllers
                 {
                     paymentMethod = PaymentMethod.Normal;
                 }
-                var initialStatus = paymentMethod == PaymentMethod.Normal ? "Pending" : "Active";
+
+                // Active only for a method whose money has ALREADY arrived. Stripe starts Pending
+                // because nothing is paid yet, and so does Invoice (2026-09) — an invoice-billed
+                // order stays Pending until a CommercialInvoice covering it is settled in full,
+                // which is what activates it. Starting it Active would report an unpaid commercial
+                // job as live work with money behind it.
+                var initialStatus = PaymentMethodRules.IsSettledOnRecord(paymentMethod)
+                    ? "Active"
+                    : "Pending";
+
+                // An Invoice order has to say who it is billed to, or it can never be picked up by
+                // an invoice. Validated here rather than defaulted: guessing the client from the
+                // customer's account would be a silent, wrong answer for any company with more
+                // than one entity.
+                if (paymentMethod == PaymentMethod.Invoice)
+                {
+                    if (dto.ContractClientId is not > 0)
+                        return BadRequest(new { message = "Choose the commercial client this order is billed to." });
+
+                    var clientExists = await _context.ContractClients
+                        .AnyAsync(c => c.Id == dto.ContractClientId!.Value);
+                    if (!clientExists)
+                        return BadRequest(new { message = "That commercial client no longer exists." });
+                }
 
                 // The admin recreate flow may override the status — a job re-entered after the
                 // fact is usually already Done. Unlike PaymentMethod above, an unrecognised value
@@ -661,7 +684,8 @@ namespace DreamCleaningBackend.Controllers
                     ManualPaymentRecordedByUserId = adminUserId,
                     BookedByAdminUserId = adminUserId,
                     IsAutoCancelExempt = isBackDated,
-                    SuppressAutomaticDiscounts = suppressAutomaticDiscounts
+                    SuppressAutomaticDiscounts = suppressAutomaticDiscounts,
+                    ContractClientId = dto.ContractClientId
                 });
 
                 // A back-dated re-entry usually describes a job that already happened, so the
@@ -719,6 +743,25 @@ namespace DreamCleaningBackend.Controllers
                 // internal and always runs: the order genuinely exists and staff must see it.
                 var notifyCustomerByEmail = dto.SendCustomerEmail != false;
                 var notifyCustomerBySms = dto.SendCustomerSms != false;
+
+                // A commercial cleaning billed on an invoice is not in the residential flow at all:
+                // the client is billed, chased and receipted from the invoice, so the residential
+                // "your booking is confirmed" mail and its SMS must never go out for it — no matter
+                // what the admin left ticked in the modal. Suppressed BEFORE the send rather than
+                // retracted after; the rule itself lives in one place because every other creation
+                // path has to answer it the same way.
+                var residentialCommunicationAllowed =
+                    ResidentialBookingCommunicationPolicy.ShouldSendResidentialBookingCommunication(
+                        paymentMethod, dto.ContractClientId);
+                if (!residentialCommunicationAllowed)
+                {
+                    _logger.LogInformation(
+                        "Order {OrderId} is billed through a commercial invoice (client {ContractClientId}); "
+                        + "residential booking confirmation email/SMS suppressed.",
+                        order.Id, dto.ContractClientId);
+                    notifyCustomerByEmail = false;
+                    notifyCustomerBySms = false;
+                }
 
                 if (dto.RecreatedFromOrderId.HasValue)
                 {
@@ -785,7 +828,9 @@ namespace DreamCleaningBackend.Controllers
                     }
                     else
                     {
-                        _logger.LogInformation($"Booking confirmation email suppressed by the creating admin for order {order.Id}");
+                        _logger.LogInformation(residentialCommunicationAllowed
+                            ? $"Booking confirmation email suppressed by the creating admin for order {order.Id}"
+                            : $"Booking confirmation email suppressed for order {order.Id} - commercial invoice-backed order");
                     }
 
                     if (notifyCustomerBySms && !string.IsNullOrWhiteSpace(manualContactPhone))
@@ -1084,9 +1129,12 @@ namespace DreamCleaningBackend.Controllers
                 if (promoMinError != null)
                     return BadRequest(new { message = promoMinError });
 
-                if (Math.Abs(dto.TotalDuration - quote.TotalDuration) > 5)
+                if (dto.TotalDuration is decimal estimatedDuration &&
+                    Math.Abs(estimatedDuration - quote.TotalDuration) > 5)
                 {
-                    _logger.LogWarning($"Duration mismatch — frontend sent {dto.TotalDuration}, backend calculated {quote.TotalDuration}. Backend value wins.");
+                    _logger.LogWarning(
+                        "Booking duration estimate differs: received {EstimatedMinutes:0.##} min, calculated {CalculatedMinutes:0.##} min for service type {ServiceTypeId} during payment preparation.",
+                        estimatedDuration, quote.TotalDuration, dto.ServiceTypeId);
                 }
 
                 // Server-derived promo/first-time/subscription discounts — this endpoint produces
@@ -1342,6 +1390,22 @@ namespace DreamCleaningBackend.Controllers
                 var callerIsOwner = order.UserId == userId;
                 userId = order.UserId;
 
+                using var recurringPaymentTransaction = order.RecurringSeriesId.HasValue
+                    ? await RecurringPaymentAttemptGuard.LockAsync(_context, userId) : null;
+                if (order.RecurringSeriesId.HasValue)
+                {
+                    await _context.Entry(order).ReloadAsync();
+                    await HttpContext.RequestServices.GetRequiredService<IRecurringCustomerPaymentService>().PrepareIndividualPaymentAsync(order.Id);
+                    var today = NyTimeHelper.NowNy.Date;
+                    var nextId = await _context.Orders.Where(o => o.UserId == userId && o.RecurringSeriesId != null
+                        && o.ServiceDate >= today && !o.IsPaid && o.InvoicePaidAt == null && o.PaymentMethod == PaymentMethod.Normal
+                        && o.Total > 0 && o.Status != OrderStatuses.Cancelled && o.Status != OrderStatuses.Refunded)
+                        .OrderBy(o => o.ServiceDate).ThenBy(o => o.ServiceTime).ThenBy(o => o.Id)
+                        .Select(o => (int?)o.Id).FirstOrDefaultAsync();
+                    if (order.ServiceDate >= today && nextId != order.Id)
+                        return BadRequest(new { message = "Pay the nearest unpaid recurring cleaning first, or use Pay all upcoming." });
+                }
+
                 if (order.IsPaid)
                     return BadRequest(new { message = "Order is already paid" });
 
@@ -1402,6 +1466,7 @@ namespace DreamCleaningBackend.Controllers
                 // Update order with payment intent ID
                 order.PaymentIntentId = paymentIntent.Id;
                 await _context.SaveChangesAsync();
+                if (recurringPaymentTransaction != null) await recurringPaymentTransaction.CommitAsync();
 
                 return Ok(new BookingResponseDto
                 {
@@ -1796,29 +1861,19 @@ namespace DreamCleaningBackend.Controllers
                 // unchanged. NOTE: the customer was already charged the correct amount at
                 // prepare-payment; this only fixes what we persist/display.
                 {
-                    // Custom Pricing orders must keep the tax that was split out of the admin-entered
-                    // tax-inclusive amount; re-deriving it from the subtotal would move the stored
-                    // Total a cent off what the customer was quoted and charged.
-                    //
-                    // Reading bookingDataDto.IsCustomPricing is safe because the stored DTO was
-                    // NORMALISED by the custom-pricing gate before it was parked in the session —
-                    // for a refused request the flag is already false, so this cannot re-apply an
-                    // override to an order that was priced normally (which would have overwritten a
-                    // correctly-charged Total with the attacker's figure). order.ServiceType.IsCustom
-                    // is re-checked as half (a) of the gate: cheap, and it means an un-normalised DTO
-                    // reaching here from anywhere still cannot move the money.
-                    decimal? customTaxOverride =
-                        bookingDataDto != null
-                        && bookingDataDto.IsCustomPricing
-                        && bookingDataDto.CustomAmount > 0
-                        && order.ServiceType?.IsCustom == true
-                            ? OrderPricingCalculator.SplitTaxInclusiveAmount(bookingDataDto.CustomAmount.Value).tax
-                            : null;
+                    // Confirmation settles the server-priced order; it does not re-price its tax.
+                    // Preserve the saved split for regular admin edits and recurring orders too,
+                    // even after the temporary booking session has expired. Points, gift cards
+                    // and reward credits are post-tax deductions, so they cannot invalidate it.
+                    // The base is the saved POST-discount subtotal, as in the admin Total editor.
+                    // Nothing here trusts a custom amount supplied by the payment-confirmation caller.
 
                     var recomputedTotals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
                     {
                         SubTotal = order.SubTotal,
-                        TaxOverride = customTaxOverride,
+                        TaxOverride = order.Tax,
+                        TaxOverrideBase = Math.Max(0m, order.SubTotal - order.DiscountAmount
+                            - order.SubscriptionDiscountAmount - order.LoyaltyDiscountAmount),
                         DiscountAmount = order.DiscountAmount,
                         SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                         LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
@@ -1836,7 +1891,23 @@ namespace DreamCleaningBackend.Controllers
                 // Ensure extra services are loaded for email/SMS templates (new-booking flow may not include navigation properties).
                 await _context.Entry(order).Collection(o => o.OrderExtraServices).Query().Include(oes => oes.ExtraService).LoadAsync();
 
-                // Send booking confirmation email and SMS to customer
+                // Send booking confirmation email and SMS to customer.
+                //
+                // Gated on the same shared rule every other creation path uses. A commercial
+                // invoice-backed order cannot normally reach here at all — this is the Stripe
+                // confirmation, and an Invoice order is never charged through it — but the rule is
+                // applied rather than assumed, so that a future path that routes one through
+                // confirm-payment does not silently start mailing residential templates to a
+                // commercial client. The company/admin notification below is internal and unaffected.
+                var sendResidentialConfirmation =
+                    ResidentialBookingCommunicationPolicy.ShouldSendResidentialBookingCommunication(order);
+                if (!sendResidentialConfirmation)
+                {
+                    _logger.LogInformation(
+                        "Order {OrderId} is billed through a commercial invoice; residential booking confirmation email/SMS suppressed.",
+                        order.Id);
+                }
+
                 var contactEmail = order.ContactEmail;
                 var contactPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : user?.Phone;
                 var customerName = CapitalizeName(order.ContactFirstName);
@@ -1859,7 +1930,7 @@ namespace DreamCleaningBackend.Controllers
                         var isAppleHiddenMail = !string.IsNullOrEmpty(contactEmail) &&
                             contactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
 
-                        if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(contactEmail))
+                        if (sendResidentialConfirmation && !isAppleHiddenMail && !string.IsNullOrWhiteSpace(contactEmail))
                         {
                             await _emailService.SendCustomerBookingConfirmationAsync(
                                 contactEmail,
@@ -1889,7 +1960,7 @@ namespace DreamCleaningBackend.Controllers
                 });
 
                 // Send booking confirmation SMS if phone exists
-                if (!string.IsNullOrWhiteSpace(contactPhone))
+                if (sendResidentialConfirmation && !string.IsNullOrWhiteSpace(contactPhone))
                 {
                     _ = Task.Run(async () =>
                     {
@@ -2199,23 +2270,19 @@ namespace DreamCleaningBackend.Controllers
                 : name.ToUpper();
         }
 
+        /// <summary>
+        /// The start times the CALLER may book on <paramref name="date"/>. Customers get
+        /// 8:00 AM - 6:00 PM, no earlier than 9:30 AM on Saturday/Sunday; Admin/SuperAdmin get
+        /// 8:00 AM - 8:00 PM on every day, matching what the booking page offers them. Mirrors
+        /// the frontend's shared/booking/service-time-slots.ts — change both together.
+        /// </summary>
         [HttpGet("available-times")]
         public ActionResult<List<string>> GetAvailableTimeSlots(DateTime date, int serviceTypeId)
         {
-            // Time slots from 8:00 AM to 6:00 PM (30-minute intervals) for all days.
-            // Weekend rule: earliest start is 9:30 AM on Saturdays and Sundays.
-            var timeSlots = new List<string>
-                {
-                    "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30",
-                    "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30",
-                    "16:00", "16:30", "17:00", "17:30", "18:00"
-                };
+            var isAdmin = User.IsInRole(UserRole.Admin.ToString())
+                || User.IsInRole(UserRole.SuperAdmin.ToString());
 
-            var isWeekend = date.DayOfWeek == DayOfWeek.Saturday || date.DayOfWeek == DayOfWeek.Sunday;
-            var minStartTime = isWeekend ? "09:30" : "08:00";
-            timeSlots = timeSlots.Where(t => String.Compare(t, minStartTime, StringComparison.Ordinal) >= 0).ToList();
-
-            return Ok(timeSlots);
+            return Ok(ServiceTimeSlots.BuildForDate(date, isAdmin));
         }
 
         /// <summary>

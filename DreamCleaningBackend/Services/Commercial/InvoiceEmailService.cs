@@ -4,6 +4,7 @@ using DreamCleaningBackend.DTOs.Commercial;
 using DreamCleaningBackend.Helpers.Commercial;
 using DreamCleaningBackend.Models.Commercial;
 using DreamCleaningBackend.Services.Interfaces;
+using DreamCleaningBackend.Controllers;
 using Microsoft.EntityFrameworkCore;
 
 namespace DreamCleaningBackend.Services.Commercial
@@ -269,17 +270,15 @@ namespace DreamCleaningBackend.Services.Commercial
         /// </summary>
         private async Task<bool> HasPaymentInFlightAsync(int invoiceId, decimal balanceDue)
         {
-            var cutoff = DateTime.UtcNow.AddHours(-24);
-
+            // SETTLING ONLY, matching the customer's view and the checkout guard. An abandoned
+            // Checkout Session is not a payment on its way, and suppressing a reminder over one
+            // would let a genuinely unpaid invoice go quiet for a day.
             var attempts = await _context.CommercialInvoicePaymentAttempts
                 .Where(a => a.CommercialInvoiceId == invoiceId
-                            && (a.Status == InvoicePaymentAttemptStatus.Processing
-                                || a.Status == InvoicePaymentAttemptStatus.CheckoutOpen))
+                            && a.Status == InvoicePaymentAttemptStatus.Processing)
                 .ToListAsync();
 
-            return attempts.Any(a =>
-                (a.Status == InvoicePaymentAttemptStatus.Processing || a.CreatedAt >= cutoff)
-                && a.Amount >= balanceDue);
+            return attempts.Any(a => a.Amount >= balanceDue);
         }
 
         private async Task<bool> AlreadyRemindedTodayAsync(int invoiceId, string reminderKey)
@@ -293,65 +292,68 @@ namespace DreamCleaningBackend.Services.Commercial
 
         // ── Bodies ───────────────────────────────────────────────────────────────────────────
 
-        private static string BuildInvoiceEmailBody(
+        private string BuildInvoiceEmailBody(
             PublicInvoiceDto invoice, string publicUrl, string? adminMessage)
         {
-            var period = InvoicePdfService.FormatServicePeriod(invoice);
-
-            return Wrap($@"
-                <h2 style='margin:0 0 16px;font-size:20px;color:#0f172a;'>Invoice {E(invoice.InvoiceNumber)}</h2>
-                <p>Hello{(string.IsNullOrWhiteSpace(invoice.BillingContactName) ? "" : " " + E(invoice.BillingContactName!))},</p>
-                <p>Please find your invoice from {E(invoice.Company.LegalName)}
-                   {(string.IsNullOrWhiteSpace(invoice.Company.DbaName) ? "" : "(DBA " + E(invoice.Company.DbaName!) + ")")}
-                   for cleaning services at {E(invoice.ServiceAddress ?? invoice.ClientName)}.</p>
-                {(string.IsNullOrWhiteSpace(adminMessage) ? "" : $"<p style='background:#f8fafc;border-left:3px solid #2563eb;padding:10px 14px;'>{E(adminMessage!)}</p>")}
-                {SummaryTable(invoice, period)}
-                <p style='margin:28px 0;'>{Button(publicUrl, "View &amp; Pay Invoice")}</p>
+            return Wrap(invoice, $@"
+                <p style=""margin:0 0 4px;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:#64748b;"">Invoice</p>
+                <h2 style='margin:0 0 20px;font-size:22px;color:#0f172a;font-weight:700;'>{E(invoice.InvoiceNumber)}</h2>
+                <p style='margin:0 0 12px;'>Hello{(string.IsNullOrWhiteSpace(invoice.BillingContactName) ? "" : " " + E(invoice.BillingContactName!))},</p>
+                <p style='margin:0 0 8px;'>Your invoice for cleaning services at
+                   <strong>{E(invoice.ServiceAddress ?? invoice.ClientName)}</strong> is ready.</p>
+                {(string.IsNullOrWhiteSpace(adminMessage) ? "" : $"<p style='background:#f8fafc;border-left:3px solid #2563eb;padding:10px 14px;margin:16px 0;'>{E(adminMessage!)}</p>")}
+                {DetailsTable(invoice)}
+                {AmountsTable(invoice)}
+                <p style='margin:28px 0;text-align:center;'>{Button(publicUrl, "View &amp; Pay Invoice")}</p>
                 {PaymentBlurb(invoice)}
                 {NoteBlock(invoice.CustomerNote)}");
         }
 
-        private static string BuildReminderEmailBody(PublicInvoiceDto invoice, string publicUrl)
+        private string BuildReminderEmailBody(PublicInvoiceDto invoice, string publicUrl)
         {
             var overdue = invoice.Status == InvoiceStatus.Overdue;
 
-            return Wrap($@"
-                <h2 style='margin:0 0 16px;font-size:20px;color:#0f172a;'>
+            return Wrap(invoice, $@"
+                <h2 style='margin:0 0 20px;font-size:22px;color:#0f172a;font-weight:700;'>
                     {(overdue ? "Invoice past due" : "A friendly payment reminder")}</h2>
-                <p>Hello{(string.IsNullOrWhiteSpace(invoice.BillingContactName) ? "" : " " + E(invoice.BillingContactName!))},</p>
-                <p>{(overdue
+                <p style='margin:0 0 12px;'>Hello{(string.IsNullOrWhiteSpace(invoice.BillingContactName) ? "" : " " + E(invoice.BillingContactName!))},</p>
+                <p style='margin:0 0 8px;'>{(overdue
                     ? $"Invoice <strong>{E(invoice.InvoiceNumber)}</strong> was due on {invoice.DueDate:MMMM d, yyyy} and has an outstanding balance."
                     : $"This is a reminder that invoice <strong>{E(invoice.InvoiceNumber)}</strong> is due on {invoice.DueDate:MMMM d, yyyy}.")}</p>
-                {SummaryTable(invoice, null)}
-                <p style='margin:28px 0;'>{Button(publicUrl, "View &amp; Pay Invoice")}</p>
+                {DetailsTable(invoice)}
+                {AmountsTable(invoice)}
+                <p style='margin:28px 0;text-align:center;'>{Button(publicUrl, "View &amp; Pay Invoice")}</p>
                 <p style='color:#475569;font-size:13px;'>If this payment has already been sent, please
                    ignore this message - bank transfers can take a few days to appear. Do let us know
                    if anything about the invoice needs correcting.</p>");
         }
 
-        private static string BuildReceiptEmailBody(PublicInvoiceDto invoice, string publicUrl)
+        private string BuildReceiptEmailBody(PublicInvoiceDto invoice, string publicUrl)
         {
-            return Wrap($@"
-                <h2 style='margin:0 0 16px;font-size:20px;color:#15803d;'>Payment received</h2>
-                <p>Hello{(string.IsNullOrWhiteSpace(invoice.BillingContactName) ? "" : " " + E(invoice.BillingContactName!))},</p>
-                <p>Thank you - we have received payment in full for invoice
+            return Wrap(invoice, $@"
+                <h2 style='margin:0 0 20px;font-size:22px;color:#15803d;font-weight:700;'>Payment received</h2>
+                <p style='margin:0 0 12px;'>Hello{(string.IsNullOrWhiteSpace(invoice.BillingContactName) ? "" : " " + E(invoice.BillingContactName!))},</p>
+                <p style='margin:0 0 8px;'>Thank you - we have received payment in full for invoice
                    <strong>{E(invoice.InvoiceNumber)}</strong>.</p>
-                <table style='width:100%;border-collapse:collapse;margin:18px 0;font-size:14px;'>
-                    <tr><td style='padding:6px 0;color:#475569;'>Invoice</td>
-                        <td style='padding:6px 0;text-align:right;'>{E(invoice.InvoiceNumber)}</td></tr>
-                    <tr><td style='padding:6px 0;color:#475569;'>Amount paid</td>
-                        <td style='padding:6px 0;text-align:right;'>{Money(invoice.AmountPaid)}</td></tr>
+                {AmountsTable(invoice)}
+                <table style='width:100%;border-collapse:collapse;margin:0 0 18px;font-size:14px;'>
                     <tr><td style='padding:6px 0;color:#475569;'>Payment date</td>
                         <td style='padding:6px 0;text-align:right;'>{(invoice.PaidAt?.ToString("MMMM d, yyyy") ?? "-")}</td></tr>
-                    <tr><td style='padding:10px 0;border-top:2px solid #15803d;font-weight:700;'>Balance due</td>
-                        <td style='padding:10px 0;border-top:2px solid #15803d;text-align:right;font-weight:700;color:#15803d;'>
-                            {Money(invoice.BalanceDue)}</td></tr>
                 </table>
-                <p style='margin:28px 0;'>{Button(publicUrl, "View receipt")}</p>
+                <p style='margin:28px 0;text-align:center;'>{Button(publicUrl, "View receipt")}</p>
                 <p style='color:#475569;font-size:13px;'>We appreciate your business.</p>");
         }
 
-        private static string SummaryTable(PublicInvoiceDto invoice, string? period) => $@"
+        /// <summary>
+        /// Who, what and when - the reference fields, with no money in them.
+        ///
+        /// Split from <see cref="AmountsTable"/> because they answer different questions and a
+        /// client scanning for "how much" should not have to read past six reference rows to find
+        /// it. The SERVICE LINE uses the label the server resolved - "Service date" for one
+        /// cleaning, "Service dates" for a list, "Service period" for a range - and is omitted
+        /// entirely when the invoice records none, rather than printing an invented range.
+        /// </summary>
+        private static string DetailsTable(PublicInvoiceDto invoice) => $@"
             <table style='width:100%;border-collapse:collapse;margin:18px 0;font-size:14px;'>
                 <tr><td style='padding:6px 0;color:#475569;'>Invoice number</td>
                     <td style='padding:6px 0;text-align:right;'>{E(invoice.InvoiceNumber)}</td></tr>
@@ -359,16 +361,69 @@ namespace DreamCleaningBackend.Services.Commercial
                     <td style='padding:6px 0;text-align:right;'>{invoice.InvoiceDate:MMMM d, yyyy}</td></tr>
                 <tr><td style='padding:6px 0;color:#475569;'>Due date</td>
                     <td style='padding:6px 0;text-align:right;'>{invoice.DueDate:MMMM d, yyyy}</td></tr>
-                {(period == null ? "" : $@"<tr><td style='padding:6px 0;color:#475569;'>Service period</td>
-                    <td style='padding:6px 0;text-align:right;'>{E(period)}</td></tr>")}
+                {(string.IsNullOrWhiteSpace(invoice.ServiceDateText) ? "" : $@"<tr><td style='padding:6px 0;color:#475569;'>{E(invoice.ServiceDateLabel ?? "Service period")}</td>
+                    <td style='padding:6px 0;text-align:right;'>{E(invoice.ServiceDateText!)}</td></tr>")}
                 {(string.IsNullOrWhiteSpace(invoice.ServiceAddress) ? "" : $@"<tr><td style='padding:6px 0;color:#475569;'>Service location</td>
                     <td style='padding:6px 0;text-align:right;'>{E(invoice.ServiceAddress!)}</td></tr>")}
                 {(string.IsNullOrWhiteSpace(invoice.ContractNumber) ? "" : $@"<tr><td style='padding:6px 0;color:#475569;'>Contract</td>
                     <td style='padding:6px 0;text-align:right;'>{E(invoice.ContractNumber!)}</td></tr>")}
-                <tr><td style='padding:10px 0;border-top:2px solid #2563eb;font-weight:700;'>Amount due</td>
-                    <td style='padding:10px 0;border-top:2px solid #2563eb;text-align:right;font-weight:700;font-size:17px;color:#2563eb;'>
+            </table>";
+
+        /// <summary>
+        /// Subtotal, tax, total, balance.
+        ///
+        /// THE TAX IS A DOLLAR AMOUNT, ALWAYS - including on a tax-inclusive invoice, where this
+        /// used to say "Included" and therefore stated the tax nowhere at all. An amount the client
+        /// cannot see is one they cannot check against their own books or a sales-tax return, and
+        /// "Subtotal $925.43 / Sales tax: Included / Total $925.43" additionally makes the subtotal
+        /// wrong. The "(included)" suffix keeps the one thing the old wording got right: saying
+        /// plainly that the figure is already inside the total rather than added to it.
+        /// </summary>
+        private static string AmountsTable(PublicInvoiceDto invoice)
+        {
+            var rate = invoice.TaxRate is > 0m
+                ? $" ({invoice.TaxRate!.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}%)"
+                : string.Empty;
+
+            var taxRow = invoice.TaxType == InvoiceTaxType.Exempt
+                ? string.Empty
+                : $@"<tr><td style='padding:6px 16px;color:#475569;'>Sales tax{rate}</td>
+                     <td style='padding:6px 16px;text-align:right;'>{Money(invoice.TaxAmount)}{(invoice.TaxType == InvoiceTaxType.Included ? " <span style='color:#64748b;font-size:12px;'>(included)</span>" : "")}</td></tr>";
+
+            var discountRow = invoice.DiscountAmount > 0m
+                ? $@"<tr><td style='padding:6px 16px;color:#475569;'>Discount</td>
+                     <td style='padding:6px 16px;text-align:right;'>-{Money(invoice.DiscountAmount)}</td></tr>"
+                : string.Empty;
+
+            // Money received is shown POSITIVE. A payment row is stored positive and only a
+            // reversal is negative, so a hand-written minus here would print a real settlement as
+            // "-$925.43" on the customer's own receipt. Discount keeps its sign: that IS a
+            // reduction of what is billed, whereas money received is the bill being met.
+            var paidRow = invoice.AmountPaid != 0m
+                ? $@"<tr><td style='padding:6px 16px;color:#475569;'>Amount paid</td>
+                     <td style='padding:6px 16px;text-align:right;'>{Money(invoice.AmountPaid)}</td></tr>"
+                : string.Empty;
+
+            // One flat table inside a bordered card. Nested tables would survive Outlook better in
+            // a complex layout, but this is four to six rows of label/value - the simplest markup
+            // that renders identically everywhere is the right one.
+            return $@"
+            <table style=""width:100%;border-collapse:collapse;margin:18px 0;font-size:14px;
+                          background:#f8fafc;border:1px solid #e2e8f0;"">
+                <tr><td style='padding:14px 16px 6px;color:#475569;'>Subtotal</td>
+                    <td style='padding:14px 16px 6px;text-align:right;'>{Money(invoice.SubTotal)}</td></tr>
+                {discountRow}
+                {taxRow}
+                <tr><td style='padding:8px 16px 6px;border-top:1px solid #e2e8f0;font-weight:700;'>Total</td>
+                    <td style='padding:8px 16px 6px;border-top:1px solid #e2e8f0;text-align:right;font-weight:700;'>
+                        {Money(invoice.Total)}</td></tr>
+                {paidRow}
+                <tr><td style=""padding:10px 16px 14px;border-top:2px solid #2563eb;font-weight:700;"">Balance due</td>
+                    <td style=""padding:10px 16px 14px;border-top:2px solid #2563eb;text-align:right;
+                               font-weight:700;font-size:18px;color:#2563eb;"">
                         {Money(invoice.BalanceDue)}</td></tr>
             </table>";
+        }
 
         /// <summary>
         /// How to pay, worded for whichever routes are actually on.
@@ -388,9 +443,19 @@ namespace DreamCleaningBackend.Services.Commercial
 
             if (online)
             {
+                // The fee is NAMED here as well as on the payment page. A customer who only reads
+                // the email should not be surprised by an extra charge when they get to Stripe -
+                // the exact figure is on the page before they authorize anything, but they are
+                // told it exists before they choose a method.
+                var fee = invoice.PaymentOptions.AchProcessingFee > 0m
+                    ? $" An {E(invoice.PaymentOptions.AchProcessingFeeLabel)} of "
+                      + $"{Money(invoice.PaymentOptions.AchProcessingFee)} applies to bank payments made "
+                      + "this way, and is shown before you confirm."
+                    : string.Empty;
+
                 lines.Add(
                     "You can pay securely straight from your US bank account by opening the invoice "
-                    + "above and choosing <strong>Pay from Bank</strong>.");
+                    + "above and choosing <strong>Pay from Bank</strong>." + fee);
             }
 
             if (card)
@@ -400,7 +465,8 @@ namespace DreamCleaningBackend.Services.Commercial
             {
                 lines.Add(
                     "Prefer to send the transfer yourself? Full bank transfer instructions are on the "
-                    + $"invoice page. Please include invoice number <strong>{E(invoice.InvoiceNumber)}</strong> "
+                    + $"invoice page, with {E(invoice.PaymentOptions.ManualAchFeeNote).ToLowerInvariant()}. "
+                    + $"Please include invoice number <strong>{E(invoice.InvoiceNumber)}</strong> "
                     + "in your payment memo or reference so we can match it to your account.");
             }
 
@@ -416,22 +482,72 @@ namespace DreamCleaningBackend.Services.Commercial
                 ? string.Empty
                 : $"<p style='color:#475569;font-size:13px;white-space:pre-line;'>{E(note!)}</p>";
 
-        /// <summary>The shared shell, matching the contract notification mails.</summary>
-        private static string Wrap(string inner) => $@"
+        /// <summary>
+        /// The shared shell: masthead, body, company block, footer.
+        ///
+        /// THE LOGO IS AN ABSOLUTE PUBLIC HTTPS URL, served by <c>PublicBrandController</c>. An
+        /// email client will not read a local path and will not follow a development URL, so the
+        /// one thing that reliably works is an address any inbox in the world can fetch
+        /// anonymously. It carries real alt text, because a great many clients block images by
+        /// default and the mail has to still say who it is from.
+        ///
+        /// THE TRADING NAME LEADS, matching the PDF and the web invoice: "DBA Dream Cleaning NYC"
+        /// large and in brand blue, the registered entity small and grey underneath. The hierarchy
+        /// is resolved on the DTO precisely so the three surfaces cannot each decide it
+        /// differently.
+        ///
+        /// NO BANK DETAILS ANYWHERE IN THE MAIL. The account number lives on the token-addressed
+        /// invoice page and in the PDF. An email is forwarded, quoted and archived far more
+        /// casually than a link is opened, and it is the channel invoice-fraud attempts actually
+        /// travel on.
+        /// </summary>
+        private string Wrap(PublicInvoiceDto invoice, string inner)
+        {
+            var company = invoice.Company;
+            var logoUrl = PublicBrandController.BuildLogoUrl(_invoices.FrontendUrl);
+
+            var contactLine = string.Join(" &nbsp;·&nbsp; ", new[]
+            {
+                company.Address,
+                company.CityStateZip,
+                company.Phone,
+                company.Email
+            }.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => E(x!)));
+
+            return $@"
+            <div style=""background:#f1f5f9;padding:24px 12px;"">
             <div style=""font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
-                        max-width:640px;margin:0 auto;padding:32px 24px;color:#0f172a;line-height:1.6;"">
-                {inner}
-                <hr style='border:none;border-top:1px solid #e2e8f0;margin:32px 0 16px;'>
-                <p style='color:#94a3b8;font-size:12px;margin:0;'>
-                    This message was sent by Dream Cleaning NYC regarding a commercial cleaning
-                    account. Please do not share the invoice link with anyone outside your
-                    organization.
-                </p>
+                        max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;
+                        color:#0f172a;line-height:1.6;"">
+
+                <div style=""padding:28px 28px 20px;border-bottom:3px solid #2563eb;"">
+                    <img src=""{logoUrl}"" alt=""{E(PublicBrandController.LogoAltText)}"" height=""40""
+                         style=""display:block;height:40px;width:auto;border:0;margin:0 0 14px;"">
+                    <div style=""font-size:18px;font-weight:700;color:#2563eb;line-height:1.25;"">
+                        {E(company.PrimaryName)}</div>
+                    {(string.IsNullOrWhiteSpace(company.SecondaryName) ? "" : $@"<div style=""font-size:13px;color:#64748b;"">{E(company.SecondaryName!)}</div>")}
+                    {(string.IsNullOrWhiteSpace(contactLine) ? "" : $@"<div style=""font-size:12px;color:#94a3b8;margin-top:8px;"">{contactLine}</div>")}
+                </div>
+
+                <div style=""padding:28px;"">
+                    {inner}
+                </div>
+
+                <div style=""padding:16px 28px 24px;border-top:1px solid #e2e8f0;background:#f8fafc;"">
+                    <p style='color:#94a3b8;font-size:12px;margin:0;'>
+                        This message was sent by {E(company.PrimaryName)} regarding a commercial
+                        cleaning account. Please do not share the invoice link with anyone outside
+                        your organization.
+                    </p>
+                    {(string.IsNullOrWhiteSpace(company.FooterText) ? "" : $@"<p style='color:#94a3b8;font-size:12px;margin:8px 0 0;'>{E(company.FooterText!)}</p>")}
+                </div>
+            </div>
             </div>";
+        }
 
         private static string Button(string url, string label) => $@"
             <a href='{url}' style=""display:inline-block;background:#2563eb;color:#ffffff;
-               text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:600;font-size:15px;"">
+               text-decoration:none;padding:14px 30px;font-weight:600;font-size:15px;"">
                {label}</a>";
 
         /// <summary>

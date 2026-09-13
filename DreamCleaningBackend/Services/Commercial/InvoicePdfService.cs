@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Helpers.Commercial;
 using DreamCleaningBackend.DTOs.Commercial;
 using DreamCleaningBackend.Models.Commercial;
 using QuestPDF.Fluent;
@@ -95,12 +96,19 @@ namespace DreamCleaningBackend.Services.Commercial
                         if (logo != null)
                             left.Item().Height(34f).AlignLeft().Image(logo).FitHeight();
 
+                        // THE TRADING NAME LEADS. "DBA Dream Cleaning NYC" in brand blue with the
+                        // registered entity in small grey underneath - not the other way round.
+                        // The customer booked Dream Cleaning NYC, will look for it on a bank
+                        // statement, and has probably never seen the corporate name; leading with
+                        // the entity made the invoice read as though it came from a stranger. The
+                        // hierarchy is resolved on the DTO so this page, the web invoice and the
+                        // email cannot each decide it differently.
                         left.Item().PaddingTop(logo == null ? 0 : 8)
-                            .Text(invoice.Company.LegalName)
+                            .Text(invoice.Company.PrimaryName)
                             .FontSize(11.5f).SemiBold().FontColor(BrandBlue);
 
-                        if (!string.IsNullOrWhiteSpace(invoice.Company.DbaName))
-                            left.Item().Text($"DBA {invoice.Company.DbaName}")
+                        if (!string.IsNullOrWhiteSpace(invoice.Company.SecondaryName))
+                            left.Item().Text(invoice.Company.SecondaryName!)
                                 .FontSize(8.5f).FontColor(MutedInk);
 
                         foreach (var line in new[]
@@ -231,9 +239,15 @@ namespace DreamCleaningBackend.Services.Commercial
                     var period = FormatServicePeriod(invoice);
                     if (period != null)
                     {
+                        // The LABEL follows the shape: one cleaning is a "Service date", four
+                        // listed Wednesdays are "Service dates", a month is a "Service period".
+                        // "Service Period" printed over a single date is the sort of small
+                        // wrongness that makes a client doubt the rest of the document.
+                        var label = invoice.ServiceDateLabel ?? ServiceDateFormatter.PeriodLabel;
+
                         col.Item().PaddingTop(6).Text(text =>
                         {
-                            text.Span("Service Period  ").FontSize(8.5f).FontColor(LabelInk);
+                            text.Span(label + "  ").FontSize(8.5f).FontColor(LabelInk);
                             text.Span(period).FontSize(8.5f);
                         });
                     }
@@ -471,23 +485,53 @@ namespace DreamCleaningBackend.Services.Commercial
 
         // ── Formatting ───────────────────────────────────────────────────────────────────────
 
-        private static string TaxLabel(PublicInvoiceDto invoice) => invoice.TaxType switch
+        /// <summary>
+        /// "Sales Tax (8.875%)", with the rate stated whenever the invoice records one - inclusive
+        /// or added. See <see cref="TaxValue"/> for why the rate alone is not enough.
+        /// </summary>
+        public static string TaxLabel(PublicInvoiceDto invoice)
         {
-            InvoiceTaxType.Included => "Sales Tax (included)",
-            InvoiceTaxType.Added when invoice.TaxRate is > 0m => $"Sales Tax ({Rate(invoice.TaxRate!.Value)}%)",
-            InvoiceTaxType.Added => "Sales Tax",
-            _ => "Sales Tax"
-        };
+            var rate = invoice.TaxRate is > 0m ? $" ({Rate(invoice.TaxRate!.Value)}%)" : string.Empty;
 
-        private static string TaxValue(PublicInvoiceDto invoice) => invoice.TaxType switch
+            return invoice.TaxType switch
+            {
+                InvoiceTaxType.Included => $"Sales Tax{rate}",
+                InvoiceTaxType.Added => $"Sales Tax{rate}",
+                _ => "Sales Tax"
+            };
+        }
+
+        /// <summary>
+        /// THE ACTUAL TAX AMOUNT, ALWAYS - in dollars, on an inclusive invoice as much as an added
+        /// one.
+        ///
+        /// This used to print the bare word "Included", on the reasoning that an amount beside a
+        /// total it is already part of reads as an extra charge. In practice the opposite was
+        /// worse: the client's invoice showed "Subtotal $925.43 / Sales tax: Included / Total
+        /// $925.43", which states the tax nowhere, cannot be reconciled against a sales-tax return,
+        /// and made the subtotal wrong as well - the tax-exclusive subtotal is $850.00.
+        ///
+        /// The misreading the old wording guarded against is handled by the "(included)" suffix
+        /// instead: the number is present AND it is labelled as already inside the total.
+        /// </summary>
+        public static string TaxValue(PublicInvoiceDto invoice) => invoice.TaxType switch
         {
             InvoiceTaxType.Exempt => "Exempt",
-            InvoiceTaxType.Included => "Included",
+            InvoiceTaxType.Included => $"{Money(invoice.TaxAmount)} (included)",
             _ => Money(invoice.TaxAmount)
         };
 
+        /// <summary>
+        /// What cleanings the invoice covers, or null when it records none.
+        ///
+        /// Resolved by the server into <c>ServiceDateLabel</c>/<c>ServiceDateText</c> so the PDF,
+        /// the web page and the email cannot describe the same invoice differently. The fallback
+        /// below only fires for a DTO built before those fields existed.
+        /// </summary>
         internal static string? FormatServicePeriod(PublicInvoiceDto invoice)
         {
+            if (!string.IsNullOrWhiteSpace(invoice.ServiceDateText)) return invoice.ServiceDateText;
+
             if (invoice.ServiceStartDate == null && invoice.ServiceEndDate == null) return null;
 
             var start = invoice.ServiceStartDate ?? invoice.ServiceEndDate!.Value;

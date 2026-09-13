@@ -16,7 +16,15 @@ namespace DreamCleaningBackend.Services.Interfaces
     {
         Task<LoyaltyDiscountDto> GetForUserAsync(int userId);
 
-        Task<LoyaltyDiscountDto> SetManualAsync(int userId, decimal percentage, int adminUserId);
+        /// <param name="isLifetime">
+        /// LIFETIME mode: the discount is not consumed by an order and the 60/90-day inactivity
+        /// automation is suspended for this customer until an admin clears it. Defaults to false so
+        /// every pre-existing caller keeps producing exactly the one-time discount it always did.
+        /// Written on every manual set, in both directions — editing a lifetime discount back down
+        /// to one-time has to actually demote it. See <c>User.LoyaltyDiscountIsLifetime</c>.
+        /// </param>
+        Task<LoyaltyDiscountDto> SetManualAsync(
+            int userId, decimal percentage, int adminUserId, bool isLifetime = false);
 
         Task<LoyaltyDiscountDto> ClearAsync(int userId, int adminUserId);
 

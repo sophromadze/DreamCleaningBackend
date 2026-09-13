@@ -30,5 +30,16 @@
         // Admin-triggered "we miss you" reminder (Send Reminder button in the users panel).
         // Same copy as LoyaltyReminder30; logged separately so we know who/what sent it.
         public const string ManualReminder = "ManualReminder";
+
+        /// <summary>
+        /// The AUTOMATIC payment request for a generated recurring occurrence (2026-09).
+        /// OrderId = the occurrence, CustomerId = the customer.
+        ///
+        /// Its presence is the at-most-once guard: the sweep refuses to ask twice for the same
+        /// cleaning. It never suppresses an ADMIN pressing "Send payment link" or "Send payment
+        /// reminder" — those are a person deciding to chase, and the whole point of the 24-hour
+        /// rule is to restrain the machine, not the office.
+        /// </summary>
+        public const string RecurringPaymentRequest = "RecurringPaymentRequest";
     }
 }

@@ -91,7 +91,17 @@ namespace DreamCleaningBackend.Services
             decimal taxOnStripePaidAdditions,
             decimal taxOnManuallyPaidAdditions)
         {
-            var retained = orderPaymentMethod == PaymentMethod.Normal
+            // INVOICE IS TREATED LIKE A CARD ORDER HERE, deliberately (2026-09). It is an
+            // outside-Stripe METHOD on the order, but the money usually arrives through Stripe ACH
+            // on the commercial invoice, and whether that tax is remitted is a real accounting
+            // question about the commercial entity rather than something this function can infer.
+            // Claiming it as retained would inflate reported net income on a guess; treating it as
+            // remitted is the conservative reading and matches how the invoice itself reports.
+            // If the owner decides otherwise, this is the one line to change.
+            var behavesLikeCard = orderPaymentMethod == PaymentMethod.Normal
+                                  || orderPaymentMethod == PaymentMethod.Invoice;
+
+            var retained = behavesLikeCard
                 // Card order: only the top-ups that were settled in cash/Zelle/check are kept.
                 ? taxOnManuallyPaidAdditions
                 // Manual order: everything except the top-ups that did go through Stripe.

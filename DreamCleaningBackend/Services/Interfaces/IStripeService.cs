@@ -59,6 +59,7 @@ namespace DreamCleaningBackend.Services.Interfaces
             string receiptEmail = null, string customerId = null, bool saveCardForOffSession = false);
         Task<PaymentIntent> ConfirmPaymentIntentAsync(string paymentIntentId);
         Task<PaymentIntent> GetPaymentIntentAsync(string paymentIntentId);
+        Task<PaymentIntent> CancelPaymentIntentAsync(string paymentIntentId);
         /// <param name="idempotencyKey">Pass one for any admin-triggered refund so a double-click
         /// or retry can never refund twice. Callers use the OrderRefund row's PK, which is unique
         /// per intended refund and stable across retries of that same row.</param>

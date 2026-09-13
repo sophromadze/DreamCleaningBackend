@@ -75,6 +75,20 @@ namespace DreamCleaningBackend.Services.Contracts
             {
                 var line = Substitute(rawLine, tokens, scopeGroups, consumedScopeKeys, unresolved);
 
+                // A token that resolved to the OMIT sentinel takes its whole line with it. This is
+                // how a clause becomes CONDITIONAL without teaching the template body an if/else:
+                // the returned-payment fee, retired in 2026-09, would otherwise print as "A fee of
+                // $0.00 applies to any returned or failed payment."
+                //
+                // Line-level rather than token-level on purpose - blanking just the amount leaves a
+                // sentence that says nothing, and it works on a body a SuperAdmin has since edited,
+                // which a rewritten seed template would not.
+                if (line.Contains(ContractPlaceholders.OmitLineSentinel, StringComparison.Ordinal))
+                {
+                    FlushParagraph();
+                    continue;
+                }
+
                 if (string.IsNullOrWhiteSpace(line))
                 {
                     FlushParagraph();

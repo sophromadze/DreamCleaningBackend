@@ -33,6 +33,22 @@ namespace DreamCleaningBackend.Services.Contracts
 
         /// <summary>Deep copy, so toggling items on a contract can never write back to the template.</summary>
         public ScopeStructure Clone() => Parse(ToJson());
+
+        /// <summary>
+        /// The structure as a NEW contract should see it: archived groups and items removed.
+        ///
+        /// Applied when a template is copied onto a draft, never when a stored snapshot is read -
+        /// a signed contract keeps every row it was signed with, whatever the master template has
+        /// done since.
+        /// </summary>
+        public ScopeStructure WithoutArchived()
+        {
+            var copy = Clone();
+            copy.Groups = copy.Groups.Where(g => !g.Archived).ToList();
+            foreach (var group in copy.Groups)
+                group.Items = group.Items.Where(i => !i.Archived).ToList();
+            return copy;
+        }
     }
 
     public class ScopeGroup
@@ -55,6 +71,16 @@ namespace DreamCleaningBackend.Services.Contracts
         /// </summary>
         public bool Inline { get; set; } = true;
 
+        /// <summary>
+        /// Retired on the MASTER template. Archived rather than deleted because a category that
+        /// has been used is quoted in signed agreements, and the template editor must not offer a
+        /// destructive action whose consequences are invisible from the screen it lives on.
+        ///
+        /// It only ever hides the group from NEW contracts: a contract snapshot is a deep copy,
+        /// so archiving here cannot reach a document that already exists.
+        /// </summary>
+        public bool Archived { get; set; }
+
         public List<ScopeItem> Items { get; set; } = new();
     }
 
@@ -62,11 +88,18 @@ namespace DreamCleaningBackend.Services.Contracts
     {
         public string Label { get; set; } = string.Empty;
 
-        /// <summary>Admin toggle. Unselected items are not written into the document at all.</summary>
+        /// <summary>
+        /// Whether this row is ticked. On a MASTER template it is the default the admin sees
+        /// pre-selected when they pick the business type; on a CONTRACT it is the admin's own
+        /// choice, and an unselected item is not written into the document at all.
+        /// </summary>
         public bool Selected { get; set; } = true;
 
         /// <summary>True for rows the admin typed on this contract (Custom templates).</summary>
         public bool IsCustom { get; set; }
+
+        /// <summary>Retired on the master template. Same reasoning as <see cref="ScopeGroup.Archived"/>.</summary>
+        public bool Archived { get; set; }
     }
 
     /// <summary>Shared serializer options so snapshots round-trip identically everywhere.</summary>

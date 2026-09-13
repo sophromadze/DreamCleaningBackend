@@ -593,6 +593,7 @@ namespace DreamCleaningBackend.Controllers
         /// <param name="includeHidden">Ticking "Show hidden orders" in the admin table. Available to
         /// EVERY admin role — anyone can view hidden orders; only SuperAdmin can hide/unhide them.</param>
         [HttpGet("orders")]
+        [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<OrderListDto>>> GetAllOrders([FromQuery] bool includeHidden = false)
         {
@@ -1263,9 +1264,12 @@ namespace DreamCleaningBackend.Controllers
                     if (Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm))
                     {
                         order.PaymentMethod = pm;
-                        order.PaymentReference = pm != PaymentMethod.Normal ? dto.PaymentReference : null;
-                        order.PaymentNotes = pm != PaymentMethod.Normal ? dto.PaymentNotes : null;
-                        if (pm != PaymentMethod.Normal)
+                        order.PaymentReference = PaymentMethodRules.IsOutsideStripe(pm) ? dto.PaymentReference : null;
+                        order.PaymentNotes = PaymentMethodRules.IsOutsideStripe(pm) ? dto.PaymentNotes : null;
+                        // Only a method whose money has ALREADY arrived gets the "recorded at"
+                        // stamp. Invoice is handled outside Stripe but is not settled by being
+                        // chosen — its invoice being paid in full is what settles it.
+                        if (PaymentMethodRules.IsSettledOnRecord(pm))
                         {
                             order.ManualPaymentRecordedAt = DateTime.UtcNow;
                             order.ManualPaymentRecordedByUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
@@ -1395,11 +1399,23 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 if (!Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm))
-                    return BadRequest(new { message = "PaymentMethod must be one of: Normal, Cash, Zelle, Check, Other." });
+                    return BadRequest(new { message = "PaymentMethod must be one of: Normal, Cash, Zelle, Check, Other, Invoice." });
 
                 var order = await _context.Orders.FindAsync(orderId);
                 if (order == null)
                     return NotFound();
+
+                // Switching an order to Invoice billing has to say who is billed, for the same
+                // reason creating one does: without a client, no invoice can ever pick it up.
+                if (pm == PaymentMethod.Invoice)
+                {
+                    var clientId = dto.ContractClientId ?? order.ContractClientId;
+                    if (clientId is not > 0)
+                        return BadRequest(new { message = "Choose the commercial client this order is billed to." });
+                    if (!await _context.ContractClients.AnyAsync(c => c.Id == clientId.Value))
+                        return BadRequest(new { message = "That commercial client no longer exists." });
+                    order.ContractClientId = clientId;
+                }
 
                 if (order.IsPaid && pm != PaymentMethod.Normal)
                     return BadRequest(new { message = "This order was already paid through Stripe. Refund the charge before recording a manual payment method." });
@@ -1416,9 +1432,9 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 order.PaymentMethod = pm;
-                order.PaymentReference = pm != PaymentMethod.Normal ? dto.PaymentReference : null;
-                order.PaymentNotes = pm != PaymentMethod.Normal ? dto.PaymentNotes : null;
-                if (pm != PaymentMethod.Normal)
+                order.PaymentReference = PaymentMethodRules.IsOutsideStripe(pm) ? dto.PaymentReference : null;
+                order.PaymentNotes = PaymentMethodRules.IsOutsideStripe(pm) ? dto.PaymentNotes : null;
+                if (PaymentMethodRules.IsSettledOnRecord(pm))
                 {
                     order.ManualPaymentRecordedAt = DateTime.UtcNow;
                     order.ManualPaymentRecordedByUserId = GetCurrentUserId();
@@ -1430,17 +1446,20 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 // Keep the status consistent with the payment flow, mirroring admin booking
-                // creation (Stripe orders start Pending until paid; manual orders start Active).
-                // Done/Cancelled orders keep their status.
+                // creation: money already in hand (Cash/Zelle/Check/Other) makes the order Active,
+                // while Stripe AND Invoice stay Pending because nothing has been paid yet. An
+                // invoice-billed order is activated by its invoice being settled in full, never by
+                // the method being chosen. Done/Cancelled orders keep their status.
                 if (!string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (pm != PaymentMethod.Normal &&
+                    if (PaymentMethodRules.IsSettledOnRecord(pm) &&
                         string.Equals(order.Status, "Pending", StringComparison.OrdinalIgnoreCase))
                     {
                         order.Status = "Active";
                     }
-                    else if (pm == PaymentMethod.Normal && !order.IsPaid &&
+                    else if (!PaymentMethodRules.IsSettledOnRecord(pm) && !order.IsPaid &&
+                             order.InvoicePaidAt == null &&
                              string.Equals(order.Status, "Active", StringComparison.OrdinalIgnoreCase))
                     {
                         order.Status = "Pending";
@@ -1780,9 +1799,19 @@ namespace DreamCleaningBackend.Controllers
             if (order == null)
                 return NotFound(new { message = "Order not found" });
 
-            using var transaction = await _context.Database.BeginTransactionAsync();
+            if (await _context.RecurringOrderSeries.AnyAsync(s => s.TemplateOrderId == orderId))
+                return BadRequest(new { message = "This order is the source of a recurring series. Keep the source order and remove its generated cleanings instead." });
+
+            using var transaction = order.IsGeneratedByRecurringSeries
+                ? await RecurringPaymentAttemptGuard.LockAsync(_context, order.UserId)
+                : await _context.Database.BeginTransactionAsync();
             try
             {
+                if (order.IsGeneratedByRecurringSeries)
+                {
+                    await _context.Entry(order).ReloadAsync();
+                    await HttpContext.RequestServices.GetRequiredService<IRecurringOrderSeriesService>().PrepareDeleteAsync(order);
+                }
                 // Cleaning photos: the FK would only null OrderId, leaving them as
                 // unassigned photos (no longer allowed) — delete rows and files instead.
                 var photos = await _context.UserCleaningPhotos
@@ -1811,11 +1840,11 @@ namespace DreamCleaningBackend.Controllers
                 _context.Orders.Remove(order);
 
                 await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
+                if (transaction != null) { await transaction.CommitAsync(); await transaction.DisposeAsync(); }
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
+                if (transaction != null) await transaction.RollbackAsync();
                 _logger.LogError(ex, "Failed to delete order {OrderId}", orderId);
                 return BadRequest(new { message = "Failed to delete order: " + ex.Message });
             }
@@ -2280,7 +2309,14 @@ namespace DreamCleaningBackend.Controllers
                 {
                     id = oc.CleanerId,
                     name = $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}",
-                    assignmentNotificationSentAt = oc.AssignmentNotificationSentAt
+                    assignmentNotificationSentAt = oc.AssignmentNotificationSentAt,
+                    // Set when the RECURRING GENERATOR copied this assignment from the series'
+                    // template rather than an admin choosing it on this job. Copying an
+                    // assignment never notifies anybody, so the panel pairs this with a null
+                    // assignmentNotificationSentAt to say "auto-assigned from recurring series -
+                    // cleaner has not been notified". The existing Send / Resend controls stay
+                    // the only thing that contacts them.
+                    autoAssignedFromSeriesId = oc.AutoAssignedFromSeriesId
                 })
                 .ToListAsync();
 
@@ -2303,7 +2339,14 @@ namespace DreamCleaningBackend.Controllers
                     orderId = oc.OrderId,
                     id = oc.CleanerId,
                     name = $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}",
-                    assignmentNotificationSentAt = oc.AssignmentNotificationSentAt
+                    assignmentNotificationSentAt = oc.AssignmentNotificationSentAt,
+                    // Set when the RECURRING GENERATOR copied this assignment from the series'
+                    // template rather than an admin choosing it on this job. Copying an
+                    // assignment never notifies anybody, so the panel pairs this with a null
+                    // assignmentNotificationSentAt to say "auto-assigned from recurring series -
+                    // cleaner has not been notified". The existing Send / Resend controls stay
+                    // the only thing that contacts them.
+                    autoAssignedFromSeriesId = oc.AutoAssignedFromSeriesId
                 })
                 .ToListAsync();
 
@@ -2678,6 +2721,22 @@ namespace DreamCleaningBackend.Controllers
         private async Task<ConfirmationSendResult> SendOrderConfirmationNotificationsAsync(Order order, bool isUpdate = false)
         {
             var result = new ConfirmationSendResult();
+
+            // A commercial cleaning billed on an invoice is contacted from the invoice, never from
+            // the residential booking templates — the same shared rule the creation paths apply.
+            // Reported rather than silently dropped: an admin who pressed the button is told why
+            // nothing went out, which is the NoEmailHelper rule about naming the REAL cause.
+            if (!ResidentialBookingCommunicationPolicy.ShouldSendResidentialBookingCommunication(order))
+            {
+                var reason = ResidentialBookingCommunicationPolicy.SuppressionReason(order);
+                result.EmailSkipReason = reason;
+                result.SmsSkipReason = reason;
+                _logger.LogInformation(
+                    "Residential booking confirmation suppressed for order {OrderId} - billed through a commercial invoice.",
+                    order.Id);
+                return result;
+            }
+
             var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
                 .Select(x => x.ExtraService?.Name ?? "")
                 .Where(n => !string.IsNullOrWhiteSpace(n))
@@ -3295,7 +3354,8 @@ namespace DreamCleaningBackend.Controllers
         }
 
         /// <summary>
-        /// Get order IDs that have not been viewed by any admin yet.
+        /// Orders the CALLING admin has not opened yet, newest first, with the timestamp the
+        /// highlight expires from. Per-admin and window-bounded — see NewOrderHighlightPolicy.
         /// </summary>
         [HttpGet("orders/unviewed-new")]
         [RequirePermission(Permission.View)]
@@ -3303,21 +3363,33 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                // Get all order IDs that have been acknowledged with type "new_order"
-                var viewedOrderIds = await _context.OrderReminderAcknowledgments
-                    .Where(a => a.Type == "new_order")
-                    .Select(a => a.OrderId)
-                    .Distinct()
-                    .ToListAsync();
+                var userId = GetCurrentUserId();
+                if (userId == 0)
+                    return Unauthorized();
 
-                // Get all non-cancelled order IDs that haven't been viewed
-                var unviewedOrderIds = await _context.Orders
-                    .Where(o => o.Status != "Cancelled" && !viewedOrderIds.Contains(o.Id))
+                // Moderators hold Permission.View, so the endpoint is reachable to them; they
+                // are simply never an audience for the indicator. Answering empty rather than
+                // 403 keeps a Moderator's console clean if a client ever asks.
+                if (!NewOrderHighlightPolicy.ShowsIndicator(GetCurrentUserRole()))
+                    return Ok(Array.Empty<object>());
+
+                var cutoff = NewOrderHighlightPolicy.CutoffUtc(DateTime.UtcNow);
+
+                // The acknowledgment test is a correlated subquery rather than a pre-loaded id
+                // list because it is now filtered by user as well as order — and it rides the
+                // existing IX_OrderReminderAcknowledgments_OrderType index.
+                var unviewed = await _context.Orders
+                    .Where(o => o.Status != "Cancelled"
+                             && o.CreatedAt >= cutoff
+                             && !_context.OrderReminderAcknowledgments.Any(a =>
+                                    a.OrderId == o.Id
+                                    && a.Type == NewOrderViewedAckType
+                                    && a.AcknowledgedByUserId == userId))
                     .OrderByDescending(o => o.CreatedAt)
-                    .Select(o => o.Id)
+                    .Select(o => new { orderId = o.Id, createdAt = o.CreatedAt })
                     .ToListAsync();
 
-                return Ok(unviewedOrderIds);
+                return Ok(unviewed);
             }
             catch (Exception ex)
             {
@@ -3326,7 +3398,8 @@ namespace DreamCleaningBackend.Controllers
         }
 
         /// <summary>
-        /// Mark a new order as viewed. Broadcasts to all admins via SignalR.
+        /// Mark a new order as viewed BY THE CALLING ADMIN. Broadcast goes to that admin's own
+        /// group only — every other admin keeps their green until they open it themselves.
         /// </summary>
         [HttpPost("orders/{orderId}/mark-viewed")]
         [RequirePermission(Permission.View)]
@@ -3334,24 +3407,25 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var userIdClaim = User.FindFirst("UserId")?.Value;
-                if (!int.TryParse(userIdClaim, out int userId))
+                var userId = GetCurrentUserId();
+                if (userId == 0)
                     return Unauthorized();
 
                 var orderExists = await _context.Orders.AnyAsync(o => o.Id == orderId);
                 if (!orderExists)
                     return NotFound(new { message = "Order not found" });
 
-                // Check if already marked as viewed
                 var alreadyViewed = await _context.OrderReminderAcknowledgments
-                    .AnyAsync(a => a.OrderId == orderId && a.Type == "new_order");
+                    .AnyAsync(a => a.OrderId == orderId
+                                && a.Type == NewOrderViewedAckType
+                                && a.AcknowledgedByUserId == userId);
 
                 if (!alreadyViewed)
                 {
                     var ack = new OrderReminderAcknowledgment
                     {
                         OrderId = orderId,
-                        Type = "new_order",
+                        Type = NewOrderViewedAckType,
                         AcknowledgedByUserId = userId,
                         AcknowledgedAt = DateTime.UtcNow,
                         TriggeredAt = DateTime.UtcNow
@@ -3360,17 +3434,10 @@ namespace DreamCleaningBackend.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                // Broadcast to all admins so their indicators update in real-time
-                var adminUserIds = await _context.Users
-                    .Where(u => u.Role == UserRole.Admin || u.Role == UserRole.SuperAdmin)
-                    .Select(u => u.Id)
-                    .ToListAsync();
-
-                foreach (var adminId in adminUserIds)
-                {
-                    await _hubContext.Clients.Group($"User_{adminId}")
-                        .SendAsync("NewOrderViewed", new { orderId });
-                }
+                // Only this admin's own sessions — other tabs, phone, second monitor. Telling
+                // the other admins would put back exactly the shared-state bug this replaced.
+                await _hubContext.Clients.Group($"User_{userId}")
+                    .SendAsync("NewOrderViewed", new { orderId, viewedByUserId = userId });
 
                 return Ok(new { message = "Order marked as viewed" });
             }
@@ -3379,6 +3446,9 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = ex.Message });
             }
         }
+
+        /// <summary>Acknowledgment row Type discriminating a new-order view from a reminder.</summary>
+        private const string NewOrderViewedAckType = "new_order";
 
     }
 

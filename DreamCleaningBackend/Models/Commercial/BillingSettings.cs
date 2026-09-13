@@ -116,13 +116,56 @@ namespace DreamCleaningBackend.Models.Commercial
         /// </summary>
         public bool ManualAchEnabled { get; set; } = true;
 
+        // -- Stripe ACH customer processing fee -------------------------------------------------
+        //
+        // THE ONE PLACE the "Pay from Bank" fee is configured. Stored rather than hardcoded so the
+        // rate and the cap are not magic numbers scattered through a checkout service, a public
+        // DTO and a PDF - and so a change in Stripe's own pricing is a settings edit rather than a
+        // deployment. Never editable by the customer, and never sent from a browser: the fee on
+        // every payment is recomputed server-side from the invoice's own balance.
+
+        /// <summary>
+        /// Whether "Pay from Bank" adds a customer-facing processing fee. On by default.
+        /// Turning it off makes online bank payment free to the client with no other change.
+        /// </summary>
+        public bool AchCustomerFeeEnabled { get; set; } = true;
+
+        /// <summary>
+        /// Percent of the balance, e.g. 0.8 for Stripe's standard 0.8% ACH Direct Debit pricing.
+        /// Stored as a PERCENT rather than a rate for the same reason <see cref="DefaultTaxRate"/>
+        /// is - an admin reading the settings row should see the number they were quoted.
+        /// </summary>
+        [System.ComponentModel.DataAnnotations.Schema.Column(TypeName = "decimal(6,4)")]
+        public decimal AchCustomerFeeRatePercent { get; set; } = 0.8m;
+
+        /// <summary>
+        /// The maximum fee in dollars, matching Stripe's own $5.00 cap. Zero means "no cap", not
+        /// "no fee" - switching the fee off is what <see cref="AchCustomerFeeEnabled"/> is for.
+        /// </summary>
+        [System.ComponentModel.DataAnnotations.Schema.Column(TypeName = "decimal(10,2)")]
+        public decimal AchCustomerFeeCapAmount { get; set; } = 5.00m;
+
         // -- Invoice defaults -------------------------------------------------------------------
+        //
+        // These are the ONE persistent source of commercial billing defaults, read by BOTH new
+        // invoices (Discount & Tax) and new contracts (Pricing & Payment). Editing the tax rate on
+        // either form saves it back here for FUTURE documents; a finalized invoice and a signed
+        // contract each carry their own snapshot and are never recomputed from this row.
 
         /// <summary>Seeds the tax mode on a new invoice. Never applied to an existing one.</summary>
-        public InvoiceTaxType DefaultTaxType { get; set; } = InvoiceTaxType.Exempt;
+        public InvoiceTaxType DefaultTaxType { get; set; } = InvoiceTaxType.Included;
 
         [System.ComponentModel.DataAnnotations.Schema.Column(TypeName = "decimal(6,3)")]
-        public decimal? DefaultTaxRate { get; set; }
+        public decimal? DefaultTaxRate { get; set; } = 8.875m;
+
+        /// <summary>
+        /// Seeds the price mode on a NEW contract. Tax-inclusive, matching
+        /// <see cref="DefaultTaxType"/>: the figure a commercial client agrees to is the figure
+        /// they pay, and the two forms disagreeing about that is how an invoice ends up 8.875%
+        /// above the contract it bills against.
+        /// </summary>
+        public Models.Contracts.ContractPriceMode DefaultContractPriceMode { get; set; }
+            = Models.Contracts.ContractPriceMode.TaxInclusive;
 
         public InvoiceDueTerms DefaultDueTerms { get; set; } = InvoiceDueTerms.Net15;
 

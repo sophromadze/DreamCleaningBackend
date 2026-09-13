@@ -85,6 +85,25 @@ namespace DreamCleaningBackend.Models.Commercial
         [Column(TypeName = "decimal(10,2)")]
         public decimal Amount { get; set; }
 
+        /// <summary>
+        /// The ACH processing fee quoted to the customer for THIS attempt, computed server-side
+        /// from the balance at the moment the checkout opened.
+        ///
+        /// Frozen on the attempt rather than recomputed at settlement, because the customer
+        /// authorized a specific figure and the settings could legitimately change in the days an
+        /// ACH debit takes to clear. What they agreed to is what is recorded.
+        /// </summary>
+        [Column(TypeName = "decimal(10,2)")]
+        public decimal ProcessingFee { get; set; }
+
+        /// <summary>
+        /// <see cref="Amount"/> + <see cref="ProcessingFee"/> - what Stripe was actually asked to
+        /// debit. Stored rather than re-added so the ledger, the Stripe dashboard and the
+        /// customer's bank statement can be reconciled against one number.
+        /// </summary>
+        [Column(TypeName = "decimal(10,2)")]
+        public decimal TotalCharged { get; set; }
+
         [Required, StringLength(3)]
         public string Currency { get; set; } = "USD";
 
@@ -131,13 +150,34 @@ namespace DreamCleaningBackend.Models.Commercial
         public DateTime? CompletedAt { get; set; }
 
         /// <summary>
-        /// True while Stripe is moving money for this attempt. The public page's "payment
-        /// processing" banner and the duplicate-payment guard both read this, so the definition
-        /// lives here once rather than being re-expressed at each call site.
+        /// True while a CONVERSATION with Stripe is open — the customer is either in the hosted
+        /// flow or the money is settling. Admin-facing only: it drives the attempt list on the
+        /// detail page, where "this one is not finished" is the useful reading.
+        ///
+        /// DO NOT use this to decide whether the customer may pay — see
+        /// <see cref="IsAwaitingSettlement"/>.
         /// </summary>
         [NotMapped]
         public bool IsInFlight =>
             Status is InvoicePaymentAttemptStatus.CheckoutOpen
                    or InvoicePaymentAttemptStatus.Processing;
+
+        /// <summary>
+        /// THE ONE TEST FOR "MONEY IS ACTUALLY MOVING", and therefore the only thing that may
+        /// block a customer from paying or show them a Processing banner.
+        ///
+        /// <b>ONLY <see cref="InvoicePaymentAttemptStatus.Processing"/> counts.</b>
+        /// <c>CheckoutOpen</c> deliberately does NOT: that status is set the instant a Checkout
+        /// Session is created, BEFORE the customer has typed anything. Treating it as "in flight"
+        /// meant somebody who pressed Pay from Bank, looked at Stripe and closed the tab had their
+        /// invoice locked as "processing" for 24 hours with the pay button disabled — no payment
+        /// submitted, no way to retry, and a Processing banner that was simply untrue.
+        ///
+        /// Creating a Checkout Session is not evidence of an ACH debit. Only Stripe telling us the
+        /// flow completed (checkout.session.completed / payment_intent.processing) is, and those
+        /// are what move an attempt to Processing.
+        /// </summary>
+        [NotMapped]
+        public bool IsAwaitingSettlement => Status == InvoicePaymentAttemptStatus.Processing;
     }
 }

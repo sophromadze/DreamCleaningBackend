@@ -89,8 +89,22 @@ namespace DreamCleaningBackend.Services
                 NotificationPhone = !string.IsNullOrWhiteSpace(order.ContactPhone)
                     ? order.ContactPhone
                     : order.User?.Phone,
-                CustomerHasNoAccountEmail = NoEmailHelper.HasNoRealEmail(order.User)
+                CustomerHasNoAccountEmail = NoEmailHelper.HasNoRealEmail(order.User),
+                // The METHOD only — see ReorderPreviewDto.SourcePaymentMethod for why no
+                // transaction state can travel with it.
+                SourcePaymentMethod = order.PaymentMethod.ToString(),
+                SourceContractClientId = order.PaymentMethod == PaymentMethod.Invoice
+                    ? order.ContractClientId
+                    : null
             };
+
+            if (preview.SourceContractClientId.HasValue)
+            {
+                preview.SourceContractClientName = await _context.ContractClients
+                    .Where(c => c.Id == preview.SourceContractClientId.Value)
+                    .Select(c => c.LegalEntityName)
+                    .FirstOrDefaultAsync();
+            }
 
             // ── Which of the source order's lines still exist in the catalogue ────────────────
             var liveServiceIds = serviceType.Services
@@ -231,68 +245,11 @@ namespace DreamCleaningBackend.Services
             ServiceType serviceType,
             List<Models.OrderService> services,
             List<OrderExtraService> extras)
-        {
-            var dto = new CreateBookingDto
-            {
-                ServiceTypeId = order.ServiceTypeId,
-                CustomServiceDisplayName = serviceType.IsCustom ? order.CustomServiceDisplayName : null,
-                Services = services
-                    .Select(s => new BookingServiceDto { ServiceId = s.ServiceId, Quantity = s.Quantity })
-                    .ToList(),
-                ExtraServices = extras
-                    .Select(e => new BookingExtraServiceDto
-                    {
-                        ExtraServiceId = e.ExtraServiceId,
-                        Quantity = e.Quantity,
-                        Hours = e.Hours
-                    })
-                    .ToList(),
-                // The plan the job was booked on is job metadata, not a discount: it is what makes
-                // the recreated order count as recurring in the CRM. Whether it actually TAKES a
-                // discount is decided server-side from the customer's live subscription, and is
-                // suppressed unless the admin opts in.
-                SubscriptionId = order.SubscriptionId ?? 0,
-                ServiceDate = order.ServiceDate,
-                ServiceTime = order.ServiceTime.ToString(@"hh\:mm"),
-                EntryMethod = order.EntryMethod ?? "",
-                SpecialInstructions = order.SpecialInstructions,
-                ContactFirstName = order.ContactFirstName,
-                ContactLastName = order.ContactLastName,
-                // Empty string is not a valid [EmailAddress]; a no-email cash customer posts null.
-                ContactEmail = string.IsNullOrWhiteSpace(order.ContactEmail) || NoEmailHelper.IsPlaceholder(order.ContactEmail)
-                    ? null
-                    : order.ContactEmail,
-                ContactPhone = order.ContactPhone,
-                ServiceAddress = order.ServiceAddress,
-                AptSuite = order.AptSuite,
-                City = order.City,
-                State = order.State,
-                ZipCode = order.ZipCode,
-                ApartmentName = order.ApartmentName,
-                Tips = order.Tips,
-                BedroomsQuantity = order.BedroomsQuantity,
-                BathroomsQuantity = order.BathroomsQuantity,
-                PropertyType = order.PropertyType,
-                LevelsQuantity = order.LevelsQuantity,
-                FloorTypes = order.FloorTypes,
-                FloorTypeOther = order.FloorTypeOther
-            };
+            // The mapping itself moved to OrderBookingSnapshot (2026-09) so the recurring-series
+            // generator asks an order the same question this flow does. The copy/don't-copy rules
+            // — including every cleared discount slot — live there now.
+            => OrderBookingSnapshot.ToBookingDto(order, serviceType, services, extras);
 
-            if (serviceType.IsCustom)
-            {
-                // Custom Pricing stores the tax-INCLUSIVE amount the admin typed, split into
-                // SubTotal + Tax that add back to it exactly — so recombining them recovers the
-                // typed figure to the cent. Duration is stored as per-cleaner × cleaners, so the
-                // form's per-cleaner field is the quotient. (A job that hit the one-hour floor
-                // cannot be reversed exactly; the admin sees the number and can correct it.)
-                dto.IsCustomPricing = true;
-                dto.CustomAmount = order.SubTotal + order.Tax;
-                dto.CustomCleaners = Math.Max(1, order.MaidsCount);
-                dto.CustomDuration = order.TotalDuration / Math.Max(1, order.MaidsCount);
-            }
-
-            return dto;
-        }
 
         /// <summary>Saved addresses get deleted. Pointing a new order at a dead ApartmentId is an
         /// FK violation at insert time, so an address that is gone becomes a plain typed one —

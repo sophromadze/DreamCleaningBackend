@@ -93,6 +93,10 @@ namespace DreamCleaningBackend.Services.Contracts
 
             if (existing != null)
             {
+                // A reactivated client may predate primary billing contacts, so top one up. This
+                // NEVER touches an existing contact - see EnsureBillingContactAsync.
+                await EnsureBillingContactAsync(user, existing);
+
                 if (existing.IsActive) return (LinkOutcome.Unchanged, existing);
 
                 // The SAME row comes back, keeping its id, its contracts, its invoices, its
@@ -111,7 +115,38 @@ namespace DreamCleaningBackend.Services.Contracts
                 user, BusinessClientMapper.ResolvePrimaryAddress(apartments));
 
             _context.ContractClients.Add(client);
+
+            // Saved here rather than left to the caller because the contact needs the client's id,
+            // and the caller's transaction still wraps both.
+            await _context.SaveChangesAsync();
+            await EnsureBillingContactAsync(user, client);
+
             return (LinkOutcome.Created, client);
+        }
+
+        /// <summary>
+        /// Gives a linked client a primary billing contact built from the account holder, when it
+        /// has no contact at all.
+        ///
+        /// <b>It never edits or replaces an existing contact.</b> The whole point of the fix this
+        /// belongs to is that the account seeds the commercial record ONCE; a client whose contact
+        /// an admin has since corrected - a different accounts-payable address, a proper title -
+        /// must not have that overwritten because somebody re-saved the business flag. So the test
+        /// is "are there any contacts", not "does this one match the account".
+        ///
+        /// Does not save - the caller owns the transaction.
+        /// </summary>
+        private async Task EnsureBillingContactAsync(User user, ContractClient client)
+        {
+            if (client.Id <= 0) return;
+
+            var hasContact = await _context.ContractContacts
+                .AnyAsync(c => c.ContractClientId == client.Id);
+
+            if (hasContact) return;
+
+            _context.ContractContacts.Add(
+                BusinessClientMapper.BuildBillingContactFromAccount(user, client.Id));
         }
 
         /// <summary>
@@ -221,13 +256,26 @@ namespace DreamCleaningBackend.Services.Contracts
                 .Where(a => pending.Select(u => u.Id).Contains(a.UserId))
                 .ToListAsync(cancellationToken);
 
+            var created = new List<(User User, ContractClient Client)>();
+
             foreach (var user in pending)
             {
                 var address = BusinessClientMapper.ResolvePrimaryAddress(
                     apartments.Where(a => a.UserId == user.Id));
 
-                _context.ContractClients.Add(BusinessClientMapper.BuildFromAccount(user, address));
+                var client = BusinessClientMapper.BuildFromAccount(user, address);
+                _context.ContractClients.Add(client);
+                created.Add((user, client));
             }
+
+            // Two saves: the contacts need the client ids the first one allocates. A backfilled
+            // client therefore comes out identical to one created by the live path, which is the
+            // whole reason this runs the shared mapper rather than its own SQL.
+            await _context.SaveChangesAsync(cancellationToken);
+
+            foreach (var (user, client) in created)
+                _context.ContractContacts.Add(
+                    BusinessClientMapper.BuildBillingContactFromAccount(user, client.Id));
 
             await _context.SaveChangesAsync(cancellationToken);
 

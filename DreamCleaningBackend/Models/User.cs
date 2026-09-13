@@ -87,6 +87,17 @@ namespace DreamCleaningBackend.Models
         public string? RefreshToken { get; set; }
         public DateTime? RefreshTokenExpiryTime { get; set; }
 
+        /// <summary>
+        /// Bumped whenever every session this account holds must end NOW - a role change, today.
+        /// The value is stamped into each JWT as the "tv" claim and re-checked on every request
+        /// (TokenVersionService), so an access token issued before the bump is refused even though
+        /// it is still signed and inside its 7-day lifetime. That is what logs out an OFFLINE
+        /// user: the SignalR notice only reaches somebody who has the page open.
+        /// Legacy tokens carry no claim and read as 0, which matches the column default, so
+        /// deploying this does not sign the whole customer base out.
+        /// </summary>
+        public int TokenVersion { get; set; }
+
         // OAuth provider info
         public string? AuthProvider { get; set; } // "Local", "Google", "Apple"
         public string? ExternalAuthId { get; set; } // ID from OAuth provider (Google ID when linked)
@@ -232,6 +243,35 @@ namespace DreamCleaningBackend.Models
         public DateTime? LoyaltyDiscountActivatedAt { get; set; }
         public DateTime? LoyaltyDiscountLastUsedAt { get; set; }
         public bool LoyaltyDiscountIsManualOverride { get; set; } = false;
+
+        /// <summary>
+        /// LIFETIME mode (2026-09). The loyalty discount above is normally ONE-TIME: it applies to
+        /// the next eligible order and is consumed. With this set it is not consumed — it stays on
+        /// the account, at the same percentage, for every future eligible order until an admin
+        /// changes or clears it.
+        ///
+        /// Three consequences, all of them load-bearing and all in <c>LoyaltyDiscountService</c>
+        /// and <c>LoyaltyReengagementService</c>:
+        ///
+        ///  • <b>It is never consumed.</b> <c>ApplyToOrderAsync</c> stamps LastUsedAt and leaves
+        ///    the percentage alone, so a recurring series keeps getting it. Consequently there is
+        ///    nothing for <c>ReverseFromOrderAsync</c> to restore on a cancellation either.
+        ///  • <b>It TURNS OFF the inactivity automation for this customer.</b> No 60-day 10%, no
+        ///    90-day upgrade to 15%, no overwrite. A lifetime discount is a standing commercial
+        ///    decision, and letting the win-back worker raise, lower or replace it would mean an
+        ///    admin's agreement quietly expired because somebody did not book for three months.
+        ///    Clearing the discount hands the customer straight back to the normal automation.
+        ///  • <b>It still does not STACK.</b> It goes through the same
+        ///    <c>ResolveStacking</c> gate as a one-time discount, so the best single discount
+        ///    wins per order. Losing that round does not remove it from the account — it is a
+        ///    standing entitlement, not a coupon that got spent.
+        ///
+        /// Implies <see cref="LoyaltyDiscountIsManualOverride"/> in every practical sense (only an
+        /// admin can set it) but is kept separate: "an admin picked this number" and "this number
+        /// survives being used" are different facts, and folding them together would make clearing
+        /// one clear the other.
+        /// </summary>
+        public bool LoyaltyDiscountIsLifetime { get; set; } = false;
 
         // ─── Two-factor authentication (staff only — Admin / SuperAdmin / Moderator) ───
         // Stored as "base64(salt)$base64(hash)". HMAC-SHA512 uses a 128-byte default key

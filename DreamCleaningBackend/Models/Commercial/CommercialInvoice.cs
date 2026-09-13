@@ -72,10 +72,24 @@ namespace DreamCleaningBackend.Models.Commercial
 
         /// <summary>
         /// The period the work covers. A single date sets both ends; a month sets a range. Both
-        /// null is valid - not every invoice describes a period.
+        /// null is valid - not every invoice describes a period, and an invoice that cannot say
+        /// which cleanings it covers must say NOTHING rather than invent a plausible range.
         /// </summary>
         public DateTime? ServiceStartDate { get; set; }
         public DateTime? ServiceEndDate { get; set; }
+
+        /// <summary>
+        /// The individual visits this invoice covers, as a JSON array of ISO dates, when they are
+        /// known - "October 7, 14, 21, 28" for a month of Wednesday cleanings.
+        ///
+        /// Stored ALONGSIDE the period bounds rather than instead of them, because it says
+        /// strictly more: a client can check four listed dates against their own diary, and cannot
+        /// check "October 1-31" against anything. Null on every invoice raised before recurring
+        /// generation existed and on any ad-hoc invoice, which is why
+        /// <c>ServiceDateFormatter</c> falls back to the bounds rather than requiring it.
+        /// </summary>
+        [Column(TypeName = "LONGTEXT")]
+        public string? ServiceDatesJson { get; set; }
 
         /// <summary>
         /// The service address AS BILLED, copied from the location at creation rather than joined
@@ -179,8 +193,45 @@ namespace DreamCleaningBackend.Models.Commercial
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// Non-blocking warnings raised when this draft was GENERATED (price drift against the
+        /// contract, tax-rate drift, a schedule that could not be worked out), as a JSON array of
+        /// strings.
+        ///
+        /// PERSISTED RATHER THAN RETURNED, because a warning that lives only in the create
+        /// response disappears the moment the caller navigates — which is exactly what happened
+        /// when "Create Next Invoice" was pressed from the Contracts LIST: the banner rendered on
+        /// a page the admin was already leaving, and the drift went to the client unread. Stored
+        /// here, the draft editor shows it however the admin got there.
+        ///
+        /// Cleared when the invoice leaves Draft (it described a document nobody had reviewed) and
+        /// whenever an admin saves an edit — at that point they have seen the figures and the
+        /// warning is either acted on or deliberately accepted.
+        /// </summary>
+        [Column(TypeName = "LONGTEXT")]
+        public string? DraftWarningsJson { get; set; }
+
+        /// <summary>
+        /// The agreed group total an admin typed for the ORDERS this invoice covers, when they
+        /// negotiated one. Null means the invoice simply totals what the orders charge.
+        ///
+        /// Kept as a record of the negotiation, not as a live input: the invoice's own
+        /// <see cref="Total"/> is still derived from its line items by <c>InvoiceCalculator</c>
+        /// like every other invoice, and the line items are what the group total was solved into.
+        /// Storing it lets the draft round-trip and lets the audit trail say "the admin agreed
+        /// $3,500" rather than only showing four $875 lines.
+        /// </summary>
+        [Column(TypeName = "decimal(10,2)")]
+        public decimal? NegotiatedOrderGroupTotal { get; set; }
+
         public virtual ICollection<CommercialInvoiceItem> Items { get; set; } = new List<CommercialInvoiceItem>();
         public virtual ICollection<CommercialInvoicePayment> Payments { get; set; } = new List<CommercialInvoicePayment>();
+
+        /// <summary>The residential/commercial cleanings this invoice covers, with the amount
+        /// allocated to each. Empty on every invoice raised before the link existed, and on any
+        /// ad-hoc invoice that bills work no Order row describes.</summary>
+        public virtual ICollection<CommercialInvoiceOrder> CoveredOrders { get; set; }
+            = new List<CommercialInvoiceOrder>();
     }
 
     /// <summary>
@@ -231,9 +282,24 @@ namespace DreamCleaningBackend.Models.Commercial
         [ForeignKey("CommercialInvoiceId")]
         public virtual CommercialInvoice? Invoice { get; set; }
 
-        /// <summary>Negative on a reversal row; that is the only way it is ever below zero.</summary>
+        /// <summary>
+        /// Money applied to the INVOICE. Negative on a reversal row; that is the only way it is
+        /// ever below zero. Deliberately excludes <see cref="ProcessingFee"/> - see below.
+        /// </summary>
         [Column(TypeName = "decimal(10,2)")]
         public decimal Amount { get; set; }
+
+        /// <summary>
+        /// The ACH processing fee the customer paid ON TOP, when they chose Stripe's "Pay from
+        /// Bank". Zero for every manual payment and for card.
+        ///
+        /// ITS OWN COLUMN, NEVER FOLDED INTO <see cref="Amount"/>. The fee is a payment-method
+        /// charge, not part of what was billed: adding it to Amount would make a $925.43 invoice
+        /// look $5.00 overpaid, and subtracting it would leave $5.00 of the customer's money
+        /// unaccounted for. Total actually debited is Amount + ProcessingFee.
+        /// </summary>
+        [Column(TypeName = "decimal(10,2)")]
+        public decimal ProcessingFee { get; set; }
 
         public DateTime PaymentDate { get; set; }
 

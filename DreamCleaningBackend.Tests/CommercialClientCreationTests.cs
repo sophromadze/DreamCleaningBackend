@@ -111,7 +111,7 @@ namespace DreamCleaningBackend.Tests
         /// </summary>
         private static AdminCommercialInvoicesController NewInvoicesController(
             ApplicationDbContext context) =>
-            new(context, null!, null!, null!, null!, null!, null!);
+            new(context, null!, null!, null!, null!, null!, null!, null!, null!);
 
         private static InvoiceService NewInvoiceService(ApplicationDbContext context) =>
             new(context,

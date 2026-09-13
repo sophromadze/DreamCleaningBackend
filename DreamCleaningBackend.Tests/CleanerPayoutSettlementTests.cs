@@ -99,9 +99,14 @@ namespace DreamCleaningBackend.Tests
         {
             var settlement = CleanerPayoutSettlement.Resolve(isPaid: true, paidAmount: 73.505m, currentPayout: 84.004m);
 
-            Assert.Equal(10.50m, settlement.Outstanding);
             Assert.Equal(73.51m, settlement.PaidAmount);
             Assert.Equal(84.00m, settlement.CurrentPayout);
+            // Each SIDE is rounded first, so the difference falls out of the two figures the page
+            // actually prints and a top-up always reconciles with the line it sits under.
+            // Rounding the raw difference instead gives 10.50 - and 73.51 + 10.50 is 84.01, a cent
+            // above the payout, which is arithmetic an admin would be asked to check and could not.
+            Assert.Equal(10.49m, settlement.Outstanding);
+            Assert.Equal(settlement.CurrentPayout - settlement.PaidAmount, settlement.Outstanding);
         }
 
         [Fact]

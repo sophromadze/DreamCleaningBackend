@@ -89,7 +89,7 @@ namespace DreamCleaningBackend.Tests
 
         private static AdminCommercialInvoicesController NewInvoicesController(
             ApplicationDbContext context) =>
-            new(context, null!, null!, null!, null!, null!, null!);
+            new(context, null!, null!, null!, null!, null!, null!, null!, null!);
 
         private static InvoiceService NewInvoiceService(ApplicationDbContext context) =>
             new(context,
@@ -179,7 +179,6 @@ namespace DreamCleaningBackend.Tests
             Assert.True(client.IsActive);
 
             // Mapped from fields that exist, nothing invented.
-            Assert.Equal("Casey Client", client.LegalEntityName);
             Assert.Equal("casey55@chicktastic.invalid", client.NoticeEmail);
             Assert.Equal("7185550123", client.Phone);
 
@@ -188,9 +187,24 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal("Brooklyn", client.City);
             Assert.Equal("11210", client.Zip);
 
-            // Deliberately blank: EntityType is printed on a contract as a legal characterisation
-            // of the counterparty, so a default would be a statement nobody checked.
+            // BLANK, DELIBERATELY, BOTH OF THEM (2026-09).
+            //
+            // LegalEntityName used to be seeded with the account holder's name, which put a
+            // person's name in the field a contract prints as a statement about a registered
+            // company - while the Primary billing contact, where that name actually belongs, sat
+            // empty. A company is not its owner. EntityType is blank for the same reason: it is a
+            // legal characterisation, so a default would be a statement nobody checked.
+            Assert.Equal(string.Empty, client.LegalEntityName);
             Assert.Equal(string.Empty, client.EntityType);
+
+            // The account holder seeds the CONTACT instead — name, email and phone, with no title,
+            // because ticking a business flag says nothing about whether they are the Owner.
+            var contact = await context.ContractContacts.SingleAsync(c => c.ContractClientId == client.Id);
+            Assert.Equal("Casey", contact.FirstName);
+            Assert.Equal("Client", contact.LastName);
+            Assert.Equal("casey55@chicktastic.invalid", contact.Email);
+            Assert.True(contact.IsPrimaryBillingContact);
+            Assert.True(string.IsNullOrEmpty(contact.Title));
         }
 
         [Fact]
@@ -565,6 +579,13 @@ namespace DreamCleaningBackend.Tests
             await NewService(context).ApplyBusinessFlagAsync(user, true, AdminId);
             var client = await context.ContractClients.SingleAsync();
 
+            // The auto-created client's legal entity name is deliberately BLANK — a company is not
+            // its owner. Staff fill it in from the client's own paperwork, which is what this
+            // fixture is standing in for, and the corrected name is what history must keep
+            // resolving after a delete.
+            client.LegalEntityName = "Chick Tastic LLC";
+            await context.SaveChangesAsync();
+
             context.Contracts.Add(new Contract
             {
                 Id = 80, ContractNumber = "DCC-2026-55556666",
@@ -649,7 +670,7 @@ namespace DreamCleaningBackend.Tests
 
             Assert.NotNull(invoice.Client);
             Assert.Equal(client.Id, invoice.Client!.Id);
-            Assert.Equal("Casey Client", invoice.Client.LegalEntityName);
+            Assert.Equal("Chick Tastic LLC", invoice.Client.LegalEntityName);
         }
 
         [Fact]
@@ -848,5 +869,172 @@ namespace DreamCleaningBackend.Tests
                 Assert.DoesNotContain("password", payload, StringComparison.OrdinalIgnoreCase);
             }
         }
+
+        // ══════════════════════════════════════════════════════════════════════════════════════
+        //  11. One commercial client per account, on EVERY route to creating one
+        // ══════════════════════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// THE DUPLICATE THE CONTRACT FORM COULD STILL HAVE MADE.
+        ///
+        /// Ticking the business flag auto-creates the account's ContractClient, so by the time an
+        /// admin can pick that account on the contract form, its client already exists. Choosing
+        /// "— New client —" and then linking that account used to build a SECOND row carrying the
+        /// same SourceUserId: with the unique index it 500s the save, and before the index existed
+        /// it split one business across two commercial records that no report would reunite.
+        ///
+        /// The lookup below is what the contract form's client resolver now consults first, so it
+        /// adopts the existing row instead of inserting.
+        /// </summary>
+        [Fact]
+        public async Task ALinkedAccountAlreadyHasAClient_SoTheContractFormMustAdoptItRatherThanInsert()
+        {
+            using var context = NewContext();
+            var user = await SeedBusinessAccountAsync(context);
+            await NewService(context).ApplyBusinessFlagAsync(user, true, AdminId);
+
+            var autoCreated = await context.ContractClients.SingleAsync();
+
+            var found = await BusinessAccountLinkPolicy.FindLinkedClientAsync(context, user.Id);
+
+            Assert.NotNull(found);
+            Assert.Equal(autoCreated.Id, found!.Id);
+        }
+
+        /// <summary>
+        /// A DEACTIVATED linked client is still found — and must be, because it is exactly the row
+        /// to bring back when that business is contracted with again. Skipping it would send the
+        /// caller straight into the duplicate insert this lookup exists to prevent.
+        /// </summary>
+        [Fact]
+        public async Task ARetiredLinkedClientIsStillFound_SoItIsRevivedRatherThanDuplicated()
+        {
+            using var context = NewContext();
+            var user = await SeedBusinessAccountAsync(context);
+            var service = NewService(context);
+
+            await service.ApplyBusinessFlagAsync(user, true, AdminId);
+            var client = await context.ContractClients.SingleAsync();
+
+            await service.ApplyBusinessFlagAsync(user, false, AdminId);
+            Assert.False((await context.ContractClients.SingleAsync()).IsActive);
+
+            var found = await BusinessAccountLinkPolicy.FindLinkedClientAsync(context, user.Id);
+
+            Assert.NotNull(found);
+            Assert.Equal(client.Id, found!.Id);
+        }
+
+        /// <summary>Null is the common case — a client typed up for a company with no account.</summary>
+        [Fact]
+        public async Task NoLinkedAccountResolvesToNothing()
+        {
+            using var context = NewContext();
+            Assert.Null(await BusinessAccountLinkPolicy.FindLinkedClientAsync(context, null));
+        }
+
+        /// <summary>
+        /// THE DATABASE IS THE FINAL GUARD, not any of the code paths above.
+        ///
+        /// UNIQUE on a nullable column is the correct spelling of "at most one non-null" in MySQL —
+        /// the engine never treats two NULLs as equal — so any number of standalone clients
+        /// coexist while a second row for one account is refused outright. Asserted structurally so
+        /// nobody removes the index believing the application code already covers it.
+        /// </summary>
+        [Fact]
+        public void TheLinkColumnIsUniqueAtTheDatabase()
+        {
+            using var context = NewContext();
+
+            var index = context.Model
+                .FindEntityType(typeof(ContractClient))!
+                .GetIndexes()
+                .Single(i => i.Properties.Count == 1
+                             && i.Properties[0].Name == nameof(ContractClient.SourceUserId));
+
+            Assert.True(index.IsUnique);
+        }
+
+        // ══════════════════════════════════════════════════════════════════════════════════════
+        //  A MOVED-BACK CUSTOMER MUST LAND SOMEWHERE
+        // ══════════════════════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Admin -> Users partitions every account across its sub-tabs: the Customers tab hides
+        /// exactly the accounts Business Clients is showing, and Business Clients lists ACTIVE
+        /// clients only. So the membership answer the users list hands the panel has to carry the
+        /// active test too, or the two tabs stop partitioning and start losing people.
+        ///
+        /// The bug this pins (2026-09): "Move to Customers" clears the business flag and
+        /// DEACTIVATES the linked client - nothing is ever hard-deleted here, because the
+        /// contracts, invoices and reference numbers hanging off it must survive. The users list
+        /// reported "has a business client" from the row's mere existence, so a moved-back
+        /// customer was hidden from Customers by a link nobody could see, and absent from
+        /// Business Clients because that list is active-only. They disappeared from the panel
+        /// entirely while their account, orders and history were perfectly intact.
+        /// </summary>
+        [Fact]
+        public async Task MovingAClientBackToCustomersPutsTheAccountOnTheCustomersTab()
+        {
+            using var context = NewContext();
+            var user = await SeedBusinessAccountAsync(context);
+            var service = NewService(context);
+
+            await service.ApplyBusinessFlagAsync(user, true, AdminId);
+            var client = await context.ContractClients.SingleAsync();
+
+            Assert.Contains(user.Id,
+                await BusinessAccountLinkPolicy.LoadBusinessClientAccountIdsAsync(context));
+
+            // The Move to Customers button, wording aside, is exactly this.
+            await service.RemoveBusinessClientAsync(client, AdminId);
+
+            Assert.False(user.IsBusiness);
+            Assert.False((await context.ContractClients.SingleAsync()).IsActive);
+
+            // The row still exists - and must no longer count as membership of the other tab.
+            Assert.DoesNotContain(user.Id,
+                await BusinessAccountLinkPolicy.LoadBusinessClientAccountIdsAsync(context));
+        }
+
+        /// <summary>
+        /// Turning the flag back on reactivates the SAME row, so the account returns to Business
+        /// Clients and leaves Customers again. The round trip is what makes the fix a partition
+        /// rather than a one-way escape hatch.
+        /// </summary>
+        [Fact]
+        public async Task ReTickingTheBusinessFlagPutsTheAccountBackOnTheBusinessTab()
+        {
+            using var context = NewContext();
+            var user = await SeedBusinessAccountAsync(context);
+            var service = NewService(context);
+
+            await service.ApplyBusinessFlagAsync(user, true, AdminId);
+            await service.ApplyBusinessFlagAsync(user, false, AdminId);
+            Assert.DoesNotContain(user.Id,
+                await BusinessAccountLinkPolicy.LoadBusinessClientAccountIdsAsync(context));
+
+            await service.ApplyBusinessFlagAsync(user, true, AdminId);
+
+            Assert.Single(await context.ContractClients.ToListAsync());
+            Assert.Contains(user.Id,
+                await BusinessAccountLinkPolicy.LoadBusinessClientAccountIdsAsync(context));
+        }
+
+        /// <summary>
+        /// A standalone client has no account behind it, so it contributes nothing to the set -
+        /// a null link must never be mistaken for "user 0".
+        /// </summary>
+        [Fact]
+        public async Task StandaloneClientsContributeNoAccountIds()
+        {
+            using var context = NewContext();
+            var directory = NewDirectory(context);
+
+            await directory.CreateClient(StandaloneDto("No Account Ltd"));
+
+            Assert.Empty(await BusinessAccountLinkPolicy.LoadBusinessClientAccountIdsAsync(context));
+        }
+
     }
 }

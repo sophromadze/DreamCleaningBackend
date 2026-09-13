@@ -15,6 +15,8 @@ namespace DreamCleaningBackend.Helpers
     ///      priced service lines?             (<see cref="IsServiceLineHiddenFromCleaners"/>)
     ///   2. What is the address, on one line? (<see cref="BuildFullAddress"/>)
     ///   3. Must they bring cleaning supplies? (<see cref="RequiresCleanerToBringSupplies"/>)
+    ///      ...and WHICH items is that about?  (<see cref="ResolveSuppliesItemKeys"/>,
+    ///                                          <see cref="ResolveEssentialsItemKeys"/>)
     ///   4. What kind of cleaning is it?      (<see cref="ResolveCleaningTypeName"/>)
     ///
     /// There is no "bring solutions" column anywhere in the model, and inventing one would have
@@ -119,6 +121,40 @@ namespace DreamCleaningBackend.Helpers
             var names = (order.OrderExtraServices ?? new List<OrderExtraService>())
                 .Select(oes => oes.ExtraService?.Name);
             return CustomerSupplyChecklist.HasCleaningEssentialsExtra(names);
+        }
+
+        /// <summary>
+        /// WHICH PRODUCTS THE SUPPLIES LINE IS ABOUT, as translation keys.
+        ///
+        /// "Bring cleaning supplies" and "the customer provides them" are both instructions that a
+        /// cleaner cannot act on without knowing WHICH supplies - one crew's idea of what a job
+        /// needs is not another's, and the customer was given an exact list. So both directions
+        /// name the same items (owner's call, 2026-09); only who is carrying them changes.
+        /// Resolved through <see cref="CustomerSupplyChecklist.SuppliesItemKeys"/>, the same
+        /// resolver behind the customer's own checklist, and returned as keys so the mail, the SMS
+        /// and the portal each translate one list rather than keeping three.
+        /// </summary>
+        public static List<string> ResolveSuppliesItemKeys(Order order)
+        {
+            var facts = CustomerSupplyChecklist.Resolve(order);
+            return CustomerSupplyChecklist.SuppliesItemKeys(facts.RequiresOvenCleaner);
+        }
+
+        /// <summary>
+        /// WHICH ITEMS THE ESSENTIALS LINE IS ABOUT, as translation keys - same reasoning as
+        /// <see cref="ResolveSuppliesItemKeys"/>.
+        ///
+        /// This one is direction-sensitive and the direction is read here, not at the call sites:
+        /// what WE bring under the "Cleaning Essentials" extra includes a broom, while what the
+        /// customer has ready is a "broom or vacuum cleaner" - or neither of those, when they
+        /// bought the Vacuum Cleaner extra and we are bringing the vacuum. See
+        /// <see cref="CustomerSupplyChecklist.EssentialsItemKeys"/>.
+        /// </summary>
+        public static List<string> ResolveEssentialsItemKeys(Order order)
+        {
+            var facts = CustomerSupplyChecklist.Resolve(order);
+            return CustomerSupplyChecklist.EssentialsItemKeys(
+                facts.HasCleaningEssentials, facts.WeBringVacuum);
         }
 
         /// <summary>

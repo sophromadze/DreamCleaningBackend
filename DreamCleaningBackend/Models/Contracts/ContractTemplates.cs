@@ -72,6 +72,18 @@ namespace DreamCleaningBackend.Models.Contracts
 
         public bool IsActive { get; set; } = true;
 
+        /// <summary>
+        /// The body a NEW contract starts from. At most one row carries it.
+        ///
+        /// Exists because the master agreement is versioned rather than edited in place: when the
+        /// seeded language changes (multiple service days, the retired returned-payment fee), a
+        /// NEW template row is added and marked default, and the previous one stays in the list,
+        /// unmodified, still selectable, and still the body every contract generated from it froze.
+        /// Overwriting the old row instead would silently discard whatever a SuperAdmin had edited
+        /// into it.
+        /// </summary>
+        public bool IsDefault { get; set; }
+
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     }

@@ -172,13 +172,43 @@ namespace DreamCleaningBackend.DTOs
         public int? ContractClientId { get; set; }
     }
 
+    /// <summary>
+    /// A BUSINESS TYPE and its default scope-of-work checklist - Restaurant, Gym/Studio, Office,
+    /// and whatever an admin adds next. The categories and items live inside
+    /// <see cref="Structure"/>, so a new premises type is a data row rather than a code change.
+    /// </summary>
     public class ScopeTemplateDto
     {
         public int Id { get; set; }
         public string Name { get; set; } = string.Empty;
+
+        /// <summary>The noun the agreement uses: "restaurant", "studio", "office".</summary>
         public string PremisesType { get; set; } = string.Empty;
+
         public bool AllowsCustomRows { get; set; }
+        public int SortOrder { get; set; }
+
+        /// <summary>False for an archived type: still resolvable by old contracts, no longer offered.</summary>
+        public bool IsActive { get; set; } = true;
+
         public ScopeStructure Structure { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Creating or editing a business type. The whole checklist is sent as one document because
+    /// the editor manipulates a tree - categories reordered, items added, renamed, re-flagged or
+    /// archived - and per-row endpoints would turn one screenful of edits into a dozen requests
+    /// that can half-fail.
+    /// </summary>
+    public class SaveScopeTemplateDto
+    {
+        [Required, StringLength(120)] public string Name { get; set; } = string.Empty;
+        [StringLength(60)] public string? PremisesType { get; set; }
+        public bool AllowsCustomRows { get; set; }
+        public int SortOrder { get; set; }
+
+        /// <summary>Null leaves the stored checklist untouched, so a rename need not resend it.</summary>
+        public ScopeStructure? Structure { get; set; }
     }
 
     public class ContractTemplateDto
@@ -188,6 +218,16 @@ namespace DreamCleaningBackend.DTOs
         public string Version { get; set; } = string.Empty;
         public string? Description { get; set; }
         public bool IsActive { get; set; }
+
+        /// <summary>
+        /// The body a NEW contract starts from. At most one row carries it.
+        ///
+        /// The create form MUST preselect this rather than the first row it happens to receive:
+        /// the master agreement is versioned by adding a row, so "first" is the OLDEST version and
+        /// preselecting it silently keeps issuing superseded language.
+        /// </summary>
+        public bool IsDefault { get; set; }
+
         /// <summary>Only returned on the single-template read used by the SuperAdmin editor.</summary>
         public string? BodyText { get; set; }
     }
@@ -237,6 +277,14 @@ namespace DreamCleaningBackend.DTOs
         [StringLength(60)] public string? PremisesType { get; set; }
 
         public ScheduleSnapshot Schedule { get; set; } = new();
+
+        /// <summary>
+        /// How often this contract is INVOICED - separate from how often it is cleaned. Absent
+        /// from an older client's payload, where it deserialises to monthly-every-one, which is
+        /// what every existing commercial arrangement is on.
+        /// </summary>
+        public BillingCadenceSnapshot Billing { get; set; } = new();
+
         public TermSnapshot Term { get; set; } = new();
         public ContractPricingInputDto Pricing { get; set; } = new();
         public AdvancedTermsSnapshot Advanced { get; set; } = new();
@@ -262,7 +310,25 @@ namespace DreamCleaningBackend.DTOs
         public int PaymentDeadlineHours { get; set; } = 48;
         [StringLength(200)] public string PaymentMethod { get; set; } = "ACH or bank-to-bank transfer";
         public decimal LateChargePercent { get; set; } = 1.5m;
-        public decimal ReturnedPaymentFee { get; set; } = 35m;
+
+        /// <summary>
+        /// RETIRED FOR NEW CONTRACTS (2026-09) and no longer offered on the form, so it arrives as
+        /// zero and the clause is dropped from the document.
+        ///
+        /// The field is KEPT rather than removed: historical contracts agreed to $35 and their
+        /// frozen snapshots still carry it, and a contract being amended must be able to round-trip
+        /// what it actually says. A flat fee passed to the client for a processor's own failed-debit
+        /// cost is what stopped being a default, not the ability to record one.
+        /// </summary>
+        public decimal ReturnedPaymentFee { get; set; }
+
+        /// <summary>
+        /// Ticked when the admin edited the tax rate or price mode here and wants it to become the
+        /// default for FUTURE contracts and invoices. Writes to <c>BillingSettings</c> only - it
+        /// cannot reach a signed contract or a finalized invoice, both of which carry their own
+        /// snapshot.
+        /// </summary>
+        public bool SaveAsDefault { get; set; }
     }
 
     /// <summary>Live echo of the derived figures while the admin is still typing.</summary>
@@ -299,6 +365,18 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>Only ever true in the list when "Show hidden contracts" is on.</summary>
         public bool IsHidden { get; set; }
+
+        /// <summary>
+        /// Whether "Create Next Invoice" is available for this contract.
+        ///
+        /// Resolved on the SERVER by <c>ContractInvoiceEligibility</c> — the same rule the endpoint
+        /// enforces — so the button and the authorization can never disagree. Hiding the button is
+        /// the convenience; the check in <c>RecurringInvoiceService</c> is the control.
+        /// </summary>
+        public bool CanCreateNextInvoice { get; set; }
+
+        /// <summary>Why not, in words an admin can act on. Null when it is available.</summary>
+        public string? CannotCreateNextInvoiceReason { get; set; }
     }
 
     public class ContractVersionDto
@@ -400,6 +478,16 @@ namespace DreamCleaningBackend.DTOs
         public bool CanDelete { get; set; }
         public bool CanRestore { get; set; }
         public bool IsLocked { get; set; }
+
+        /// <summary>
+        /// Whether "Create Next Invoice" is available. Same server-resolved rule as the list's
+        /// flag (<c>ContractInvoiceEligibility</c>) — the detail page and the list must not be able
+        /// to disagree about whether a contract can be billed.
+        /// </summary>
+        public bool CanCreateNextInvoice { get; set; }
+
+        /// <summary>Why not, in words an admin can act on. Null when it is available.</summary>
+        public string? CannotCreateNextInvoiceReason { get; set; }
 
         /// <summary>
         /// True only when the signed-in account IS this contract's contractor signer and has not

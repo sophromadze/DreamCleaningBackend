@@ -120,9 +120,20 @@ namespace DreamCleaningBackend.Helpers.Commercial
 
         public static bool CanSend(InvoiceStatus status) => status != InvoiceStatus.Void;
 
-        /// <summary>A void invoice collects no money; a paid one needs none.</summary>
+        /// <summary>A void invoice collects no money, and a draft has not been issued.</summary>
         public static bool CanRecordPayment(InvoiceStatus status) =>
             status is not (InvoiceStatus.Void or InvoiceStatus.Draft);
+
+        /// <summary>
+        /// The same question with the balance taken into account: an invoice that is already
+        /// settled offers no "record payment" action at all.
+        ///
+        /// Separate from the status test above rather than replacing it, because a REVERSAL still
+        /// has to be possible on a paid invoice - that is its own endpoint, and it is how a
+        /// mistaken or returned payment is put right.
+        /// </summary>
+        public static bool CanRecordPayment(InvoiceStatus status, decimal balanceDue) =>
+            CanRecordPayment(status) && balanceDue > 0m;
 
         /// <summary>Chasing payment only makes sense while payment is outstanding and issued.</summary>
         public static bool CanSendReminder(InvoiceStatus status) =>

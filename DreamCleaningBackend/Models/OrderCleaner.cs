@@ -38,6 +38,22 @@ namespace DreamCleaningBackend.Models
         /// </summary>
         public DateTime? AssignmentNotificationSentAt { get; set; }
 
+        /// <summary>
+        /// Set when the recurring generator copied this assignment from the series' template order
+        /// rather than an admin choosing it on this job (2026-09).
+        ///
+        /// COPYING AN ASSIGNMENT IS NOT NOTIFYING A CLEANER, and this column is what lets the
+        /// panel say so. The row is created with <see cref="AssignmentNotificationSentAt"/> null
+        /// and NOTHING is emailed or texted — the existing Send / Resend assignment controls stay
+        /// the only thing that contacts anybody, exactly as they were before recurring orders
+        /// existed. The admin sees "Auto-assigned from recurring series — cleaner has not been
+        /// notified" until they use them.
+        ///
+        /// Kept after the notification is sent: it stays the record of HOW the cleaner got onto
+        /// this job, which "notification sent" alone cannot say.
+        /// </summary>
+        public int? AutoAssignedFromSeriesId { get; set; }
+
         // ===== Payroll (Outgoing Payments page, SuperAdmin) =====
         //
         // This row is the payout record for ONE cleaner on ONE order. Both overrides below are

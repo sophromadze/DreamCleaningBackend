@@ -98,6 +98,30 @@ namespace DreamCleaningBackend.Helpers.Contracts
             return $"{dollars} ({Money(value)})";
         }
 
+        /// <summary>
+        /// "Monday", "Monday and Wednesday", "Monday, Wednesday and Friday" - a list as a person
+        /// writes it in prose.
+        ///
+        /// Serial comma deliberately absent: the reference agreement does not use one, and the
+        /// document has to read in one voice whether it names one service day or five. An empty
+        /// list yields an empty string rather than a dangling "and".
+        /// </summary>
+        public static string JoinWithAnd(IReadOnlyList<string>? parts)
+        {
+            var items = (parts ?? Array.Empty<string>())
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p.Trim())
+                .ToList();
+
+            return items.Count switch
+            {
+                0 => string.Empty,
+                1 => items[0],
+                2 => $"{items[0]} and {items[1]}",
+                _ => string.Join(", ", items.Take(items.Count - 1)) + " and " + items[^1]
+            };
+        }
+
         /// <summary>Contract-style long date: "September 6, 2026". Blank line when unset.</summary>
         public static string LongDate(DateTime? value) =>
             value.HasValue

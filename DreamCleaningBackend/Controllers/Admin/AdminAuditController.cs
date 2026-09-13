@@ -34,6 +34,7 @@ namespace DreamCleaningBackend.Controllers
         public async Task<IActionResult> GetEntityHistory(string entityType, long entityId)
         {
             var history = await _auditService.GetEntityHistoryAsync(entityType, entityId);
+            var display = await AuditDisplayProjection.BuildAsync(_context, history);
 
             var result = history.Select(log => new
             {
@@ -42,8 +43,10 @@ namespace DreamCleaningBackend.Controllers
                 log.CreatedAt,
                 ChangedBy = log.User?.FirstName + " " + log.User?.LastName,
                 ChangedByEmail = log.User?.Email,
-                OldValues = string.IsNullOrEmpty(log.OldValues) ? null : JsonConvert.DeserializeObject(log.OldValues),
-                NewValues = string.IsNullOrEmpty(log.NewValues) ? null : JsonConvert.DeserializeObject(log.NewValues),
+                log.EntityType,
+                log.EntityId,
+                OldValues = display[log.Id].OldValues == null ? null : JsonConvert.DeserializeObject(display[log.Id].OldValues!),
+                NewValues = display[log.Id].NewValues == null ? null : JsonConvert.DeserializeObject(display[log.Id].NewValues!),
                 ChangedFields = string.IsNullOrEmpty(log.ChangedFields) ? null : JsonConvert.DeserializeObject<List<string>>(log.ChangedFields),
                 UndoneAt = log.UndoneAt,
                 UndoBlockedReason = AuditEntityTypes.ResolveUndoBlockedReason(log)
@@ -116,6 +119,7 @@ namespace DreamCleaningBackend.Controllers
                 .Include(a => a.User)
                 .ToListAsync();
 
+            var display = await AuditDisplayProjection.BuildAsync(_context, logs);
             var items = logs.Select(log => new
             {
                 id = log.Id,
@@ -126,8 +130,8 @@ namespace DreamCleaningBackend.Controllers
                 changedBy = log.User == null ? null : (log.User.FirstName + " " + log.User.LastName).Trim(),
                 changedByEmail = log.User?.Email,
                 changedByUserId = log.UserId,
-                oldValues = log.OldValues,
-                newValues = log.NewValues,
+                oldValues = display[log.Id].OldValues,
+                newValues = display[log.Id].NewValues,
                 changedFields = log.ChangedFields,
                 undoneAt = log.UndoneAt,
                 // Server-side authority for the Undo button. Null = the row can be reverted; a

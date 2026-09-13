@@ -156,14 +156,17 @@ namespace DreamCleaningBackend.Services
             var todayDate = now.Date;
             var engagedStatuses = new[] { "Active", "Pending", "Confirmed" };
 
+            var residentialOrders = context.Orders.Where(o => o.ContractClientId == null
+                && o.PaymentMethod != PaymentMethod.Invoice
+                && !context.CommercialInvoiceOrders.Any(l => l.OrderId == o.Id));
             var candidates = await context.Users
                 .Where(u =>
                     u.IsActive &&
                     !u.IsDeleted &&
-                    u.LastCompletedOrderDate != null &&
-                    u.LastCompletedOrderDate <= latestEligibleLastOrderUtc &&
-                    u.LastCompletedOrderDate >= earliestEligibleLastOrderUtc &&
-                    !context.Orders.Any(o =>
+                    residentialOrders.Where(o => o.UserId == u.Id && o.Status == "Done").Max(o => (DateTime?)o.ServiceDate) != null &&
+                    residentialOrders.Where(o => o.UserId == u.Id && o.Status == "Done").Max(o => (DateTime?)o.ServiceDate) <= latestEligibleLastOrderUtc &&
+                    residentialOrders.Where(o => o.UserId == u.Id && o.Status == "Done").Max(o => (DateTime?)o.ServiceDate) >= earliestEligibleLastOrderUtc &&
+                    !residentialOrders.Any(o =>
                         o.UserId == u.Id &&
                         engagedStatuses.Contains(o.Status) &&
                         o.ServiceDate >= todayDate))
@@ -173,11 +176,12 @@ namespace DreamCleaningBackend.Services
                     FirstName = u.FirstName,
                     Email = u.Email,
                     Phone = u.Phone,
-                    LastCompletedOrderDate = u.LastCompletedOrderDate!.Value,
+                    LastCompletedOrderDate = residentialOrders.Where(o => o.UserId == u.Id && o.Status == "Done").Max(o => (DateTime?)o.ServiceDate)!.Value,
                     CanReceiveEmails = u.CanReceiveEmails,
                     CanReceiveMessages = u.CanReceiveMessages,
                     LoyaltyDiscountPercentage = u.LoyaltyDiscountPercentage,
                     LoyaltyDiscountIsManualOverride = u.LoyaltyDiscountIsManualOverride,
+                    LoyaltyDiscountIsLifetime = u.LoyaltyDiscountIsLifetime,
                     LoyaltyDiscountActivatedAt = u.LoyaltyDiscountActivatedAt,
                     LoyaltyDiscountLastUsedAt = u.LoyaltyDiscountLastUsedAt,
                 })
@@ -212,6 +216,27 @@ namespace DreamCleaningBackend.Services
             ISmsService smsService,
             IAuditService auditService)
         {
+            // ═══ LIFETIME LOYALTY TURNS THIS AUTOMATION OFF FOR THIS CUSTOMER ═══
+            //
+            // An admin has made a standing commercial decision about what this person pays. The
+            // win-back worker must not activate a 60-day 10% on top of it, must not "upgrade" them
+            // to the 90-day 15% (which for a 20% lifetime customer would be a CUT), and must not
+            // overwrite the agreed figure. It must not send them the discount reminders either —
+            // the copy announces a percentage the account does not have.
+            //
+            // Returned BEFORE the milestone branches rather than filtered in the SQL above, so the
+            // reason is stated once, in words, where somebody debugging "why did this customer
+            // never get the 60-day mail?" will actually read it. Clearing the lifetime discount
+            // hands them straight back to the ordinary rules with no backfill and no retroactive
+            // duplicate — the next natural cycle simply re-evaluates them.
+            if (c.LoyaltyDiscountIsLifetime)
+            {
+                _logger.LogDebug(
+                    "User {UserId}: skipped (lifetime loyalty discount of {Pct}% is in force)",
+                    c.UserId, c.LoyaltyDiscountPercentage);
+                return;
+            }
+
             var daysSinceLastOrder = (int)Math.Floor((now.Date - c.LastCompletedOrderDate.Date).TotalDays);
 
             // Re-activation cooldown: even if days-since-last-order is past day30, we wait
@@ -487,6 +512,8 @@ namespace DreamCleaningBackend.Services
             public bool CanReceiveMessages { get; init; }
             public decimal LoyaltyDiscountPercentage { get; set; }
             public bool LoyaltyDiscountIsManualOverride { get; init; }
+            /// <summary>A lifetime discount suspends this whole automation for the customer.</summary>
+            public bool LoyaltyDiscountIsLifetime { get; init; }
             public DateTime? LoyaltyDiscountActivatedAt { get; init; }
             public DateTime? LoyaltyDiscountLastUsedAt { get; init; }
         }

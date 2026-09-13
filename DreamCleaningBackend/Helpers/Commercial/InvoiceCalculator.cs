@@ -27,6 +27,8 @@ namespace DreamCleaningBackend.Helpers.Commercial
         public decimal DiscountAmount { get; set; }
         public decimal TaxAmount { get; set; }
         public decimal Total { get; set; }
+        /// <summary>After discounts, excluding the tax already derived by this calculator.</summary>
+        public decimal PreTaxTotal => InvoiceCalculator.Round2(Total - TaxAmount);
     }
 
     /// <summary>

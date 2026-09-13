@@ -133,11 +133,13 @@ namespace DreamCleaningBackend.Helpers
         /// whether a booking happened at all: a bonus is earned for work DELIVERED and money
         /// COLLECTED, so the job has to have reached Done as well. The paid test is the same one
         /// used everywhere else in the codebase — manual payments (cash/Zelle/check) carry
-        /// IsPaid = false by design and qualify on PaymentMethod instead.
+        /// IsPaid = false by design and qualify on PaymentMethod instead — except Invoice, which
+        /// is handled outside Stripe but is not SETTLED until its invoice is paid in full
+        /// (see Helpers/OrderPaymentFilter, which states that rule once).
         /// </summary>
         public static readonly System.Linq.Expressions.Expression<Func<Order, bool>> BonusEligible = o =>
             o.Status == OrderStatuses.Done
-            && (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal);
+            && (o.IsPaid || (o.PaymentMethod != PaymentMethod.Normal && (o.PaymentMethod != PaymentMethod.Invoice || o.InvoicePaidAt != null)));
 
         /// <summary>
         /// The same rule widened to jobs that have not happened yet — what the finances page's
@@ -152,6 +154,6 @@ namespace DreamCleaningBackend.Helpers
             (o.Status == OrderStatuses.Done
              || o.Status == OrderStatuses.Active
              || o.Status == OrderStatuses.Pending)
-            && (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal);
+            && (o.IsPaid || (o.PaymentMethod != PaymentMethod.Normal && (o.PaymentMethod != PaymentMethod.Invoice || o.InvoicePaidAt != null)));
     }
 }

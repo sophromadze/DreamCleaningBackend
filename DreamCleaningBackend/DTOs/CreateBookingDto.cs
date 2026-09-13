@@ -85,7 +85,9 @@ namespace DreamCleaningBackend.DTOs
         // CompanyDevelopmentTips is deliberately absent: "Tips for Company Development" is
         // retired and cannot be set by any client. New orders always store 0.
         public int MaidsCount { get; set; }
-        public decimal TotalDuration { get; set; }
+        // Optional client estimate for mismatch diagnostics. Internal recurring requests omit it;
+        // the persisted duration is always calculated from the selected services on the server.
+        public decimal? TotalDuration { get; set; }
         public decimal DiscountAmount { get; set; }
         public decimal SubscriptionDiscountAmount { get; set; } = 0;
         // Loyalty Discount amount the client computed for the breakdown preview. The backend
@@ -158,6 +160,17 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentMethod { get; set; }
         public string? PaymentReference { get; set; }
         public string? PaymentNotes { get; set; }
+
+        /// <summary>
+        /// The commercial client this order is BILLED to. Required when
+        /// <see cref="PaymentMethod"/> is "Invoice", ignored otherwise.
+        ///
+        /// A ContractClient id, not a User id: the client may have no website account at all, and
+        /// ContractClient is the commercial billing entity invoices and contracts already hang off.
+        /// The order is not activated by being created — an invoice covering it being paid in full
+        /// is what does that.
+        /// </summary>
+        public int? ContractClientId { get; set; }
 
         // ── Admin "recreate a past order" controls (2026-08) ──────────────────────────────────
         // All four are NULLABLE and null means "behave exactly as this endpoint always has".

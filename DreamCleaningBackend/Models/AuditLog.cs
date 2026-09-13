@@ -16,7 +16,7 @@ namespace DreamCleaningBackend.Models
         public long EntityId { get; set; } // The ID of the thing that changed
 
         [Required]
-        [StringLength(20)]
+        [StringLength(128)]
         public string Action { get; set; } // "Create", "Update", "Delete"
 
         [Column(TypeName = "LONGTEXT")]

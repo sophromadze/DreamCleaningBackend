@@ -37,15 +37,18 @@ namespace DreamCleaningBackend.Services.Commercial
     {
         private readonly ApplicationDbContext _context;
         private readonly InvoiceService _invoices;
+        private readonly InvoiceOrderLinkService _orderLinks;
         private readonly ILogger<InvoiceStripePaymentService> _logger;
 
         public InvoiceStripePaymentService(
             ApplicationDbContext context,
             InvoiceService invoices,
+            InvoiceOrderLinkService orderLinks,
             ILogger<InvoiceStripePaymentService> logger)
         {
             _context = context;
             _invoices = invoices;
+            _orderLinks = orderLinks;
             _logger = logger;
         }
 
@@ -175,8 +178,25 @@ namespace DreamCleaningBackend.Services.Commercial
                 return result;
             }
 
-            // Stripe reports cents; the ledger is decimal dollars.
-            var amount = decimal.Round(amountReceivedCents / 100m, 2, MidpointRounding.AwayFromZero);
+            // Stripe reports cents; the ledger is decimal dollars. THIS IS THE GROSS DEBIT - it
+            // includes the ACH processing fee the customer agreed to on top of the invoice.
+            var charged = decimal.Round(amountReceivedCents / 100m, 2, MidpointRounding.AwayFromZero);
+            if (charged <= 0m) return result;
+
+            // ── Split the debit back into "what the invoice was paid" and "what the payment
+            //    method cost" ──
+            //
+            // The fee is taken from the ATTEMPT, which froze the figure quoted to the customer
+            // when they authorized - never recomputed from today's settings, because an ACH debit
+            // takes days to clear and the settings could legitimately have moved in between. What
+            // they agreed to is what is recorded.
+            //
+            // Crediting the gross to the invoice would make a $925.43 bill read $5.00 overpaid on
+            // every single online payment; dropping the fee instead would leave $5.00 of the
+            // customer's money with no record anywhere. So it is stored beside the amount.
+            var processingFee = attempt?.ProcessingFee ?? 0m;
+            if (processingFee > charged) processingFee = 0m;   // defensive: never a negative credit
+            var amount = InvoiceCalculator.Round2(charged - processingFee);
             if (amount <= 0m) return result;
 
             await using var transaction = await _context.Database.BeginTransactionAsync();
@@ -200,6 +220,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 {
                     CommercialInvoiceId = invoice.Id,
                     Amount = amount,
+                    ProcessingFee = processingFee,
                     PaymentDate = DateTime.UtcNow.Date,
                     PaymentMethod = attempt?.PaymentMethod ?? InvoicePaymentRecordMethod.AchBankTransfer,
                     Provider = InvoicePaymentProvider.Stripe,
@@ -247,6 +268,11 @@ namespace DreamCleaningBackend.Services.Commercial
                     Description =
                         $"Stripe confirmed a {InvoiceCheckoutService.MethodLabel(payment.PaymentMethod)} "
                         + $"payment of {amount:C}."
+                        + (processingFee > 0m
+                            ? $" A {Helpers.Commercial.AchProcessingFeeCalculator.CustomerFacingLabel} "
+                              + $"of {processingFee:C} was collected on top ({charged:C} debited in total); "
+                              + "it is not applied to the invoice."
+                            : string.Empty)
                         + (string.IsNullOrWhiteSpace(sourceLabel) ? "" : $" Paid from {sourceLabel}."),
                     ActorName = "Stripe",
                     CreatedAt = DateTime.UtcNow
@@ -270,27 +296,56 @@ namespace DreamCleaningBackend.Services.Commercial
                 // refund.
                 if (overpayment > 0m)
                 {
+                    // Was any of the other money recorded by hand? If so this is not merely an
+                    // overpayment, it is the SPECIFIC accident of an invoice marked paid manually
+                    // while a Stripe debit was still settling - and it is named as such, because
+                    // "possible duplicate payment" tells an admin what to go and check while
+                    // "overpaid" leaves them guessing.
+                    var manuallyPaid = await _context.CommercialInvoicePayments
+                        .AnyAsync(p => p.CommercialInvoiceId == invoice.Id
+                                       && p.Provider == InvoicePaymentProvider.Manual
+                                       && !p.IsReversal);
+
                     _context.CommercialInvoiceActivityLogs.Add(new CommercialInvoiceActivityLog
                     {
                         CommercialInvoiceId = invoice.Id,
-                        Action = "payment_overpaid",
-                        Description =
-                            $"This invoice is overpaid by {overpayment:C} after the Stripe payment was "
-                            + "recorded. It may have also been paid manually — please review and refund.",
+                        Action = manuallyPaid ? "payment_duplicate_suspected" : "payment_overpaid",
+                        Description = manuallyPaid
+                            ? $"POSSIBLE DUPLICATE PAYMENT. This invoice was already marked paid manually, "
+                              + $"and Stripe has now settled {amount:C} as well - it is overpaid by "
+                              + $"{overpayment:C}. Neither payment has been altered: both are real money "
+                              + "that arrived. Review the payment history and refund whichever is the "
+                              + "duplicate."
+                            : $"This invoice is overpaid by {overpayment:C} after the Stripe payment was "
+                              + "recorded. Please review and refund.",
                         ActorName = "System",
                         CreatedAt = DateTime.UtcNow
                     });
                     result.Overpaid = true;
 
                     _logger.LogWarning(
-                        "Invoice {Number} is overpaid by {Overpayment} after Stripe settlement {PaymentIntentId}.",
-                        invoice.InvoiceNumber, overpayment, paymentIntentId);
+                        "Invoice {Number} is overpaid by {Overpayment} after Stripe settlement "
+                        + "{PaymentIntentId}. Manual payment present: {ManuallyPaid}.",
+                        invoice.InvoiceNumber, overpayment, paymentIntentId, manuallyPaid);
                 }
 
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
 
                 result.Recorded = true;
+
+                // The cleanings this invoice covers become Active now the money has actually
+                // settled — AFTER the commit, so the activation can never be part of a
+                // transaction that later rolls back and leaves orders claiming to be paid.
+                //
+                // THE SAME CALL "Mark as Paid" MAKES. One activation path, so a manual bank
+                // transfer and a Stripe ACH settlement produce identical results. It is idempotent
+                // (Order.InvoicePaidAt is the marker) and swallows its own failures, so a retried
+                // delivery does nothing and a bookkeeping problem never makes Stripe retry a
+                // payment that already succeeded.
+                if (result.InvoiceBecamePaid && result.InvoiceId.HasValue)
+                    await _orderLinks.ActivateCoveredOrdersAsync(result.InvoiceId.Value);
+
                 return result;
             }
             catch (DbUpdateException ex) when (IsUniqueViolation(ex))
@@ -362,6 +417,46 @@ namespace DreamCleaningBackend.Services.Commercial
             attempt.CompletedAt = DateTime.UtcNow;
             attempt.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// An ACH debit that had been authorized has failed on settlement — returned, insufficient
+        /// funds, account closed. Days may have passed since the customer pressed the button.
+        ///
+        /// NO MONEY IS WRITTEN, and the invoice's own status is deliberately not touched: with no
+        /// payment row the balance is unchanged, so <c>InvoiceStatusPolicy</c> already reads it as
+        /// Sent / Viewed / Overdue and the pay button returns on its own. The attempt keeps the
+        /// failure so the history explains the gap.
+        /// </summary>
+        public async Task HandleAsyncPaymentFailedAsync(
+            string sessionId, string? paymentIntentId, IDictionary<string, string>? metadata)
+        {
+            var attempt = await FindAttemptAsync(sessionId, paymentIntentId, metadata);
+            if (attempt == null)
+            {
+                _logger.LogWarning(
+                    "async_payment_failed for {SessionId} matched no commercial payment attempt.",
+                    sessionId);
+                return;
+            }
+
+            // A settled attempt is never dragged backwards. Stripe can deliver out of order, and a
+            // succeeded payment that later genuinely reverses is an ACH RETURN - corrected by a
+            // reversing entry on the ledger, not by rewriting this row.
+            if (attempt.Status == InvoicePaymentAttemptStatus.Succeeded) return;
+
+            attempt.Status = InvoicePaymentAttemptStatus.Failed;
+            attempt.StripePaymentIntentId ??= paymentIntentId;
+            attempt.FailureMessage = "The bank rejected the ACH debit after it was authorized.";
+            attempt.CompletedAt = DateTime.UtcNow;
+            attempt.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            await _invoices.LogActivityAsync(attempt.CommercialInvoiceId, "stripe_ach_failed",
+                $"The bank payment of {attempt.TotalCharged:C} failed to settle. The invoice is "
+                + "payable again and no money was recorded.",
+                null, "Stripe");
         }
 
         // ── Resolution ────────────────────────────────────────────────────────────────────────

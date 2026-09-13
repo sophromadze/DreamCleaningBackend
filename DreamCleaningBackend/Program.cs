@@ -17,6 +17,7 @@ using MySqlConnector;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.OpenApi.Models;
+using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -153,6 +154,41 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 }
                 
                 return Task.CompletedTask;
+            },
+
+            // Server-side session revocation. A JWT is signed for 30 days and carries the role it
+            // was minted with, so without this an admin who changed somebody's role could only end
+            // the session of a user who happened to be ONLINE (the SignalR "RoleChanged" notice).
+            // An offline user came back holding their old role until the token aged out. The "tv"
+            // claim is re-checked against User.TokenVersion here, on every request, so a revoked
+            // token is refused whether the browser was open at the time or not.
+            OnTokenValidated = async context =>
+            {
+                var principal = context.Principal;
+                var userIdClaim = principal?.FindFirst("UserId")?.Value
+                                  ?? principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+                // Nothing to check against - leave the token exactly as it was validated.
+                if (!int.TryParse(userIdClaim, out var userId))
+                    return;
+
+                // Tokens minted before this feature carry no claim and read as 0, which is the
+                // column default. They stay valid until something actually revokes them.
+                var claimValue = principal?.FindFirst(TokenVersionService.ClaimType)?.Value;
+                if (!int.TryParse(claimValue, out var tokenVersion))
+                    tokenVersion = 0;
+
+                var tokenVersions = context.HttpContext.RequestServices.GetRequiredService<ITokenVersionService>();
+                if (!await tokenVersions.IsTokenCurrentAsync(userId, tokenVersion))
+                {
+                    // Tell the browser WHY, so the frontend can log out on a revoked session
+                    // without having to treat every unrelated 401 as "your session ended".
+                    context.Response.Headers[TokenVersionService.RevokedHeader] = "1";
+
+                    // 401 -> the frontend clears its stored session and lands on the login page.
+                    // A refresh cannot rescue it either: the revoke dropped the refresh token.
+                    context.Fail("Session revoked");
+                }
             }
         };
     });
@@ -173,8 +209,25 @@ builder.Services.AddScoped<IProfileService, ProfileService>();
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<IUserManagementService, UserManagementService>();
+
+// Server-side session revocation (see TokenVersionService). Singleton because OnTokenValidated
+// consults it on every authenticated request; it opens its own scope for the rare DB read.
+builder.Services.AddSingleton<ITokenVersionService, TokenVersionService>();
 builder.Services.AddScoped<IGiftCardService, GiftCardService>();
 builder.Services.AddScoped<IBookingCreationService, BookingCreationService>();
+
+// ── Recurring residential orders (2026-09) ──────────────────────────────────────────────────
+// A series is a SCHEDULE; every occurrence it produces is an ordinary Order created through
+// BookingCreationService, so it is priced, discounted and displayed like any other booking.
+builder.Services.AddScoped<IRecurringOrderSeriesService, RecurringOrderSeriesService>();
+builder.Services.AddScoped<IRecurringCustomerPaymentService, RecurringCustomerPaymentService>();
+
+// Singleton AND hosted, resolving the same instance both ways — same arrangement as
+// InvoiceOverdueService: it runs its own daily pass, and the admin "run sweep" endpoint injects
+// it to trigger one on demand. AddHostedService<T>() alone would create a second instance the
+// controller could not reach.
+builder.Services.AddSingleton<RecurringOrderGenerationService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<RecurringOrderGenerationService>());
 builder.Services.AddScoped<IOrderReorderPreviewService, OrderReorderPreviewService>();
 builder.Services.AddScoped<IPricingConfigurationService, PricingConfigurationService>();
 // Scoped so it shares the caller's ApplicationDbContext — it persists what the caller staged
@@ -406,6 +459,16 @@ builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceEmail
 builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceCheckoutService>();
 builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceStripePaymentService>();
 
+// "Create Next Invoice": turns a recurring contract into a DRAFT invoice. It emails nobody and
+// finalizes nothing, so it is an ordinary scoped service rather than a background worker.
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.RecurringInvoiceService>();
+
+// Which cleanings an invoice covers, and what it allocates to each. Writes to Orders through
+// IOrderInvoiceAllocationService (registered with the residential services below) so the
+// commercial code never reaches into the residential pricing chain.
+builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceOrderLinkService>();
+builder.Services.AddScoped<IOrderInvoiceAllocationService, OrderInvoiceAllocationService>();
+
 // Registered as a singleton AND hosted, resolving the same instance both ways: it runs its own
 // daily sweep, and the SuperAdmin "run now" endpoint injects it to trigger a pass on demand.
 // AddHostedService<T>() alone would create a second, separate instance for the controller.
@@ -424,7 +487,10 @@ builder.Services.AddCors(options =>
             policy.WithOrigins("http://localhost:4200") // Angular dev server
                    .AllowAnyHeader()
                    .AllowAnyMethod()
-                   .AllowCredentials(); // Important for cookies
+                   .AllowCredentials() // Important for cookies
+                   // Readable cross-origin so the browser can tell a revoked session from any
+                   // other 401 (see TokenVersionService.RevokedHeader).
+                   .WithExposedHeaders(TokenVersionService.RevokedHeader);
         });
 
     // Add production policy
@@ -440,7 +506,8 @@ builder.Services.AddCors(options =>
                 )
                 .AllowAnyHeader()
                 .AllowAnyMethod()
-                .AllowCredentials(); // Important for cookies
+                .AllowCredentials() // Important for cookies
+                .WithExposedHeaders(TokenVersionService.RevokedHeader);
         });
 });
 

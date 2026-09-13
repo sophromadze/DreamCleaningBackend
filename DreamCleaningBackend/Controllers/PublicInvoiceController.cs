@@ -118,7 +118,9 @@ namespace DreamCleaningBackend.Controllers
                 {
                     CheckoutUrl = checkoutUrl,
                     AttemptId = attempt.Id,
-                    Amount = attempt.Amount
+                    Amount = attempt.Amount,
+                    ProcessingFee = attempt.ProcessingFee,
+                    TotalCharged = attempt.TotalCharged
                 });
             }
             catch (InvoiceCheckoutUnavailableException ex)

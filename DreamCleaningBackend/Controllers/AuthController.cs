@@ -494,7 +494,11 @@ namespace DreamCleaningBackend.Controllers
         }
 
         [HttpPost("logout")]
-        [Authorize]
+        // Deliberately anonymous: logging out only clears cookies, and the ONE moment the frontend
+        // needs it most is when the access token has just been refused (revoked session, expired
+        // token). Requiring auth there made the call 401, which the interceptor answers by calling
+        // logout again - a loop. Nothing here reads the caller's identity.
+        [AllowAnonymous]
         public ActionResult Logout()
         {
             if (_useCookieAuth)
@@ -880,7 +884,7 @@ namespace DreamCleaningBackend.Controllers
                 HttpOnly = true,
                 Secure = !_configuration.GetValue<bool>("Development:UseHttp", false), // Use HTTPS in production
                 SameSite = SameSiteMode.Strict,
-                Expires = DateTime.UtcNow.AddDays(7) // Changed from 2 hours to 7 days to match refresh token
+                Expires = DateTime.UtcNow.AddDays(30) // 30 days, matching the access token and refresh token
             };
 
             Response.Cookies.Append("access_token", token, cookieOptions);
@@ -890,7 +894,7 @@ namespace DreamCleaningBackend.Controllers
                 HttpOnly = true,
                 Secure = !_configuration.GetValue<bool>("Development:UseHttp", false),
                 SameSite = SameSiteMode.Strict,
-                Expires = DateTime.UtcNow.AddDays(7)
+                Expires = DateTime.UtcNow.AddDays(30)
             };
 
             Response.Cookies.Append("refresh_token", refreshToken, refreshCookieOptions);

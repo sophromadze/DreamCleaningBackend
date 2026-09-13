@@ -61,6 +61,10 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        public Task<PaymentIntent> CancelPaymentIntentAsync(string paymentIntentId) =>
+            new PaymentIntentService().CancelAsync(paymentIntentId,
+                new PaymentIntentCancelOptions { CancellationReason = "abandoned" });
+
         public async Task<PaymentIntent> GetPaymentIntentAsync(string paymentIntentId)
         {
             try

@@ -7,6 +7,7 @@ using DreamCleaningBackend.DTOs.Commercial;
 using DreamCleaningBackend.Helpers.Commercial;
 using DreamCleaningBackend.Models.Commercial;
 using DreamCleaningBackend.Models.Contracts;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Commercial;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -69,7 +70,18 @@ namespace DreamCleaningBackend.Tests
 
         private static InvoiceStripePaymentService NewStripeService(
             ApplicationDbContext context, InvoiceService invoices) =>
-            new(context, invoices, NullLogger<InvoiceStripePaymentService>.Instance);
+            new(context, invoices, NewOrderLinks(context, invoices),
+                NullLogger<InvoiceStripePaymentService>.Instance);
+
+        /// <summary>Turns a settled payment into ACTIVE cleanings. A no-op here — these invoices
+        /// link no orders, which is the ordinary ad-hoc commercial case.</summary>
+        private static InvoiceOrderLinkService NewOrderLinks(
+            ApplicationDbContext context, InvoiceService invoices) =>
+            new(context, invoices,
+                new OrderInvoiceAllocationService(
+                    context, new RecordingAuditService(),
+                    NullLogger<OrderInvoiceAllocationService>.Instance),
+                NullLogger<InvoiceOrderLinkService>.Instance);
 
         /// <summary>The admin who raised the invoice, and the one who reverses a payment below.</summary>
         private const int CreatingAdminId = 1;

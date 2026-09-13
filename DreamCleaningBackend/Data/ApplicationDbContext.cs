@@ -21,6 +21,30 @@ namespace DreamCleaningBackend.Data
         {
         }
 
+        // This also covers the few audit writers outside AuditService. Existing rows are not
+        // rewritten in bulk; new/changed snapshots never persist credentials.
+        private void SanitizeAuditWrites()
+        {
+            foreach (var entry in ChangeTracker.Entries<AuditLog>()
+                .Where(e => e.State is EntityState.Added or EntityState.Modified))
+            {
+                entry.Entity.OldValues = DreamCleaningBackend.Services.AuditDataPolicy.SanitizeJson(entry.Entity.OldValues);
+                entry.Entity.NewValues = DreamCleaningBackend.Services.AuditDataPolicy.SanitizeJson(entry.Entity.NewValues);
+            }
+        }
+
+        public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        {
+            SanitizeAuditWrites();
+            return base.SaveChanges(acceptAllChangesOnSuccess);
+        }
+
+        public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+        {
+            SanitizeAuditWrites();
+            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        }
+
         public DbSet<User> Users { get; set; }
         public DbSet<Apartment> Apartments { get; set; }
         public DbSet<Subscription> Subscriptions { get; set; }
@@ -40,6 +64,16 @@ namespace DreamCleaningBackend.Data
         public DbSet<UserSpecialOffer> UserSpecialOffers { get; set; }
         public DbSet<GiftCardConfig> GiftCardConfigs { get; set; }
         public DbSet<OrderCleaner> OrderCleaners { get; set; }
+
+        // Recurring residential/commercial cleanings (2026-09). A series is a SCHEDULE — every
+        // occurrence is an ordinary Order. Nothing is backfilled: an order with no
+        // RecurringSeriesId behaves exactly as it did before this feature existed.
+        public DbSet<RecurringOrderSeries> RecurringOrderSeries { get; set; }
+
+        // "Pay all upcoming" — one Stripe charge covering several of a customer's own orders.
+        // Deliberately NOT the commercial invoice ledger; see OrderPaymentBatch.
+        public DbSet<OrderPaymentBatch> OrderPaymentBatches { get; set; }
+        public DbSet<OrderPaymentBatchItem> OrderPaymentBatchItems { get; set; }
         public DbSet<OrderUnassignedPayout> OrderUnassignedPayouts { get; set; }
         public DbSet<NotificationLog> NotificationLogs { get; set; }
         public DbSet<PollQuestion> PollQuestions { get; set; }
@@ -149,6 +183,8 @@ namespace DreamCleaningBackend.Data
         // through HasData, for the same reason the contract reference data is.
         public DbSet<CommercialInvoice> CommercialInvoices { get; set; }
         public DbSet<CommercialInvoiceItem> CommercialInvoiceItems { get; set; }
+        /// <summary>Which cleanings an invoice covers, and the amount allocated to each.</summary>
+        public DbSet<CommercialInvoiceOrder> CommercialInvoiceOrders { get; set; }
         public DbSet<CommercialInvoicePayment> CommercialInvoicePayments { get; set; }
         public DbSet<CommercialInvoiceEmailLog> CommercialInvoiceEmailLogs { get; set; }
         public DbSet<CommercialInvoiceActivityLog> CommercialInvoiceActivityLogs { get; set; }
@@ -422,6 +458,33 @@ namespace DreamCleaningBackend.Data
 
                 entity.HasOne(e => e.VoidedByUser).WithMany()
                     .HasForeignKey(e => e.VoidedByUserId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // One invoice ↔ many orders, with the amount allocated to each. See
+            // CommercialInvoiceOrder for why this is an explicit entity and not a link table.
+            modelBuilder.Entity<CommercialInvoiceOrder>(entity =>
+            {
+                // UNIQUE. An order can appear on an invoice at most once — a second row would be
+                // two allocations for one cleaning, and the "already billed" check reads this pair.
+                entity.HasIndex(e => new { e.CommercialInvoiceId, e.OrderId }).IsUnique()
+                    .HasDatabaseName("IX_CommercialInvoiceOrders_Invoice_Order");
+
+                // "Which invoices cover this order?" — the duplicate-billing guard's own query.
+                entity.HasIndex(e => e.OrderId).HasDatabaseName("IX_CommercialInvoiceOrders_OrderId");
+
+                // Cascade from the invoice, like line items: the allocation has no meaning apart
+                // from the invoice that made it. Deleting a DRAFT therefore drops its proposals,
+                // which is correct — nothing was ever written to the orders.
+                entity.HasOne(e => e.Invoice).WithMany(i => i.CoveredOrders)
+                    .HasForeignKey(e => e.CommercialInvoiceId).OnDelete(DeleteBehavior.Cascade);
+
+                // Restrict on the order: an order that has been billed must not be deletable out
+                // from under a finalized invoice.
+                entity.HasOne(e => e.Order).WithMany()
+                    .HasForeignKey(e => e.OrderId).OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.CommittedByUser).WithMany()
+                    .HasForeignKey(e => e.CommittedByUserId).OnDelete(DeleteBehavior.SetNull);
             });
 
             modelBuilder.Entity<CommercialInvoiceItem>(entity =>
@@ -761,6 +824,83 @@ namespace DreamCleaningBackend.Data
             modelBuilder.Entity<UserSpecialOffer>()
                 .Property(uso => uso.UsedOnOrderId)
                 .IsRequired(false);
+
+            // ── Recurring order series (2026-09) ──────────────────────────────────────────────
+            modelBuilder.Entity<RecurringOrderSeries>(entity =>
+            {
+                entity.HasIndex(e => new { e.IsActive, e.AnchorDate })
+                    .HasDatabaseName("IX_RecurringOrderSeries_Active_Anchor");
+
+                entity.HasIndex(e => e.UserId).HasDatabaseName("IX_RecurringOrderSeries_UserId");
+
+                entity.HasOne(e => e.User).WithMany()
+                    .HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Restrict);
+
+                // Restrict, not cascade: the template is a real order in its own right, and
+                // deleting it must never take the schedule (or the bookings it produced) with it.
+                entity.HasOne(e => e.TemplateOrder).WithMany()
+                    .HasForeignKey(e => e.TemplateOrderId).OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.CreatedByUser).WithMany()
+                    .HasForeignKey(e => e.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<Order>()
+                .HasOne(o => o.RecurringSeries)
+                .WithMany(s => s.Occurrences)
+                .HasForeignKey(o => o.RecurringSeriesId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // THE IDEMPOTENCY GUARD for rolling generation. Unique on (series, occurrence date),
+            // so a restarted sweep, an overlapping sweep or a double-clicked "generate now"
+            // cannot produce two cleanings for the same slot. MySQL never treats two NULLs as
+            // equal, so every ordinary non-recurring order coexists here untouched — which is why
+            // no filtered index is needed (and MySQL has none).
+            modelBuilder.Entity<Order>()
+                .HasIndex(o => new { o.RecurringSeriesId, o.RecurrenceOccurrenceDate })
+                .IsUnique()
+                .HasDatabaseName("IX_Orders_Series_Occurrence");
+
+            // Order ↔ ContractClient, for Invoice-method orders. SetNull rather than Restrict:
+            // retiring a commercial client must not be blocked by past bookings, and the invoice
+            // link is what actually records who was billed.
+            modelBuilder.Entity<Order>()
+                .HasOne(o => o.ContractClient)
+                .WithMany()
+                .HasForeignKey(o => o.ContractClientId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // ── Combined "pay all upcoming" payments ──────────────────────────────────────────
+            modelBuilder.Entity<OrderPaymentBatch>(entity =>
+            {
+                entity.HasIndex(e => new { e.UserId, e.Status })
+                    .HasDatabaseName("IX_OrderPaymentBatches_User_Status");
+
+                // UNIQUE, same role the commercial ledger's StripePaymentIntentId plays: a retried
+                // or concurrently-delivered payment_intent.succeeded cannot settle one batch twice.
+                entity.HasIndex(e => e.PaymentIntentId).IsUnique()
+                    .HasDatabaseName("IX_OrderPaymentBatches_PaymentIntent");
+
+                entity.HasOne(e => e.User).WithMany()
+                    .HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.RecurringSeries).WithMany()
+                    .HasForeignKey(e => e.RecurringSeriesId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<OrderPaymentBatchItem>(entity =>
+            {
+                entity.HasIndex(e => new { e.OrderPaymentBatchId, e.OrderId }).IsUnique()
+                    .HasDatabaseName("IX_OrderPaymentBatchItems_Batch_Order");
+
+                entity.HasIndex(e => e.OrderId).HasDatabaseName("IX_OrderPaymentBatchItems_OrderId");
+
+                entity.HasOne(e => e.Batch).WithMany(b => b.Items)
+                    .HasForeignKey(e => e.OrderPaymentBatchId).OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(e => e.Order).WithMany()
+                    .HasForeignKey(e => e.OrderId).OnDelete(DeleteBehavior.Restrict);
+            });
 
             // Order configuration
             modelBuilder.Entity<Order>()

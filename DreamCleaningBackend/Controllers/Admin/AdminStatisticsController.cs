@@ -16,6 +16,8 @@ using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Helpers;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
+using DreamCleaningBackend.Helpers.Commercial;
+using DreamCleaningBackend.Models.Commercial;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -102,6 +104,23 @@ namespace DreamCleaningBackend.Controllers
 
         // ───── Statistics (SuperAdmin only) ─────
 
+        private async Task<List<InvoiceReceiptReporting.Receipt>> InvoiceReceiptsAsync(DateTime? from, DateTime? to)
+        {
+            // Read the whole ledger before windowing so partial payments/reversals keep their
+            // cumulative cent allocation. Both manual and Stripe settlement write this ledger.
+            var invoices = await _context.CommercialInvoices.AsNoTracking()
+                .Include(i => i.Payments)
+                .Where(i => i.Status != InvoiceStatus.Draft && i.FirstSentAt != null)
+                .ToListAsync();
+            return invoices.SelectMany(i => InvoiceReceiptReporting.Split(i.Total, i.TaxAmount, i.Payments))
+                .Where(r => (!from.HasValue || r.Date >= from.Value.Date)
+                    && (!to.HasValue || r.Date <= to.Value.Date)).ToList();
+        }
+
+        private Task<List<int>> InvoiceReportedOrderIdsAsync() => _context.CommercialInvoiceOrders
+            .Where(i => i.Invoice!.FirstSentAt != null && i.Invoice.Status != InvoiceStatus.Void)
+            .Select(i => i.OrderId).Distinct().ToListAsync();
+
         [HttpGet("statistics")]
         [RequirePageView(AdminViewablePages.Statistics, AdminViewablePages.Finances)]
         public async Task<ActionResult<OrderStatisticsDto>> GetOrderStatistics(
@@ -127,7 +146,7 @@ namespace DreamCleaningBackend.Controllers
             // an upcoming order's CleanerTotalSalary is whatever is on it today — an unstaffed order
             // contributes 0 salary, so a projection is optimistic on the cost side by design.
             var query = _context.Orders
-                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
+                .Where(o => (o.IsPaid || (o.PaymentMethod != PaymentMethod.Normal && (o.PaymentMethod != PaymentMethod.Invoice || o.InvoicePaidAt != null)))
                     && (o.Status == OrderStatuses.Done
                         || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done)
                         || (includeUpcoming && (o.Status == OrderStatuses.Active || o.Status == OrderStatuses.Pending))));
@@ -160,13 +179,15 @@ namespace DreamCleaningBackend.Controllers
                 .ToListAsync();
 
             var additionalTax = await LoadAdditionalTaxByOrderAsync(query);
+            var invoiceOrderIds = await InvoiceReportedOrderIdsAsync();
+            var receipts = await InvoiceReceiptsAsync(from, to);
 
             var money = rows
                 .Select(o => new
                 {
                     o.Status,
                     o.CleanerTotalSalary,
-                    Split = OrderRevenueMath.Split(
+                    Split = invoiceOrderIds.Contains(o.Id) ? default : OrderRevenueMath.Split(
                         o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount,
                         o.LoyaltyDiscountAmount, o.Tax, o.Tips, o.CompanyDevelopmentTips,
                         o.TotalRefundedAmount,
@@ -176,7 +197,7 @@ namespace DreamCleaningBackend.Controllers
 
             // "Company Revenue" — the taxable revenue PLUS the sales tax that was collected
             // outside Stripe and so never goes to the state. See OrderRevenueMath.
-            var totalRevenue = money.Sum(o => o.Split.ReportedRevenue);
+            var totalRevenue = money.Sum(o => o.Split.ReportedRevenue) + receipts.Sum(r => r.NetServiceRevenue);
             var totalSalary = money.Sum(o => o.CleanerTotalSalary);
 
             var stats = new OrderStatisticsDto
@@ -187,7 +208,7 @@ namespace DreamCleaningBackend.Controllers
                 // is case-sensitive — unlike the SQL collation the old GroupBy relied on.
                 TotalOrders = money.Count(o => !OrderStatuses.IsRefunded(o.Status)),
                 TotalAmount = totalRevenue,
-                TotalTaxes = money.Sum(o => o.Split.Tax),
+                TotalTaxes = money.Sum(o => o.Split.Tax) + receipts.Sum(r => r.Tax),
                 TotalTaxRetained = money.Sum(o => o.Split.TaxRetained),
                 TotalTips = money.Sum(o => o.Split.Tips),
                 TotalDiscounts = money.Sum(o => o.Split.Discounts),
@@ -229,7 +250,7 @@ namespace DreamCleaningBackend.Controllers
             // month's 5 remaining jobs. Callers pass the real period end here; it defaults to `to`.
             var upcomingEnd = upcomingTo ?? to;
             IQueryable<Order> upcoming = _context.Orders
-                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
+                .Where(o => (o.IsPaid || (o.PaymentMethod != PaymentMethod.Normal && (o.PaymentMethod != PaymentMethod.Invoice || o.InvoicePaidAt != null)))
                     && (o.Status == OrderStatuses.Active || o.Status == OrderStatuses.Pending));
             if (from.HasValue)
                 upcoming = upcoming.Where(o => o.ServiceDate >= from.Value.Date);
@@ -373,7 +394,7 @@ namespace DreamCleaningBackend.Controllers
             // Same filter as /statistics — include manual-paid orders alongside Stripe-paid, and
             // keep fully-refunded orders that were performed so their cleaner cost still counts.
             var query = _context.Orders
-                .Where(o => (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal)
+                .Where(o => (o.IsPaid || (o.PaymentMethod != PaymentMethod.Normal && (o.PaymentMethod != PaymentMethod.Invoice || o.InvoicePaidAt != null)))
                     && (o.Status == OrderStatuses.Done
                         || (o.Status == OrderStatuses.Refunded && o.StatusBeforeRefund == OrderStatuses.Done)));
 
@@ -407,7 +428,9 @@ namespace DreamCleaningBackend.Controllers
             var additionalTax = await LoadAdditionalTaxByOrderAsync(query);
 
             // Same buckets the /statistics totals use, so a summed chart matches the cards.
-            var moneyByOrder = orders.ToDictionary(o => o.Id, o => OrderRevenueMath.Split(
+            var invoiceOrderIds = await InvoiceReportedOrderIdsAsync();
+            var receipts = await InvoiceReceiptsAsync(from, to);
+            var moneyByOrder = orders.ToDictionary(o => o.Id, o => invoiceOrderIds.Contains(o.Id) ? default : OrderRevenueMath.Split(
                 o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount,
                 o.LoyaltyDiscountAmount, o.Tax, o.Tips, o.CompanyDevelopmentTips,
                 o.TotalRefundedAmount,
@@ -493,6 +516,19 @@ namespace DreamCleaningBackend.Controllers
                         CompanyRevenue = revenue - salary - computed
                     };
                 });
+
+            // Invoice receipts use payment dates. Linked order revenue was excluded above.
+            foreach (var receipt in receipts)
+            {
+                if (!dailyMap.TryGetValue(receipt.Date, out var row))
+                {
+                    row = new DailyStatisticsDto { Date = receipt.Date.ToString("yyyy-MM-dd") };
+                    dailyMap[receipt.Date] = row;
+                }
+                row.Amount += receipt.NetServiceRevenue;
+                row.Taxes += receipt.Tax;
+                row.CompanyRevenue += receipt.NetServiceRevenue;
+            }
 
             // Fold in expense days that have no orders so the chart still reflects them.
             foreach (var kv in expensesByDay)

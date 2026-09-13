@@ -61,8 +61,8 @@ namespace DreamCleaningBackend.Services
             var normalized = NormalizePhoneToE164(toNumber);
             if (string.IsNullOrEmpty(normalized))
             {
-                _logger.LogWarning("Cannot send SMS: invalid or empty phone number: {Phone}", toNumber);
-                return;
+                _logger.LogInformation("SMS not sent to {To}: phone number is empty or has an invalid format.", toNumber);
+                throw new InvalidPhoneNumberException(toNumber, "Phone number is empty or has an invalid format; no SMS was sent.");
             }
 
             if (await IsBlockedUserPhoneAsync(toNumber))
@@ -97,8 +97,10 @@ namespace DreamCleaningBackend.Services
                 // and not worth alerting on — surface it as a typed exception so admin-triggered
                 // sends can show a clean "this number is invalid, no SMS sent" message instead
                 // of leaking the raw RingCentral payload to the user.
-                _logger.LogWarning(rcEx, "RingCentral rejected phone number {To} as invalid; SMS not sent", toNumber);
-                throw new InvalidPhoneNumberException(toNumber, "Phone number is invalid; no SMS was sent.", rcEx);
+                // RestException includes HTTP headers (including credentials) and the SMS body.
+                // Neither log it nor attach it to an exception a caller might log again.
+                _logger.LogInformation("SMS not sent to {To}: RingCentral rejected the destination phone number as invalid.", toNumber);
+                throw new InvalidPhoneNumberException(toNumber, "RingCentral rejected the destination phone number as invalid; no SMS was sent.");
             }
             catch (Exception ex)
             {

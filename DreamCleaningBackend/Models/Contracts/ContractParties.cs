@@ -85,6 +85,18 @@ namespace DreamCleaningBackend.Models.Contracts
         public ContractContactRole Role { get; set; } = ContractContactRole.ClientSigner;
 
         /// <summary>
+        /// The person invoices are addressed to for this client. At most one per client in
+        /// practice, though nothing enforces uniqueness in the database - the resolver simply
+        /// prefers a flagged contact and falls back to the oldest active one, which is exactly
+        /// what it did before this column existed.
+        ///
+        /// Set automatically on the contact seeded from a linked business account, because that
+        /// person IS who we bill. Never inferred from a role: a client's signer and their accounts
+        /// payable contact are frequently two different people.
+        /// </summary>
+        public bool IsPrimaryBillingContact { get; set; }
+
+        /// <summary>
         /// The platform account this person signs in as, when they have one. Null is the normal
         /// case — most client signers never log in and use their emailed token link.
         ///

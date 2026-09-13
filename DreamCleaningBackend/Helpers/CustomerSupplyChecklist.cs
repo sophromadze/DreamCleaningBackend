@@ -59,10 +59,73 @@ namespace DreamCleaningBackend.Helpers
         public const string CleaningEssentialsMatch = "cleaning essentials";
         public const string VacuumMatch = "vacuum";
 
-        /// <summary>What "Cleaning Essentials" buys the customer out of - the four items WE bring
-        /// when they take it. The broom joined the set in 2026-09.</summary>
-        public static readonly string[] EssentialsItems =
-            { "Paper towels", "Garbage bags", "Toilet brush", "Broom" };
+        // THE ITEMS THEMSELVES, as translation KEYS rather than as English text.
+        //
+        // A cleaner is told the supplies and essentials lines in their own language, on three
+        // surfaces (the assignment email, the assignment SMS and the portal), and each of those
+        // surfaces owns its own dictionary. What must NOT vary between them is WHICH items are
+        // named and in what order - a cleaner reading "Mop" in the mail and not on the page has no
+        // way to tell which of the two is out of date. So the list is resolved once, here, as
+        // keys, and the surfaces only translate them.
+        //
+        // Keys rather than text is also what lets the portal ship the resolved list straight from
+        // the server: there is no mirrored frontend copy of this rule to drift.
+        public const string ItemZep = "zep";
+        public const string ItemZepWithOven = "zepOven";
+        public const string ItemWindex = "windex";
+        public const string ItemCloths = "cloths";
+        public const string ItemSponge = "sponge";
+        public const string ItemMop = "mop";
+        public const string ItemPaperTowels = "paperTowels";
+        public const string ItemGarbageBags = "garbageBags";
+        public const string ItemToiletBrush = "toiletBrush";
+        public const string ItemBroom = "broom";
+        public const string ItemBroomOrVacuum = "broomOrVacuum";
+
+        /// <summary>
+        /// The products group, item by item: the Zep liquids, the Windex, the cloths, the sponge
+        /// and the mop.
+        ///
+        /// IT IS THE SAME LIST WHOEVER IS CARRYING IT. With the "Cleaning Supplies" extra WE bring
+        /// these; without it the customer has them ready - which is exactly the block
+        /// <see cref="BuildItems"/> puts on the customer's own checklist, written one per line
+        /// here instead of grouped. That is deliberate: a cleaner has to be told what is expected
+        /// to be waiting in the house just as precisely as what is expected in the car, and
+        /// reading both off one resolver is what stops the two answers contradicting each other.
+        ///
+        /// The oven liquid follows <see cref="RequiresOvenCleaner"/> - a Deep / Super Deep
+        /// cleaning, or the Oven Cleaning extra on its own - the same condition that puts it on
+        /// the customer's list.
+        /// </summary>
+        public static List<string> SuppliesItemKeys(bool requiresOvenCleaner) => new()
+        {
+            requiresOvenCleaner ? ItemZepWithOven : ItemZep,
+            ItemWindex,
+            ItemCloths,
+            ItemSponge,
+            ItemMop
+        };
+
+        /// <summary>
+        /// The essentials group, item by item - and the one place the two directions genuinely
+        /// differ.
+        ///
+        /// When WE bring the essentials the fourth item is a BROOM, because that is what the
+        /// "Cleaning Essentials" extra buys. When the CUSTOMER is providing them the fourth item
+        /// is "broom or vacuum cleaner", and it disappears entirely if they bought the Vacuum
+        /// Cleaner extra - in that case we are bringing a vacuum and they were never asked for a
+        /// broom. Both halves mirror <see cref="BuildItems"/> exactly; telling a cleaner to expect
+        /// a broom nobody asked the customer for is how a crew arrives without one.
+        /// </summary>
+        public static List<string> EssentialsItemKeys(bool weBringEssentials, bool weBringVacuum)
+        {
+            var keys = new List<string> { ItemPaperTowels, ItemGarbageBags, ItemToiletBrush };
+            if (weBringEssentials)
+                keys.Add(ItemBroom);
+            else if (!weBringVacuum)
+                keys.Add(ItemBroomOrVacuum);
+            return keys;
+        }
 
         /// <summary>The line the Vacuum Cleaner extra buys the customer out of.</summary>
         private const string BroomOrVacuumItem = "Broom or vacuum cleaner";

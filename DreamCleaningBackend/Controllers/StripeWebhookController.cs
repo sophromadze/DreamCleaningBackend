@@ -184,6 +184,8 @@ namespace DreamCleaningBackend.Controllers
                             if (processingIntent != null)
                             {
                                 await HandleCommercialProcessing(processingIntent);
+                                if (processingIntent.Metadata?.GetValueOrDefault("type") == Services.RecurringCustomerPaymentService.StripeMetadataType)
+                                    await HttpContext.RequestServices.GetRequiredService<Services.IRecurringCustomerPaymentService>().RefreshBatchStateAsync(processingIntent.Id);
                             }
                             break;
 
@@ -200,6 +202,30 @@ namespace DreamCleaningBackend.Controllers
                             if (expiredSession != null)
                             {
                                 await HandleCommercialCheckoutExpired(expiredSession);
+                            }
+                            break;
+
+                        // ── The ACH settlement pair ──────────────────────────────────────────
+                        // For a delayed payment method, checkout.session.completed only means the
+                        // customer authorized the debit; the money resolves days later through
+                        // these two. They are handled ALONGSIDE payment_intent.succeeded /
+                        // .payment_failed rather than instead of them, because Stripe may deliver
+                        // either first and both routes are idempotent — the unique index on
+                        // CommercialInvoicePayments.StripePaymentIntentId is what makes recording
+                        // the same settlement twice impossible.
+                        case "checkout.session.async_payment_succeeded":
+                            var settledSession = stripeEvent.Data.Object as Stripe.Checkout.Session;
+                            if (settledSession != null)
+                            {
+                                await HandleCommercialAsyncPaymentSucceeded(settledSession);
+                            }
+                            break;
+
+                        case "checkout.session.async_payment_failed":
+                            var failedSession = stripeEvent.Data.Object as Stripe.Checkout.Session;
+                            if (failedSession != null)
+                            {
+                                await HandleCommercialAsyncPaymentFailed(failedSession);
                             }
                             break;
 
@@ -265,6 +291,14 @@ namespace DreamCleaningBackend.Controllers
                         
                         case "gift_card":
                             await HandleGiftCardPayment(paymentIntent, cancellationToken);
+                            break;
+
+                        // "Pay all upcoming" — ONE charge covering several of a customer's own
+                        // recurring cleanings (2026-09). Its own discriminator rather than
+                        // "booking", because the booking handler resolves a single orderId from
+                        // the metadata and would find none here.
+                        case Services.RecurringCustomerPaymentService.StripeMetadataType:
+                            await HandleRecurringBatchPayment(paymentIntent);
                             break;
 
                         // Commercial invoicing (2026-09). Slots in as another discriminator value
@@ -409,6 +443,37 @@ namespace DreamCleaningBackend.Controllers
         /// Money settled on a commercial invoice. Delegates to the service that owns the
         /// transaction, the ledger write and the idempotency guard.
         /// </summary>
+        /// <summary>
+        /// Settles a "Pay all upcoming" batch: every cleaning it covers is marked paid and moved
+        /// to Active, in ONE transaction.
+        ///
+        /// Idempotent twice over — a settled batch returns immediately, and the unique index on
+        /// <c>OrderPaymentBatches.PaymentIntentId</c> is the guarantee behind that. Failures are
+        /// logged and swallowed rather than rethrown: a bookkeeping problem must never make Stripe
+        /// retry a charge that already succeeded.
+        /// </summary>
+        private async Task HandleRecurringBatchPayment(PaymentIntent paymentIntent)
+        {
+            try
+            {
+                var batches = HttpContext.RequestServices
+                    .GetRequiredService<Services.IRecurringCustomerPaymentService>();
+
+                int? batchId = paymentIntent.Metadata != null
+                               && paymentIntent.Metadata.TryGetValue("batchId", out var raw)
+                               && int.TryParse(raw, out var parsed)
+                    ? parsed
+                    : null;
+
+                await batches.SettleBatchAsync(paymentIntent.Id, batchId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to settle combined recurring payment {PaymentIntentId}.", paymentIntent.Id);
+            }
+        }
+
         private async Task HandleCommercialInvoicePayment(PaymentIntent paymentIntent)
         {
             try
@@ -511,6 +576,75 @@ namespace DreamCleaningBackend.Controllers
         }
 
         /// <summary>
+        /// An ACH debit settled. Routes to the SAME recorder as payment_intent.succeeded, so there
+        /// is one place money enters the ledger whichever event Stripe delivers first — and one
+        /// unique index stopping it entering twice.
+        /// </summary>
+        private async Task HandleCommercialAsyncPaymentSucceeded(Stripe.Checkout.Session session)
+        {
+            if (!Services.Commercial.StripeCommercialInvoiceMetadata.IsCommercialInvoice(session.Metadata))
+                return;
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(session.PaymentIntentId))
+                {
+                    _logger.LogWarning(
+                        "async_payment_succeeded for session {SessionId} carried no PaymentIntent.",
+                        session.Id);
+                    return;
+                }
+
+                var commercial = HttpContext.RequestServices
+                    .GetRequiredService<Services.Commercial.InvoiceStripePaymentService>();
+
+                // AmountTotal is the gross debit (invoice + ACH fee), exactly what
+                // payment_intent.succeeded reports as amount_received. The recorder splits the fee
+                // back out from the attempt.
+                var result = await commercial.RecordSucceededAsync(
+                    session.PaymentIntentId,
+                    session.AmountTotal ?? 0,
+                    session.Currency ?? "usd",
+                    null,
+                    session.Metadata,
+                    null);
+
+                if (result.Recorded && result.InvoiceBecamePaid && result.InvoiceId.HasValue)
+                    await SendCommercialPaymentReceiptAsync(result.InvoiceId.Value);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to record settled commercial ACH payment for session {SessionId}.", session.Id);
+            }
+        }
+
+        /// <summary>
+        /// An ACH debit failed days after authorization — returned, account closed, insufficient
+        /// funds. The attempt is marked Failed and NO money is written, so the invoice falls
+        /// straight back to its own unpaid status and becomes payable again.
+        /// </summary>
+        private async Task HandleCommercialAsyncPaymentFailed(Stripe.Checkout.Session session)
+        {
+            if (!Services.Commercial.StripeCommercialInvoiceMetadata.IsCommercialInvoice(session.Metadata))
+                return;
+
+            try
+            {
+                var commercial = HttpContext.RequestServices
+                    .GetRequiredService<Services.Commercial.InvoiceStripePaymentService>();
+
+                await commercial.HandleAsyncPaymentFailedAsync(
+                    session.Id, session.PaymentIntentId, session.Metadata);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to record failed commercial ACH payment for session {SessionId}.", session.Id);
+            }
+        }
+
+        /// <summary>
         /// Mails the "payment received" confirmation. Guarded against duplicates by the email log:
         /// Stripe retries deliveries, and a customer receiving three receipts for one payment
         /// reads as a billing system that has lost track of itself.
@@ -567,6 +701,31 @@ namespace DreamCleaningBackend.Controllers
                 return;
             }
 
+            // A failed combined payment releases its cleanings so the customer can try again.
+            // Nothing was charged and no order moved, so this only clears the in-flight guard.
+            if (paymentIntent?.Metadata != null
+                && paymentIntent.Metadata.TryGetValue("type", out var failedType)
+                && failedType == Services.RecurringCustomerPaymentService.StripeMetadataType)
+            {
+                try
+                {
+                    var batches = HttpContext.RequestServices
+                        .GetRequiredService<Services.IRecurringCustomerPaymentService>();
+
+                    await batches.MarkBatchFailedAsync(
+                        paymentIntent.Id,
+                        paymentIntent.LastPaymentError?.Message ?? paymentIntent.LastPaymentError?.Code);
+                }
+                catch (Exception ex)
+                {
+                    // Swallowed on purpose: a bookkeeping failure must never make Stripe retry.
+                    _logger.LogError(ex,
+                        "Failed to mark combined payment {PaymentIntentId} as failed.", paymentIntent.Id);
+                }
+
+                return;
+            }
+
             try
             {
                 _logger.LogWarning("Payment failed for intent: {PaymentIntentId}", paymentIntent?.Id);
@@ -591,6 +750,11 @@ namespace DreamCleaningBackend.Controllers
 
         private async Task HandlePaymentIntentCanceled(PaymentIntent paymentIntent, CancellationToken cancellationToken = default)
         {
+            if (paymentIntent.Metadata?.GetValueOrDefault("type") == Services.RecurringCustomerPaymentService.StripeMetadataType) {
+                await HttpContext.RequestServices.GetRequiredService<Services.IRecurringCustomerPaymentService>().RefreshBatchStateAsync(paymentIntent.Id);
+                return;
+            }
+
             _logger.LogWarning("Payment intent {PaymentIntentId} was canceled", paymentIntent?.Id);
             // Implement cancellation handling logic
         }

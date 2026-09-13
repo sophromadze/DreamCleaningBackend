@@ -534,6 +534,18 @@ namespace DreamCleaningBackend.DTOs
         public bool IsBusiness { get; set; }
 
         /// <summary>
+        /// True when this account currently appears on Users -> Business Clients, i.e. its linked
+        /// <c>ContractClient</c> exists AND is active. The Customers sub-tab hides exactly these,
+        /// so the two tabs partition the accounts between them with no row falling through.
+        ///
+        /// The ACTIVE half is load-bearing: "Move to Customers" deactivates the linked client and
+        /// keeps the row (contracts, invoices and reference numbers all survive), so a flag that
+        /// only asked whether a row existed stayed true forever and hid the account from both
+        /// tabs at once.
+        /// </summary>
+        public bool HasActiveBusinessClient { get; set; }
+
+        /// <summary>
         /// Officer title on a staff account: "None" | "CEO" | "CTO". Read-only here — assigning it
         /// goes through PUT users/{id}/org-title, whose authority is the bootstrap/locked rule in
         /// OrgTitlePolicy rather than the ordinary role hierarchy.
@@ -697,6 +709,13 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentReference { get; set; }
         [StringLength(1000)]
         public string? PaymentNotes { get; set; }
+
+        /// <summary>
+        /// Required when switching an order to the Invoice method — the commercial client it is
+        /// billed to. Ignored for every other method. Omitted on an order that already carries a
+        /// client means "keep the one it has".
+        /// </summary>
+        public int? ContractClientId { get; set; }
     }
 
     // SuperAdmin-only: full user edit (all changes are audit-logged)

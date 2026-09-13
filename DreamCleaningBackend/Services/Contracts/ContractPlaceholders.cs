@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Models.Contracts;
 using System.Text;
 using DreamCleaningBackend.Helpers.Contracts;
 
@@ -20,6 +21,16 @@ namespace DreamCleaningBackend.Services.Contracts
     /// </summary>
     public static class ContractPlaceholders
     {
+        /// <summary>
+        /// The value a token resolves to when its whole LINE should be dropped from the document.
+        /// <see cref="ContractRenderer"/> discards any line containing it.
+        ///
+        /// Deliberately a string no legal text could contain. It exists so a clause can be made
+        /// conditional without a control structure in the template body - see
+        /// {{RETURNED_PAYMENT_FEE_WORDS}} below.
+        /// </summary>
+        public const string OmitLineSentinel = "OMIT_LINE";
+
         public static Dictionary<string, string> Build(ContractSnapshot s)
         {
             var map = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -93,9 +104,39 @@ namespace DreamCleaningBackend.Services.Contracts
             Put("SERVICE_FREQUENCY_TEXT_CAP", Capitalize(frequencyText));
             Put("VISITS_PER_PERIOD", ContractTextFormat.WordsWithDigits(Math.Max(1, sc.VisitsPerPeriod)));
             Put("SERVICE_PERIOD", sc.FrequencyUnit);
-            Put("SERVICE_DAY", sc.ServiceDay);
+
+            // ── Service days ───────────────────────────────────────────────────
+            // A contract may be cleaned on several weekdays, so every one of these is derived from
+            // the resolved LIST rather than the legacy single column. {{SERVICE_DAY}} is kept as an
+            // alias of {{SERVICE_DAYS}} so a template body written before multiple days existed -
+            // including one a SuperAdmin has since edited - keeps rendering the right weekdays.
+            var dayNames = sc.ResolveServiceDayNames();
+            var multiple = dayNames.Count > 1;
+            var daysText = ContractTextFormat.JoinWithAnd(dayNames);
+
+            Put("SERVICE_DAYS", daysText);
+            Put("SERVICE_DAY", daysText);
+            Put("SERVICE_DAY_NOUN", multiple ? "days" : "day");
+            Put("SERVICE_DAY_NOUN_UPPER", multiple ? "DAYS" : "DAY");
+            Put("SERVICE_DAY_VERB", multiple ? "are" : "is");
+            // The sentence that follows the list. Both halves have to agree in number with the
+            // list above them, which is the whole reason it is composed here rather than written
+            // into the template with a hardcoded singular.
+            Put("SERVICE_DAY_FIXED_TEXT", sc.FlexibleScheduling
+                ? (multiple
+                    ? "Those days are not permanently fixed service days."
+                    : "That day is not a permanently fixed service day.")
+                : (multiple
+                    ? "Those days are fixed service days and may be changed only by signed Change Order."
+                    : "That day is a fixed service day and may be changed only by signed Change Order."));
+
             Put("SERVICE_TIME", sc.ServiceTime);
             Put("ACCESS_TYPE", sc.AccessType);
+
+            // ── Billing cadence ────────────────────────────────────────────────
+            // How often the client is INVOICED, which Exhibit B states separately from how often
+            // the premises are cleaned.
+            Put("BILLING_CADENCE_TEXT", BillingCadenceText(s.Billing));
 
             // ── Term ───────────────────────────────────────────────────────────
             var t = s.Term;
@@ -122,8 +163,17 @@ namespace DreamCleaningBackend.Services.Contracts
             Put("PAYMENT_METHOD", p.PaymentMethod);
             Put("LATE_CHARGE_PERCENT", ContractTextFormat.PercentWithDigits(p.LateChargePercent));
             Put("LATE_CHARGE_PERCENT_SHORT", ContractTextFormat.FormatPercent(p.LateChargePercent));
-            Put("RETURNED_PAYMENT_FEE", ContractTextFormat.Money(p.ReturnedPaymentFee));
-            Put("RETURNED_PAYMENT_FEE_WORDS", ContractTextFormat.MoneyWithWords(p.ReturnedPaymentFee));
+            // The returned-payment fee is RETIRED for new contracts (2026-09) and defaults to zero.
+            // At zero the Exhibit B row reads "...; no returned or failed payment fee", and Section
+            // 11(g) drops out entirely through the OMIT sentinel rather than promising a $0.00
+            // charge. A historical contract that agreed to $35 renders exactly as it always did,
+            // because its frozen snapshot still carries the figure.
+            Put("RETURNED_PAYMENT_FEE", p.ReturnedPaymentFee > 0m
+                ? ContractTextFormat.Money(p.ReturnedPaymentFee)
+                : "no");
+            Put("RETURNED_PAYMENT_FEE_WORDS", p.ReturnedPaymentFee > 0m
+                ? ContractTextFormat.MoneyWithWords(p.ReturnedPaymentFee)
+                : OmitLineSentinel);
 
             // ── Advanced terms ─────────────────────────────────────────────────
             var a = s.Advanced;
@@ -155,6 +205,30 @@ namespace DreamCleaningBackend.Services.Contracts
                 : "as a fixed service day and time, changeable only by signed Change Order");
 
             return map;
+        }
+
+        /// <summary>
+        /// "monthly", "every two weeks", "for each scheduled service visit" - the phrase Exhibit B
+        /// uses to state how often an invoice is issued.
+        ///
+        /// Composed rather than stored so the interval count and the frequency can never contradict
+        /// each other in the document: "every 1 weeks" is the kind of thing a client notices.
+        /// </summary>
+        private static string BillingCadenceText(BillingCadenceSnapshot b)
+        {
+            var n = Math.Max(1, b?.IntervalCount ?? 1);
+
+            return (b?.Frequency ?? ContractBillingFrequency.Monthly) switch
+            {
+                ContractBillingFrequency.PerServiceVisit => "for each scheduled service visit",
+                ContractBillingFrequency.Weekly => n == 1
+                    ? "weekly"
+                    : $"every {ContractTextFormat.WordsWithDigits(n)} weeks",
+                ContractBillingFrequency.CustomDays => $"every {ContractTextFormat.WordsWithDigits(n)} days",
+                _ => n == 1
+                    ? "monthly"
+                    : $"every {ContractTextFormat.WordsWithDigits(n)} months"
+            };
         }
 
         /// <summary>"one (1) scheduled cleaning visit per calendar week".</summary>

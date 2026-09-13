@@ -287,6 +287,75 @@ namespace DreamCleaningBackend.Models
 
         public int? ManualPaymentRecordedByUserId { get; set; }
 
+        // ─── Recurring series (2026-09) ───────────────────────────────────────────────────
+        // An order joins a series ONLY because an admin created one; nothing backfills, and an
+        // order with a null RecurringSeriesId behaves exactly as it did before this feature.
+
+        /// <summary>The series that generated this order, or null for an ordinary one-off booking.
+        /// The TEMPLATE order of a series also carries it, so the panel can show the schedule from
+        /// the order the admin set it up on.</summary>
+        public int? RecurringSeriesId { get; set; }
+
+        [ForeignKey("RecurringSeriesId")]
+        public virtual RecurringOrderSeries? RecurringSeries { get; set; }
+
+        /// <summary>
+        /// The occurrence date this order fills, as the schedule computed it.
+        ///
+        /// THE IDEMPOTENCY KEY. (RecurringSeriesId, RecurrenceOccurrenceDate) carries a UNIQUE
+        /// index, so a second generator pass — a restart, an overlapping sweep, a manual
+        /// "generate now" pressed twice — cannot produce a duplicate cleaning. It is stored
+        /// separately from <see cref="ServiceDate"/> on purpose: an admin may move a generated
+        /// order to a different day, and the occurrence it satisfies must not move with it or the
+        /// generator would immediately fill the gap it thinks has appeared.
+        /// </summary>
+        public DateTime? RecurrenceOccurrenceDate { get; set; }
+
+        /// <summary>True when the recurring generator created this order rather than a person.
+        /// Drives the admin panel badge; the series link alone cannot say it, because the template
+        /// order carries that too.</summary>
+        public bool IsGeneratedByRecurringSeries { get; set; }
+
+        // ─── Commercial invoice billing (2026-09) ─────────────────────────────────────────
+        // Only meaningful when PaymentMethod == Invoice. See PaymentMethodRules: Invoice is the
+        // one outside-Stripe method that does NOT mean the money has already arrived.
+
+        /// <summary>
+        /// The commercial client this order is billed to. Set for Invoice-method orders.
+        ///
+        /// ContractClient rather than User deliberately: plenty of commercial clients have no
+        /// website account at all, and ContractClient is the commercial legal/billing entity that
+        /// invoices, contracts and billing contacts already hang off.
+        /// </summary>
+        public int? ContractClientId { get; set; }
+
+        [ForeignKey("ContractClientId")]
+        public virtual Contracts.ContractClient? ContractClient { get; set; }
+
+        /// <summary>
+        /// When a fully-paid commercial invoice settled this order. Null while the invoice is
+        /// Draft/Sent/Viewed/Overdue/partially paid, or while a Stripe ACH debit is still
+        /// processing — none of which is money that has arrived.
+        ///
+        /// Every "has this order been paid for?" query must test it for Invoice orders. It exists
+        /// as its own column rather than reusing <see cref="ManualPaymentRecordedAt"/> so no
+        /// legacy row can be misread: nothing before this feature can carry PaymentMethod.Invoice,
+        /// so the new condition provably changes nothing about historical reporting.
+        /// </summary>
+        public DateTime? InvoicePaidAt { get; set; }
+
+        /// <summary>
+        /// The order total BEFORE a commercial invoice allocated a negotiated group amount to it,
+        /// captured the first time such an allocation is committed and never overwritten
+        /// afterwards. Null on every order whose price no invoice has ever renegotiated.
+        ///
+        /// The per-invoice detail (which invoice, which admin, when) lives on
+        /// <c>CommercialInvoiceOrder</c>; this column is the fast answer to "was this order's
+        /// price ever renegotiated, and what was it before?" without a join.
+        /// </summary>
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal? PreInvoiceAllocationTotal { get; set; }
+
         // Navigation properties
         public virtual ICollection<OrderService> OrderServices { get; set; } = new List<OrderService>();
         public virtual ICollection<OrderExtraService> OrderExtraServices { get; set; } = new List<OrderExtraService>();

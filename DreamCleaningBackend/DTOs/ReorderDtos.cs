@@ -125,5 +125,27 @@ namespace DreamCleaningBackend.DTOs
         public string? NotificationEmail { get; set; }
         public string? NotificationPhone { get; set; }
         public bool CustomerHasNoAccountEmail { get; set; }
+
+        /// <summary>
+        /// The SOURCE order's payment method, so the recreate form can default to it.
+        ///
+        /// Fixed a real defect (2026-09): the modal hardcoded "Cash" whatever the original order
+        /// used, so recreating a Stripe booking silently produced a cash job — marked Active,
+        /// never charged, counted as settled revenue, and invisible to every unpaid-order sweep.
+        ///
+        /// <b>ONLY THE METHOD TRAVELS.</b> The prefill is a <c>CreateBookingDto</c>, which has no
+        /// field for a PaymentIntent, a payment reference, a transaction id, a paid flag, an
+        /// amount paid or an invoice association — so old transaction state is not merely excluded,
+        /// it is UNREPRESENTABLE. The recreated order is a new financial transaction that happens
+        /// to be settled the same way.
+        /// </summary>
+        public string SourcePaymentMethod { get; set; } = "Normal";
+
+        /// <summary>The commercial client the source order was billed to, when it used the
+        /// Invoice method. Carried so a recreated invoice order knows who it bills; null for
+        /// every other method.</summary>
+        public int? SourceContractClientId { get; set; }
+
+        public string? SourceContractClientName { get; set; }
     }
 }

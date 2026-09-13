@@ -29,6 +29,19 @@ namespace DreamCleaningBackend.Services
             _logger = logger;
         }
 
+        private async Task SaveAuditChangesAsync()
+        {
+            var pending = _context.ChangeTracker.Entries<AuditLog>().Where(e => e.State == EntityState.Added).ToList();
+            try { await _context.SaveChangesAsync(); }
+            catch
+            {
+                // Best-effort auditing must not poison the caller's next SaveChanges. Detach
+                // only the failed audit inserts, never the caller's tracked business entities.
+                foreach (var entry in pending) entry.State = EntityState.Detached;
+                throw;
+            }
+        }
+
         public async Task LogCreateAsync<T>(T entity) where T : class
         {
             try
@@ -47,7 +60,7 @@ namespace DreamCleaningBackend.Services
                     Action = "Create",
                     OldValues = null,
                     NewValues = JsonConvert.SerializeObject(cleanEntity, _jsonSettings),
-                    ChangedFields = JsonConvert.SerializeObject(GetAllPropertyNames(entity), _jsonSettings),
+                    ChangedFields = null,
                     UserId = userId,
                     IpAddress = GetIpAddress(),
                     UserAgent = GetUserAgent(),
@@ -55,7 +68,7 @@ namespace DreamCleaningBackend.Services
                 };
 
                 _context.AuditLogs.Add(auditLog);
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
             }
             catch (Exception ex)
             {
@@ -92,7 +105,7 @@ namespace DreamCleaningBackend.Services
                 // Order LINE changes are unaffected - LogOrderServiceChanges below runs on its own
                 // and still writes its OrderServicesUpdate row.
                 var changedFields = GetChangedFields(originalEntity, currentEntity)
-                    .Where(f => !AuditNoiseFields.Contains(f))
+                    .Where(f => !AuditNoiseFields.Contains(f) && !AuditDataPolicy.IsSecret(f))
                     .ToList();
 
                 // Special handling for Order entity
@@ -150,7 +163,7 @@ namespace DreamCleaningBackend.Services
                     }
                 }
 
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
             }
             catch (Exception ex)
             {
@@ -184,7 +197,7 @@ namespace DreamCleaningBackend.Services
                 };
 
                 _context.AuditLogs.Add(auditLog);
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
             }
             catch (Exception ex)
             {
@@ -205,32 +218,17 @@ namespace DreamCleaningBackend.Services
         private object CreateCleanEntity(object entity)
         {
             var entityType = entity.GetType();
-            var cleanEntity = Activator.CreateInstance(entityType);
+            var cleanEntity = new Dictionary<string, object?>();
 
             var properties = entityType.GetProperties()
-                .Where(p => p.CanRead && p.CanWrite &&
-                       (p.PropertyType.IsPrimitive ||
-                        p.PropertyType == typeof(string) ||
-                        p.PropertyType == typeof(DateTime) ||
-                        p.PropertyType == typeof(DateTime?) ||
-                        p.PropertyType == typeof(TimeSpan) ||
-                        p.PropertyType == typeof(TimeSpan?) ||
-                        p.PropertyType == typeof(decimal) ||
-                        p.PropertyType == typeof(decimal?) ||
-                        p.PropertyType == typeof(int) ||
-                        p.PropertyType == typeof(int?) ||
-                        p.PropertyType == typeof(long) ||
-                        p.PropertyType == typeof(long?) ||
-                        p.PropertyType == typeof(bool) ||
-                        p.PropertyType == typeof(bool?) ||
-                        p.PropertyType.IsEnum));
+                .Where(p => p.CanRead && p.CanWrite && IsRevertableScalar(p.PropertyType));
 
             foreach (var property in properties)
             {
                 try
                 {
                     var value = property.GetValue(entity);
-                    property.SetValue(cleanEntity, value);
+                    if (!AuditDataPolicy.IsSecret(property.Name)) cleanEntity[property.Name] = value;
                 }
                 catch
                 {
@@ -427,6 +425,8 @@ namespace DreamCleaningBackend.Services
                     var originalValue = property.GetValue(original);
                     var currentValue = property.GetValue(current);
 
+                    if (originalValue is null or "" && currentValue is null or "") continue;
+
                     if (!Equals(originalValue, currentValue))
                     {
                         changedFields.Add(property.Name);
@@ -478,7 +478,7 @@ namespace DreamCleaningBackend.Services
                 var fields = changedFields?.ToList() ?? DeriveChangedFields(oldValues, newValues);
 
                 // Same no-op rule as LogUpdateAsync — see AuditNoiseFields there.
-                fields = fields.Where(f => !AuditNoiseFields.Contains(f)).ToList();
+                fields = fields.Where(f => !AuditNoiseFields.Contains(f) && !AuditDataPolicy.IsSecret(f)).ToList();
                 if (fields.Count == 0 &&
                     string.Equals(action, "Update", StringComparison.OrdinalIgnoreCase))
                 {
@@ -500,7 +500,7 @@ namespace DreamCleaningBackend.Services
                 };
 
                 _context.AuditLogs.Add(auditLog);
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
             }
             catch (Exception ex)
             {
@@ -576,7 +576,7 @@ namespace DreamCleaningBackend.Services
                 };
 
                 _context.AuditLogs.Add(auditLog);
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
             }
             catch (Exception ex)
             {
@@ -632,7 +632,7 @@ namespace DreamCleaningBackend.Services
             {
                 await ApplyLoyaltyAuditAsync(log, useOldValues: true);
                 log.UndoneAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
                 return;
             }
 
@@ -654,7 +654,7 @@ namespace DreamCleaningBackend.Services
             }
 
             log.UndoneAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync();
+            await SaveAuditChangesAsync();
         }
 
         public async Task RedoAsync(long auditLogId)
@@ -677,7 +677,7 @@ namespace DreamCleaningBackend.Services
             {
                 await ApplyLoyaltyAuditAsync(log, useOldValues: false);
                 log.UndoneAt = null;
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
                 return;
             }
 
@@ -699,7 +699,7 @@ namespace DreamCleaningBackend.Services
             }
 
             log.UndoneAt = null;
-            await _context.SaveChangesAsync();
+            await SaveAuditChangesAsync();
         }
 
         // Applies a UserLoyaltyDiscount audit row's snapshot to the underlying User entity.
@@ -794,7 +794,7 @@ namespace DreamCleaningBackend.Services
             var entity = await FindByPrimaryKeyAsync(clrType, entityId)
                 ?? throw new InvalidOperationException($"{clrType.Name} #{entityId} not found");
 
-            var snapshot = JsonConvert.DeserializeObject(valuesJson, clrType, _jsonSettings)
+            var snapshot = JsonConvert.DeserializeObject(AuditDataPolicy.SanitizeJson(valuesJson)!, clrType, _jsonSettings)
                 ?? throw new InvalidOperationException("Could not deserialize audit snapshot");
 
             var fieldNames = string.IsNullOrWhiteSpace(changedFieldsJson)
@@ -804,7 +804,7 @@ namespace DreamCleaningBackend.Services
             foreach (var prop in clrType.GetProperties())
             {
                 if (!prop.CanRead || !prop.CanWrite) continue;
-                if (prop.Name == "Id") continue;
+                if (prop.Name == "Id" || AuditDataPolicy.IsSecret(prop.Name)) continue;
                 if (fieldNames != null && !fieldNames.Contains(prop.Name, StringComparer.OrdinalIgnoreCase)) continue;
                 if (!IsRevertableScalar(prop.PropertyType)) continue;
 
@@ -824,7 +824,7 @@ namespace DreamCleaningBackend.Services
             if (existingRow != null)
                 throw new InvalidOperationException($"{clrType.Name} #{entityId} still exists; nothing to reinsert");
 
-            var entity = JsonConvert.DeserializeObject(valuesJson, clrType, _jsonSettings)
+            var entity = JsonConvert.DeserializeObject(AuditDataPolicy.SanitizeJson(valuesJson)!, clrType, _jsonSettings)
                 ?? throw new InvalidOperationException("Could not deserialize audit snapshot");
 
             // Force the original PK so any foreign-key references that survived still resolve.
@@ -834,6 +834,9 @@ namespace DreamCleaningBackend.Services
                 idProp.SetValue(entity, idProp.PropertyType == typeof(int) ? (object)(int)entityId : entityId);
             }
 
+            // Restore the business record without reviving credentials or old payment links.
+            // Accounts require explicit reactivation and fresh authentication setup.
+            if (entity is User restoredUser) restoredUser.IsActive = false;
             _context.Add(entity);
         }
 
@@ -872,7 +875,7 @@ namespace DreamCleaningBackend.Services
                 };
 
                 _context.AuditLogs.Add(auditLog);
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
             }
             catch (Exception ex)
             {
@@ -903,7 +906,7 @@ namespace DreamCleaningBackend.Services
                 };
 
                 _context.AuditLogs.Add(auditLog);
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
             }
             catch (Exception ex)
             {
@@ -956,7 +959,7 @@ namespace DreamCleaningBackend.Services
                 };
 
                 _context.AuditLogs.Add(auditLog);
-                await _context.SaveChangesAsync();
+                await SaveAuditChangesAsync();
             }
             catch (Exception ex)
             {

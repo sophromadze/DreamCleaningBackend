@@ -70,21 +70,53 @@ namespace DreamCleaningBackend.Services.Contracts
             _logger.LogInformation("Seeded the default contractor profile for commercial contracts.");
         }
 
+        /// <summary>
+        /// Makes sure the CURRENT master agreement version exists and is the default a new
+        /// contract starts from.
+        ///
+        /// ADDITIVE ONLY. An existing template row is never rewritten, because it is admin-editable
+        /// and because every version generated from it froze that exact body - a "helpful" upgrade
+        /// in place would discard a SuperAdmin's wording with no trace and leave the picker
+        /// claiming a version whose text had changed underneath it. So a new agreement version is
+        /// a NEW ROW, marked default, with the previous one left active and still selectable.
+        ///
+        /// The default flag moves; nothing else does.
+        /// </summary>
         private async Task SeedContractTemplateAsync()
         {
-            if (await _context.ContractTemplates.AnyAsync()) return;
+            var templates = await _context.ContractTemplates.ToListAsync();
 
-            _context.ContractTemplates.Add(new ContractTemplate
+            var current = templates.FirstOrDefault(t =>
+                t.Name == ContractTemplateSeed.TemplateName
+                && t.Version == ContractTemplateSeed.CurrentTemplateVersion);
+
+            if (current == null)
             {
-                Name = ContractTemplateSeed.TemplateName,
-                Version = ContractTemplateSeed.TemplateVersion,
-                Description = ContractTemplateSeed.TemplateDescription,
-                BodyText = ContractTemplateSeed.BodyText,
-                IsActive = true
-            });
+                current = new ContractTemplate
+                {
+                    Name = ContractTemplateSeed.TemplateName,
+                    Version = ContractTemplateSeed.CurrentTemplateVersion,
+                    Description = ContractTemplateSeed.CurrentTemplateDescription,
+                    BodyText = ContractTemplateSeed.CurrentBodyText,
+                    IsActive = true
+                };
+                _context.ContractTemplates.Add(current);
+                templates.Add(current);
+
+                _logger.LogInformation(
+                    "Seeded master service agreement template v{Version}. Existing versions were left untouched.",
+                    ContractTemplateSeed.CurrentTemplateVersion);
+            }
+
+            // Exactly one default. Assigned every run so a database seeded before the flag existed
+            // ends up pointing at the current version rather than at nothing.
+            if (!current.IsDefault || templates.Any(t => t.IsDefault && t.Id != current.Id))
+            {
+                foreach (var template in templates) template.IsDefault = false;
+                current.IsDefault = true;
+            }
+
             await _context.SaveChangesAsync();
-            _logger.LogInformation("Seeded the master service agreement template v{Version}.",
-                ContractTemplateSeed.TemplateVersion);
         }
 
         private async Task SeedScopeTemplatesAsync()

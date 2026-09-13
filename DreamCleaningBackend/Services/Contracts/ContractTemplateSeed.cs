@@ -24,6 +24,93 @@ namespace DreamCleaningBackend.Services.Contracts
         public const string TemplateDescription =
             "Standard commercial MSA: Sections 1-35, signature block, Exhibit A (scope) and Exhibit B (pricing).";
 
+        // ══════════════════════════════════════════════════════════════════════════════════════
+        //  v1.1 (2026-09) - multiple regular service days, and a stated billing cadence
+        // ══════════════════════════════════════════════════════════════════════════════════════
+        //
+        // WHY A NEW ROW RATHER THAN AN EDIT. The v1.0 row is admin-editable and may already carry
+        // a SuperAdmin's changes; overwriting it would discard them silently, and every version
+        // generated from it froze that exact body anyway. So v1.1 is inserted alongside and marked
+        // default for NEW contracts, v1.0 stays in the picker, and nothing already rendered moves.
+        //
+        // WHY IT IS DERIVED FROM v1.0 RATHER THAN RETYPED. The agreement is ~250 lines of legal
+        // text that must not drift. Expressing v1.1 as an explicit list of line replacements makes
+        // the difference between the two versions readable in one screen and makes an accidental
+        // change to any other sentence impossible. ContractRenderingTests asserts every
+        // replacement still matches, so editing BodyText without updating this list fails the
+        // suite instead of silently producing a v1.1 identical to v1.0.
+
+        public const string CurrentTemplateVersion = "1.1";
+
+        public const string CurrentTemplateDescription =
+            "Standard commercial MSA: Sections 1-35, signature block, Exhibit A (scope) and Exhibit B "
+            + "(pricing). Supports multiple regular service days and states the billing cadence.";
+
+        /// <summary>One exact line of v1.0 and what v1.1 says instead.</summary>
+        public record BodyRevision(string Original, string Replacement);
+
+        /// <summary>
+        /// Every difference between v1.0 and v1.1, in the order they appear in the document.
+        ///
+        /// Only SCHEDULE language changed. The returned-payment fee needed no edit here: at zero
+        /// it drops out through the OMIT sentinel in <c>ContractPlaceholders</c>, which also fixes
+        /// a v1.0 body and an edited one - a template rewrite could not have reached either.
+        /// </summary>
+        public static IReadOnlyList<BodyRevision> BodyRevisionsV11 => new List<BodyRevision>
+        {
+            // Section 5(b). The old sentence names one day twice and cannot be made to agree in
+            // number; the tokens carry the noun and the verb so one body serves any day count.
+            new(
+                "(b) Regular service day. The regular anticipated service day is {{SERVICE_DAY}}. {{SERVICE_DAY}} is not a permanently fixed service day. Client may request an occasional different day, and the Parties may agree to move a particular scheduled cleaning to another mutually agreed day, subject to Contractor's reasonable availability.",
+                "(b) Regular service days. The regular anticipated service {{SERVICE_DAY_NOUN}} for the Services {{SERVICE_DAY_VERB}} {{SERVICE_DAYS}}. {{SERVICE_DAY_FIXED_TEXT}} Client may request an occasional different day, and the Parties may agree to move a particular scheduled cleaning to another mutually agreed day, subject to Contractor's reasonable availability."),
+
+            // Section 5(c). "the scheduled service day" reads as though there were only ever one.
+            new(
+                "(c) Start time. The Services are generally expected to begin at approximately {{SERVICE_TIME}} on the scheduled service day.",
+                "(c) Start time. The Services are generally expected to begin at approximately {{SERVICE_TIME}} on each scheduled service day."),
+
+            // Exhibit A heading row.
+            new(
+                "REGULAR ANTICIPATED DAY: {{SERVICE_DAY}}, {{SCHEDULE_FLEXIBILITY_TEXT}}.",
+                "REGULAR ANTICIPATED SERVICE {{SERVICE_DAY_NOUN_UPPER}}: {{SERVICE_DAYS}}, {{SCHEDULE_FLEXIBILITY_TEXT}}."),
+
+            // Exhibit B schedule row.
+            new(
+                "|Regular anticipated service day|{{SERVICE_DAY}}, subject to mutually agreed scheduling changes.",
+                "|Regular anticipated service {{SERVICE_DAY_NOUN}}|{{SERVICE_DAYS}}, subject to mutually agreed scheduling changes."),
+
+            // Exhibit B gains a billing-cadence row. It is a genuinely separate fact from the
+            // service frequency two rows above it: "every Wednesday, invoiced monthly" is an
+            // ordinary arrangement, and Exhibit B previously had no way to say the second half.
+            new(
+                "|Invoicing|{{INVOICE_TIMING}}",
+                "|Billing cadence|Invoices are issued {{BILLING_CADENCE_TEXT}}.\n|Invoicing|{{INVOICE_TIMING}}")
+        };
+
+        /// <summary>
+        /// The v1.1 body: v1.0 with <see cref="BodyRevisionsV11"/> applied.
+        ///
+        /// A replacement whose original is not found is SKIPPED rather than throwing - a startup
+        /// seeder must not be able to take the API down over template wording - but the test suite
+        /// asserts that every one of them applies, so the failure surfaces in review instead.
+        /// </summary>
+        public static string CurrentBodyText => BuildCurrentBody();
+
+        /// <summary>Which revisions actually matched. Used by the spec, not by the seeder.</summary>
+        public static IReadOnlyList<BodyRevision> UnappliedRevisions() =>
+            BodyRevisionsV11.Where(r => !BodyText.Contains(r.Original, StringComparison.Ordinal)).ToList();
+
+        private static string BuildCurrentBody()
+        {
+            var body = BodyText;
+            foreach (var revision in BodyRevisionsV11)
+            {
+                if (!body.Contains(revision.Original, StringComparison.Ordinal)) continue;
+                body = body.Replace(revision.Original, revision.Replacement, StringComparison.Ordinal);
+            }
+            return body;
+        }
+
         public const string BodyText = """
 # MASTER SERVICE AGREEMENT
 # COMMERCIAL CLEANING SERVICES

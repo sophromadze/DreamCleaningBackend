@@ -847,7 +847,10 @@ namespace DreamCleaningBackend.Services
         new Claim("LastName", user.LastName),
         new Claim("FirstTimeOrder", user.FirstTimeOrder.ToString()),
         new Claim("AuthProvider", user.AuthProvider ?? "Local"),
-        new Claim("RequiresRealEmail", (user.RequiresRealEmail || (user.Email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true)).ToString())
+        new Claim("RequiresRealEmail", (user.RequiresRealEmail || (user.Email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true)).ToString()),
+        // Session revocation: an admin ending this account's sessions bumps User.TokenVersion,
+        // which makes every token minted before that bump fail validation. See TokenVersionService.
+        new Claim(TokenVersionService.ClaimType, user.TokenVersion.ToString()),
     };
 
             if (user.SubscriptionId.HasValue)
@@ -863,7 +866,7 @@ namespace DreamCleaningBackend.Services
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(claims),
-                Expires = DateTime.UtcNow.AddDays(7), // Extended to 7 days to match cookie expiration
+                Expires = DateTime.UtcNow.AddDays(30), // 30 days, matching the cookie and refresh-token lifetime
                 SigningCredentials = creds
             };
 

@@ -101,6 +101,27 @@ namespace DreamCleaningBackend.DTOs
         public bool BringCleaningEssentials { get; set; }
 
         /// <summary>
+        /// WHICH products the supplies line is about, as translation keys, in the order they are
+        /// listed. Shipped whichever way <see cref="BringCleaningSupplies"/> falls: the flag says
+        /// who is carrying them, this says what they are, and a cleaner needs both.
+        ///
+        /// KEYS rather than finished text, and RESOLVED ON THE SERVER rather than rebuilt by the
+        /// page: the mail, the SMS and the portal have to name the same items, and the one way to
+        /// guarantee that is for the portal to translate a list it was handed rather than keep a
+        /// mirrored copy of the rule that builds it (CleanerJobView.ResolveSuppliesItemKeys).
+        /// </summary>
+        public List<string> SuppliesItemKeys { get; set; } = new();
+
+        /// <summary>
+        /// WHICH items the essentials line is about, as translation keys - same contract as
+        /// <see cref="SuppliesItemKeys"/>. Note the list itself differs by direction: we bring a
+        /// BROOM under the extra, whereas a customer providing them is asked for a broom OR a
+        /// vacuum, and for neither when they bought the Vacuum Cleaner extra. That is decided in
+        /// CleanerJobView.ResolveEssentialsItemKeys, not here.
+        /// </summary>
+        public List<string> EssentialsItemKeys { get; set; } = new();
+
+        /// <summary>
         /// The hours this cleaner is actually expected to work: THEIR payroll line, straight from
         /// CleanerPayrollCalculator, so the figure on the page is the figure they are paid for and
         /// the one their assignment email already quoted. Never Order.TotalDuration, which is total

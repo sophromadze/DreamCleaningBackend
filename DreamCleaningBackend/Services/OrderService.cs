@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers;
+using DreamCleaningBackend.Helpers.Recurring;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Repositories.Interfaces;
@@ -44,6 +45,8 @@ namespace DreamCleaningBackend.Services
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
                 .Include(o => o.AssignedAdmin)
+                // Lazy loading is off; without this the recurrence label is always null.
+                .Include(o => o.RecurringSeries)
                 .AsQueryable();
 
             if (!includeHidden)
@@ -94,6 +97,13 @@ namespace DreamCleaningBackend.Services
                 PaymentMethod = o.PaymentMethod.ToString(),
                 PaymentReference = o.PaymentReference,
                 PaymentNotes = o.PaymentNotes,
+                InvoicePaidAt = o.InvoicePaidAt,
+                ContractClientId = o.ContractClientId,
+                RecurringSeriesId = o.RecurringSeriesId,
+                IsGeneratedByRecurringSeries = o.IsGeneratedByRecurringSeries,
+                RecurrenceLabel = o.RecurringSeries == null
+                    ? null
+                    : RecurrenceCalculator.Describe(o.RecurringSeries.IntervalUnit, o.RecurringSeries.IntervalValue),
                 AssignedAdminId = o.AssignedAdminId,
                 AssignedAdminFirstName = o.AssignedAdmin != null ? o.AssignedAdmin.FirstName : null,
                 AssignedAdminLastName = o.AssignedAdmin != null ? o.AssignedAdmin.LastName : null,
@@ -196,6 +206,13 @@ namespace DreamCleaningBackend.Services
                 PaymentMethod = o.PaymentMethod.ToString(),
                 PaymentReference = o.PaymentReference,
                 PaymentNotes = o.PaymentNotes,
+                InvoicePaidAt = o.InvoicePaidAt,
+                ContractClientId = o.ContractClientId,
+                RecurringSeriesId = o.RecurringSeriesId,
+                IsGeneratedByRecurringSeries = o.IsGeneratedByRecurringSeries,
+                RecurrenceLabel = o.RecurringSeries == null
+                    ? null
+                    : RecurrenceCalculator.Describe(o.RecurringSeries.IntervalUnit, o.RecurringSeries.IntervalValue),
                 AssignedAdminId = o.AssignedAdminId,
                 AssignedAdminFirstName = o.AssignedAdmin != null ? o.AssignedAdmin.FirstName : null,
                 AssignedAdminLastName = o.AssignedAdmin != null ? o.AssignedAdmin.LastName : null,
@@ -334,6 +351,9 @@ namespace DreamCleaningBackend.Services
 
             if (order == null || order.UserId != userId)
                 throw new Exception("Order not found");
+
+            if (order.RecurringSeriesId.HasValue)
+                throw new Exception("Please contact Dream Cleaning to cancel or reschedule a recurring cleaning.");
 
             if (order.Status == "Cancelled")
                 throw new Exception("Cannot update a cancelled order");
@@ -547,6 +567,9 @@ namespace DreamCleaningBackend.Services
             if (order == null || order.UserId != userId)
                 throw new Exception("Order not found");
 
+            if (order.RecurringSeriesId.HasValue)
+                throw new Exception("Please contact Dream Cleaning to cancel or reschedule a recurring cleaning.");
+
             if (order.Status == "Cancelled" || order.Status == "Done")
                 throw new Exception($"Cannot update a {order.Status.ToLower()} order");
 
@@ -590,6 +613,9 @@ namespace DreamCleaningBackend.Services
             var order = await _orderRepository.GetByIdAsync(orderId);
             if (order == null || order.UserId != userId)
                 throw new Exception("Order not found");
+
+            if (order.RecurringSeriesId.HasValue)
+                throw new Exception("Please contact Dream Cleaning to cancel or reschedule a recurring cleaning.");
             if (order.Status == "Cancelled")
                 throw new Exception("Order is already cancelled");
             if (order.Status == "Done")
@@ -732,6 +758,9 @@ namespace DreamCleaningBackend.Services
             if (order == null)
                 throw new Exception("Order not found");
 
+            if (order.RecurringSeriesId.HasValue)
+                throw new Exception("Please contact Dream Cleaning to cancel or reschedule a recurring cleaning.");
+
             // Store original values for comparison - DO NOT MODIFY THE ORDER OBJECT!
             var originalTotal = order.Total;
 
@@ -817,6 +846,8 @@ namespace DreamCleaningBackend.Services
                 .Include(o => o.ServiceType)
                 .Include(o => o.User)
                 .Include(o => o.AssignedAdmin)
+                // Lazy loading is off; without this the recurrence label is always null.
+                .Include(o => o.RecurringSeries)
                 .Where(o => o.UserId == userId)
                 .OrderByDescending(o => o.OrderDate)
                 .ToListAsync();
@@ -850,6 +881,13 @@ namespace DreamCleaningBackend.Services
                 PaymentMethod = o.PaymentMethod.ToString(),
                 PaymentReference = o.PaymentReference,
                 PaymentNotes = o.PaymentNotes,
+                InvoicePaidAt = o.InvoicePaidAt,
+                ContractClientId = o.ContractClientId,
+                RecurringSeriesId = o.RecurringSeriesId,
+                IsGeneratedByRecurringSeries = o.IsGeneratedByRecurringSeries,
+                RecurrenceLabel = o.RecurringSeries == null
+                    ? null
+                    : RecurrenceCalculator.Describe(o.RecurringSeries.IntervalUnit, o.RecurringSeries.IntervalValue),
                 AssignedAdminId = o.AssignedAdminId,
                 AssignedAdminFirstName = o.AssignedAdmin != null ? o.AssignedAdmin.FirstName : null,
                 AssignedAdminLastName = o.AssignedAdmin != null ? o.AssignedAdmin.LastName : null,

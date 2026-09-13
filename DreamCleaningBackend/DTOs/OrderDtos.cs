@@ -101,6 +101,24 @@ namespace DreamCleaningBackend.DTOs
         public string PaymentMethod { get; set; } = "Normal";
         public string? PaymentReference { get; set; }
         public string? PaymentNotes { get; set; }
+
+        /// <summary>The commercial client an Invoice-method order is billed to. Null otherwise.</summary>
+        public int? ContractClientId { get; set; }
+
+        /// <summary>
+        /// Set when a fully-paid commercial invoice settled this order. Only ever non-null on an
+        /// Invoice-method order, and it is what makes "has this been paid for?" answerable for
+        /// one — <c>IsPaid</c> is Stripe-only and stays false. See Helpers/OrderPaymentFilter.
+        /// </summary>
+        public DateTime? InvoicePaidAt { get; set; }
+
+        // ── Recurring series ──────────────────────────────────────────────────────────────
+        // Null/false on every ordinary one-off booking — nothing was backfilled.
+
+        public int? RecurringSeriesId { get; set; }
+        /// <summary>True when the generator created this order rather than a person.</summary>
+        public bool IsGeneratedByRecurringSeries { get; set; }
+
         /// <summary>Sum of unpaid additional payments created by order updates.</summary>
         public decimal PendingUpdateAmount { get; set; }
         /// <summary>Latest unpaid update-history id (if any).</summary>
@@ -338,6 +356,29 @@ namespace DreamCleaningBackend.DTOs
         public string PaymentMethod { get; set; } = "Normal";
         public string? PaymentReference { get; set; }
         public string? PaymentNotes { get; set; }
+
+        /// <summary>
+        /// Set when a fully-paid commercial invoice settled this order. Only ever non-null on an
+        /// Invoice-method order, and it is what makes "has this been paid for?" answerable for one
+        /// — <c>IsPaid</c> is Stripe-only and stays false. See Helpers/OrderPaymentFilter.
+        /// </summary>
+        public DateTime? InvoicePaidAt { get; set; }
+
+        /// <summary>The commercial client an Invoice-method order is billed to. Null otherwise.</summary>
+        public int? ContractClientId { get; set; }
+
+        // ── Recurring series ──────────────────────────────────────────────────────────────
+        // Null on every ordinary one-off booking, which is every order that existed before this
+        // feature — nothing was backfilled.
+
+        public int? RecurringSeriesId { get; set; }
+
+        /// <summary>True when the generator created this order rather than a person. The series
+        /// link alone cannot say it: the TEMPLATE order carries that too.</summary>
+        public bool IsGeneratedByRecurringSeries { get; set; }
+
+        /// <summary>"Every 2 weeks". Null when the order is not part of a series.</summary>
+        public string? RecurrenceLabel { get; set; }
 
         // Assigned admin (drives the order-details pill and admin-bonus counts).
         public int? AssignedAdminId { get; set; }

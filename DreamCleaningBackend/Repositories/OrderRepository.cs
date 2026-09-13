@@ -40,6 +40,9 @@ namespace DreamCleaningBackend.Repositories
             return await _context.Orders
                 .Include(o => o.ServiceType)
                 .Include(o => o.AssignedAdmin)
+                // Lazy loading is off, so the recurrence label the list DTO renders would
+                // silently come back null for every order without this.
+                .Include(o => o.RecurringSeries)
                 .Where(o => o.UserId == userId)
                 .OrderByDescending(o => o.OrderDate)
                 .ToListAsync();

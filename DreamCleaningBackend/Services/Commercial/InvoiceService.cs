@@ -89,6 +89,7 @@ namespace DreamCleaningBackend.Services.Commercial
                     DueDate = InvoiceCalculator.ResolveDueDate(invoiceDate, dto.DueTerms, dto.CustomDueDate),
                     ServiceStartDate = dto.ServiceStartDate?.Date,
                     ServiceEndDate = dto.ServiceEndDate?.Date,
+                    ServiceDatesJson = SerializeServiceDates(dto.ServiceDates),
                     ServiceAddress = await ResolveServiceAddressAsync(dto),
                     PoNumber = Trim(dto.PoNumber),
                     ClientReference = Trim(dto.ClientReference),
@@ -103,6 +104,10 @@ namespace DreamCleaningBackend.Services.Commercial
 
                 ApplyItems(invoice, dto.Items);
                 ApplyFinancials(invoice, dto);
+                if (dto.OrderIds?.Count > 0)
+                    await InvoiceOrderLinkService.ApplySelectionAsync(_context, invoice,
+                        new SaveInvoiceOrdersDto { OrderIds = dto.OrderIds, NegotiatedGroupTotal = dto.NegotiatedGroupTotal });
+                ApplyTaxDefaultIfRequested(settings, dto, userId);
 
                 _context.CommercialInvoices.Add(invoice);
 
@@ -118,6 +123,7 @@ namespace DreamCleaningBackend.Services.Commercial
                         "Invoice number {Number} collided on insert; retrying.", invoice.InvoiceNumber);
                     _context.Entry(invoice).State = EntityState.Detached;
                     foreach (var item in invoice.Items) _context.Entry(item).State = EntityState.Detached;
+                    foreach (var link in invoice.CoveredOrders) _context.Entry(link).State = EntityState.Detached;
                     continue;
                 }
 
@@ -128,6 +134,23 @@ namespace DreamCleaningBackend.Services.Commercial
             }
 
             throw new InvoiceWorkflowException("Could not allocate an invoice number. Please try again.");
+        }
+
+        public async Task<InvoiceOrdersResultDto> PreviewLinkedOrdersAsync(SaveInvoiceDto dto, int? invoiceId)
+        {
+            await ValidateContractBelongsToClientAsync(dto.ContractId, dto.ContractClientId);
+            if (invoiceId.HasValue)
+            {
+                var saved = await _context.CommercialInvoices.AsNoTracking().FirstOrDefaultAsync(i => i.Id == invoiceId.Value)
+                    ?? throw new InvoiceWorkflowException("Invoice not found.");
+                if (saved.Status != InvoiceStatus.Draft)
+                    throw new InvoiceWorkflowException("Only Draft invoices can preview a new cleaning selection.");
+            }
+            var preview = new CommercialInvoice { Id = invoiceId ?? 0, ContractClientId = dto.ContractClientId,
+                ContractId = dto.ContractId, Status = InvoiceStatus.Draft };
+            ApplyFinancials(preview, dto);
+            return await InvoiceOrderLinkService.ApplySelectionAsync(_context, preview,
+                new SaveInvoiceOrdersDto { OrderIds = dto.OrderIds ?? new(), NegotiatedGroupTotal = dto.NegotiatedGroupTotal }, updateLinks: false);
         }
 
         // ── Update ────────────────────────────────────────────────────────────────────────────
@@ -147,6 +170,14 @@ namespace DreamCleaningBackend.Services.Commercial
         {
             var invoice = await LoadForWriteAsync(invoiceId);
 
+            if (invoice.Status != InvoiceStatus.Draft && dto.OrderIds != null)
+                throw new InvoiceWorkflowException("Linked cleaning selections can only be changed on Draft invoices.");
+
+            var driftChoices = dto.DraftDriftChoices ?? new List<string>();
+            if (driftChoices.Any(c => c is not ("KeepPrice" or "CurrentPrice" or "KeepTax" or "CurrentTax"))
+                || (driftChoices.Count > 0 && invoice.Status != InvoiceStatus.Draft))
+                throw new InvoiceWorkflowException("Drift choices apply only to a Draft invoice.");
+
             if (!InvoiceStatusPolicy.CanEdit(invoice.Status))
                 throw new InvoiceWorkflowException(
                     "A voided invoice is read-only. Duplicate it if you need to issue a corrected one.");
@@ -163,6 +194,10 @@ namespace DreamCleaningBackend.Services.Commercial
             invoice.InternalNote = Trim(dto.InternalNote);
             invoice.ServiceStartDate = dto.ServiceStartDate?.Date;
             invoice.ServiceEndDate = dto.ServiceEndDate?.Date;
+            // Which cleanings the invoice covers is a factual correction, not a monetary change -
+            // an admin fixing a service date on a paid invoice is ordinary bookkeeping, the same
+            // reasoning that keeps the PO number editable.
+            invoice.ServiceDatesJson = SerializeServiceDates(dto.ServiceDates);
 
             if (monetaryEditable)
             {
@@ -179,7 +214,26 @@ namespace DreamCleaningBackend.Services.Commercial
 
                 ApplyItems(invoice, dto.Items);
                 ApplyFinancials(invoice, dto);
+
+                if (invoice.Status == InvoiceStatus.Draft && (dto.OrderIds != null || invoice.CoveredOrders.Count > 0))
+                {
+                    await InvoiceOrderLinkService.ApplySelectionAsync(_context, invoice, new SaveInvoiceOrdersDto {
+                        OrderIds = dto.OrderIds ?? invoice.CoveredOrders.Select(l => l.OrderId).ToList(),
+                        NegotiatedGroupTotal = dto.OrderIds == null ? invoice.NegotiatedOrderGroupTotal : dto.NegotiatedGroupTotal
+                    });
+                    if (dto.OrderIds?.Count == 0) { ApplyItems(invoice, dto.Items); ApplyFinancials(invoice, dto); }
+                }
+
+                var settings = await _billing.GetOrCreateAsync();
+                ApplyTaxDefaultIfRequested(settings, dto, userId);
             }
+
+            // Saving unrelated fields does not acknowledge price/tax drift. Only an explicit
+            // review choice dismisses its warning; the other warnings remain visible.
+            var remainingWarnings = ParseDraftWarnings(invoice.DraftWarningsJson).Where(w =>
+                !(w.StartsWith("Current contract pricing") && driftChoices.Any(c => c.EndsWith("Price")))
+                && !(w.StartsWith("Current contract tax") && driftChoices.Any(c => c.EndsWith("Tax")))).ToList();
+            invoice.DraftWarningsJson = remainingWarnings.Count == 0 ? null : JsonSerializer.Serialize(remainingWarnings);
 
             RecalculateStatus(invoice);
             invoice.UpdatedAt = DateTime.UtcNow;
@@ -200,7 +254,88 @@ namespace DreamCleaningBackend.Services.Commercial
                 await LogActivityAsync(invoice.Id, "invoice_updated", "Invoice updated.", userId);
             }
 
+            foreach (var choice in driftChoices)
+                await LogActivityAsync(invoice.Id, "invoice_drift_choice", $"Draft review: {choice}. Total {invoice.Total:C}; tax {invoice.TaxAmount:C} at {invoice.TaxRate}%.", userId);
             return invoice;
+        }
+
+        // ── Service dates ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// The individual visit dates an invoice covers, read back off the row. Empty when it
+        /// records none - which is legitimate and common, and is why every reader falls back to
+        /// the period bounds rather than treating this as required.
+        /// </summary>
+        /// <summary>
+        /// The generation warnings frozen onto a draft. An unreadable column returns nothing
+        /// rather than taking the invoice page down with it — the same tolerance
+        /// <see cref="ParseServiceDates"/> applies, and for the same reason: a warning is
+        /// advisory, and losing it must never cost an admin the invoice itself.
+        /// </summary>
+        public static List<string> ParseDraftWarnings(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+            try
+            {
+                return JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+            }
+            catch (JsonException)
+            {
+                return new List<string>();
+            }
+        }
+
+        public static List<DateTime> ParseServiceDates(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return new List<DateTime>();
+            try
+            {
+                return JsonSerializer.Deserialize<List<DateTime>>(json)?
+                           .Select(d => d.Date)
+                           .Distinct()
+                           .OrderBy(d => d)
+                           .ToList()
+                       ?? new List<DateTime>();
+            }
+            catch (JsonException)
+            {
+                // An unreadable column must not take a whole invoice page down with it; the period
+                // bounds beside it still describe the work.
+                return new List<DateTime>();
+            }
+        }
+
+        /// <summary>Null rather than "[]" for an empty list, so "records none" is one state.</summary>
+        private static string? SerializeServiceDates(IEnumerable<DateTime>? dates)
+        {
+            var normalised = (dates ?? Enumerable.Empty<DateTime>())
+                .Select(d => d.Date)
+                .Distinct()
+                .OrderBy(d => d)
+                .ToList();
+
+            return normalised.Count == 0 ? null : JsonSerializer.Serialize(normalised);
+        }
+
+        /// <summary>The label and text every surface prints for "what does this invoice cover".</summary>
+        public static ServiceDateDisplay DescribeServiceDates(CommercialInvoice invoice) =>
+            ServiceDateFormatter.Describe(
+                ParseServiceDates(invoice.ServiceDatesJson),
+                invoice.ServiceStartDate,
+                invoice.ServiceEndDate);
+
+        /// <summary>
+        /// Writes a rate typed on the invoice form back as the default for FUTURE documents, when
+        /// the admin asked for that.
+        ///
+        /// It touches <c>BillingSettings</c> and nothing else. A finalized invoice and a signed
+        /// contract each carry their own rate snapshot and are never recomputed from this row -
+        /// which is precisely why the rate is snapshotted per document.
+        /// </summary>
+        private void ApplyTaxDefaultIfRequested(BillingSettings settings, SaveInvoiceDto dto, int userId)
+        {
+            if (!dto.SaveTaxRateAsDefault) return;
+            _billing.ApplyTaxDefaults(settings, dto.TaxType, dto.TaxRate, null, userId);
         }
 
         private readonly record struct FinancialSnapshot(
@@ -478,6 +613,9 @@ namespace DreamCleaningBackend.Services.Commercial
             // one legitimate manual transition out of Draft.
             if (invoice.Status == InvoiceStatus.Draft) invoice.Status = InvoiceStatus.Sent;
 
+            // The draft warnings described something to check BEFORE sending. It has been sent.
+            invoice.DraftWarningsJson = null;
+
             RecalculateStatus(invoice);
             invoice.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
@@ -531,6 +669,7 @@ namespace DreamCleaningBackend.Services.Commercial
         public async Task<CommercialInvoice> LoadForWriteAsync(int invoiceId) =>
             await _context.CommercialInvoices
                 .Include(i => i.Items)
+                .Include(i => i.CoveredOrders)
                 .Include(i => i.Client)
                 .FirstOrDefaultAsync(i => i.Id == invoiceId)
                 ?? throw new InvoiceWorkflowException("Invoice not found.");
@@ -576,6 +715,18 @@ namespace DreamCleaningBackend.Services.Commercial
                 .Take(50)
                 .ToListAsync();
 
+            var serviceDates = DescribeServiceDates(invoice);
+            var currentContract = invoice.Status == InvoiceStatus.Draft && invoice.Contract != null
+                ? await RecurringInvoiceService.LoadSnapshotAsync(_context, invoice.Contract) : null;
+
+            // A Stripe payment AND a manual one AND more money in than was billed. Nothing is
+            // corrected automatically - the money really did arrive twice and only a person can
+            // decide which half to refund - but it is surfaced, because the customer will notice a
+            // duplicate debit long before a month-end reconciliation does.
+            var hasStripePayment = payments.Any(p => p.Provider == InvoicePaymentProvider.Stripe && !p.IsReversal);
+            var hasManualPayment = payments.Any(p => p.Provider == InvoicePaymentProvider.Manual && !p.IsReversal);
+            var overpaid = InvoiceCalculator.ResolveOverpayment(invoice.Total, invoice.AmountPaid);
+
             return new InvoiceDetailDto
             {
                 Id = invoice.Id,
@@ -602,9 +753,35 @@ namespace DreamCleaningBackend.Services.Commercial
                 DueTerms = invoice.DueTerms,
                 ServiceStartDate = invoice.ServiceStartDate,
                 ServiceEndDate = invoice.ServiceEndDate,
+                ServiceDates = ParseServiceDates(invoice.ServiceDatesJson),
+                ServiceDateLabel = serviceDates.HasValue ? serviceDates.Label : null,
+                ServiceDateText = serviceDates.HasValue ? serviceDates.Text : null,
 
                 PoNumber = invoice.PoNumber,
                 ClientReference = invoice.ClientReference,
+
+                // Warnings raised when this draft was GENERATED, stored on the row rather than
+                // returned once — so they are visible in the editor whichever route the admin took
+                // to get here. Cleared when the invoice leaves Draft or its warning is explicitly acknowledged.
+                DraftWarnings = ParseDraftWarnings(invoice.DraftWarningsJson),
+                CurrentContractUnitPrice = currentContract == null ? null
+                    : currentContract.Pricing.PriceMode == Models.Contracts.ContractPriceMode.TaxInclusive
+                        ? currentContract.Pricing.TotalPrice : currentContract.Pricing.PreTaxPrice,
+                CurrentContractTaxType = currentContract == null ? null
+                    : currentContract.Pricing.PriceMode == Models.Contracts.ContractPriceMode.TaxInclusive
+                        ? InvoiceTaxType.Included : InvoiceTaxType.Added,
+                CurrentContractTaxRate = currentContract?.Pricing.SalesTaxRatePercent,
+                CleaningsCovered = await _context.CommercialInvoiceOrders
+                    .Where(l => l.CommercialInvoiceId == invoiceId)
+                    .OrderBy(l => l.Order!.ServiceDate).ThenBy(l => l.OrderId)
+                    .Select(l => new InvoiceOrderAllocationDto {
+                        OrderId = l.OrderId, ServiceDate = l.Order!.ServiceDate,
+                        ServiceAddress = l.Order.ServiceAddress + (l.Order.AptSuite == null ? "" : ", " + l.Order.AptSuite),
+                        AllocatedAmount = l.AllocatedAmount, OriginalOrderTotal = l.OriginalOrderTotal,
+                        OrderStatus = l.Order.Status, IsProposal = l.CommittedAt == null,
+                        CommittedAt = l.CommittedAt, ActivatedOrderAt = l.ActivatedOrderAt
+                    }).ToListAsync(),
+                NegotiatedOrderGroupTotal = invoice.NegotiatedOrderGroupTotal,
 
                 SubTotal = invoice.SubTotal,
                 DiscountType = invoice.DiscountType,
@@ -639,19 +816,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 DuplicatedFromInvoiceId = invoice.DuplicatedFromInvoiceId,
 
                 Items = invoice.Items.OrderBy(i => i.SortOrder).Select(ToItemDto).ToList(),
-                Payments = payments.Select(p => new InvoicePaymentDto
-                {
-                    Id = p.Id,
-                    Amount = p.Amount,
-                    PaymentDate = p.PaymentDate,
-                    PaymentMethod = p.PaymentMethod,
-                    PaymentMethodLabel = PaymentMethodLabel(p.PaymentMethod),
-                    TransactionReference = p.TransactionReference,
-                    InternalNote = p.InternalNote,
-                    IsReversal = p.IsReversal,
-                    RecordedByName = BuildUserName(p.RecordedByUser),
-                    CreatedAt = p.CreatedAt
-                }).ToList(),
+                Payments = payments.Select(ToPaymentDto).ToList(),
                 EmailHistory = emails.Select(e => new InvoiceEmailLogDto
                 {
                     Id = e.Id,
@@ -691,21 +856,66 @@ namespace DreamCleaningBackend.Services.Commercial
                     IsInFlight = a.IsInFlight
                 }).ToList(),
 
-                HasPaymentInProgress = attempts.Any(a =>
-                    a.Status == InvoicePaymentAttemptStatus.Processing
-                    || (a.Status == InvoicePaymentAttemptStatus.CheckoutOpen
-                        && a.CreatedAt >= DateTime.UtcNow.AddHours(-24))),
+                // Only a SETTLING payment counts, matching the customer's view. An open Checkout
+                // Session the customer may have abandoned is not a payment in progress.
+                HasPaymentInProgress = attempts.Any(a => a.IsAwaitingSettlement),
 
                 CanEdit = InvoiceStatusPolicy.CanEdit(invoice.Status),
                 CanEditMonetaryValues = InvoiceStatusPolicy.CanEditMonetaryValues(invoice.Status),
                 EditRequiresWarning = InvoiceStatusPolicy.EditRequiresWarning(invoice.Status),
                 CanSend = InvoiceStatusPolicy.CanSend(invoice.Status),
-                CanRecordPayment = InvoiceStatusPolicy.CanRecordPayment(invoice.Status),
+                CanRecordPayment = InvoiceStatusPolicy.CanRecordPayment(invoice.Status, invoice.BalanceDue),
                 CanVoid = InvoiceStatusPolicy.CanVoid(invoice.Status),
                 CanDelete = InvoiceStatusPolicy.CanDelete(invoice.Status),
-                CanSendReminder = InvoiceStatusPolicy.CanSendReminder(invoice.Status)
+                CanSendReminder = InvoiceStatusPolicy.CanSendReminder(invoice.Status),
+
+                PotentialDuplicatePayment = hasStripePayment && hasManualPayment && overpaid > 0m,
+                HasProcessingStripePayment =
+                    attempts.Any(a => a.Status == InvoicePaymentAttemptStatus.Processing)
             };
         }
+
+        /// <summary>
+        /// One payment row for the admin ledger.
+        ///
+        /// MONEY RECEIVED IS POSITIVE and only a reversal is negative, so nothing here paints a
+        /// sign onto <c>Amount</c> - a real settlement printed as "-$925.43" is the regression
+        /// InvoicePaymentSignTests exists for. The processing fee is shown BESIDE the amount, never
+        /// folded into it: the invoice was met by <c>Amount</c>, and the extra is what the payment
+        /// method cost the customer.
+        /// </summary>
+        public static InvoicePaymentDto ToPaymentDto(CommercialInvoicePayment p) => new()
+        {
+            Id = p.Id,
+            Amount = p.Amount,
+            ProcessingFee = p.ProcessingFee,
+            TotalCharged = InvoiceCalculator.Round2(p.Amount + p.ProcessingFee),
+            PaymentDate = p.PaymentDate,
+            PaymentMethod = p.PaymentMethod,
+            PaymentMethodLabel = PaymentMethodLabel(p.PaymentMethod),
+            Provider = p.Provider,
+            ProviderLabel = ProviderLabel(p.Provider),
+            TransactionReference = p.TransactionReference,
+            InternalNote = p.InternalNote,
+            IsReversal = p.IsReversal,
+            // NULL when a webhook wrote the row, and deliberately not filled in from
+            // RecordedByLabel: "recorded by" means a PERSON, and an audit trail that names an
+            // admin where there was none is worse than one that says nothing. Which system
+            // produced the row is answered by ProviderLabel beside it.
+            RecordedByName = BuildUserName(p.RecordedByUser),
+            CreatedAt = p.CreatedAt
+        };
+
+        /// <summary>
+        /// "Manual" or "Stripe (online)". Stated plainly on the ledger because a bank transfer an
+        /// admin typed in from a statement must never look like it came through the processor -
+        /// the two reconcile against completely different records.
+        /// </summary>
+        public static string ProviderLabel(InvoicePaymentProvider provider) => provider switch
+        {
+            InvoicePaymentProvider.Stripe => "Stripe (online)",
+            _ => "Manual"
+        };
 
         public static InvoiceItemDto ToItemDto(CommercialInvoiceItem i) => new()
         {
@@ -726,6 +936,7 @@ namespace DreamCleaningBackend.Services.Commercial
             var settings = await _billing.GetOrCreateAsync();
             var contact = await ResolveBillingContactAsync(invoice.ContractClientId);
             var options = await BuildPaymentOptionsAsync(invoice, settings);
+            var publicServiceDates = DescribeServiceDates(invoice);
 
             return new PublicInvoiceDto
             {
@@ -737,6 +948,9 @@ namespace DreamCleaningBackend.Services.Commercial
                 DueDate = invoice.DueDate,
                 ServiceStartDate = invoice.ServiceStartDate,
                 ServiceEndDate = invoice.ServiceEndDate,
+                ServiceDates = ParseServiceDates(invoice.ServiceDatesJson),
+                ServiceDateLabel = publicServiceDates.HasValue ? publicServiceDates.Label : null,
+                ServiceDateText = publicServiceDates.HasValue ? publicServiceDates.Text : null,
 
                 ClientName = invoice.Client?.LegalEntityName ?? string.Empty,
                 BillingContactName = contact?.FullName,
@@ -793,6 +1007,15 @@ namespace DreamCleaningBackend.Services.Commercial
 
             options.ManualAchAvailable = BillingSettingsService.CanOfferManualAch(settings);
 
+            // THE FEE IS QUOTED BEFORE THE CUSTOMER COMMITS TO ANYTHING. Computed here from the
+            // invoice's own live balance so a part-payment recorded this morning is reflected, and
+            // recomputed identically by the checkout endpoint - the page can only ever DISPLAY it.
+            options.AchProcessingFee = AchProcessingFeeCalculator.Resolve(invoice.BalanceDue, settings);
+            options.AchTotalWithFee =
+                AchProcessingFeeCalculator.ResolveTotalCharge(invoice.BalanceDue, options.AchProcessingFee);
+            options.AchProcessingFeeLabel = AchProcessingFeeCalculator.CustomerFacingLabel;
+            options.ManualAchFeeNote = AchProcessingFeeCalculator.ManualAchNoFeeNote;
+
             // Attempts are only consulted for an invoice that can still take money, so a paid
             // invoice never shows a stale "processing" banner.
             var attempts = await _context.CommercialInvoicePaymentAttempts
@@ -801,20 +1024,28 @@ namespace DreamCleaningBackend.Services.Commercial
                 .Take(20)
                 .ToListAsync();
 
-            var cutoff = DateTime.UtcNow.AddHours(-24);
-            var inFlight = attempts.FirstOrDefault(a =>
-                a.Status == InvoicePaymentAttemptStatus.Processing
-                || (a.Status == InvoicePaymentAttemptStatus.CheckoutOpen && a.CreatedAt >= cutoff));
+            // ONLY A SETTLING PAYMENT BLOCKS THE CUSTOMER — see IsAwaitingSettlement.
+            //
+            // This used to also count CheckoutOpen, which is set the moment a Session is created.
+            // The result was that opening Stripe and closing the tab without paying locked the
+            // invoice as "processing" for 24 hours: pay button disabled, no retry, and a banner
+            // claiming a payment was under way when nothing had been submitted. Creating a
+            // Checkout Session is not evidence of a debit.
+            var settling = attempts.FirstOrDefault(a => a.IsAwaitingSettlement);
 
-            if (inFlight != null)
+            if (settling != null)
             {
                 options.PaymentInProgress = true;
-                options.ProcessingAmount = inFlight.Amount;
-                options.ProcessingStartedAt = inFlight.CreatedAt;
+                options.ProcessingAmount = settling.Amount;
+                options.ProcessingFeeAmount = settling.ProcessingFee;
+                options.ProcessingTotalCharged = settling.TotalCharged > 0m
+                    ? settling.TotalCharged
+                    : AchProcessingFeeCalculator.ResolveTotalCharge(settling.Amount, settling.ProcessingFee);
+                options.ProcessingStartedAt = settling.CreatedAt;
 
-                // Both buttons stay OFF while money is in flight. This is the duplicate-payment
-                // guard's visible half: ACH takes days to settle and the invoice reads unpaid the
-                // whole time, so without it a customer would quite reasonably pay again.
+                // Both buttons stay OFF while money is genuinely in flight. This is the
+                // duplicate-payment guard's visible half: ACH takes days to settle and the invoice
+                // reads unpaid the whole time, so without it a customer would reasonably pay again.
                 return options;
             }
 
@@ -935,14 +1166,19 @@ namespace DreamCleaningBackend.Services.Commercial
         }
 
         /// <summary>
-        /// The person an invoice is addressed to: the client's active billing/signer contact.
-        /// Falls back to the company's notice email, which is the address the contract itself
-        /// serves notice on.
+        /// The person an invoice is addressed to: the client's primary billing contact when one is
+        /// flagged, otherwise their oldest active client-side contact. Falls back to the company's
+        /// notice email, which is the address the contract itself serves notice on.
+        ///
+        /// The explicit flag is checked FIRST so a client whose accounts-payable contact is not
+        /// their signer is billed correctly; the ordering below it is exactly what this resolver
+        /// did before the flag existed, so no client's invoices change recipient on deployment.
         /// </summary>
         public async Task<ContractContact?> ResolveBillingContactAsync(int clientId) =>
             await _context.ContractContacts
                 .Where(c => c.ContractClientId == clientId && c.IsActive)
-                .OrderBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1)
+                .OrderBy(c => c.IsPrimaryBillingContact ? 0 : 1)
+                .ThenBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1)
                 .ThenBy(c => c.Id)
                 .FirstOrDefaultAsync();
 

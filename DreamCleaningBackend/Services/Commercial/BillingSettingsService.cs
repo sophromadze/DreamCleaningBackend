@@ -61,8 +61,18 @@ namespace DreamCleaningBackend.Services.Commercial
                     "Please send payment by ACH bank transfer to the account above and include the "
                     + "invoice number in the payment memo or reference field so we can match it to "
                     + "your account.",
-                DefaultTaxType = InvoiceTaxType.Exempt,
+                // The commercial defaults, in one place, used by BOTH a new invoice's Discount &
+                // Tax panel and a new contract's Pricing & Payment panel. Tax-inclusive at 8.875%
+                // because that is what a commercial client is actually quoted: the agreed figure
+                // is what they pay, and adding tax on top of it at invoice time produces a bill
+                // that does not match the contract.
+                DefaultTaxType = InvoiceTaxType.Included,
+                DefaultTaxRate = 8.875m,
+                DefaultContractPriceMode = Models.Contracts.ContractPriceMode.TaxInclusive,
                 DefaultDueTerms = InvoiceDueTerms.Net15,
+                AchCustomerFeeEnabled = true,
+                AchCustomerFeeRatePercent = Helpers.Commercial.AchProcessingFeeCalculator.DefaultRatePercent,
+                AchCustomerFeeCapAmount = Helpers.Commercial.AchProcessingFeeCalculator.DefaultCapAmount,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             };
@@ -110,14 +120,65 @@ namespace DreamCleaningBackend.Services.Commercial
             ManualAchEnabled = s.ManualAchEnabled,
             ManualAchComplete = IsManualAchComplete(s),
             MissingManualAchFields = MissingManualAchFields(s),
+            AchCustomerFeeEnabled = s.AchCustomerFeeEnabled,
+            AchCustomerFeeRatePercent = s.AchCustomerFeeRatePercent,
+            AchCustomerFeeCapAmount = s.AchCustomerFeeCapAmount,
             DefaultTaxType = s.DefaultTaxType,
             DefaultTaxRate = s.DefaultTaxRate,
+            DefaultContractPriceMode = s.DefaultContractPriceMode,
             DefaultDueTerms = s.DefaultDueTerms,
             DefaultCustomerNote = s.DefaultCustomerNote,
             InvoiceFooterText = s.InvoiceFooterText,
             UpdatedAt = s.UpdatedAt,
             CanEdit = canEdit
         };
+
+        /// <summary>
+        /// The subset of the settings a NEW contract or invoice starts from, served to any admin
+        /// who can open either form. Deliberately carries no bank details: the two creation forms
+        /// need the tax defaults and nothing else, and a form that receives an account number it
+        /// never displays is a leak waiting for a future copy-paste.
+        /// </summary>
+        public CommercialBillingDefaultsDto ToDefaultsDto(BillingSettings s) => new()
+        {
+            DefaultTaxType = s.DefaultTaxType,
+            DefaultTaxRate = s.DefaultTaxRate,
+            DefaultContractPriceMode = s.DefaultContractPriceMode,
+            DefaultDueTerms = s.DefaultDueTerms,
+            AchCustomerFeeEnabled = s.AchCustomerFeeEnabled,
+            AchCustomerFeeRatePercent = s.AchCustomerFeeRatePercent,
+            AchCustomerFeeCapAmount = s.AchCustomerFeeCapAmount
+        };
+
+        /// <summary>
+        /// Persists a tax rate typed on a contract or invoice form as the default for FUTURE
+        /// documents.
+        ///
+        /// The two things it must NOT do, and structurally cannot: touch a finalized invoice, or
+        /// touch a signed contract. Both carry their own rate snapshot and are never recomputed
+        /// from this row - which is the entire reason the rate is snapshotted per document rather
+        /// than looked up at render time.
+        ///
+        /// Saved by the caller, so it joins whatever transaction is already open.
+        /// </summary>
+        public void ApplyTaxDefaults(
+            BillingSettings target,
+            InvoiceTaxType? taxType,
+            decimal? taxRate,
+            Models.Contracts.ContractPriceMode? contractPriceMode,
+            int userId)
+        {
+            if (taxType.HasValue) target.DefaultTaxType = taxType.Value;
+
+            // A null rate on an Exempt document is not a request to forget the configured rate -
+            // it just means this one document is not taxed. Only a real figure moves the default.
+            if (taxRate is > 0m) target.DefaultTaxRate = taxRate;
+
+            if (contractPriceMode.HasValue) target.DefaultContractPriceMode = contractPriceMode.Value;
+
+            target.UpdatedAt = DateTime.UtcNow;
+            target.UpdatedByUserId = userId;
+        }
 
         /// <summary>
         /// Whether manual ACH is fully configured enough to actually be paid.
@@ -200,8 +261,15 @@ namespace DreamCleaningBackend.Services.Commercial
             target.StripeCardEnabled = dto.StripeCardEnabled;
             target.ManualAchEnabled = dto.ManualAchEnabled;
 
+            target.AchCustomerFeeEnabled = dto.AchCustomerFeeEnabled;
+            // Clamped rather than validated away: a negative rate or cap is meaningless and a
+            // typo here would surcharge every commercial client on the next payment.
+            target.AchCustomerFeeRatePercent = Math.Clamp(dto.AchCustomerFeeRatePercent, 0m, 10m);
+            target.AchCustomerFeeCapAmount = Math.Max(0m, dto.AchCustomerFeeCapAmount);
+
             target.DefaultTaxType = dto.DefaultTaxType;
             target.DefaultTaxRate = dto.DefaultTaxRate;
+            target.DefaultContractPriceMode = dto.DefaultContractPriceMode;
             target.DefaultDueTerms = dto.DefaultDueTerms;
             target.DefaultCustomerNote = Trim(dto.DefaultCustomerNote);
             target.InvoiceFooterText = Trim(dto.InvoiceFooterText);

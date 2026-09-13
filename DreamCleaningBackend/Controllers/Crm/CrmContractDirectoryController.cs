@@ -1,6 +1,7 @@
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Helpers.Contracts;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Models.Contracts;
@@ -145,9 +146,40 @@ namespace DreamCleaningBackend.Controllers.Crm
                 .Where(c => c.ContractClientId != null && ids.Contains(c.ContractClientId!.Value) && c.IsActive)
                 .ToListAsync();
 
-            return Ok(clients.Select(c => MapClient(c,
-                locations.Where(l => l.ContractClientId == c.Id),
-                contacts.Where(x => x.ContractClientId == c.Id))).ToList());
+            // The linked account's NAME, resolved once for the page rather than per row.
+            //
+            // The contract form shows it as a read-only "Linked account" line, so selecting a
+            // client hydrates its whole relationship in one gesture. Without it the admin had to
+            // choose the linked customer SEPARATELY to see who the client belonged to - the
+            // duplicated-selector confusion this endpoint's caller was rebuilt to end.
+            var linkedIds = clients.Where(c => c.SourceUserId != null)
+                .Select(c => c.SourceUserId!.Value).Distinct().ToList();
+
+            var accounts = linkedIds.Count == 0
+                ? new Dictionary<int, (string Name, string? Email)>()
+                : (await _context.Users
+                        .Where(u => linkedIds.Contains(u.Id))
+                        .Select(u => new { u.Id, u.FirstName, u.LastName, u.Email })
+                        .ToListAsync())
+                    .ToDictionary(
+                        u => u.Id,
+                        u => (Name: $"{u.FirstName} {u.LastName}".Trim(),
+                              Email: NoEmailHelper.IsPlaceholder(u.Email) ? null : u.Email));
+
+            return Ok(clients.Select(c =>
+            {
+                var dto = MapClient(c,
+                    locations.Where(l => l.ContractClientId == c.Id),
+                    contacts.Where(x => x.ContractClientId == c.Id));
+
+                if (c.SourceUserId != null && accounts.TryGetValue(c.SourceUserId.Value, out var account))
+                {
+                    dto.SourceUserName = account.Name;
+                    dto.SourceUserEmail = account.Email;
+                }
+
+                return dto;
+            }).ToList());
         }
 
         /// <summary>
@@ -365,6 +397,11 @@ namespace DreamCleaningBackend.Controllers.Crm
         /// their bookings and their history, and re-ticking the business flag on the Users tab
         /// brings this same client row back with its contracts and invoices intact.
         ///
+        /// Which is why the admin panel offers this as <b>"Move to Customers"</b> on a linked
+        /// client rather than as a deletion — same call, and the account simply goes back to being
+        /// an ordinary customer. A standalone client has no account to move back to and keeps the
+        /// Delete wording. The response message follows whichever act it performed.
+        ///
         /// Permission.Deactivate, not Permission.Delete: this IS a deactivation, it is fully
         /// reversible, and Delete is SuperAdmin-only — the people who run the commercial tab
         /// (Admins) are the ones who retire a client.
@@ -385,9 +422,12 @@ namespace DreamCleaningBackend.Controllers.Crm
 
                 return Ok(new
                 {
-                    message = $"{client.LegalEntityName} was removed from Commercial → Clients, and the " +
-                              "business designation was taken off the linked customer account. " +
-                              "Their contracts and invoices are unchanged.",
+                    // Worded as the move it is: the admin pressed "Move to Customers", and what
+                    // they care about is that the account is an ordinary customer again.
+                    message = $"{client.LegalEntityName} was moved back to Customers — the business " +
+                              "designation has been taken off the linked customer account, and they " +
+                              "are no longer listed under Business Clients. Their contracts and " +
+                              "invoices are unchanged.",
                     isActive = false,
                     businessFlagRemoved = true
                 });
@@ -667,26 +707,177 @@ namespace DreamCleaningBackend.Controllers.Crm
             return Ok(MapContact(contact));
         }
 
-        // ── scope templates ────────────────────────────────────────────────────
+        // ── Business types and their scope-of-work templates ───────────────────
+        //
+        // A ScopeTemplate IS the business type: Restaurant, Gym/Studio, Office, and whatever an
+        // admin adds next. Its StructureJson holds the ordered CATEGORIES, each holding ITEMS with
+        // a default-selected flag - so "Business type -> scope template -> categories -> items" is
+        // the shape already in the database, and nothing about the premises types is hardcoded.
+        //
+        // EVERY EDIT HERE AFFECTS FUTURE CONTRACTS ONLY. Picking a template on a contract DEEP
+        // COPIES it into that contract's snapshot, and a generated version freezes the copy, so
+        // renaming a category or retiring an item cannot reach a document that already exists -
+        // structurally, not by a rule someone has to remember.
 
+        /// <summary>
+        /// The business types offered when creating a contract, with their default checklists.
+        ///
+        /// Archived categories and items are stripped: they exist so a retired row keeps rendering
+        /// on the signed contracts that used it, not so it keeps being offered on new ones. The
+        /// template EDITOR reads the unfiltered structure through the endpoint below.
+        /// </summary>
         [HttpGet("scope-templates")]
         [RequirePermission(Permission.View)]
-        public async Task<ActionResult<List<ScopeTemplateDto>>> GetScopeTemplates()
+        public async Task<ActionResult<List<ScopeTemplateDto>>> GetScopeTemplates(
+            [FromQuery] bool includeArchived = false)
         {
             var rows = await _context.ScopeTemplates
-                .Where(t => t.IsActive)
-                .OrderBy(t => t.SortOrder)
+                .Where(t => includeArchived || t.IsActive)
+                .OrderBy(t => t.SortOrder).ThenBy(t => t.Id)
                 .ToListAsync();
 
-            return Ok(rows.Select(t => new ScopeTemplateDto
+            return Ok(rows.Select(t => ToScopeTemplateDto(t, includeArchived)).ToList());
+        }
+
+        /// <summary>One business type in full, INCLUDING archived rows, for the template editor.</summary>
+        [HttpGet("scope-templates/{id}")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<ScopeTemplateDto>> GetScopeTemplate(int id)
+        {
+            var row = await _context.ScopeTemplates.FirstOrDefaultAsync(t => t.Id == id);
+            if (row == null) return NotFound(new { message = "Business type not found." });
+
+            return Ok(ToScopeTemplateDto(row, includeArchived: true));
+        }
+
+        [HttpPost("scope-templates")]
+        [RequirePermission(Permission.Create)]
+        public async Task<ActionResult<ScopeTemplateDto>> CreateScopeTemplate(
+            [FromBody] SaveScopeTemplateDto dto)
+        {
+            var name = (dto.Name ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(name))
+                return BadRequest(new { message = "Enter a name for the business type." });
+
+            if (await _context.ScopeTemplates.AnyAsync(t => t.Name == name))
+                return BadRequest(new { message = $"A business type called \"{name}\" already exists." });
+
+            var row = new ScopeTemplate
+            {
+                Name = name,
+                PremisesType = Fallback(dto.PremisesType, "premises"),
+                AllowsCustomRows = dto.AllowsCustomRows,
+                SortOrder = dto.SortOrder,
+                StructureJson = (dto.Structure ?? new ScopeStructure()).ToJson(),
+                IsActive = true
+            };
+
+            _context.ScopeTemplates.Add(row);
+            await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(AuditEntityTypes.CommercialClient, row.Id,
+                "ScopeTemplateCreated", null,
+                new { row.Id, row.Name, row.PremisesType }, new[] { "Name" }, GetCurrentUserId());
+
+            return Ok(ToScopeTemplateDto(row, includeArchived: true));
+        }
+
+        /// <summary>
+        /// Renames a business type, or replaces its checklist wholesale.
+        ///
+        /// The whole structure is sent and stored as one document - categories reordered, items
+        /// added, renamed, re-flagged or archived - because the editor manipulates a tree and
+        /// per-row endpoints would turn one screenful of edits into a dozen requests that can
+        /// half-fail.
+        /// </summary>
+        [HttpPut("scope-templates/{id}")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<ScopeTemplateDto>> UpdateScopeTemplate(
+            int id, [FromBody] SaveScopeTemplateDto dto)
+        {
+            var row = await _context.ScopeTemplates.FirstOrDefaultAsync(t => t.Id == id);
+            if (row == null) return NotFound(new { message = "Business type not found." });
+
+            var name = (dto.Name ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(name))
+                return BadRequest(new { message = "Enter a name for the business type." });
+
+            if (await _context.ScopeTemplates.AnyAsync(t => t.Name == name && t.Id != id))
+                return BadRequest(new { message = $"A business type called \"{name}\" already exists." });
+
+            row.Name = name;
+            row.PremisesType = Fallback(dto.PremisesType, row.PremisesType);
+            row.AllowsCustomRows = dto.AllowsCustomRows;
+            row.SortOrder = dto.SortOrder;
+            if (dto.Structure != null) row.StructureJson = dto.Structure.ToJson();
+            row.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(AuditEntityTypes.CommercialClient, row.Id,
+                "ScopeTemplateUpdated", null,
+                new { row.Id, row.Name, row.PremisesType, Note = "Affects future contracts only." },
+                new[] { "Name" }, GetCurrentUserId());
+
+            return Ok(ToScopeTemplateDto(row, includeArchived: true));
+        }
+
+        /// <summary>
+        /// Archives a business type. Never a hard delete.
+        ///
+        /// Deactivate rather than Delete for the same reason a commercial client is: contracts
+        /// join it by id and do not test IsActive, so every existing agreement keeps resolving the
+        /// template it was built from. What changes is only that it stops being OFFERED.
+        /// </summary>
+        [HttpDelete("scope-templates/{id}")]
+        [RequirePermission(Permission.Deactivate)]
+        public async Task<ActionResult> ArchiveScopeTemplate(int id)
+        {
+            var row = await _context.ScopeTemplates.FirstOrDefaultAsync(t => t.Id == id);
+            if (row == null) return NotFound(new { message = "Business type not found." });
+
+            row.IsActive = false;
+            row.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            await _auditService.LogActionAsync(AuditEntityTypes.CommercialClient, row.Id,
+                "ScopeTemplateArchived", null, new { row.Id, row.Name }, new[] { "Name" }, GetCurrentUserId());
+
+            return Ok(new { message = $"\"{row.Name}\" is no longer offered on new contracts." });
+        }
+
+        [HttpPost("scope-templates/{id}/restore")]
+        [RequirePermission(Permission.Activate)]
+        public async Task<ActionResult> RestoreScopeTemplate(int id)
+        {
+            var row = await _context.ScopeTemplates.FirstOrDefaultAsync(t => t.Id == id);
+            if (row == null) return NotFound(new { message = "Business type not found." });
+
+            row.IsActive = true;
+            row.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = $"\"{row.Name}\" is available again." });
+        }
+
+        private static ScopeTemplateDto ToScopeTemplateDto(ScopeTemplate t, bool includeArchived)
+        {
+            var structure = ScopeStructure.Parse(t.StructureJson);
+
+            return new ScopeTemplateDto
             {
                 Id = t.Id,
                 Name = t.Name,
                 PremisesType = t.PremisesType,
                 AllowsCustomRows = t.AllowsCustomRows,
-                Structure = ScopeStructure.Parse(t.StructureJson)
-            }).ToList());
+                SortOrder = t.SortOrder,
+                IsActive = t.IsActive,
+                Structure = includeArchived ? structure : structure.WithoutArchived()
+            };
         }
+
+        private static string Fallback(string? value, string fallback) =>
+            string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
         // ── contract templates ─────────────────────────────────────────────────
 
@@ -694,16 +885,22 @@ namespace DreamCleaningBackend.Controllers.Crm
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<ContractTemplateDto>>> GetContractTemplates()
         {
+            // DEFAULT FIRST, then newest. The master agreement is versioned by ADDING a row, so
+            // ordering by name alone put v1.0 at the top of a list the form preselects from - which
+            // is how a new contract silently kept rendering superseded language. The flag is also
+            // returned so the form can preselect deliberately rather than trusting this order.
             var rows = await _context.ContractTemplates
                 .Where(t => t.IsActive)
-                .OrderBy(t => t.Name)
+                .OrderByDescending(t => t.IsDefault)
+                .ThenByDescending(t => t.Id)
                 .Select(t => new ContractTemplateDto
                 {
                     Id = t.Id,
                     Name = t.Name,
                     Version = t.Version,
                     Description = t.Description,
-                    IsActive = t.IsActive
+                    IsActive = t.IsActive,
+                    IsDefault = t.IsDefault
                 })
                 .ToListAsync();
             return Ok(rows);

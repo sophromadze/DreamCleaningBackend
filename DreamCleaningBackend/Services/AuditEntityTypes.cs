@@ -57,6 +57,23 @@ namespace DreamCleaningBackend.Services
         /// <summary>Assigned admin set or cleared on an order. EntityId = order id.</summary>
         public const string OrderAssignedAdmin = "OrderAssignedAdmin";
 
+        /// <summary>
+        /// A recurring series created, edited, paused, resumed — or a pass of its generator.
+        /// EntityId = the SERIES id.
+        ///
+        /// The generation rows are what answer "which recurring series created this order, and
+        /// when?" without joining: the payload names every order id the pass produced, whether
+        /// cleaner assignments were copied, and explicitly that no cleaner was notified.
+        /// </summary>
+        public const string RecurringOrderSeriesAction = "RecurringOrderSeriesAction";
+
+        /// <summary>
+        /// One combined "pay all upcoming" payment — assembled, settled or failed.
+        /// EntityId = the BATCH id. The payload names every order the money covered, which is the
+        /// only place that link is stated in words.
+        /// </summary>
+        public const string OrderPaymentBatchAction = "OrderPaymentBatchAction";
+
         // --- Users, rewards, referrals -----------------------------------------------------
         /// <summary>Free-text admin note on a customer. EntityId = user id.</summary>
         public const string UserAdminNote = "UserAdminNote";
@@ -121,6 +138,17 @@ namespace DreamCleaningBackend.Services
 
         /// <summary>An invoice voided. EntityId = invoice id.</summary>
         public const string CommercialInvoiceVoid = "CommercialInvoiceVoid";
+
+        /// <summary>
+        /// An invoice's allocation to the ORDERS it covers — proposed on a draft, committed when
+        /// the invoice is finalized, and reversed when it is voided. EntityId = order id, because
+        /// the question this stream answers is "why did this cleaning's price change?"; the
+        /// invoice number and the amount before and after are in the payload.
+        ///
+        /// Money-facing and irreversible from here: the order's price has already been agreed with
+        /// the client on a document that has left the building.
+        /// </summary>
+        public const string OrderInvoiceAllocation = "OrderInvoiceAllocation";
 
         /// <summary>
         /// The company's billing/bank settings changed. EntityId = 0 (a single global row).
@@ -203,6 +231,9 @@ namespace DreamCleaningBackend.Services
                 [OrderVisibility] = "Show or hide the order again from the orders panel.",
                 [OrderEditRequest] = "Change requests are a decision record. Submit a new request instead.",
                 [OrderAssignedAdmin] = "Reassign the order from the orders panel instead.",
+                [RecurringOrderSeriesAction] = "Orders have already been generated from this schedule. Edit or pause the series instead.",
+                [OrderPaymentBatchAction] = "The charge has already been taken. Refund the covered orders rather than reverting the record.",
+                [OrderInvoiceAllocation] = "The allocated price is printed on an invoice the client already has. Issue a corrected invoice instead.",
                 [UserAdminNote] = "Notes are free text on the customer - edit the note instead.",
                 [UserCommunicationPreference] = "Set the preference back from the customer's record.",
                 [RewardAdjustment] = "Credits and points are a running ledger; make the opposite adjustment instead.",

@@ -7,6 +7,7 @@ using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Helpers;
+using DreamCleaningBackend.Helpers.Contracts;
 using DreamCleaningBackend.Hubs;
 using System.Linq;
 using Newtonsoft.Json;
@@ -38,6 +39,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IBubbleRewardsSettingsService _bubbleRewardsSettingsService;
         private readonly IPageAccessService _pageAccessService;
         private readonly ITwoFactorService _twoFactorService;
+        private readonly ITokenVersionService _tokenVersions;
         private readonly ILogger<AdminUsersController> _logger;
 
         public AdminUsersController(ApplicationDbContext context,
@@ -52,6 +54,7 @@ namespace DreamCleaningBackend.Controllers
             IBubbleRewardsSettingsService bubbleRewardsSettingsService,
             IPageAccessService pageAccessService,
             ITwoFactorService twoFactorService,
+            ITokenVersionService tokenVersions,
             ILogger<AdminUsersController> logger)
         {
             _logger = logger;
@@ -67,6 +70,7 @@ namespace DreamCleaningBackend.Controllers
             _bubbleRewardsSettingsService = bubbleRewardsSettingsService;
             _pageAccessService = pageAccessService;
             _twoFactorService = twoFactorService;
+            _tokenVersions = tokenVersions;
         }
 
         // Users Management
@@ -115,6 +119,16 @@ namespace DreamCleaningBackend.Controllers
                 .ToListAsync();
 
             var userIds = users.Select(u => u.Id).ToList();
+
+            // Which accounts the Business Clients sub-tab is showing, so the Customers sub-tab can
+            // hide exactly those and nobody else. ACTIVE links only - see the helper: "Move to
+            // Customers" deactivates the client rather than deleting it, and testing for mere
+            // existence made the account disappear from every tab at once.
+            var businessClientAccountIds =
+                await BusinessAccountLinkPolicy.LoadBusinessClientAccountIdsAsync(_context);
+            foreach (var user in users)
+                user.HasActiveBusinessClient = businessClientAccountIds.Contains(user.Id);
+
             var notesDict = new Dictionary<int, string?>();
             try
             {
@@ -618,7 +632,17 @@ namespace DreamCleaningBackend.Controllers
             targetUser.Role = newRole;
             targetUser.UpdatedAt = DateTime.UtcNow;
 
+            // End every session this account holds, ONLINE OR NOT. The SignalR notice below only
+            // reaches a browser that currently has the page open; a user who was signed out of the
+            // building kept a signed token carrying the OLD role for up to 30 days. Bumping the
+            // token version refuses that token on its next request, and dropping the refresh token
+            // stops the browser minting a replacement, so they land on the login page.
+            _tokenVersions.RevokeSessions(targetUser);
+
             await _context.SaveChangesAsync();
+
+            // After the save, so a request racing the commit cannot re-cache the old version.
+            _tokenVersions.SyncCache(targetUser.Id, targetUser.TokenVersion);
 
             // Log audit
             try
@@ -1044,6 +1068,9 @@ namespace DreamCleaningBackend.Controllers
                 targetUser.Email = dto.Email;
             }
             targetUser.Phone = dto.Phone ?? targetUser.Phone;
+            // The role can move from this form too, so the same revocation applies - an offline
+            // user edited here would otherwise keep their old role until the token expired.
+            var roleChanged = targetUser.Role != newRole;
             targetUser.Role = newRole;
             targetUser.IsActive = dto.IsActive;
             targetUser.FirstTimeOrder = dto.FirstTimeOrder;
@@ -1053,7 +1080,13 @@ namespace DreamCleaningBackend.Controllers
             targetUser.CanReceiveMessages = dto.CanReceiveMessages;
             targetUser.UpdatedAt = DateTime.UtcNow;
 
+            if (roleChanged)
+                _tokenVersions.RevokeSessions(targetUser);
+
             await _context.SaveChangesAsync();
+
+            if (roleChanged)
+                _tokenVersions.SyncCache(targetUser.Id, targetUser.TokenVersion);
 
             try
             {
@@ -1693,7 +1726,8 @@ namespace DreamCleaningBackend.Controllers
 
             try
             {
-                var dto = await _loyaltyDiscountService.SetManualAsync(userId, body.Percentage, adminUserId);
+                var dto = await _loyaltyDiscountService.SetManualAsync(
+                    userId, body.Percentage, adminUserId, body.IsLifetime);
                 return Ok(dto);
             }
             catch (ArgumentOutOfRangeException ex)

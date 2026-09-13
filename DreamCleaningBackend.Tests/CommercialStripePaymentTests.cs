@@ -4,6 +4,7 @@ using DreamCleaningBackend.DTOs.Commercial;
 using DreamCleaningBackend.Helpers.Commercial;
 using DreamCleaningBackend.Models.Commercial;
 using DreamCleaningBackend.Models.Contracts;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Commercial;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -64,8 +65,17 @@ namespace DreamCleaningBackend.Tests
                 new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(),
                 NullLogger<InvoiceService>.Instance);
 
+            // The order-link service is what turns a settled payment into ACTIVE cleanings. Real
+            // rather than null so the settlement path runs end to end; with no linked orders it is
+            // a no-op, which is exactly the shape of an ordinary ad-hoc commercial invoice.
+            var orderLinks = new InvoiceOrderLinkService(
+                context, invoices,
+                new OrderInvoiceAllocationService(
+                    context, new RecordingAuditService(), NullLogger<OrderInvoiceAllocationService>.Instance),
+                NullLogger<InvoiceOrderLinkService>.Instance);
+
             return new InvoiceStripePaymentService(
-                context, invoices, NullLogger<InvoiceStripePaymentService>.Instance);
+                context, invoices, orderLinks, NullLogger<InvoiceStripePaymentService>.Instance);
         }
 
         /// <summary>An issued, unpaid invoice for $925.43. Fictional client; no real bank data.</summary>
@@ -354,9 +364,21 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(0m, reloaded.BalanceDue);
 
             // And a human is told, in the invoice's own timeline.
+            //
+            // The action is the MORE SPECIFIC "payment_duplicate_suspected" (2026-09) because this
+            // invoice has both a manual payment and a Stripe settlement — which is not merely an
+            // overpayment, it is the particular accident of an invoice marked paid by hand while
+            // an ACH debit was still settling. Naming it that way tells an admin what to go and
+            // check; "overpaid" alone left them guessing. An overpayment with no manual payment
+            // behind it still logs the plain action.
             var flagged = await context.CommercialInvoiceActivityLogs
-                .AnyAsync(a => a.Action == "payment_overpaid");
+                .AnyAsync(a => a.Action == "payment_duplicate_suspected" || a.Action == "payment_overpaid");
             Assert.True(flagged, "An overpayment must be flagged for admin review.");
+
+            var duplicate = await context.CommercialInvoiceActivityLogs
+                .FirstOrDefaultAsync(a => a.Action == "payment_duplicate_suspected");
+            Assert.NotNull(duplicate);
+            Assert.Contains("DUPLICATE", duplicate!.Description, StringComparison.OrdinalIgnoreCase);
         }
 
         // ── Failure and retry ─────────────────────────────────────────────────────────────────
@@ -767,6 +789,204 @@ namespace DreamCleaningBackend.Tests
             {
                 Assert.DoesNotContain(names, n => n.Contains(forbidden));
             }
+        }
+
+        // ── The abandoned checkout ────────────────────────────────────────────────────────────
+        //
+        // THE BUG THESE COVER, in the customer's words: "I clicked Pay from Bank, the Stripe page
+        // opened, I closed it without typing anything — and my invoice now says a payment is
+        // processing and the button is dead."
+        //
+        // Nothing had been submitted. `CheckoutOpen` is set the instant a Session is created, and
+        // it was being read as "money is moving". A financial state must never be derived from the
+        // fact that a browser opened a page.
+
+        /// <summary>
+        /// OPENING CHECKOUT IS NOT PAYING. An attempt that never got past the hosted page leaves
+        /// the invoice fully payable and shows no Processing banner.
+        /// </summary>
+        [Fact]
+        public async Task AnAbandonedCheckoutLeavesTheInvoicePayableAndShowsNoProcessingBanner()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            await SeedAttemptAsync(
+                context, invoice, "pi_test_abandoned", 925.43m,
+                InvoicePaymentAttemptStatus.CheckoutOpen);
+
+            var billing = new BillingSettingsService(context);
+            var settings = await billing.GetOrCreateAsync();
+            settings.StripeAchEnabled = true;
+            settings.StripeCardEnabled = true;
+            await context.SaveChangesAsync();
+
+            var invoices = NewInvoiceService(context, billing);
+            var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);
+
+            Assert.False(options.PaymentInProgress);
+            Assert.True(options.StripeAchAvailable);
+            Assert.True(options.StripeCardAvailable);
+            Assert.Null(options.ProcessingAmount);
+        }
+
+        /// <summary>
+        /// The distinction the two flags encode. <c>IsInFlight</c> is admin vocabulary — "this
+        /// conversation with Stripe is not finished". <c>IsAwaitingSettlement</c> is the money
+        /// question, and it is the ONLY one allowed to block a customer or draw a banner.
+        /// </summary>
+        [Fact]
+        public void CheckoutOpenIsAConversationInFlightButNotMoneyInFlight()
+        {
+            var open = new CommercialInvoicePaymentAttempt
+            { Status = InvoicePaymentAttemptStatus.CheckoutOpen };
+            var settling = new CommercialInvoicePaymentAttempt
+            { Status = InvoicePaymentAttemptStatus.Processing };
+
+            Assert.True(open.IsInFlight);
+            Assert.False(open.IsAwaitingSettlement);
+
+            Assert.True(settling.IsInFlight);
+            Assert.True(settling.IsAwaitingSettlement);
+        }
+
+        /// <summary>
+        /// What DOES start the banner: Stripe telling us the customer finished the hosted flow.
+        /// The same attempt, one webhook later, is the state the customer should be told about.
+        /// </summary>
+        [Fact]
+        public async Task CompletingCheckoutIsWhatStartsTheProcessingBanner()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var attempt = await SeedAttemptAsync(
+                context, invoice, "pi_test_completes", 925.43m,
+                InvoicePaymentAttemptStatus.CheckoutOpen);
+
+            var billing = new BillingSettingsService(context);
+            var settings = await billing.GetOrCreateAsync();
+            settings.StripeAchEnabled = true;
+            await context.SaveChangesAsync();
+
+            var invoices = NewInvoiceService(context, billing);
+            Assert.False((await invoices.BuildPaymentOptionsAsync(invoice, settings)).PaymentInProgress);
+
+            await NewService(context).HandleCheckoutCompletedAsync(
+                attempt.StripeCheckoutSessionId!, "pi_test_completes", Metadata(invoice));
+
+            var after = await invoices.BuildPaymentOptionsAsync(invoice, settings);
+            Assert.True(after.PaymentInProgress);
+            Assert.False(after.StripeAchAvailable);
+        }
+
+        /// <summary>
+        /// The banner has to explain the customer's BANK STATEMENT, which shows one debit larger
+        /// than the invoice. So it carries all three figures, read from what was actually
+        /// authorized on the attempt rather than recomputed from today's settings.
+        /// </summary>
+        [Fact]
+        public async Task TheProcessingBannerCarriesTheInvoiceAmountTheFeeAndTheTotalDebit()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var attempt = await SeedAttemptAsync(context, invoice, "pi_test_breakdown", 925.43m);
+            attempt.ProcessingFee = 5.00m;
+            attempt.TotalCharged = 930.43m;
+            await context.SaveChangesAsync();
+
+            var billing = new BillingSettingsService(context);
+            var settings = await billing.GetOrCreateAsync();
+            settings.StripeAchEnabled = true;
+            await context.SaveChangesAsync();
+
+            var options = await NewInvoiceService(context, billing)
+                .BuildPaymentOptionsAsync(invoice, settings);
+
+            Assert.True(options.PaymentInProgress);
+            Assert.Equal(925.43m, options.ProcessingAmount);
+            Assert.Equal(5.00m, options.ProcessingFeeAmount);
+            Assert.Equal(930.43m, options.ProcessingTotalCharged);
+        }
+
+        /// <summary>
+        /// An older attempt saved before the fee columns existed has a zero <c>TotalCharged</c>.
+        /// The banner must still add up rather than printing a $0.00 bank debit.
+        /// </summary>
+        [Fact]
+        public async Task ATotalDebitIsDerivedWhenTheAttemptNeverStoredOne()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var attempt = await SeedAttemptAsync(context, invoice, "pi_test_legacy", 925.43m);
+            attempt.ProcessingFee = 5.00m;
+            attempt.TotalCharged = 0m;
+            await context.SaveChangesAsync();
+
+            var billing = new BillingSettingsService(context);
+            var settings = await billing.GetOrCreateAsync();
+            settings.StripeAchEnabled = true;
+            await context.SaveChangesAsync();
+
+            var options = await NewInvoiceService(context, billing)
+                .BuildPaymentOptionsAsync(invoice, settings);
+
+            Assert.Equal(930.43m, options.ProcessingTotalCharged);
+        }
+
+        /// <summary>
+        /// <c>checkout.session.async_payment_failed</c> — the ACH debit was authorized days ago and
+        /// the bank has now returned it. No money is written, and the invoice becomes payable
+        /// again on its own because its balance never moved.
+        /// </summary>
+        [Fact]
+        public async Task AnAsyncPaymentFailureRecordsNoMoneyAndReopensTheInvoice()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var attempt = await SeedAttemptAsync(context, invoice, "pi_test_returned", 925.43m);
+
+            await NewService(context).HandleAsyncPaymentFailedAsync(
+                attempt.StripeCheckoutSessionId!, "pi_test_returned", Metadata(invoice));
+
+            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync());
+
+            var reloadedInvoice = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            Assert.Equal(925.43m, reloadedInvoice.BalanceDue);
+            Assert.Null(reloadedInvoice.PaidAt);
+
+            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            Assert.Equal(InvoicePaymentAttemptStatus.Failed, reloaded.Status);
+            Assert.False(reloaded.IsAwaitingSettlement);
+
+            var billing = new BillingSettingsService(context);
+            var settings = await billing.GetOrCreateAsync();
+            settings.StripeAchEnabled = true;
+            await context.SaveChangesAsync();
+
+            var options = await NewInvoiceService(context, billing)
+                .BuildPaymentOptionsAsync(reloadedInvoice, settings);
+            Assert.False(options.PaymentInProgress);
+            Assert.True(options.StripeAchAvailable);
+        }
+
+        /// <summary>
+        /// A late failure never drags a SETTLED attempt backwards. Stripe delivers out of order,
+        /// and a genuine post-settlement ACH return is corrected by a reversing ledger entry — not
+        /// by rewriting the row that recorded the money.
+        /// </summary>
+        [Fact]
+        public async Task AnAsyncFailureNeverOverwritesASucceededAttempt()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var attempt = await SeedAttemptAsync(
+                context, invoice, "pi_test_late_fail", 925.43m,
+                InvoicePaymentAttemptStatus.Succeeded);
+
+            await NewService(context).HandleAsyncPaymentFailedAsync(
+                attempt.StripeCheckoutSessionId!, "pi_test_late_fail", Metadata(invoice));
+
+            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            Assert.Equal(InvoicePaymentAttemptStatus.Succeeded, reloaded.Status);
         }
 
         private static InvoiceService NewInvoiceService(

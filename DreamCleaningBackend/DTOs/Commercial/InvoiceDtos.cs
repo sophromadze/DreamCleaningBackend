@@ -35,6 +35,11 @@ namespace DreamCleaningBackend.DTOs.Commercial
     /// </summary>
     public class SaveInvoiceDto
     {
+        /// <summary>Null preserves existing links; an explicit empty list switches to standalone.</summary>
+        public List<int>? OrderIds { get; set; }
+        [Range(typeof(decimal), "0", "10000000")]
+        public decimal? NegotiatedGroupTotal { get; set; }
+        public List<string> DraftDriftChoices { get; set; } = new();
         [Required]
         public int ContractClientId { get; set; }
 
@@ -51,6 +56,13 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public DateTime? ServiceStartDate { get; set; }
         public DateTime? ServiceEndDate { get; set; }
 
+        /// <summary>
+        /// The individual visits this invoice covers, when they are known. Editable while the
+        /// invoice is a Draft, which is what "admin must be able to review/edit the generated
+        /// dates" means - an empty list simply falls back to the period bounds.
+        /// </summary>
+        public List<DateTime> ServiceDates { get; set; } = new();
+
         [StringLength(400)]
         public string? ServiceAddress { get; set; }
 
@@ -65,6 +77,16 @@ namespace DreamCleaningBackend.DTOs.Commercial
 
         public InvoiceTaxType TaxType { get; set; } = InvoiceTaxType.Exempt;
         public decimal? TaxRate { get; set; }
+
+        /// <summary>
+        /// Ticked when the admin edited the tax rate and wants it to become the default for future
+        /// invoices and contracts.
+        ///
+        /// It writes to <c>BillingSettings</c> only. It cannot reach a finalized invoice or a
+        /// signed contract, both of which carry their own rate snapshot - which is exactly why the
+        /// rate is snapshotted per document.
+        /// </summary>
+        public bool SaveTaxRateAsDefault { get; set; }
 
         public InvoicePaymentMethod PaymentMethod { get; set; } = InvoicePaymentMethod.AchBankTransfer;
 
@@ -98,6 +120,16 @@ namespace DreamCleaningBackend.DTOs.Commercial
         /// overpayment is REFUSED rather than silently accepted - see InvoicePaymentService.
         /// </summary>
         public bool AllowOverpayment { get; set; }
+
+        /// <summary>
+        /// Explicit acknowledgement that a Stripe ACH payment is already authorized and settling.
+        ///
+        /// ACH IS ASYNCHRONOUS: the customer authorized a debit days ago, no money has moved yet,
+        /// and the invoice legitimately still reads unpaid. Marking it paid by hand in that window
+        /// is how the same money gets counted twice - so the record is refused until an admin says
+        /// they know, and the override is recorded on the payment's note trail.
+        /// </summary>
+        public bool AcknowledgeProcessingPayment { get; set; }
     }
 
     public class VoidInvoiceDto
@@ -190,9 +222,25 @@ namespace DreamCleaningBackend.DTOs.Commercial
     {
         public int Id { get; set; }
         public decimal Amount { get; set; }
+
+        /// <summary>The ACH fee paid on top, when this came through Stripe. Zero otherwise.</summary>
+        public decimal ProcessingFee { get; set; }
+
+        /// <summary>Amount + fee - what the customer's bank statement actually shows.</summary>
+        public decimal TotalCharged { get; set; }
+
         public DateTime PaymentDate { get; set; }
         public InvoicePaymentRecordMethod PaymentMethod { get; set; }
         public string PaymentMethodLabel { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Who processed it. Surfaced so the payment history can say "Manual" or "Stripe" plainly:
+        /// a bank transfer an admin recorded from a statement must never be presented as though it
+        /// had come through the processor.
+        /// </summary>
+        public InvoicePaymentProvider Provider { get; set; }
+        public string ProviderLabel { get; set; } = string.Empty;
+
         public string? TransactionReference { get; set; }
         public string? InternalNote { get; set; }
         public bool IsReversal { get; set; }
@@ -240,8 +288,18 @@ namespace DreamCleaningBackend.DTOs.Commercial
 
         public int AttemptId { get; set; }
 
-        /// <summary>Echoed back so the page can confirm what is being charged.</summary>
+        /// <summary>The invoice balance being settled. Echoed back so the page can confirm it.</summary>
         public decimal Amount { get; set; }
+
+        /// <summary>The ACH processing fee added on top, as the server computed it.</summary>
+        public decimal ProcessingFee { get; set; }
+
+        /// <summary>
+        /// What the customer's bank will be debited: balance + fee. Sent back so the page can
+        /// verify that the figure it showed matches what was actually created - if a stale
+        /// balance made them disagree, the SERVER's number is the one that stands.
+        /// </summary>
+        public decimal TotalCharged { get; set; }
     }
 
     /// <summary>
@@ -308,8 +366,37 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public DateTime? ServiceStartDate { get; set; }
         public DateTime? ServiceEndDate { get; set; }
 
+        /// <summary>The individual visits, when known. Editable while the invoice is a Draft.</summary>
+        public List<DateTime> ServiceDates { get; set; } = new();
+
+        /// <summary>"Service date" / "Service dates" / "Service period" - whichever fits.</summary>
+        public string? ServiceDateLabel { get; set; }
+
+        /// <summary>The formatted dates, or null when the invoice records none.</summary>
+        public string? ServiceDateText { get; set; }
+
         public string? PoNumber { get; set; }
         public string? ClientReference { get; set; }
+
+        /// <summary>
+        /// Non-blocking warnings raised when this draft was generated — contract price drift, tax
+        /// drift, a schedule that could not be worked out.
+        ///
+        /// They live on the INVOICE, not in the create response, because "Create Next Invoice"
+        /// launched from the Contracts list navigates away instantly and a banner on the previous
+        /// page is a banner nobody reads. Empty on every invoice that was not generated, and
+        /// cleared once the invoice leaves Draft or an admin saves an edit — at that point the
+        /// figures have been seen and the warning is either acted on or deliberately accepted.
+        /// </summary>
+        public List<string> DraftWarnings { get; set; } = new();
+        public decimal? CurrentContractUnitPrice { get; set; }
+        public InvoiceTaxType? CurrentContractTaxType { get; set; }
+        public decimal? CurrentContractTaxRate { get; set; }
+        public List<InvoiceOrderAllocationDto> CleaningsCovered { get; set; } = new();
+
+        /// <summary>The agreed group total an admin negotiated for the ORDERS this invoice covers,
+        /// when they set one. Null means the invoice simply totals what the cleanings cost.</summary>
+        public decimal? NegotiatedOrderGroupTotal { get; set; }
 
         public decimal SubTotal { get; set; }
         public InvoiceDiscountType DiscountType { get; set; }
@@ -370,6 +457,30 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public bool CanVoid { get; set; }
         public bool CanDelete { get; set; }
         public bool CanSendReminder { get; set; }
+
+        /// <summary>
+        /// True when this invoice has BOTH a Stripe payment and a manual one, and more has been
+        /// received than was billed.
+        ///
+        /// The shape of the accident it catches: an admin marks an invoice paid from a bank
+        /// statement while a Stripe ACH debit is still settling, and days later the debit lands.
+        /// Nothing is auto-corrected - the money genuinely arrived twice and only a person can
+        /// decide which half to refund - but it is FLAGGED rather than quietly banked, because the
+        /// customer notices a duplicate debit long before a reconciliation does.
+        /// </summary>
+        public bool PotentialDuplicatePayment { get; set; }
+
+        /// <summary>
+        /// True when a Stripe ACH payment is authorized and settling. The "Mark as Paid" dialog
+        /// warns off this before letting an admin record a manual payment on top of it.
+        /// </summary>
+        public bool HasProcessingStripePayment { get; set; }
+
+        /// <summary>
+        /// The contract this invoice can be regenerated from, when it has one. Drives the
+        /// "Create Next Invoice" action on the contract, and the pricing-drift warning here.
+        /// </summary>
+        public string? ContractPricingWarning { get; set; }
     }
 
     // ── The public page ───────────────────────────────────────────────────────────────────────
@@ -396,6 +507,19 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public DateTime DueDate { get; set; }
         public DateTime? ServiceStartDate { get; set; }
         public DateTime? ServiceEndDate { get; set; }
+
+        /// <summary>The individual visits this invoice covers, when the schedule is known.</summary>
+        public List<DateTime> ServiceDates { get; set; } = new();
+
+        /// <summary>
+        /// "Service date" / "Service dates" / "Service period" - the label that matches whichever
+        /// shape the invoice actually records. Null together with
+        /// <see cref="ServiceDateText"/> when the invoice covers no stated period; the surfaces
+        /// then print no service line at all rather than inventing one.
+        /// </summary>
+        public string? ServiceDateLabel { get; set; }
+
+        public string? ServiceDateText { get; set; }
 
         public string ClientName { get; set; } = string.Empty;
         public string? BillingContactName { get; set; }
@@ -463,8 +587,20 @@ namespace DreamCleaningBackend.DTOs.Commercial
         /// </summary>
         public bool PaymentInProgress { get; set; }
 
-        /// <summary>The amount already in flight, so the banner can name it.</summary>
+        /// <summary>The INVOICE amount being settled — what the payment pays off.</summary>
         public decimal? ProcessingAmount { get; set; }
+
+        /// <summary>The ACH fee that rode along with it. Zero when none applied.</summary>
+        public decimal? ProcessingFeeAmount { get; set; }
+
+        /// <summary>
+        /// What the customer's bank is actually debited: invoice amount + fee.
+        ///
+        /// The banner MUST name this. Saying "your bank payment of $925.43 has been initiated"
+        /// when $930.43 leaves their account is the kind of small discrepancy that costs trust
+        /// precisely because the customer can check it against their statement.
+        /// </summary>
+        public decimal? ProcessingTotalCharged { get; set; }
 
         /// <summary>When that payment was started.</summary>
         public DateTime? ProcessingStartedAt { get; set; }
@@ -481,9 +617,44 @@ namespace DreamCleaningBackend.DTOs.Commercial
         /// something to put in front of a customer. The detail is kept admin-side on the attempt.
         /// </summary>
         public string? LastFailureMessage { get; set; }
+
+        // ── The ACH processing fee, quoted BEFORE the customer authorizes anything ────────────
+        //
+        // Computed server-side from the invoice's own balance and sent down so the page can show
+        // the exact extra amount next to the "Pay from Bank" button and again in the confirmation
+        // summary. The browser NEVER computes or submits it - the checkout endpoint recalculates
+        // from the same settings, so a tampered page can change what is displayed and nothing else.
+
+        /// <summary>The fee in dollars for paying this balance by Stripe ACH. Zero when disabled.</summary>
+        public decimal AchProcessingFee { get; set; }
+
+        /// <summary>Balance + fee - the figure the customer's bank will actually be debited.</summary>
+        public decimal AchTotalWithFee { get; set; }
+
+        /// <summary>
+        /// "ACH Processing Fee". Never a bare "Fee": a vague label on a payment page reads as a
+        /// hidden markup, and the customer is entitled to know what the charge is for.
+        /// </summary>
+        public string AchProcessingFeeLabel { get; set; } = string.Empty;
+
+        /// <summary>
+        /// What the manual bank-transfer block says about cost. Deliberately not "No fee" - the
+        /// customer's OWN bank may charge them for sending a transfer, and that is not ours to
+        /// promise about.
+        /// </summary>
+        public string ManualAchFeeNote { get; set; } = string.Empty;
     }
 
-    /// <summary>The company block on the public invoice and the PDF.</summary>
+    /// <summary>
+    /// The company block on the public invoice, the PDF and the invoice email.
+    ///
+    /// THE TRADING NAME COMES FIRST (2026-09). The company header used to read
+    /// "Nodar Alania Inc." with "DBA Dream Cleaning NYC" underneath in small grey text, which is
+    /// the wrong way round for a customer: the name they recognise, booked with and will look for
+    /// on a bank statement is Dream Cleaning NYC, and the registered entity is the legal footnote.
+    /// <see cref="PrimaryName"/> and <see cref="SecondaryName"/> exist so all three surfaces render
+    /// the same hierarchy without each one re-deciding it.
+    /// </summary>
     public class PublicCompanyDto
     {
         public string LegalName { get; set; } = string.Empty;
@@ -493,6 +664,20 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public string? Phone { get; set; }
         public string? Email { get; set; }
         public string? FooterText { get; set; }
+
+        /// <summary>
+        /// What is shown large, bold and in brand blue: "DBA Dream Cleaning NYC". Falls back to
+        /// the legal name when no trading name is configured, so the header is never empty.
+        /// </summary>
+        public string PrimaryName =>
+            string.IsNullOrWhiteSpace(DbaName) ? LegalName : $"DBA {DbaName!.Trim()}";
+
+        /// <summary>
+        /// The registered entity, immediately underneath in smaller secondary type. Null when
+        /// there is no trading name, because printing the legal name twice reads as a bug.
+        /// </summary>
+        public string? SecondaryName =>
+            string.IsNullOrWhiteSpace(DbaName) ? null : LegalName;
     }
 
     /// <summary>
@@ -563,8 +748,14 @@ namespace DreamCleaningBackend.DTOs.Commercial
         /// <summary>Field NAMES only — never values.</summary>
         public List<string> MissingManualAchFields { get; set; } = new();
 
+        // -- The customer-facing Stripe ACH fee --
+        public bool AchCustomerFeeEnabled { get; set; }
+        public decimal AchCustomerFeeRatePercent { get; set; }
+        public decimal AchCustomerFeeCapAmount { get; set; }
+
         public InvoiceTaxType DefaultTaxType { get; set; }
         public decimal? DefaultTaxRate { get; set; }
+        public Models.Contracts.ContractPriceMode DefaultContractPriceMode { get; set; }
         public InvoiceDueTerms DefaultDueTerms { get; set; }
         public string? DefaultCustomerNote { get; set; }
         public string? InvoiceFooterText { get; set; }
@@ -573,6 +764,25 @@ namespace DreamCleaningBackend.DTOs.Commercial
 
         /// <summary>Whether the current caller may write these settings (SuperAdmin only).</summary>
         public bool CanEdit { get; set; }
+    }
+
+    /// <summary>
+    /// The commercial billing defaults a NEW contract or invoice form starts from.
+    ///
+    /// Served to any admin who can open either form - deliberately WITHOUT the bank details that
+    /// live on the same settings row, because neither form displays them and a payload carrying an
+    /// account number it never renders is a leak waiting for a future copy-paste.
+    /// </summary>
+    public class CommercialBillingDefaultsDto
+    {
+        public InvoiceTaxType DefaultTaxType { get; set; }
+        public decimal? DefaultTaxRate { get; set; }
+        public Models.Contracts.ContractPriceMode DefaultContractPriceMode { get; set; }
+        public InvoiceDueTerms DefaultDueTerms { get; set; }
+
+        public bool AchCustomerFeeEnabled { get; set; }
+        public decimal AchCustomerFeeRatePercent { get; set; }
+        public decimal AchCustomerFeeCapAmount { get; set; }
     }
 
     public class SaveBillingSettingsDto
@@ -607,8 +817,20 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public bool StripeCardEnabled { get; set; } = false;
         public bool ManualAchEnabled { get; set; } = true;
 
-        public InvoiceTaxType DefaultTaxType { get; set; } = InvoiceTaxType.Exempt;
-        public decimal? DefaultTaxRate { get; set; }
+        public bool AchCustomerFeeEnabled { get; set; } = true;
+
+        [Range(typeof(decimal), "0", "10")]
+        public decimal AchCustomerFeeRatePercent { get; set; } = 0.8m;
+
+        [Range(typeof(decimal), "0", "1000")]
+        public decimal AchCustomerFeeCapAmount { get; set; } = 5.00m;
+
+        public InvoiceTaxType DefaultTaxType { get; set; } = InvoiceTaxType.Included;
+        public decimal? DefaultTaxRate { get; set; } = 8.875m;
+
+        public Models.Contracts.ContractPriceMode DefaultContractPriceMode { get; set; }
+            = Models.Contracts.ContractPriceMode.TaxInclusive;
+
         public InvoiceDueTerms DefaultDueTerms { get; set; } = InvoiceDueTerms.Net15;
 
         [StringLength(2000)] public string? DefaultCustomerNote { get; set; }
@@ -719,5 +941,185 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public decimal? TaxRate { get; set; }
         public InvoiceTaxType? TaxType { get; set; }
         public string? PaymentTerms { get; set; }
+    }
+
+    // ── The business customer's own invoices ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// One row in the customer's My Invoices list.
+    ///
+    /// A THIRD DTO rather than a reuse of either admin type, for the reason
+    /// <see cref="PublicInvoiceDto"/> spells out: a customer-facing projection whose default is
+    /// "carry nothing" cannot leak a field somebody adds to the admin view later. It deliberately
+    /// carries no internal note, no activity, no view counts and no row id - the invoice is opened
+    /// by its <see cref="PublicToken"/>, the same address the emailed link uses.
+    /// </summary>
+    public class MyInvoiceListItemDto
+    {
+        public string InvoiceNumber { get; set; } = string.Empty;
+
+        /// <summary>How the customer opens it: /invoice/{token}, exactly as the email link does.</summary>
+        public string PublicToken { get; set; } = string.Empty;
+
+        public string? ContractNumber { get; set; }
+        public string? ServiceAddress { get; set; }
+
+        public DateTime InvoiceDate { get; set; }
+        public DateTime DueDate { get; set; }
+
+        public DateTime? ServiceStartDate { get; set; }
+        public DateTime? ServiceEndDate { get; set; }
+        public string? ServiceDateLabel { get; set; }
+        public string? ServiceDateText { get; set; }
+
+        public decimal Total { get; set; }
+        public decimal AmountPaid { get; set; }
+        public decimal BalanceDue { get; set; }
+        public string Currency { get; set; } = "USD";
+
+        public InvoiceStatus Status { get; set; }
+        public string StatusLabel { get; set; } = string.Empty;
+
+        /// <summary>
+        /// True while a Stripe ACH debit is authorized and settling. The list shows "Processing"
+        /// rather than the underlying status, because for those few days the customer HAS paid as
+        /// far as they are concerned and chasing them would be wrong.
+        /// </summary>
+        public bool PaymentInProgress { get; set; }
+
+        public DateTime? PaidAt { get; set; }
+    }
+
+    // ── Recurring generation ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The result of "Create Next Invoice" on a contract: the draft, plus anything the admin
+    /// should look at before sending it.
+    /// </summary>
+    public class CreateNextInvoiceResultDto
+    {
+        public InvoiceDetailDto Invoice { get; set; } = new();
+
+        /// <summary>The invoice this one was modelled on, when there was a previous sent one.</summary>
+        public string? ClonedFromInvoiceNumber { get; set; }
+
+        /// <summary>
+        /// NON-BLOCKING warnings. Nothing here stops the draft existing - it is a draft, and the
+        /// admin is about to review it. Silently "fixing" any of these instead would be the actual
+        /// failure: re-pricing a cloned invoice from the contract, or inventing a service period.
+        /// </summary>
+        public List<string> Warnings { get; set; } = new();
+
+        /// <summary>True when the service dates could not be derived and must be chosen by hand.</summary>
+        public bool NeedsServiceDates { get; set; }
+    }
+
+    /// <summary>Body of "Create Next Invoice". Carries only what the admin can legitimately override.</summary>
+    public class CreateNextInvoiceDto
+    {
+        public bool AcknowledgeUndatedDraft { get; set; }
+        /// <summary>
+        /// Proceed even though an issued invoice already covers this billing period.
+        ///
+        /// The guard exists because generating twice for one month is both easy to do and hard to
+        /// notice: the two invoices look identical apart from their numbers, and the client is
+        /// billed twice. There are legitimate reasons to override it, so it is a confirmation
+        /// rather than a refusal.
+        /// </summary>
+        public bool AllowDuplicatePeriod { get; set; }
+    }
+
+    // ── "Which invoices touch this order / this customer?" ─────────────────────────────────────
+
+    /// <summary>
+    /// An invoice as a surface OUTSIDE the Commercial section sees it — the admin Orders panel and
+    /// a customer's detail panel.
+    ///
+    /// A SEPARATE projection rather than a reuse of <see cref="InvoiceListItemDto"/>, for the same
+    /// reason <c>PublicInvoiceDto</c> is its own type: these two surfaces need the workflow flags
+    /// (<see cref="CanSend"/>) and the per-order allocation, and neither needs the invoice table's
+    /// filters. One shape for both would mean every field added for one of them silently appears
+    /// on the other.
+    /// </summary>
+    public class LinkedInvoiceSummaryDto
+    {
+        public int Id { get; set; }
+        public string InvoiceNumber { get; set; } = string.Empty;
+        public int ContractClientId { get; set; }
+        public string ClientName { get; set; } = string.Empty;
+
+        public DateTime InvoiceDate { get; set; }
+        public DateTime DueDate { get; set; }
+
+        public decimal Total { get; set; }
+        public decimal AmountPaid { get; set; }
+        public decimal BalanceDue { get; set; }
+
+        public InvoiceStatus Status { get; set; }
+        public string StatusLabel { get; set; } = string.Empty;
+
+        public bool HasBeenSent { get; set; }
+        public DateTime? LastSentAt { get; set; }
+        public DateTime? PaidAt { get; set; }
+
+        /// <summary>
+        /// From <c>InvoiceStatusPolicy</c>, never re-derived in the browser — the same rules the
+        /// send endpoints enforce, so a button cannot offer something the server refuses.
+        /// </summary>
+        public bool CanSend { get; set; }
+        public bool CanSendReminder { get; set; }
+
+        /// <summary>
+        /// Where this invoice would be emailed. Null means it cannot be sent at all yet, which is
+        /// worth saying BEFORE somebody presses Send — the same rule the no-account-email warning
+        /// on the orders panel follows.
+        /// </summary>
+        public string? BillingEmail { get; set; }
+
+        /// <summary>How many cleanings this invoice covers in total.</summary>
+        public int CoveredOrderCount { get; set; }
+
+        /// <summary>
+        /// What this invoice allocates to the ORDER that was asked about, and whether that
+        /// allocation is still a draft proposal. Null on the per-customer listing, where there is
+        /// no single order in view.
+        /// </summary>
+        public decimal? AllocatedAmount { get; set; }
+        public bool? AllocationIsProposal { get; set; }
+    }
+
+    /// <summary>
+    /// The Orders panel's answer to "can I bill this cleaning, and on what?".
+    ///
+    /// Deliberately answers the WHOLE question in one call: the invoices that already cover the
+    /// order, and — when none does — whether a client is known so a draft could be started. The
+    /// panel must never have to infer the second half from the absence of the first.
+    /// </summary>
+    public class OrderInvoicesDto
+    {
+        public int OrderId { get; set; }
+
+        /// <summary>The commercial client this cleaning is billed to, if any.</summary>
+        public int? ContractClientId { get; set; }
+        public string? ClientName { get; set; }
+
+        /// <summary>
+        /// Set when the order carries no client of its own but its customer account is linked to
+        /// one — the ordinary case for a business customer's normal booking. It is what lets the
+        /// panel offer "put this cleaning on an invoice" without the admin first having to know
+        /// that the account is flagged as a business.
+        /// </summary>
+        public int? SuggestedContractClientId { get; set; }
+        public string? SuggestedClientName { get; set; }
+
+        /// <summary>
+        /// False when this cleaning can no longer be put on an invoice — already paid, cancelled,
+        /// refunded — with <see cref="BlockedReason"/> saying which. Resolved by the SAME rule the
+        /// invoice form's picker blocks on.
+        /// </summary>
+        public bool CanBeInvoiced { get; set; }
+        public string? BlockedReason { get; set; }
+
+        public List<LinkedInvoiceSummaryDto> Invoices { get; set; } = new();
     }
 }

@@ -44,6 +44,8 @@ namespace DreamCleaningBackend.Controllers.Admin
         private readonly InvoiceEmailService _emails;
         private readonly InvoicePdfService _pdf;
         private readonly InvoiceOverdueService _overdue;
+        private readonly RecurringInvoiceService _recurring;
+        private readonly InvoiceOrderLinkService _orderLinks;
         private readonly IAuditService _audit;
 
         public AdminCommercialInvoicesController(
@@ -53,6 +55,8 @@ namespace DreamCleaningBackend.Controllers.Admin
             InvoiceEmailService emails,
             InvoicePdfService pdf,
             InvoiceOverdueService overdue,
+            RecurringInvoiceService recurring,
+            InvoiceOrderLinkService orderLinks,
             IAuditService audit)
         {
             _context = context;
@@ -61,6 +65,8 @@ namespace DreamCleaningBackend.Controllers.Admin
             _emails = emails;
             _pdf = pdf;
             _overdue = overdue;
+            _recurring = recurring;
+            _orderLinks = orderLinks;
             _audit = audit;
         }
 
@@ -232,11 +238,44 @@ namespace DreamCleaningBackend.Controllers.Admin
 
         // ── Actions ───────────────────────────────────────────────────────────────────────────
 
-        /// <summary>Emails the invoice to the billing contact and stamps it Sent.</summary>
+        /// <summary>
+        /// Emails the invoice to the billing contact and stamps it Sent.
+        ///
+        /// One gate before the mail goes out: an invoice raised against a CONTRACT has to say which
+        /// cleanings it covers. A recurring bill with no service date is unanswerable for the
+        /// client - "what am I paying for?" - and inventing a period to fill the gap is exactly
+        /// what this whole area exists to stop. Ad-hoc invoices with no contract are unaffected;
+        /// plenty of one-off work genuinely has no period to state.
+        /// </summary>
         [HttpPost("{id:int}/send")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<InvoiceDetailDto>> Send(int id, [FromBody] SendInvoiceDto dto)
         {
+            var missingDates = await _context.CommercialInvoices
+                .AnyAsync(i => i.Id == id
+                               && i.ContractId != null
+                               && i.ServiceStartDate == null
+                               && i.ServiceEndDate == null
+                               && i.ServiceDatesJson == null);
+
+            if (missingDates)
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "This invoice is billed against a contract but does not say which cleanings it "
+                        + "covers. Set the service date or period before sending it."
+                });
+            }
+
+            // FINALIZING IS WHAT COMMITS THE ALLOCATION. Up to this moment the covered orders'
+            // prices were a proposal on a draft nobody had seen; sending is the act that makes the
+            // agreed figure real, so the orders are written FIRST — one transaction, all or none.
+            // Doing it before the mail means the client's copy can never quote a price the
+            // bookings do not carry; a failed send afterwards leaves an invoice that is correct
+            // and simply has not gone out yet, which is the recoverable half of the pair.
+            await _orderLinks.CommitAllocationsAsync(id, CurrentUserId);
+
             var log = await _emails.SendInvoiceAsync(id, dto ?? new SendInvoiceDto(), CurrentUserId);
 
             if (log.Status == InvoiceEmailStatus.Failed)
@@ -316,6 +355,12 @@ namespace DreamCleaningBackend.Controllers.Admin
                 },
                 actingUserId: CurrentUserId);
 
+            // MANUAL "MARK AS PAID" AND A STRIPE SETTLEMENT ACTIVATE ORDERS THE SAME WAY — this is
+            // the same call InvoiceStripePaymentService makes from the webhook, deliberately, so
+            // the two cannot behave differently. It is idempotent and refuses unless the balance
+            // is actually zero, so a partial payment activates nothing.
+            if (becamePaid) await _orderLinks.ActivateCoveredOrdersAsync(id);
+
             return Ok(await _invoices.GetDetailAsync(id));
         }
 
@@ -361,6 +406,11 @@ namespace DreamCleaningBackend.Controllers.Admin
         {
             var invoice = await _invoices.VoidAsync(id, dto?.Reason ?? string.Empty, CurrentUserId);
 
+            // A voided invoice's negotiated prices go back. The LINK ROWS are kept so the trail can
+            // still say what the cancelled number covered — they simply stop being a claim, which
+            // is what frees those cleanings to be billed again.
+            await _orderLinks.RevertAllocationsAsync(id, CurrentUserId);
+
             await _audit.LogActionAsync(
                 AuditEntityTypes.CommercialInvoiceVoid,
                 invoice.Id,
@@ -385,6 +435,129 @@ namespace DreamCleaningBackend.Controllers.Admin
         {
             var copy = await _invoices.DuplicateAsync(id, CurrentUserId);
             return Ok(await _invoices.GetDetailAsync(copy.Id));
+        }
+
+        /// <summary>
+        /// "Create Next Invoice" on a recurring contract.
+        ///
+        /// PRODUCES A DRAFT AND STOPS. Nothing is emailed, the client sees nothing, and the invoice
+        /// does not appear in My Invoices until an admin presses Send - which is why the button is
+        /// deliberately not called "Send New Invoice". The response carries the draft plus every
+        /// warning worth reading before it goes out: pricing that has drifted from the contract,
+        /// or service dates the schedule could not supply.
+        ///
+        /// A 400 here means an issued invoice already covers the period it worked out. That is a
+        /// confirmation rather than a wall - resend with allowDuplicatePeriod when there is a real
+        /// reason to bill the same period twice.
+        /// </summary>
+        [HttpPost("from-contract/{contractId:int}")]
+        [RequirePermission(Permission.Create)]
+        public async Task<ActionResult<CreateNextInvoiceResultDto>> CreateNextFromContract(
+            int contractId, [FromBody] CreateNextInvoiceDto? dto)
+        {
+            try
+            {
+                var (invoice, result) = await _recurring.CreateNextAsync(
+                    contractId, dto ?? new CreateNextInvoiceDto(), CurrentUserId);
+
+                result.Invoice = await _invoices.GetDetailAsync(invoice.Id) ?? new InvoiceDetailDto();
+                return Ok(result);
+            }
+            catch (ExistingDraftInvoiceException ex)
+            {
+                // 409, not 400: nothing is wrong with the request — the thing being asked for
+                // already exists. The body carries the draft so the UI can offer "Open Draft"
+                // instead of leaving the admin to go and find it.
+                return Conflict(new { message = ex.Message, existingDraft = ex.Draft });
+            }
+        }
+
+        // ── Which cleanings an invoice covers ─────────────────────────────────────────────────
+
+        /// <summary>
+        /// The cleanings this client has that an invoice could cover.
+        ///
+        /// Returns unsellable rows too, each carrying the reason — "Already included in
+        /// DCI-2026-74521863", "already paid", "cancelled". An order silently missing from the
+        /// list is the thing an admin cannot debug.
+        /// </summary>
+        [HttpGet("eligible-orders/{contractClientId:int}")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<InvoiceEligibleOrdersDto>> EligibleOrders(
+            int contractClientId,
+            [FromQuery] int? invoiceId = null,
+            [FromQuery] DateTime? from = null,
+            [FromQuery] DateTime? to = null)
+            => Ok(await _orderLinks.GetEligibleOrdersAsync(contractClientId, invoiceId, from, to));
+
+        /// <summary>
+        /// Sets which cleanings a DRAFT invoice covers, and optionally the agreed group total.
+        ///
+        /// NOTHING IS WRITTEN TO THE ORDERS HERE. The allocation is a proposal until the invoice
+        /// is sent — an admin who types an agreed figure, reconsiders and abandons the draft has
+        /// re-priced no bookings. The line items are rebuilt from the selection, one per visit.
+        /// </summary>
+        [HttpPut("{id:int}/orders")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<InvoiceOrdersResultDto>> SaveOrders(
+            int id, [FromBody] SaveInvoiceOrdersDto dto)
+            => Ok(await _orderLinks.SaveSelectionAsync(id, dto ?? new SaveInvoiceOrdersDto(), CurrentUserId));
+
+        [HttpPost("orders/preview")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<InvoiceOrdersResultDto>> PreviewOrders(
+            [FromBody] SaveInvoiceDto dto, [FromQuery] int? invoiceId = null)
+            => Ok(await _invoices.PreviewLinkedOrdersAsync(dto, invoiceId));
+
+        /// <summary>The allocation as it currently stands, proposal or committed.</summary>
+        [HttpGet("{id:int}/orders")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<InvoiceOrderAllocationDto>>> GetOrders(int id)
+            => Ok(await _orderLinks.GetAllocationsAsync(id));
+
+        /// <summary>
+        /// The other direction: which invoices cover this ORDER, and — if none does — which client
+        /// a new one would be raised for. Drives the Orders panel's "Send Invoice".
+        ///
+        /// A READ. Creating and sending stay where they are (<c>POST invoices</c> and
+        /// <c>POST invoices/{id}/send</c>), so there is still exactly one path that emails a client
+        /// and it is never reached by opening a panel.
+        /// </summary>
+        [HttpGet("for-order/{orderId:int}")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<OrderInvoicesDto>> InvoicesForOrder(int orderId)
+            => Ok(await _orderLinks.GetOrderInvoicesAsync(orderId));
+
+        /// <summary>
+        /// Every invoice belonging to a CUSTOMER — their linked commercial client's invoices, plus
+        /// any invoice covering one of their own cleanings. Drives the Invoices tab on the user
+        /// detail panel, which is hidden entirely when this comes back empty.
+        /// </summary>
+        [HttpGet("for-user/{userId:int}")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<List<LinkedInvoiceSummaryDto>>> InvoicesForUser(int userId)
+            => Ok(await _orderLinks.GetUserInvoicesAsync(userId));
+
+        /// <summary>
+        /// The commercial client a customer account is linked to, or 204 when there is none.
+        ///
+        /// Exists so the Customers tab can show a business customer's COMMERCIAL details beside
+        /// their account details in one panel instead of sending an admin to a different tab to
+        /// read the other half. It reuses the Clients projection rather than growing a second one —
+        /// a parallel shape would drift from the screen this data already feeds.
+        /// </summary>
+        [HttpGet("client-for-user/{userId:int}")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<InvoiceClientOptionDto>> ClientForUser(int userId)
+        {
+            // includeInactive: an account whose business flag was turned off still has a client row
+            // carrying its contracts and invoices, and the panel says so rather than showing
+            // nothing — "where did the contracts go?" is the question this answers.
+            var options = await BuildClientOptionsAsync(
+                _context.ContractClients.Where(c => c.SourceUserId == userId));
+
+            var client = options.FirstOrDefault();
+            return client == null ? NoContent() : Ok(client);
         }
 
         /// <summary>The admin's copy of the client-facing PDF - byte-identical to it.</summary>
@@ -438,9 +611,18 @@ namespace DreamCleaningBackend.Controllers.Admin
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<List<InvoiceClientOptionDto>>> Clients(
             [FromQuery] bool includeInactive = false)
+            => Ok(await BuildClientOptionsAsync(
+                _context.ContractClients.Where(c => includeInactive || c.IsActive)));
+
+        /// <summary>
+        /// The client projection the Clients screen, the invoice form's dropdown and the Customers
+        /// tab's combined panel all render. ONE implementation on purpose: a second copy returning
+        /// "the same" client is how the two end up disagreeing about which email invoices go to.
+        /// </summary>
+        private async Task<List<InvoiceClientOptionDto>> BuildClientOptionsAsync(
+            IQueryable<Models.Contracts.ContractClient> source)
         {
-            var clients = await _context.ContractClients
-                .Where(c => includeInactive || c.IsActive)
+            var clients = await source
                 .Include(c => c.ServiceLocations.Where(l => l.IsActive))
                 .Include(c => c.SourceUser)
                 .OrderBy(c => c.LegalEntityName)
@@ -533,7 +715,7 @@ namespace DreamCleaningBackend.Controllers.Admin
                 };
             }).ToList();
 
-            return Ok(result);
+            return result;
         }
 
         /// <summary>

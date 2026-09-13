@@ -1,5 +1,7 @@
+using System.Reflection;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using Xunit;
 
 namespace DreamCleaningBackend.Tests
@@ -88,7 +90,9 @@ namespace DreamCleaningBackend.Tests
         [Fact]
         public void TheBroomIsOneOfTheItemsCleaningEssentialsCovers()
         {
-            Assert.Contains("Broom", CustomerSupplyChecklist.EssentialsItems);
+            Assert.Contains(
+                CustomerSupplyChecklist.ItemBroom,
+                CustomerSupplyChecklist.EssentialsItemKeys(weBringEssentials: true, weBringVacuum: false));
             Assert.DoesNotContain("Broom or vacuum cleaner", ChecklistFor("Cleaning Essentials"));
         }
 
@@ -194,6 +198,132 @@ namespace DreamCleaningBackend.Tests
                 // The Vacuum Cleaner extra IS work-adjacent equipment the cleaner carries, and it
                 // has no row of its own - it stays in the list.
                 Assert.False(CleanerJobView.IsExtraHiddenFromCleaners("Vacuum Cleaner"));
+            }
+
+            /// <summary>
+            /// THE SAME PRODUCTS WHOEVER IS CARRYING THEM. "Bring cleaning supplies" and "the
+            /// customer provides them" are both unactionable without the list - one crew's idea of
+            /// what a job needs is not another's - so the items are named in both directions, and
+            /// they are the same items. Only the flag beside them changes.
+            /// </summary>
+            [Fact]
+            public void SuppliesItems_AreTheSameListWhicheverWayTheFlagFalls()
+            {
+                var weBring = CleanerJobView.ResolveSuppliesItemKeys(OrderWithExtras("Cleaning Supplies"));
+                var customerProvides = CleanerJobView.ResolveSuppliesItemKeys(OrderWithExtras());
+
+                Assert.Equal(weBring, customerProvides);
+                Assert.Equal(new[]
+                {
+                    CustomerSupplyChecklist.ItemZep,
+                    CustomerSupplyChecklist.ItemWindex,
+                    CustomerSupplyChecklist.ItemCloths,
+                    CustomerSupplyChecklist.ItemSponge,
+                    CustomerSupplyChecklist.ItemMop
+                }, weBring);
+            }
+
+            /// <summary>
+            /// The oven liquid rides on the same condition that puts it on the CUSTOMER'S list -
+            /// a Deep / Super Deep cleaning, or the Oven Cleaning extra on its own - so the two
+            /// halves of the arrangement cannot ask for different chemicals.
+            /// </summary>
+            [Fact]
+            public void SuppliesItems_NameTheOvenLiquidExactlyWhenTheCustomerChecklistDoes()
+            {
+                Assert.Equal(
+                    CustomerSupplyChecklist.ItemZepWithOven,
+                    CleanerJobView.ResolveSuppliesItemKeys(OrderWithExtras("Oven Cleaning"))[0]);
+                Assert.Equal(
+                    CustomerSupplyChecklist.ItemZepWithOven,
+                    CleanerJobView.ResolveSuppliesItemKeys(OrderWithExtras("Deep Cleaning"))[0]);
+                Assert.Equal(
+                    CustomerSupplyChecklist.ItemZep,
+                    CleanerJobView.ResolveSuppliesItemKeys(OrderWithExtras())[0]);
+            }
+
+            /// <summary>
+            /// The one place the two directions legitimately differ. What WE bring under the
+            /// extra includes a BROOM; what the customer has ready is a broom OR a vacuum, exactly
+            /// as their own checklist words it.
+            /// </summary>
+            [Fact]
+            public void EssentialsItems_SayBroomWhenWeBringThemAndBroomOrVacuumWhenTheCustomerDoes()
+            {
+                Assert.Equal(new[]
+                {
+                    CustomerSupplyChecklist.ItemPaperTowels,
+                    CustomerSupplyChecklist.ItemGarbageBags,
+                    CustomerSupplyChecklist.ItemToiletBrush,
+                    CustomerSupplyChecklist.ItemBroom
+                }, CleanerJobView.ResolveEssentialsItemKeys(OrderWithExtras("Cleaning Essentials")));
+
+                Assert.Equal(new[]
+                {
+                    CustomerSupplyChecklist.ItemPaperTowels,
+                    CustomerSupplyChecklist.ItemGarbageBags,
+                    CustomerSupplyChecklist.ItemToiletBrush,
+                    CustomerSupplyChecklist.ItemBroomOrVacuum
+                }, CleanerJobView.ResolveEssentialsItemKeys(OrderWithExtras()));
+            }
+
+            /// <summary>
+            /// ...and it disappears altogether when we are bringing the vacuum, because nobody
+            /// ever asked the customer for a broom. Telling a cleaner to expect one that was never
+            /// requested is how a crew arrives without the thing they needed.
+            /// </summary>
+            [Fact]
+            public void EssentialsItems_PromiseNoBroomTheCustomerWasNeverAskedFor()
+            {
+                var keys = CleanerJobView.ResolveEssentialsItemKeys(OrderWithExtras("Vacuum Cleaner"));
+
+                Assert.DoesNotContain(CustomerSupplyChecklist.ItemBroom, keys);
+                Assert.DoesNotContain(CustomerSupplyChecklist.ItemBroomOrVacuum, keys);
+                Assert.Equal(3, keys.Count);
+            }
+
+            /// <summary>
+            /// EVERY ITEM A CLEANER CAN BE SHOWN HAS A WORD IN EVERY LANGUAGE WE MAIL IN.
+            ///
+            /// The item lists are resolved as translation keys precisely so the mail, the SMS and
+            /// the portal name the same things; the cost of that is that a key with no entry in
+            /// one dictionary reaches somebody as a bare "toiletBrush". This walks every key the
+            /// two resolvers can emit against all four label sets, so adding an item without
+            /// translating it fails here rather than in a Georgian cleaner's inbox.
+            /// </summary>
+            [Fact]
+            public void EveryItemKeyIsTranslatedInAllFourAssignmentLanguages()
+            {
+                var keys = CustomerSupplyChecklist.SuppliesItemKeys(requiresOvenCleaner: true)
+                    .Concat(CustomerSupplyChecklist.SuppliesItemKeys(requiresOvenCleaner: false))
+                    .Concat(CustomerSupplyChecklist.EssentialsItemKeys(weBringEssentials: true, weBringVacuum: false))
+                    .Concat(CustomerSupplyChecklist.EssentialsItemKeys(weBringEssentials: false, weBringVacuum: false))
+                    .Distinct()
+                    .ToList();
+
+                foreach (var language in new[] { "en", "ka", "ru", "es" })
+                {
+                    var labels = CleanerEmailLabels(language);
+                    foreach (var key in keys)
+                    {
+                        Assert.True(
+                            labels.ContainsKey($"item:{key}") && !string.IsNullOrWhiteSpace(labels[$"item:{key}"]),
+                            $"Assignment labels for '{language}' are missing supply item '{key}'.");
+                    }
+                }
+            }
+
+            /// <summary>
+            /// The label table is a private implementation detail of EmailService and should stay
+            /// one - it is read through reflection here rather than widened, because the thing
+            /// worth asserting is the translation coverage, not the shape of the accessor.
+            /// </summary>
+            private static IReadOnlyDictionary<string, string> CleanerEmailLabels(string language)
+            {
+                var method = typeof(EmailService).GetMethod(
+                    "GetCleanerEmailLabels", BindingFlags.NonPublic | BindingFlags.Static);
+                Assert.NotNull(method);
+                return (Dictionary<string, string>)method!.Invoke(null, new object[] { language })!;
             }
         }
     }

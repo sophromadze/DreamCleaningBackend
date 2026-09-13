@@ -125,6 +125,8 @@ namespace DreamCleaningBackend.Services
                     Address = job.Address,
                     BringCleaningSupplies = job.BringCleaningSupplies,
                     BringCleaningEssentials = job.BringCleaningEssentials,
+                    SuppliesItemKeys = job.SuppliesItemKeys,
+                    EssentialsItemKeys = job.EssentialsItemKeys,
                     ServiceDurationMinutes = job.ServiceDurationMinutes,
                     PropertyType = job.PropertyType,
                     LevelsQuantity = job.LevelsQuantity,
@@ -138,7 +140,7 @@ namespace DreamCleaningBackend.Services
                     IsCompleted = job.IsCompleted,
                     Status = order.Status,
                     MaidsCount = order.MaidsCount,
-                    IsPaid = order.IsPaid || order.PaymentMethod != PaymentMethod.Normal,
+                    IsPaid = OrderPaymentFilter.IsSettledInMemory(order),
                     AssignedCleaners = order.OrderCleaners
                         .Where(oc => oc.Cleaner != null)
                         .Select(oc => $"{oc.Cleaner.FirstName} {oc.Cleaner.LastName}".Trim())
@@ -241,6 +243,10 @@ namespace DreamCleaningBackend.Services
                 Address = CleanerJobView.BuildFullAddress(order),
                 BringCleaningSupplies = CleanerJobView.RequiresCleanerToBringSupplies(order),
                 BringCleaningEssentials = CleanerJobView.RequiresCleanerToBringEssentials(order),
+                // The items behind those two flags, resolved by the same helper the assignment
+                // mail and SMS read - the page translates this list, it never rebuilds it.
+                SuppliesItemKeys = CleanerJobView.ResolveSuppliesItemKeys(order),
+                EssentialsItemKeys = CleanerJobView.ResolveEssentialsItemKeys(order),
                 // THEIR payroll line - the hours they were told and are paid for. Falls back to the
                 // automatic per-cleaner split when nobody in particular is being addressed.
                 ServiceDurationMinutes = (int)CleanerPayrollCalculator

@@ -11,12 +11,32 @@ namespace DreamCleaningBackend.Services
     /// self-service booking flow (Stripe, status Pending).</summary>
     public class BookingCreationOptions
     {
+        public int? RecurringSeriesId { get; set; }
+
+        /// <summary>The series' standing discount. At most one of the two is set — see
+        /// <c>RecurringDiscountPolicy</c>, which is the only thing that reads them.</summary>
+        public decimal? RecurringLoyaltyDiscountPercent { get; set; }
+        public decimal? RecurringLoyaltyDiscountAmount { get; set; }
+        // Invoice-linked templates remain commercial even when their legacy payment method is Card.
+        public bool ExcludeRecurringLoyalty { get; set; }
+        public DateTime? RecurrenceOccurrenceDate { get; set; }
         public string InitialStatus { get; set; } = "Pending";
         public PaymentMethod PaymentMethod { get; set; } = PaymentMethod.Normal;
         public string? PaymentReference { get; set; }
         public string? PaymentNotes { get; set; }
         /// <summary>Admin who recorded a manual payment (create-for-user flow).</summary>
         public int? ManualPaymentRecordedByUserId { get; set; }
+
+        /// <summary>
+        /// The commercial client this order is BILLED to. Stored for every payment method
+        /// so residential loyalty stays excluded and an invoice can later
+        /// offer it as a coverable cleaning.
+        ///
+        /// ContractClient rather than User, deliberately: plenty of commercial clients have no
+        /// website account, and ContractClient is the entity contracts, invoices and billing
+        /// contacts already hang off.
+        /// </summary>
+        public int? ContractClientId { get; set; }
         /// <summary>Admin creating the order via create-for-user (any payment method).
         /// Null = the customer booked it themselves.</summary>
         public int? BookedByAdminUserId { get; set; }
@@ -271,7 +291,14 @@ namespace DreamCleaningBackend.Services
             BookingCreationOptions? options = null)
         {
             options ??= new BookingCreationOptions();
-            var manualPayment = options.PaymentMethod != PaymentMethod.Normal;
+
+            // "Handled outside Stripe" and "the money has already arrived" stopped being the same
+            // question when the Invoice method was added (2026-09). A reference and notes belong to
+            // any non-Stripe method; the ManualPaymentRecordedAt stamp is a claim that somebody
+            // handed money over, which is false for an invoice nobody has paid yet.
+            var outsideStripe = PaymentMethodRules.IsOutsideStripe(options.PaymentMethod);
+            var settledOnRecord = PaymentMethodRules.IsSettledOnRecord(options.PaymentMethod)
+                && options.RecurringSeriesId == null;
 
             // Thresholds and rate tiers are eager-loaded here too: lazy loading is not enabled,
             // so anything downstream reading these navigations off serviceType.Services would
@@ -292,16 +319,20 @@ namespace DreamCleaningBackend.Services
                 _context, serviceType, dto, allowCustomPricing);
             var quote = OrderPricingCalculator.CalculateQuote(quoteInput);
 
-            if (Math.Abs(dto.TotalDuration - quote.TotalDuration) > 5)
+            if (dto.TotalDuration is decimal estimatedDuration &&
+                Math.Abs(estimatedDuration - quote.TotalDuration) > 5)
             {
-                _logger.LogWarning($"Duration mismatch — frontend sent {dto.TotalDuration}, backend calculated {quote.TotalDuration}. Backend value wins.");
+                _logger.LogWarning(
+                    "Booking duration estimate differs: received {EstimatedMinutes:0.##} min, calculated {CalculatedMinutes:0.##} min for service type {ServiceTypeId}. Saving the calculated duration.",
+                    estimatedDuration, quote.TotalDuration, dto.ServiceTypeId);
             }
 
             // Promo/first-time/special-offer and subscription discounts are derived from the
             // DB against the backend subtotal — dto.DiscountAmount / dto.SubscriptionDiscountAmount
             // are never trusted (same model as the loyalty slot below).
             var (discountAmount, subscriptionDiscountAmount) =
-                await ResolveDiscountsAsync(dto, orderUserId, quote.SubTotal);
+                options.RecurringSeriesId.HasValue ? (0m, 0m)
+                    : await ResolveDiscountsAsync(dto, orderUserId, quote.SubTotal);
 
             // Admin recreate flow: the plan stays on the order, its discount does not. Applied
             // here rather than by clearing dto.SubscriptionId so the recreated order still counts
@@ -322,6 +353,9 @@ namespace DreamCleaningBackend.Services
 
             var order = new Order
             {
+                RecurringSeriesId = options.RecurringSeriesId,
+                RecurrenceOccurrenceDate = options.RecurrenceOccurrenceDate,
+                IsGeneratedByRecurringSeries = options.RecurringSeriesId.HasValue,
                 UserId = orderUserId,
                 IsNewCustomerOrder = isNewCustomerOrder,
                 ServiceTypeId = dto.ServiceTypeId,
@@ -365,10 +399,12 @@ namespace DreamCleaningBackend.Services
                 IsPaid = false, // IsPaid is Stripe-only; manual payments leave it false too
                 // Manual payment tracking — only stamped when paymentMethod != Normal.
                 PaymentMethod = options.PaymentMethod,
-                PaymentReference = manualPayment ? options.PaymentReference : null,
-                PaymentNotes = manualPayment ? options.PaymentNotes : null,
-                ManualPaymentRecordedAt = manualPayment ? DateTime.UtcNow : (DateTime?)null,
-                ManualPaymentRecordedByUserId = manualPayment ? options.ManualPaymentRecordedByUserId : null,
+                PaymentReference = outsideStripe ? options.PaymentReference : null,
+                PaymentNotes = outsideStripe ? options.PaymentNotes : null,
+                ManualPaymentRecordedAt = settledOnRecord ? DateTime.UtcNow : (DateTime?)null,
+                ManualPaymentRecordedByUserId = settledOnRecord ? options.ManualPaymentRecordedByUserId : null,
+                // Only meaningful for the Invoice method — who the cleaning is billed to.
+                ContractClientId = options.ContractClientId,
                 // Who booked it: the create-for-user flow passes the admin; self-service leaves null.
                 BookedByAdminUserId = options.BookedByAdminUserId,
                 // Back-dated admin re-entry only — see BookingCreationOptions.IsAutoCancelExempt.
@@ -413,7 +449,20 @@ namespace DreamCleaningBackend.Services
             // zeroing the result afterwards is deliberate — the stacking gate is what decides
             // which of loyalty / subscription / promo survives, and running it with a loyalty
             // candidate that will be discarded could zero a discount that should have stood.
-            if (!options.SuppressAutomaticDiscounts)
+            if (options.RecurringSeriesId.HasValue)
+            {
+                var customer = await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == orderUserId);
+                // The policy resolves the AMOUNT as well as the percentage, because a series
+                // written as "$50 off every clean" has no percentage until this subtotal exists.
+                // Both are stored: the amount is what comes off, the percentage is what every
+                // pre-existing loyalty surface reads.
+                var loyalty = Helpers.Recurring.RecurringDiscountPolicy.Resolve(customer,
+                    options.RecurringLoyaltyDiscountPercent, options.RecurringLoyaltyDiscountAmount,
+                    options.ExcludeRecurringLoyalty || !ResidentialLoyaltyPolicy.AppliesTo(order), order.SubTotal);
+                order.LoyaltyDiscountPercentage = loyalty.Percent;
+                order.LoyaltyDiscountAmount = loyalty.Amount;
+            }
+            else if (!options.SuppressAutomaticDiscounts && ResidentialLoyaltyPolicy.AppliesTo(order))
                 await ApplyLoyaltyDiscountAndStackingAsync(order, orderUserId);
 
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
@@ -461,6 +510,7 @@ namespace DreamCleaningBackend.Services
                 catch (Exception ex)
                 {
                     await transaction.RollbackAsync();
+                    if (options.RecurringSeriesId.HasValue && ex is DbUpdateException) throw;
                     var innerMsg = ex.InnerException?.InnerException?.Message ?? ex.InnerException?.Message ?? "";
                     throw new InvalidOperationException(
                         $"Failed to create order: {ex.Message}" + (string.IsNullOrEmpty(innerMsg) ? "" : $" | Detail: {innerMsg}"));

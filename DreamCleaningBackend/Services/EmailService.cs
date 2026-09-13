@@ -1062,12 +1062,14 @@ namespace DreamCleaningBackend.Services
             var labels = GetCleanerEmailLabels(language);
 
             string suppliesValue = hasCleaningSupplies ? labels["suppliesRequired"] : labels["suppliesNotRequired"];
-            // The long-form surface names the three items the first time a cleaner sees the row —
-            // "Essentials: required" alone doesn't tell somebody what to put in the car. The SMS
-            // keeps the bare required/not-required, because every line there costs segment budget.
-            string essentialsValue = hasCleaningEssentials
-                ? $"{labels["essentialsRequired"]} ({labels["essentialsItems"]})"
-                : labels["essentialsNotRequired"];
+            string essentialsValue = hasCleaningEssentials ? labels["essentialsRequired"] : labels["essentialsNotRequired"];
+            // BOTH rows name their items, and they name them whichever way the row falls (owner's
+            // call, 2026-09). "Supplies: not required" told a cleaner nothing they could act on —
+            // required or not, the question they are actually asking is WHICH products, and the
+            // answer is the same list either way: ours to load, or the customer's to have ready.
+            // Resolved through CleanerJobView so the SMS and the portal name the same items.
+            var suppliesItems = LocalizeSupplyItems(CleanerJobView.ResolveSuppliesItemKeys(order), labels);
+            var essentialsItems = LocalizeSupplyItems(CleanerJobView.ResolveEssentialsItemKeys(order), labels);
             string firstName = order.ContactFirstName ?? string.Empty;
             string addressValue = string.IsNullOrWhiteSpace(fullAddress) ? "—" : fullAddress;
             string entryValue = string.IsNullOrWhiteSpace(order.EntryMethod) ? "—" : order.EntryMethod;
@@ -1097,8 +1099,8 @@ namespace DreamCleaningBackend.Services
                 rows.Append(BuildRow(labels["levels"], order.LevelsQuantity.Value.ToString()));
             rows.Append(BuildRow(labels["serviceDuration"], formattedDuration));
             rows.Append(BuildRow(labels["dateAndTime"], dateTimeText));
-            rows.Append(BuildRow(labels["supplies"], suppliesValue));
-            rows.Append(BuildRow(labels["essentials"], essentialsValue));
+            rows.Append(BuildRowWithList(labels["supplies"], suppliesValue, suppliesItems));
+            rows.Append(BuildRowWithList(labels["essentials"], essentialsValue, essentialsItems));
             rows.Append(BuildListRow(labels["extraServices"], BuildCleanerExtraServiceItems(order, language)));
             rows.Append(BuildRow(labels["tips"], tipsValue));
             rows.Append("<p style='margin:18px 0 6px 0;'></p>");
@@ -1168,6 +1170,38 @@ namespace DreamCleaningBackend.Services
             var normalized = PropertyDetailsHelper.NormalizePropertyType(propertyType);
             if (normalized == null) return null;
             return normalized == PropertyDetailsHelper.House ? labels["house"] : labels["apartment"];
+        }
+
+        /// <summary>
+        /// A labelled row with its own bulleted list underneath - "Supplies: required" followed by
+        /// the products themselves. Unlike <see cref="BuildListRow"/> the VALUE carries meaning of
+        /// its own here (who is bringing them), so it stays on the label line and the items hang
+        /// under it rather than replacing it.
+        /// </summary>
+        private static string BuildRowWithList(string label, string value, IReadOnlyList<string> items)
+        {
+            if (items.Count == 0)
+                return BuildRow(label, value);
+
+            var listItems = string.Join("", items.Select(i => $"<li style='margin:2px 0;'>{i}</li>"));
+            return $"<p style='margin:6px 0 2px 0;'><strong>{label}:</strong> {value}</p>" +
+                   $"<ul style='margin:0 0 6px 0; padding-left:20px;'>{listItems}</ul>";
+        }
+
+        /// <summary>
+        /// Turns the supply item KEYS that CleanerJobView resolves into this cleaner's language.
+        ///
+        /// Which items are named is decided once, for every cleaner-facing surface, in
+        /// CustomerSupplyChecklist; all that happens here is the translation. An unknown key falls
+        /// back to the key itself rather than disappearing - a missing translation should look
+        /// like a missing translation, not like an item nobody has to bring.
+        /// </summary>
+        private static List<string> LocalizeSupplyItems(
+            IEnumerable<string> itemKeys, IReadOnlyDictionary<string, string> labels)
+        {
+            return itemKeys
+                .Select(key => labels.TryGetValue($"item:{key}", out var text) ? text : key)
+                .ToList();
         }
 
         private static string BuildListRow(string label, IReadOnlyList<string> items)
@@ -1267,6 +1301,12 @@ namespace DreamCleaningBackend.Services
             var hasCleaningEssentials = CleanerJobView.RequiresCleanerToBringEssentials(order);
             var suppliesValue = hasCleaningSupplies ? labels["suppliesRequired"] : labels["suppliesNotRequired"];
             var essentialsValue = hasCleaningEssentials ? labels["essentialsRequired"] : labels["essentialsNotRequired"];
+            // The SMS stands in for the mail when a cleaner has no email, so it names the items
+            // too (owner's call, 2026-09) - this is the ONLY thing that reader is told about what
+            // goes in the car, and the segment budget it costs is cheaper than a crew arriving
+            // without a mop. Comma-joined on the existing line rather than lines of their own.
+            var smsSuppliesItems = LocalizeSupplyItems(CleanerJobView.ResolveSuppliesItemKeys(order), labels);
+            var smsEssentialsItems = LocalizeSupplyItems(CleanerJobView.ResolveEssentialsItemKeys(order), labels);
 
             var addressParts = new List<string>();
             if (!string.IsNullOrEmpty(order.ServiceAddress)) addressParts.Add(order.ServiceAddress);
@@ -1312,8 +1352,8 @@ namespace DreamCleaningBackend.Services
                 lines.Add($"{labels["address"]}: {fullAddress}");
             if (!string.IsNullOrWhiteSpace(order.EntryMethod))
                 lines.Add($"{labels["entryInstruction"]}: {order.EntryMethod}");
-            lines.Add($"{labels["supplies"]}: {suppliesValue}");
-            lines.Add($"{labels["essentials"]}: {essentialsValue}");
+            lines.Add(BuildSmsSupplyLine(labels["supplies"], suppliesValue, smsSuppliesItems));
+            lines.Add(BuildSmsSupplyLine(labels["essentials"], essentialsValue, smsEssentialsItems));
 
             // Same extras the email lists (prices stripped there too); comma-joined on one line
             // because each SMS line costs segment budget.
@@ -1333,6 +1373,15 @@ namespace DreamCleaningBackend.Services
             lines.Add(labels["verifyConditionShort"]);
 
             return string.Join("\n", lines);
+        }
+
+        /// <summary>"Supplies: required - Zep liquids: Green, Floor, Windex liquid, ..." - one SMS
+        /// line carrying both the direction and the items it is about.</summary>
+        private static string BuildSmsSupplyLine(string label, string value, IReadOnlyList<string> items)
+        {
+            return items.Count == 0
+                ? $"{label}: {value}"
+                : $"{label}: {value} - {string.Join(", ", items)}";
         }
 
         private string FormatDurationLocalized(int minutes, string language)
@@ -1398,7 +1447,17 @@ namespace DreamCleaningBackend.Services
                     ["essentials"] = "საწმენდი ნივთები",
                     ["essentialsRequired"] = "საჭიროა",
                     ["essentialsNotRequired"] = "არ არის საჭირო",
-                    ["essentialsItems"] = "ხელსახოცები, ნაგვის პარკები, უნიტაზის ჯაგრისი, ცოცხი",
+                    ["item:zep"] = "Zep ხსნარები: მწვანე, იატაკის",
+                    ["item:zepOven"] = "Zep ხსნარები: მწვანე, იატაკის, ღუმელის საწმენდი",
+                    ["item:windex"] = "Windex ხსნარი",
+                    ["item:cloths"] = "საწმენდი ტილოები",
+                    ["item:sponge"] = "ღრუბელი",
+                    ["item:mop"] = "მოპი",
+                    ["item:paperTowels"] = "ქაღალდის ხელსახოცები",
+                    ["item:garbageBags"] = "ნაგვის პარკები",
+                    ["item:toiletBrush"] = "უნიტაზის ჯაგრისი",
+                    ["item:broom"] = "ცოცხი",
+                    ["item:broomOrVacuum"] = "ცოცხი ან მტვერსასრუტი",
                     ["extraServices"] = "დამატებითი სერვისები",
                     ["tips"] = "თიფსი",
                     ["customerName"] = "მომხმარებლის სახელი",
@@ -1436,7 +1495,17 @@ namespace DreamCleaningBackend.Services
                     ["essentials"] = "Расходные материалы",
                     ["essentialsRequired"] = "требуются",
                     ["essentialsNotRequired"] = "не требуются",
-                    ["essentialsItems"] = "бумажные полотенца, мусорные пакеты, ёршик для унитаза, веник",
+                    ["item:zep"] = "Жидкости Zep: зелёная, для пола",
+                    ["item:zepOven"] = "Жидкости Zep: зелёная, для пола, для духовки",
+                    ["item:windex"] = "Жидкость Windex",
+                    ["item:cloths"] = "Тряпки для уборки",
+                    ["item:sponge"] = "Губка",
+                    ["item:mop"] = "Швабра",
+                    ["item:paperTowels"] = "Бумажные полотенца",
+                    ["item:garbageBags"] = "Мусорные пакеты",
+                    ["item:toiletBrush"] = "Ёршик для унитаза",
+                    ["item:broom"] = "Веник",
+                    ["item:broomOrVacuum"] = "Веник или пылесос",
                     ["extraServices"] = "Дополнительные услуги",
                     ["tips"] = "Чаевые",
                     ["customerName"] = "Имя клиента",
@@ -1474,7 +1543,17 @@ namespace DreamCleaningBackend.Services
                     ["essentials"] = "Artículos básicos",
                     ["essentialsRequired"] = "se requieren",
                     ["essentialsNotRequired"] = "no se requieren",
-                    ["essentialsItems"] = "toallas de papel, bolsas de basura, escobilla de inodoro, escoba",
+                    ["item:zep"] = "Líquidos Zep: verde, para suelos",
+                    ["item:zepOven"] = "Líquidos Zep: verde, para suelos, para horno",
+                    ["item:windex"] = "Líquido Windex",
+                    ["item:cloths"] = "Paños de limpieza",
+                    ["item:sponge"] = "Esponja",
+                    ["item:mop"] = "Fregona",
+                    ["item:paperTowels"] = "Toallas de papel",
+                    ["item:garbageBags"] = "Bolsas de basura",
+                    ["item:toiletBrush"] = "Escobilla de inodoro",
+                    ["item:broom"] = "Escoba",
+                    ["item:broomOrVacuum"] = "Escoba o aspiradora",
                     ["extraServices"] = "Servicios adicionales",
                     ["tips"] = "Propina",
                     ["customerName"] = "Nombre del cliente",
@@ -1512,7 +1591,17 @@ namespace DreamCleaningBackend.Services
                     ["essentials"] = "Essentials",
                     ["essentialsRequired"] = "required",
                     ["essentialsNotRequired"] = "not required",
-                    ["essentialsItems"] = "paper towels, garbage bags, toilet brush, broom",
+                    ["item:zep"] = "Zep liquids: Green, Floor",
+                    ["item:zepOven"] = "Zep liquids: Green, Floor, Oven",
+                    ["item:windex"] = "Windex liquid",
+                    ["item:cloths"] = "Cleaning cloths",
+                    ["item:sponge"] = "Sponge",
+                    ["item:mop"] = "Mop",
+                    ["item:paperTowels"] = "Paper towels",
+                    ["item:garbageBags"] = "Garbage bags",
+                    ["item:toiletBrush"] = "Toilet brush",
+                    ["item:broom"] = "Broom",
+                    ["item:broomOrVacuum"] = "Broom or vacuum cleaner",
                     ["extraServices"] = "Extra services",
                     ["tips"] = "Tips",
                     ["customerName"] = "Customer name",

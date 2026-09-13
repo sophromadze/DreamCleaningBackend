@@ -105,4 +105,32 @@ namespace DreamCleaningBackend.Models.Contracts
         /// <summary>The amount typed is the pre-tax service fee; tax is added on top.</summary>
         PreTax = 1
     }
+
+    /// <summary>
+    /// How often a recurring commercial contract is INVOICED, which is a different question from
+    /// how often the premises are CLEANED.
+    ///
+    /// Keeping them apart is the whole reason this enum exists: "every Wednesday, billed monthly"
+    /// is an ordinary arrangement, and a monthly invoice for weekly cleaning legitimately covers
+    /// four or five visits. The service side lives on <c>ScheduleSnapshot</c>; this lives on
+    /// <c>BillingCadenceSnapshot</c>, and <c>ServiceScheduleCalculator</c> is what combines them.
+    ///
+    /// "Every N weeks" and "every N months" are these members plus an interval count rather than
+    /// separate values - biweekly is simply Weekly with a count of two, so there is one code path
+    /// instead of a family of near-duplicates.
+    /// </summary>
+    public enum ContractBillingFrequency
+    {
+        /// <summary>One invoice per cleaning. The period collapses onto that single date.</summary>
+        PerServiceVisit = 0,
+
+        /// <summary>Every week, or every N weeks when the interval count is above one.</summary>
+        Weekly = 1,
+
+        /// <summary>Every month, or every N months. A period starting on the 1st ends month-end.</summary>
+        Monthly = 2,
+
+        /// <summary>An arbitrary interval in days, for arrangements the presets do not describe.</summary>
+        CustomDays = 3
+    }
 }

@@ -64,6 +64,27 @@ namespace DreamCleaningBackend.Controllers.Admin
         }
 
         /// <summary>
+        /// The commercial billing DEFAULTS a new contract or invoice starts from: tax mode, tax
+        /// rate, contract price mode, due terms and the ACH fee configuration.
+        ///
+        /// A separate, narrower endpoint rather than the full settings read, because the two
+        /// creation forms need these five values and nothing else. Handing them a payload that
+        /// also carries the company's bank account - which neither form displays - would be a leak
+        /// waiting for a future copy-paste.
+        ///
+        /// ONE SOURCE, TWO CONSUMERS. Contract creation reads the price mode and rate here;
+        /// invoice creation reads the tax type and rate here; editing either and ticking "save as
+        /// default" writes back here. That is what stops a contract quoting tax-inclusive while its
+        /// invoices add 8.875% on top.
+        /// </summary>
+        [HttpGet("defaults")]
+        public async Task<ActionResult<CommercialBillingDefaultsDto>> GetDefaults()
+        {
+            var settings = await _settings.GetOrCreateAsync();
+            return Ok(_settings.ToDefaultsDto(settings));
+        }
+
+        /// <summary>
         /// Saves the settings. SuperAdmin only.
         ///
         /// The audit row NAMES the fields that changed but never QUOTES the bank values - an audit

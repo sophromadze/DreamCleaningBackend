@@ -25,6 +25,7 @@ namespace DreamCleaningBackend.Services.Contracts
         private readonly ContractPdfService _pdf;
         private readonly ContractStorage _storage;
         private readonly ContractNotificationService _notifications;
+        private readonly Commercial.BillingSettingsService _billing;
         private readonly ILogger<ContractService> _logger;
 
         /// <summary>Default life of a signing link. Long enough for a real countersigning cycle.</summary>
@@ -51,12 +52,14 @@ namespace DreamCleaningBackend.Services.Contracts
             ContractPdfService pdf,
             ContractStorage storage,
             ContractNotificationService notifications,
+            Commercial.BillingSettingsService billing,
             ILogger<ContractService> logger)
         {
             _context = context;
             _pdf = pdf;
             _storage = storage;
             _notifications = notifications;
+            _billing = billing;
             _logger = logger;
         }
 
@@ -120,6 +123,23 @@ namespace DreamCleaningBackend.Services.Contracts
             var snapshot = BuildSnapshot(contract, dto, template, contractorProfile, client, location,
                 contractorSigner, clientSigner, scopeTemplate);
             contract.DraftSnapshotJson = snapshot.ToJson();
+
+            // "Save this rate as the default" writes to BillingSettings and NOWHERE else. It
+            // cannot reach a signed contract or a finalized invoice - both carry their own rate
+            // snapshot and are never recomputed - which is exactly why the rate is snapshotted per
+            // document rather than looked up at render time.
+            if (dto.Pricing.SaveAsDefault)
+            {
+                var settings = await _billing.GetOrCreateAsync();
+                _billing.ApplyTaxDefaults(
+                    settings,
+                    dto.Pricing.PriceMode == ContractPriceMode.TaxInclusive
+                        ? Models.Commercial.InvoiceTaxType.Included
+                        : Models.Commercial.InvoiceTaxType.Added,
+                    dto.Pricing.SalesTaxRatePercent,
+                    dto.Pricing.PriceMode,
+                    adminId);
+            }
 
             await _context.SaveChangesAsync();
 
@@ -1209,17 +1229,14 @@ namespace DreamCleaningBackend.Services.Contracts
                     ?? throw new ContractWorkflowException("The selected client no longer exists.");
 
                 // The form is fully editable even for an existing client, so apply what came back.
+                // WRITING BACK TO THE MASTER RECORD IS THE POINT: a client, a contact and a
+                // location are reusable, so a correction made while drafting is a correction to the
+                // company. It can only happen while the contract is still editable - SaveDraftAsync
+                // refuses once the status is locked - so a signed agreement keeps its own frozen
+                // snapshot and is untouched by any of this.
                 if (dto.NewClient != null)
                 {
-                    existing.LegalEntityName = dto.NewClient.LegalEntityName.Trim();
-                    existing.EntityType = dto.NewClient.EntityType.Trim();
-                    existing.FormationState = dto.NewClient.FormationState?.Trim();
-                    existing.PrincipalAddress = dto.NewClient.PrincipalAddress.Trim();
-                    existing.City = dto.NewClient.City.Trim();
-                    existing.State = dto.NewClient.State.Trim();
-                    existing.Zip = dto.NewClient.Zip.Trim();
-                    existing.NoticeEmail = dto.NewClient.NoticeEmail?.Trim();
-                    existing.Phone = dto.NewClient.Phone;
+                    ApplyClientFields(existing, dto.NewClient);
                     existing.SourceUserId = await ValidateSourceUserAsync(dto.NewClient.SourceUserId);
                     existing.UpdatedAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
@@ -1230,22 +1247,60 @@ namespace DreamCleaningBackend.Services.Contracts
             if (dto.NewClient == null)
                 throw new ContractWorkflowException("Select an existing client or enter a new one.");
 
-            var client = new ContractClient
+            var sourceUserId = await ValidateSourceUserAsync(dto.NewClient.SourceUserId);
+
+            // ── "New client" + a linked account that ALREADY has one: adopt it, never insert ──
+            //
+            // Every business-flagged account auto-creates a ContractClient the moment the flag is
+            // ticked, so by the time an admin can pick that account here, its client exists. An
+            // insert would hit IX_ContractClients_SourceUserId (UNIQUE) and 500 the save; before
+            // that index existed it produced a SECOND commercial client for one business, splitting
+            // their contracts and invoices across two records that no report would ever reunite.
+            //
+            // The typed details are applied to the row that already exists - which is what the
+            // admin meant - and its id, its history and its service locations are kept.
+            var linked = await BusinessAccountLinkPolicy.FindLinkedClientAsync(_context, sourceUserId);
+            if (linked != null)
             {
-                LegalEntityName = dto.NewClient.LegalEntityName.Trim(),
-                EntityType = dto.NewClient.EntityType.Trim(),
-                FormationState = dto.NewClient.FormationState?.Trim(),
-                PrincipalAddress = dto.NewClient.PrincipalAddress.Trim(),
-                City = dto.NewClient.City.Trim(),
-                State = dto.NewClient.State.Trim(),
-                Zip = dto.NewClient.Zip.Trim(),
-                NoticeEmail = dto.NewClient.NoticeEmail?.Trim(),
-                Phone = dto.NewClient.Phone,
-                SourceUserId = await ValidateSourceUserAsync(dto.NewClient.SourceUserId)
-            };
+                ApplyClientFields(linked, dto.NewClient);
+                linked.SourceUserId = sourceUserId;
+
+                // An auto-created client that was retired and is now being contracted with again
+                // comes back rather than staying invisible in every picker.
+                linked.IsActive = true;
+                linked.UpdatedAt = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+                return linked;
+            }
+
+            var client = new ContractClient { SourceUserId = sourceUserId };
+            ApplyClientFields(client, dto.NewClient);
+
             _context.ContractClients.Add(client);
             await _context.SaveChangesAsync();
             return client;
+        }
+
+        /// <summary>
+        /// Copies the form's company fields onto a client row.
+        ///
+        /// Shared by the create and the adopt paths above so the two cannot drift - the whole point
+        /// of adopting an existing linked client is that the admin's typing still lands.
+        /// <c>SourceUserId</c> is deliberately NOT set here; it is validated separately by the
+        /// caller, because it is an access grant rather than an ordinary field.
+        /// </summary>
+        private static void ApplyClientFields(ContractClient target, SaveContractClientDto dto)
+        {
+            target.LegalEntityName = dto.LegalEntityName.Trim();
+            target.EntityType = dto.EntityType.Trim();
+            target.FormationState = dto.FormationState?.Trim();
+            target.PrincipalAddress = dto.PrincipalAddress.Trim();
+            target.City = dto.City.Trim();
+            target.State = dto.State.Trim();
+            target.Zip = dto.Zip.Trim();
+            target.NoticeEmail = dto.NoticeEmail?.Trim();
+            target.Phone = dto.Phone;
         }
 
         /// <summary>
@@ -1381,6 +1436,30 @@ namespace DreamCleaningBackend.Services.Contracts
             return contact;
         }
 
+        /// <summary>
+        /// Reconciles the two ways a schedule can arrive, so the snapshot is internally consistent
+        /// whichever form posted it.
+        ///
+        /// An older client sends only <c>ServiceDay</c>; the current form sends
+        /// <c>ServiceDays</c>. Both are stored: the list is authoritative, and the legacy single
+        /// day is kept in step with the first entry so an export, a stale reader or a
+        /// partially-deployed instance never shows a weekday the contract does not have.
+        ///
+        /// Deduplicated and put back into Monday-first order, because a day picker returns them in
+        /// click order and "Friday, Monday, Wednesday" reads as a mistake in a legal document.
+        /// </summary>
+        private static ScheduleSnapshot NormalizeSchedule(ScheduleSnapshot? schedule)
+        {
+            var result = schedule ?? new ScheduleSnapshot();
+
+            var days = result.ResolveServiceDays();
+            if (days.Count == 0) return result;
+
+            result.ServiceDays = days.Select(d => d.ToString()).ToList();
+            result.ServiceDay = result.ServiceDays[0];
+            return result;
+        }
+
         private static ContractSnapshot BuildSnapshot(
             Contract contract, SaveContractDto dto, ContractTemplate template,
             ContractorProfile profile, ContractClient client, ContractServiceLocation location,
@@ -1402,9 +1481,14 @@ namespace DreamCleaningBackend.Services.Contracts
             // them was ignored by the DTO in the first place.
             ContractPricingCalculator.Recalculate(pricing);
 
+            // A template copied onto a draft drops anything the admin has ARCHIVED on the master;
+            // a scope the form already sent is taken as-is, because by then it is this contract's
+            // own checklist and an archived-in-the-meantime row is still a row somebody ticked.
             var scope = dto.Scope?.Groups.Count > 0
                 ? dto.Scope.Clone()
-                : (scopeTemplate != null ? ScopeStructure.Parse(scopeTemplate.StructureJson) : new ScopeStructure());
+                : (scopeTemplate != null
+                    ? ScopeStructure.Parse(scopeTemplate.StructureJson).WithoutArchived()
+                    : new ScopeStructure());
 
             return new ContractSnapshot
             {
@@ -1482,7 +1566,8 @@ namespace DreamCleaningBackend.Services.Contracts
                     Email = clientSigner.Email,
                     Phone = clientSigner.Phone
                 },
-                Schedule = dto.Schedule ?? new ScheduleSnapshot(),
+                Schedule = NormalizeSchedule(dto.Schedule),
+                Billing = dto.Billing ?? new BillingCadenceSnapshot(),
                 Term = dto.Term ?? new TermSnapshot(),
                 Pricing = pricing,
                 Advanced = dto.Advanced ?? new AdvancedTermsSnapshot(),

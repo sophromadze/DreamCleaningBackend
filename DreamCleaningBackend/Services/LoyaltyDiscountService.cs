@@ -41,7 +41,8 @@ namespace DreamCleaningBackend.Services
             return Project(user);
         }
 
-        public async Task<LoyaltyDiscountDto> SetManualAsync(int userId, decimal percentage, int adminUserId)
+        public async Task<LoyaltyDiscountDto> SetManualAsync(
+            int userId, decimal percentage, int adminUserId, bool isLifetime = false)
         {
             if (percentage < 0 || percentage > 100)
                 throw new ArgumentOutOfRangeException(nameof(percentage), "Percentage must be between 0 and 100");
@@ -51,6 +52,9 @@ namespace DreamCleaningBackend.Services
 
             // Setting to exactly 0 via the manual endpoint is semantically a clear — let the
             // user re-enter the auto-managed flow rather than being permanently frozen at 0.
+            // That includes clearing LIFETIME: "0% forever" is not a discount, it is its absence,
+            // and leaving the flag set would keep the inactivity automation suppressed for a
+            // customer who now has nothing.
             if (percentage == 0)
             {
                 return await ClearAsync(userId, adminUserId);
@@ -63,6 +67,10 @@ namespace DreamCleaningBackend.Services
 
             user.LoyaltyDiscountPercentage = percentage;
             user.LoyaltyDiscountIsManualOverride = true;
+            // Set on EVERY manual write, in both directions: an admin editing a lifetime discount
+            // down to a one-time one must actually demote it, or the customer would keep a
+            // standing entitlement the admin believes they removed.
+            user.LoyaltyDiscountIsLifetime = isLifetime;
             // Stamp ActivatedAt when going from 0 → manual value so the admin UI can show
             // a meaningful "set on" date. Don't overwrite an existing date — if the admin is
             // editing an already-active discount we preserve the original activation moment.
@@ -94,13 +102,17 @@ namespace DreamCleaningBackend.Services
             var oldLastUsedAt = user.LoyaltyDiscountLastUsedAt;
 
             // Belt-and-suspenders: only emit audit + save when something actually changes.
-            if (oldPct == 0 && !oldOverride && oldActivatedAt == null)
+            if (oldPct == 0 && !oldOverride && oldActivatedAt == null && !user.LoyaltyDiscountIsLifetime)
             {
                 return Project(user);
             }
 
             user.LoyaltyDiscountPercentage = 0;
             user.LoyaltyDiscountIsManualOverride = false;
+            // Clearing hands the customer back to the ordinary inactivity automation — which is
+            // exactly what the lifetime flag was suppressing. Leaving it set would freeze them out
+            // of the 60/90-day discounts forever with nothing to show for it.
+            user.LoyaltyDiscountIsLifetime = false;
             user.LoyaltyDiscountActivatedAt = null;
             // Do NOT touch LastUsedAt — clearing should not re-open a cooldown the user already
             // passed through. The next natural inactivity cycle will re-evaluate.
@@ -140,6 +152,11 @@ namespace DreamCleaningBackend.Services
             var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId)
                 ?? throw new InvalidOperationException($"Order #{orderId} not found");
 
+            if (!DreamCleaningBackend.Helpers.ResidentialLoyaltyPolicy.AppliesTo(order)) return;
+            // A generated occurrence carries a standing agreement, never a consumable account award.
+            if (order.IsGeneratedByRecurringSeries) return;
+            if (await _context.CommercialInvoiceOrders.AnyAsync(l => l.OrderId == orderId)) return;
+
             // No-op when the order didn't actually carry a loyalty discount. ApplyToOrderAsync
             // is called unconditionally on the booking-confirmation path so the caller doesn't
             // have to branch.
@@ -153,6 +170,37 @@ namespace DreamCleaningBackend.Services
             var oldOverride = user.LoyaltyDiscountIsManualOverride;
             var oldActivatedAt = user.LoyaltyDiscountActivatedAt;
             var oldLastUsedAt = user.LoyaltyDiscountLastUsedAt;
+
+            // LIFETIME IS NOT CONSUMED. The whole meaning of the mode is that it survives being
+            // used: the percentage, the manual-override flag and the activation date all stay, so
+            // the next order — including every occurrence a recurring series generates — gets it
+            // again. LastUsedAt is still stamped, because "when did this customer last take their
+            // discount" is a real question, but it is not a cooldown here: the automation is
+            // suppressed for lifetime customers anyway (see LoyaltyReengagementService), so there
+            // is nothing for a cooldown to hold back.
+            //
+            // The reminder logs are likewise left alone. Deleting them exists to let the win-back
+            // cycle re-trigger from scratch, and that cycle does not run for this customer.
+            if (user.LoyaltyDiscountIsLifetime)
+            {
+                user.LoyaltyDiscountLastUsedAt = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
+                await _auditService.LogLoyaltyDiscountChangeAsync(
+                    user.Id, ActionUsed,
+                    oldPct, oldOverride, oldActivatedAt, oldLastUsedAt,
+                    user.LoyaltyDiscountPercentage, user.LoyaltyDiscountIsManualOverride,
+                    user.LoyaltyDiscountActivatedAt, user.LoyaltyDiscountLastUsedAt,
+                    adminUserId: null);
+
+                _logger.LogInformation(
+                    "Lifetime loyalty discount {Percentage}% applied by user {UserId} on order {OrderId} "
+                    + "(${Amount}); not consumed.",
+                    order.LoyaltyDiscountPercentage, user.Id, orderId, order.LoyaltyDiscountAmount);
+
+                return;
+            }
 
             // Consume: zero the percentage, clear manual override (a new cycle re-enters auto
             // management), stamp LastUsedAt, and delete the reminder logs for this user so the
@@ -200,6 +248,11 @@ namespace DreamCleaningBackend.Services
             var oldActivatedAt = user.LoyaltyDiscountActivatedAt;
             var oldLastUsedAt = user.LoyaltyDiscountLastUsedAt;
 
+            // Nothing was consumed for a lifetime customer, so there is nothing to give back —
+            // and restoring would be actively wrong: it would overwrite the CURRENT percentage
+            // (an admin may have changed it since) with the figure this order happened to use.
+            if (user.LoyaltyDiscountIsLifetime) return;
+
             // Restore the percentage snapshot from the order. We do NOT recreate the reminder
             // NotificationLog rows that were deleted on consumption — the spec is explicit that
             // the next natural inactivity cycle re-triggers them if eligible.
@@ -236,7 +289,11 @@ namespace DreamCleaningBackend.Services
             // a friendly label without exposing the underlying boolean.
             string status;
             if (user.LoyaltyDiscountPercentage > 0)
-                status = user.LoyaltyDiscountIsManualOverride ? "Manual" : "Auto";
+                // Lifetime outranks Manual: both are admin-set, but only one keeps applying after
+                // it has been used, and that is the fact somebody reading the label needs.
+                status = user.LoyaltyDiscountIsLifetime
+                    ? "Lifetime"
+                    : user.LoyaltyDiscountIsManualOverride ? "Manual" : "Auto";
             else if (user.LoyaltyDiscountLastUsedAt.HasValue)
                 status = "Used";
             else
@@ -246,6 +303,7 @@ namespace DreamCleaningBackend.Services
             {
                 Percentage = user.LoyaltyDiscountPercentage,
                 IsManualOverride = user.LoyaltyDiscountIsManualOverride,
+                IsLifetime = user.LoyaltyDiscountIsLifetime,
                 ActivatedAt = user.LoyaltyDiscountActivatedAt,
                 LastUsedAt = user.LoyaltyDiscountLastUsedAt,
                 Status = status,
