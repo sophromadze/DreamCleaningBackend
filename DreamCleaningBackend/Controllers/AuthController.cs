@@ -459,37 +459,74 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        /// <summary>
+        /// Renews the session. BOTH tokens are needed: the (possibly expired) ACCESS token names
+        /// the user — <c>AuthService.RefreshToken</c> reads its claims to find out whose session
+        /// this is — and the REFRESH token is what authorises the renewal.
+        ///
+        /// Under cookie auth both live in httpOnly cookies, so the body is an empty <c>{}</c> and
+        /// EVERYTHING must come off <c>Request.Cookies</c> — including the access token, which this
+        /// used to leave null. That produced a guaranteed exception inside the service and so a 400
+        /// on every single cookie-auth refresh. See <see cref="RefreshTokenDto"/> for why the DTO
+        /// carries no <c>[Required]</c>.
+        ///
+        /// A session that cannot be renewed answers 401, never 400: the frontend ends the session
+        /// on the failure either way, and a 400 read as "malformed request" sent the last hunt for
+        /// this after the signing secret rather than the cookies.
+        /// </summary>
         [HttpPost("refresh-token")]
         public async Task<ActionResult<AuthResponseDto>> RefreshToken(RefreshTokenDto refreshTokenDto)
         {
             try
             {
                 AuthResponseDto response;
-                
+
                 if (_useCookieAuth)
                 {
-                    // Get refresh token from cookie
+                    // Both tokens come from the cookies; the body is empty by design.
                     var refreshToken = Request.Cookies["refresh_token"];
                     if (string.IsNullOrEmpty(refreshToken))
                     {
                         return Unauthorized(new { message = "No refresh token provided" });
                     }
-                    
-                    response = await _authService.RefreshToken(new RefreshTokenDto { RefreshToken = refreshToken });
+
+                    var accessToken = Request.Cookies["access_token"];
+                    if (string.IsNullOrEmpty(accessToken))
+                    {
+                        // The access-token cookie shares the refresh cookie's 30-day lifetime, so
+                        // losing it means the browser dropped the session: there is nothing left
+                        // identifying who is asking, and re-login is the only way forward.
+                        return Unauthorized(new { message = "No access token provided" });
+                    }
+
+                    response = await _authService.RefreshToken(new RefreshTokenDto
+                    {
+                        Token = accessToken,
+                        RefreshToken = refreshToken
+                    });
                     SetAuthCookies(response.Token, response.RefreshToken);
-                    
+
                     // Don't send tokens in response for cookie auth
                     return Ok(new { user = response.User });
                 }
                 else
                 {
+                    // Validated here rather than with [Required] on the DTO: automatic model
+                    // validation answers with a ValidationProblemDetails, which has no `message`
+                    // for the frontend to read.
+                    if (string.IsNullOrEmpty(refreshTokenDto?.Token) ||
+                        string.IsNullOrEmpty(refreshTokenDto.RefreshToken))
+                    {
+                        return Unauthorized(new { message = "No tokens provided" });
+                    }
+
                     response = await _authService.RefreshToken(refreshTokenDto);
                     return Ok(response);
                 }
             }
             catch (Exception ex)
             {
-                return BadRequest(new { message = ex.Message });
+                return Unauthorized(new { message = ex.Message });
             }
         }
 

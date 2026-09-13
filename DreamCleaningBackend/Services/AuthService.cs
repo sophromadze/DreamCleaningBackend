@@ -656,8 +656,27 @@ namespace DreamCleaningBackend.Services
             try
             {
                 _logger.LogInformation("Starting token refresh process");
-                
-                var principal = GetPrincipalFromExpiredToken(refreshTokenDto.Token);
+
+                // The DTO's properties are optional (see RefreshTokenDto) because the cookie-auth
+                // body is empty and the controller fills them from the cookies. Guard here so a
+                // caller that skipped that fails with a message someone can act on, rather than
+                // with an ArgumentNullException from deep inside the JWT handler.
+                var suppliedAccessToken = refreshTokenDto?.Token;
+                var suppliedRefreshToken = refreshTokenDto?.RefreshToken;
+
+                if (string.IsNullOrEmpty(suppliedAccessToken))
+                {
+                    _logger.LogWarning("No access token supplied for refresh");
+                    throw new Exception("Invalid token");
+                }
+
+                if (string.IsNullOrEmpty(suppliedRefreshToken))
+                {
+                    _logger.LogWarning("No refresh token supplied for refresh");
+                    throw new Exception("Invalid refresh token");
+                }
+
+                var principal = GetPrincipalFromExpiredToken(suppliedAccessToken);
                 // PRESERVED: Try both claim types for user ID
                 var userId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
                              principal.FindFirst("UserId")?.Value;
@@ -686,12 +705,12 @@ namespace DreamCleaningBackend.Services
                 }
 
                 // PRESERVED: Validate refresh token
-                if (user.RefreshToken != refreshTokenDto.RefreshToken)
+                if (user.RefreshToken != suppliedRefreshToken)
                 {
                     _logger.LogWarning($"Invalid refresh token for user ID: {userId}");
                     _logger.LogWarning($"Expected refresh token: {user.RefreshToken}");
-                    _logger.LogWarning($"Received refresh token: {refreshTokenDto.RefreshToken}");
-                    _logger.LogWarning($"Token lengths - Expected: {user.RefreshToken?.Length}, Received: {refreshTokenDto.RefreshToken?.Length}");
+                    _logger.LogWarning($"Received refresh token: {suppliedRefreshToken}");
+                    _logger.LogWarning($"Token lengths - Expected: {user.RefreshToken?.Length}, Received: {suppliedRefreshToken.Length}");
                     throw new Exception("Invalid refresh token");
                 }
 
