@@ -240,6 +240,6 @@ public class TelegramWebhookController : ControllerBase
         await _context.SaveChangesAsync();
         // Note: the visitor is intentionally NOT emailed when the team replies — they
         // pick up replies via the widget's polling. GuestEmail may still be collected
-        // at escalation for potential future use, but nothing sends to it now.
+        // by the widget's email field for potential future use, but nothing sends to it now.
     }
 }

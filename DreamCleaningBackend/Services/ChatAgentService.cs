@@ -18,6 +18,20 @@ namespace DreamCleaningBackend.Services
         /// the "QA:"/"/qa" prefix. Throws ArgumentException for caller errors (→ 400).</summary>
         Task<ChatMessageResponseDto> HandleMessageAsync(ChatMessageRequestDto dto, int? userId, bool isAdmin = false);
 
+        /// <summary>The widget's "Talk to a real person" button: escalates the session straight
+        /// to the team without asking the AI for permission first. Creates a session when the
+        /// visitor clicks before typing anything, and is idempotent on an already-escalated one.
+        /// Deliberately does NOT touch Anthropic — this is the route out when the assistant is
+        /// misreading the visitor (or is unavailable), so it must not depend on it.</summary>
+        Task<ChatMessageResponseDto> RequestHumanAsync(ChatRequestHumanDto dto, int? userId);
+
+        /// <summary>Stores a guest's contact email on an existing session (the widget's email
+        /// field submits on its own button, so it can arrive mid-conversation rather than only
+        /// with the first message). No-op for a session that belongs to a signed-in user — their
+        /// account email is the contact address. Returns false when the session doesn't exist or
+        /// is already Resolved. Format is validated by the caller (EmailAddressValidator).</summary>
+        Task<bool> SetGuestEmailAsync(Guid sessionId, string email, int? userId);
+
         /// <summary>Marks a session Resolved (customer End-chat or admin Mark-Resolved):
         /// writes a System audit row and posts a courtesy note to the Telegram topic if
         /// one exists. Returns false when the session doesn't exist.</summary>
@@ -120,35 +134,8 @@ namespace DreamCleaningBackend.Services
 
             var now = DateTime.UtcNow;
 
-            // Load or create the session. A Resolved session never accepts appends —
-            // a stale client (second tab, old localStorage) gets a FRESH session
-            // instead, matching the widget's "start new chat" semantics.
-            ChatAgentSession? session = null;
-            if (dto.SessionId.HasValue)
-                session = await _context.ChatAgentSessions.FirstOrDefaultAsync(s => s.Id == dto.SessionId.Value);
-            if (session?.Status == ChatSessionStatus.Resolved)
-                session = null;
-
-            if (session == null)
-            {
-                session = new ChatAgentSession
-                {
-                    Id = Guid.NewGuid(),
-                    UserId = userId,
-                    GuestIdentifier = Truncate(dto.GuestIdentifier, 64),
-                    // Guests only — captured from the widget's optional start-of-chat field.
-                    // Logged-in users use their account email, so this stays null for them.
-                    GuestEmail = userId == null ? NormalizeGuestEmail(dto.GuestEmail) : null,
-                    Status = ChatSessionStatus.AiHandling,
-                    CreatedAt = now,
-                    LastMessageAt = now
-                };
-                _context.ChatAgentSessions.Add(session);
-            }
-            else if (session.UserId == null && userId != null)
-            {
-                session.UserId = userId; // visitor logged in mid-conversation
-            }
+            var session = await LoadOrCreateSessionAsync(
+                dto.SessionId, userId, dto.GuestIdentifier, dto.GuestEmail, now);
 
             // Audit marker for QA-triggered turns — a System row (excluded from Claude's
             // history AND the customer widget, shown in the admin transcript viewer) so
@@ -184,8 +171,8 @@ namespace DreamCleaningBackend.Services
             // Escalated sessions bypass the AI entirely — relay straight to the team.
             // Reply is null on purpose: the one-time "forwarded to our team" text was
             // already shown at escalation, so subsequent sends add no bot bubble; the
-            // human's actual answer arrives via the widget's polling. Guest email is now
-            // collected up front by the widget's start-of-chat field, so there is no
+            // human's actual answer arrives via the widget's polling. Guest email has its own
+            // submit button in the widget (and its own endpoint), so there is no
             // post-escalation email capture here anymore.
             if (session.Status == ChatSessionStatus.EscalatedToHuman)
             {
@@ -234,6 +221,133 @@ namespace DreamCleaningBackend.Services
                 Escalated = escalated,
                 QuickReplies = quickReplies
             };
+        }
+
+        /// <summary>
+        /// Load or create the session for an incoming visitor action. A Resolved session never
+        /// accepts appends — a stale client (second tab, old localStorage) gets a FRESH session
+        /// instead, matching the widget's "start new chat" semantics. Shared by the message and
+        /// request-human paths so both agree on what "the current session" means.
+        /// </summary>
+        private async Task<ChatAgentSession> LoadOrCreateSessionAsync(
+            Guid? sessionId, int? userId, string? guestIdentifier, string? guestEmail, DateTime now)
+        {
+            ChatAgentSession? session = null;
+            if (sessionId.HasValue)
+                session = await _context.ChatAgentSessions.FirstOrDefaultAsync(s => s.Id == sessionId.Value);
+            if (session?.Status == ChatSessionStatus.Resolved)
+                session = null;
+
+            if (session == null)
+            {
+                session = new ChatAgentSession
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = userId,
+                    GuestIdentifier = Truncate(guestIdentifier, 64),
+                    // Guests only — captured from the widget's email field. Logged-in users
+                    // use their account email, so this stays null for them.
+                    GuestEmail = userId == null ? NormalizeGuestEmail(guestEmail) : null,
+                    Status = ChatSessionStatus.AiHandling,
+                    CreatedAt = now,
+                    LastMessageAt = now
+                };
+                _context.ChatAgentSessions.Add(session);
+            }
+            else if (session.UserId == null && userId != null)
+            {
+                session.UserId = userId; // visitor logged in mid-conversation
+            }
+
+            return session;
+        }
+
+        public async Task<ChatMessageResponseDto> RequestHumanAsync(ChatRequestHumanDto dto, int? userId)
+        {
+            var now = DateTime.UtcNow;
+            var session = await LoadOrCreateSessionAsync(
+                dto.SessionId, userId, dto.GuestIdentifier, dto.GuestEmail, now);
+
+            // Already with the team — nothing to do, and no second Telegram topic / email.
+            // Reply is null for the same reason a post-escalation relay's is: the "forwarded
+            // to our team" line is already on screen and repeating it reads as a glitch.
+            if (session.Status == ChatSessionStatus.EscalatedToHuman)
+            {
+                await _context.SaveChangesAsync(); // persists a mid-conversation login, if any
+                return new ChatMessageResponseDto { SessionId = session.Id, Reply = null, Escalated = true };
+            }
+
+            // A brand-new session has to exist before EscalateSessionAsync writes its System row
+            // against it (and before the transcript query can find anything).
+            await _context.SaveChangesAsync();
+
+            await EscalateSessionAsync(session, "the visitor asked to speak with a real person");
+
+            // Same confirmation the AI-driven escalation shows, persisted so it survives a
+            // reload and appears in the admin transcript in the right place.
+            _context.ChatAgentMessages.Add(new ChatAgentMessage
+            {
+                Id = Guid.NewGuid(),
+                ChatSessionId = session.Id,
+                Role = ChatMessageRole.Assistant,
+                Content = EscalatedReply,
+                CreatedAt = DateTime.UtcNow
+            });
+            session.LastMessageAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            return new ChatMessageResponseDto
+            {
+                SessionId = session.Id,
+                Reply = EscalatedReply,
+                Escalated = true
+            };
+        }
+
+        public async Task<bool> SetGuestEmailAsync(Guid sessionId, string email, int? userId)
+        {
+            var session = await _context.ChatAgentSessions.FirstOrDefaultAsync(s => s.Id == sessionId);
+            if (session == null || session.Status == ChatSessionStatus.Resolved)
+                return false;
+
+            if (session.UserId == null && userId != null)
+                session.UserId = userId; // visitor logged in mid-conversation
+
+            // Signed-in visitors are contactable through their account address; storing a
+            // second one here would give the team two answers to "who is this".
+            if (session.UserId != null)
+            {
+                await _context.SaveChangesAsync();
+                return true;
+            }
+
+            // Unreachable from the controller, which validates the format and the 255-char cap
+            // before calling — this only catches a future in-process caller that doesn't.
+            var normalized = NormalizeGuestEmail(email);
+            if (normalized == null)
+                return false;
+
+            var changed = !string.Equals(session.GuestEmail, normalized, StringComparison.OrdinalIgnoreCase);
+            session.GuestEmail = normalized;
+            await _context.SaveChangesAsync();
+
+            // An escalated conversation is being read in Telegram right now, and the whole point
+            // of the address is that the team can reach this visitor after they close the tab —
+            // so it has to reach the topic, not just the database.
+            if (changed && _telegramBot.IsConfigured && session.TelegramTopicId is > 0)
+            {
+                try
+                {
+                    await _telegramBot.SendTextToTopic(session.TelegramTopicId.Value, "Chat Agent",
+                        $"The visitor left a contact email: {normalized}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to post guest email to Telegram topic {TopicId}", session.TelegramTopicId);
+                }
+            }
+
+            return true;
         }
 
         public async Task<bool> ResolveSessionAsync(Guid sessionId, string endedByLabel)

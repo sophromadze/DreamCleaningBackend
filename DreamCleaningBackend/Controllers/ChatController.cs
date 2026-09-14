@@ -120,6 +120,48 @@ namespace DreamCleaningBackend.Controllers
         }
 
         /// <summary>
+        /// The widget's "Talk to a real person" button: escalates straight to the team,
+        /// bypassing the AI. Never asks Anthropic anything — this is the visitor's way out
+        /// when the assistant is misreading them, so it has to work when the assistant
+        /// doesn't. SessionId is optional (a visitor may click before typing), and a repeat
+        /// click on an already-escalated session is a no-op rather than a second handoff.
+        /// </summary>
+        [HttpPost("request-human")]
+        public async Task<ActionResult<ChatMessageResponseDto>> RequestHuman(ChatRequestHumanDto dto)
+        {
+            if (!await IsChatAccessibleAsync())
+                return StatusCode(403, new { message = "Chat is not available" });
+
+            return Ok(await _chatAgentService.RequestHumanAsync(dto, GetOptionalUserId()));
+        }
+
+        /// <summary>
+        /// Stores a guest's contact email against their session. The widget's email field has
+        /// its own submit button and no longer disappears the moment the first message is sent,
+        /// so the address can arrive at any point in the conversation — not only at creation.
+        /// Validated here (not by a [EmailAddress] attribute) so a rejection carries the usual
+        /// { message } shape naming the actual mistake — see Helpers/EmailAddressValidator.cs.
+        /// </summary>
+        [HttpPost("session/{sessionId:guid}/guest-email")]
+        public async Task<IActionResult> SetGuestEmail(Guid sessionId, ChatGuestEmailDto dto)
+        {
+            if (!await IsChatAccessibleAsync())
+                return StatusCode(403, new { message = "Chat is not available" });
+
+            var email = (dto.Email ?? string.Empty).Trim();
+            var problem = Helpers.EmailAddressValidator.DescribeProblem(email);
+            if (problem != null)
+                return BadRequest(new { message = problem });
+            if (email.Length > 255)
+                return BadRequest(new { message = "Email address is too long (255 characters maximum)." });
+
+            if (!await _chatAgentService.SetGuestEmailAsync(sessionId, email, GetOptionalUserId()))
+                return NotFound(new { message = "Session not found" });
+
+            return Ok(new { status = "saved" });
+        }
+
+        /// <summary>
         /// Temporary chat-photo upload (jpg/png/webp, max 5 MB — validated by magic
         /// bytes, not the client's file name). Stored under {FileUpload:Path}/chat-photos
         /// and served from /chat-photos/{name} via the existing uploads static mapping.

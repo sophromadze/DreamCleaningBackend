@@ -10,9 +10,11 @@ namespace DreamCleaningBackend.DTOs
         public string? ImagePath { get; set; }
         /// <summary>Widget-generated anonymous identifier for guests (stored on the session at creation).</summary>
         public string? GuestIdentifier { get; set; }
-        /// <summary>Optional contact email from the widget's start-of-chat field. Stored on the
-        /// session at creation for guests only (logged-in users use their account email).
-        /// Collected for potential future outreach — nothing sends to it currently.</summary>
+        /// <summary>Optional contact email from the widget's email field, when the visitor
+        /// submitted it before sending anything. Stored on the session at creation for guests
+        /// only (logged-in users use their account email); an address submitted later in the
+        /// conversation arrives through POST session/{id}/guest-email instead. Collected for
+        /// potential future outreach — nothing sends to it currently.</summary>
         public string? GuestEmail { get; set; }
     }
 
@@ -26,6 +28,30 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>Clickable quick-reply options (from the present_choices pseudo-tool).
         /// Transient UI hint — not persisted; clicking one sends it as a normal message.</summary>
         public List<string>? QuickReplies { get; set; }
+    }
+
+    /// <summary>
+    /// Body of POST /api/chat/request-human — the widget's "Talk to a real person" button.
+    /// SessionId is optional: a visitor may ask for a human before typing anything, in which
+    /// case a session is created for them so the team still gets a topic to reply into.
+    /// </summary>
+    public class ChatRequestHumanDto
+    {
+        public Guid? SessionId { get; set; }
+        /// <summary>Widget-generated anonymous identifier for guests (used only when a session is created here).</summary>
+        public string? GuestIdentifier { get; set; }
+        /// <summary>Contact email already captured by the widget's email field, if any (guests only).</summary>
+        public string? GuestEmail { get; set; }
+    }
+
+    /// <summary>
+    /// Body of POST /api/chat/session/{id}/guest-email — the widget's email field, which now
+    /// submits on its own button instead of riding along with the first message, so a guest
+    /// can leave contact details at any point in the conversation.
+    /// </summary>
+    public class ChatGuestEmailDto
+    {
+        public string? Email { get; set; }
     }
 
     public class ChatImageUploadResponseDto
