@@ -1454,6 +1454,15 @@ namespace DreamCleaningBackend.Data
 
                 entity.Property(e => e.GiftCardCode)
                     .HasMaxLength(14);
+
+                // UNIQUE, the same role it plays on OrderPaymentBatch and the commercial ledger:
+                // one Stripe intent can only ever produce one order. Two prepare-payment calls
+                // used to mint two intents and two orders for one booking (2026-08-30); the
+                // application-level checks in confirm-payment are the friendly path, and this is
+                // the backstop that holds when two confirms race. NULL is not constrained by a
+                // MySQL/MariaDB unique index, so the many orders with no intent are unaffected.
+                entity.HasIndex(e => e.PaymentIntentId).IsUnique()
+                    .HasDatabaseName("IX_Orders_PaymentIntentId");
             });
 
             // Seed Services for Residential Cleaning

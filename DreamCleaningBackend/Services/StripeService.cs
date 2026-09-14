@@ -17,7 +17,8 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string> metadata = null,
-            string receiptEmail = null, string customerId = null, bool saveCardForOffSession = false)
+            string receiptEmail = null, string customerId = null, bool saveCardForOffSession = false,
+            string idempotencyKey = null)
         {
             try
             {
@@ -38,7 +39,16 @@ namespace DreamCleaningBackend.Services
                 };
 
                 var service = new PaymentIntentService();
-                return await service.CreateAsync(options);
+
+                // Same role the refund and off-session paths already give it: a repeat of the
+                // same logical attempt returns the intent Stripe already created rather than a
+                // second chargeable one. Without a key, two prepare-payment calls produced two
+                // intents and the customer was charged twice for one booking (2026-08-30).
+                var requestOptions = string.IsNullOrWhiteSpace(idempotencyKey)
+                    ? null
+                    : new RequestOptions { IdempotencyKey = idempotencyKey };
+
+                return await service.CreateAsync(options, requestOptions);
             }
             catch (StripeException ex)
             {

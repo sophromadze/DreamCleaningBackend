@@ -13,6 +13,15 @@ namespace DreamCleaningBackend.Services
     {
         public int? RecurringSeriesId { get; set; }
 
+        /// <summary>
+        /// The Stripe intent this order is being created for, stamped at INSERT time.
+        /// Load-bearing: the unique index on Order.PaymentIntentId is only a real backstop
+        /// against a concurrent duplicate confirm if the row carries the id from the start.
+        /// Stamping it after the insert (as confirm-payment used to) lets both racers commit a
+        /// row before either one trips the index. Null for every flow that has no intent yet.
+        /// </summary>
+        public string? PaymentIntentId { get; set; }
+
         /// <summary>The series' standing discount. At most one of the two is set — see
         /// <c>RecurringDiscountPolicy</c>, which is the only thing that reads them.</summary>
         public decimal? RecurringLoyaltyDiscountPercent { get; set; }
@@ -353,6 +362,9 @@ namespace DreamCleaningBackend.Services
 
             var order = new Order
             {
+                // Stamped before the insert so the unique index can reject a concurrent
+                // duplicate — see BookingCreationOptions.PaymentIntentId.
+                PaymentIntentId = options.PaymentIntentId,
                 RecurringSeriesId = options.RecurringSeriesId,
                 RecurrenceOccurrenceDate = options.RecurrenceOccurrenceDate,
                 IsGeneratedByRecurringSeries = options.RecurringSeriesId.HasValue,

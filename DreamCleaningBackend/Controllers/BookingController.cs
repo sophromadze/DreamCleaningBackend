@@ -1215,53 +1215,113 @@ namespace DreamCleaningBackend.Controllers
                 });
                 decimal total = totals.Total;
 
-                // Store booking data temporarily (will be used to create order after payment succeeds)
-                var sessionId = $"prepare_payment_{userId}_{DateTime.UtcNow.Ticks}";
-                _bookingDataService.StoreBookingData(sessionId, dto);
-
                 // When a gift card (or credits/points) fully covers the order, the payable total
                 // is below Stripe's minimum charge. Skip the PaymentIntent entirely — the frontend
                 // sees RequiresPayment=false, bypasses the card step, and confirms directly. The
                 // gift card is still drawn down server-side during order creation in confirm-payment.
                 var requiresPayment = total >= StripeMinimumChargeAmount;
-                Stripe.PaymentIntent paymentIntent = null;
 
-                if (requiresPayment)
+                // ── Duplicate-booking guard (2026-08-30) ──────────────────────────────────────
+                // This endpoint used to mint a fresh Ticks-based session id and a fresh
+                // PaymentIntent on EVERY call, so a customer who reached the payment step twice
+                // for one booking got two intents and could be charged on both. Identify the
+                // logical attempt and reuse it instead.
+                //
+                // The fingerprint is computed HERE, after the DTO has been server-normalised
+                // (gift-card draw clamped to the real balance, discounts server-resolved), and it
+                // includes the recomputed total — so an attempt that now prices differently is
+                // correctly treated as NEW rather than reusing an intent for the old amount.
+                //
+                // Scoped to a live session rather than to the booking content: once the session
+                // is consumed at confirm-payment, a genuine re-booking of the identical service
+                // mints a new session and a new intent, and is charged properly.
+                var fingerprint = BookingSessionFingerprint.Compute(dto, total);
+
+                string sessionId;
+                string paymentIntentId = null;
+                string paymentClientSecret = null;
+
+                // Find-or-create under a per-user lock: two genuinely concurrent prepares would
+                // otherwise both miss the lookup and both create an intent.
+                using (await _bookingDataService.AcquirePrepareLockAsync(userId, HttpContext.RequestAborted))
                 {
-                    // Create Stripe payment intent with sessionId in metadata
-                    var metadata = new Dictionary<string, string>
-                    {
-                        { "sessionId", sessionId },
-                        { "userId", userId.ToString() },
-                        { "type", "booking" }
-                    };
+                    var outstanding = _bookingDataService.FindOutstandingPreparedSession(userId, fingerprint);
+                    PreparedBookingSession session;
 
-                    // Card on file: attach the Stripe Customer whenever we can identify one, so
-                    // the frontend MAY confirm this intent with an already-saved card ("Pay with
-                    // card ending ####"). When the customer also ticked "save this card",
-                    // setup_future_usage stores the card they type for later explicit charges —
-                    // nothing is ever charged without a person clicking Pay/Charge. Best-effort:
-                    // if the customer profile can't be set up, the booking proceeds normally.
-                    string stripeCustomerId = null;
-                    var saveCard = dto.SaveCardForFutureUse;
-                    if (saveCard || !string.IsNullOrEmpty(user.StripeCustomerId))
+                    if (outstanding != null)
                     {
-                        try
+                        session = outstanding;
+                        sessionId = outstanding.SessionId;
+                        paymentIntentId = outstanding.PaymentIntentId;
+                        paymentClientSecret = outstanding.PaymentClientSecret;
+                        _logger.LogInformation(
+                            "Reusing outstanding prepare-payment session {SessionId} for user {UserId} (intent {PaymentIntentId})",
+                            sessionId, userId, paymentIntentId ?? "none yet");
+                    }
+                    else
+                    {
+                        sessionId = $"prepare_payment_{userId}_{DateTime.UtcNow.Ticks}";
+                        session = new PreparedBookingSession
                         {
-                            stripeCustomerId = await _stripeService.CreateOrGetCustomerAsync(user);
-                            await _context.SaveChangesAsync(); // persist a freshly created StripeCustomerId
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Card on file: could not create Stripe customer for user {UserId}; booking proceeds without card saving", userId);
-                            saveCard = false;
-                            stripeCustomerId = null;
-                        }
+                            SessionId = sessionId,
+                            UserId = userId,
+                            BookingData = dto,
+                            Fingerprint = fingerprint,
+                            Total = total
+                        };
+                        // Stored BEFORE the Stripe call, so a create that fails or times out
+                        // still leaves a session the retry can find and reuse the id of.
+                        _bookingDataService.StorePreparedSession(session);
                     }
 
-                    paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata,
-                        customerId: stripeCustomerId,
-                        saveCardForOffSession: saveCard && stripeCustomerId != null);
+                    if (requiresPayment && string.IsNullOrEmpty(paymentIntentId))
+                    {
+                        // Create Stripe payment intent with sessionId in metadata
+                        var metadata = new Dictionary<string, string>
+                        {
+                            { "sessionId", sessionId },
+                            { "userId", userId.ToString() },
+                            { "type", "booking" }
+                        };
+
+                        // Card on file: attach the Stripe Customer whenever we can identify one, so
+                        // the frontend MAY confirm this intent with an already-saved card ("Pay with
+                        // card ending ####"). When the customer also ticked "save this card",
+                        // setup_future_usage stores the card they type for later explicit charges —
+                        // nothing is ever charged without a person clicking Pay/Charge. Best-effort:
+                        // if the customer profile can't be set up, the booking proceeds normally.
+                        string stripeCustomerId = null;
+                        var saveCard = dto.SaveCardForFutureUse;
+                        if (saveCard || !string.IsNullOrEmpty(user.StripeCustomerId))
+                        {
+                            try
+                            {
+                                stripeCustomerId = await _stripeService.CreateOrGetCustomerAsync(user);
+                                await _context.SaveChangesAsync(); // persist a freshly created StripeCustomerId
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "Card on file: could not create Stripe customer for user {UserId}; booking proceeds without card saving", userId);
+                                saveCard = false;
+                                stripeCustomerId = null;
+                            }
+                        }
+
+                        // The session id doubles as the Stripe idempotency key: a retry of this
+                        // same attempt (including one where the response above was lost) returns
+                        // the intent Stripe already created instead of a second chargeable one.
+                        var paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata,
+                            customerId: stripeCustomerId,
+                            saveCardForOffSession: saveCard && stripeCustomerId != null,
+                            idempotencyKey: sessionId);
+
+                        paymentIntentId = paymentIntent?.Id;
+                        paymentClientSecret = paymentIntent?.ClientSecret;
+
+                        session.PaymentIntentId = paymentIntentId;
+                        session.PaymentClientSecret = paymentClientSecret;
+                        _bookingDataService.StorePreparedSession(session);
+                    }
                 }
 
                 // Guest auto-registration: in cookie-auth mode (production) the frontend
@@ -1281,8 +1341,8 @@ namespace DreamCleaningBackend.Controllers
                     Status = "Pending",
                     Total = total,
                     RequiresPayment = requiresPayment,
-                    PaymentIntentId = paymentIntent?.Id,
-                    PaymentClientSecret = paymentIntent?.ClientSecret,
+                    PaymentIntentId = paymentIntentId,
+                    PaymentClientSecret = paymentClientSecret,
                     SessionId = sessionId, // Return sessionId so frontend can use it in confirm-payment
                     // Guest booking: include auth token so frontend can authenticate before calling confirm-payment
                     GuestToken = guestAuth?.Token,
@@ -1593,12 +1653,42 @@ namespace DreamCleaningBackend.Controllers
                         // Card is already charged at this point (verified succeeded above). Mark it so the
                         // catch block can refund if order creation throws before the order is persisted.
                         chargedNewBookingPaymentIntentId = effectivePaymentIntentId;
+
+                        // One Stripe intent, one order (duplicate-booking fix, 2026-08-30). A
+                        // replayed or duplicated confirm for an intent that ALREADY produced an
+                        // order must return that order, not build a second one — and must not
+                        // fall through to the tail below, which would re-mark it paid and
+                        // re-consume the customer's loyalty discount, bubble points and reward
+                        // credits a second time. The unique index on Order.PaymentIntentId is
+                        // the backstop for the concurrent case this lookup can still lose.
+                        var existingOrderForIntent = await _context.Orders
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(o => o.PaymentIntentId == effectivePaymentIntentId);
+
+                        if (existingOrderForIntent != null)
+                        {
+                            _logger.LogWarning(
+                                "ConfirmPayment: payment intent {PaymentIntentId} already produced order {OrderId}; returning it instead of creating a duplicate.",
+                                effectivePaymentIntentId, existingOrderForIntent.Id);
+
+                            return Ok(new
+                            {
+                                success = true,
+                                message = "Payment completed successfully",
+                                orderId = existingOrderForIntent.Id,
+                                status = existingOrderForIntent.Status
+                            });
+                        }
                     }
 
                     // Now create the order using the booking data (reuse logic from CreateBooking).
                     // The gift card is drawn down here against its REAL balance, so order.Total below
                     // is authoritative regardless of what the client claimed.
-                    order = await CreateOrderFromBookingData(bookingDataDto, userId);
+                    // The intent id is stamped at INSERT time so the unique index can reject a
+                    // concurrent duplicate; the assignment further down then changes nothing.
+                    order = await CreateOrderFromBookingData(
+                        bookingDataDto, userId,
+                        hasPaymentIntent ? effectivePaymentIntentId : null);
                     newBookingOrderPersisted = true; // order row committed — refund net no longer applies
                     orderId = order.Id; // Update orderId for later use
 
@@ -2104,6 +2194,40 @@ namespace DreamCleaningBackend.Controllers
                 // order, and invite them to reach out so we can help complete the booking.
                 if (chargedNewBookingPaymentIntentId != null && !newBookingOrderPersisted)
                 {
+                    // ...unless an order for this intent DOES exist. With the unique index on
+                    // Order.PaymentIntentId in place, the way a concurrent duplicate confirm now
+                    // fails is that its insert is rejected — and the winner's order is the very
+                    // thing this charge paid for. Refunding here would hand the customer a free
+                    // cleaning. Only refund when the charge really did buy nothing.
+                    try
+                    {
+                        var orderForCharge = await _context.Orders
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(o => o.PaymentIntentId == chargedNewBookingPaymentIntentId);
+
+                        if (orderForCharge != null)
+                        {
+                            _logger.LogWarning(ex,
+                                "ConfirmPayment failed for payment intent {PaymentIntentId}, but order {OrderId} exists for it (concurrent duplicate confirm). Not refunding; returning the existing order.",
+                                chargedNewBookingPaymentIntentId, orderForCharge.Id);
+
+                            return Ok(new
+                            {
+                                success = true,
+                                message = "Payment completed successfully",
+                                orderId = orderForCharge.Id,
+                                status = orderForCharge.Status
+                            });
+                        }
+                    }
+                    catch (Exception lookupEx)
+                    {
+                        // Can't prove an order exists — fall through to the refund, which is the
+                        // safe direction: a wrongly refunded booking is recoverable, a silently
+                        // kept charge with no order is not.
+                        _logger.LogError(lookupEx, "ConfirmPayment: duplicate-order lookup failed for payment intent {PaymentIntentId}", chargedNewBookingPaymentIntentId);
+                    }
+
                     try
                     {
                         await _stripeService.CreateRefundAsync(chargedNewBookingPaymentIntentId);
@@ -2125,7 +2249,12 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        private async Task<Order> CreateOrderFromBookingData(CreateBookingDto dto, int userId)
+        /// <param name="paymentIntentId">The Stripe intent this order is being created for, or
+        /// null for a fully-covered booking that takes no charge. Passed so the row carries it
+        /// from the INSERT and the unique index on Order.PaymentIntentId can reject a concurrent
+        /// duplicate — stamping it afterwards would let both racers commit a row first.</param>
+        private async Task<Order> CreateOrderFromBookingData(CreateBookingDto dto, int userId,
+            string paymentIntentId = null)
         {
             // Create + persist the order through the shared creation service: pricing via
             // the shared calculator, loyalty stacking for the order owner, special-offer
@@ -2136,7 +2265,8 @@ namespace DreamCleaningBackend.Controllers
             // normalised before being stored. Passing false here keeps the persisted order derived
             // from the SAME decision that produced the Stripe charge; re-deciding it (by role, at
             // confirm time) could disagree with the amount already captured.
-            var order = await _bookingCreationService.CreateOrderAsync(dto, userId, allowCustomPricing: false);
+            var order = await _bookingCreationService.CreateOrderAsync(dto, userId, allowCustomPricing: false,
+                new BookingCreationOptions { PaymentIntentId = paymentIntentId });
 
             // Notify admins about new order
             await NotifyAdminsNewOrder(order.Id);

@@ -55,8 +55,12 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// <param name="saveCardForOffSession">Sets setup_future_usage=off_session so the card
         /// used for THIS payment is saved for later recurring charges — no separate card-entry
         /// step (the booking flow's auto-charge checkbox).</param>
+        /// <param name="idempotencyKey">Pass one wherever a repeated call is the SAME logical
+        /// payment attempt, so a retry reuses the intent Stripe already created instead of a
+        /// second chargeable one. The booking flow passes its prepare-session id.</param>
         Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string> metadata = null,
-            string receiptEmail = null, string customerId = null, bool saveCardForOffSession = false);
+            string receiptEmail = null, string customerId = null, bool saveCardForOffSession = false,
+            string idempotencyKey = null);
         Task<PaymentIntent> ConfirmPaymentIntentAsync(string paymentIntentId);
         Task<PaymentIntent> GetPaymentIntentAsync(string paymentIntentId);
         Task<PaymentIntent> CancelPaymentIntentAsync(string paymentIntentId);
