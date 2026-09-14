@@ -56,6 +56,16 @@ namespace DreamCleaningBackend.Services.Contracts
         public TermSnapshot Term { get; set; } = new();
         public PricingSnapshot Pricing { get; set; } = new();
         public AdvancedTermsSnapshot Advanced { get; set; } = new();
+
+        /// <summary>Exhibit A's recorded site facts - restroom counts, floor materials, glass locations.</summary>
+        public SiteDetailsSnapshot SiteDetails { get; set; } = new();
+
+        /// <summary>Exhibit B4 - approval, notice and on-call contacts for both Parties.</summary>
+        public OperationalContactsSnapshot Contacts { get; set; } = new();
+
+        /// <summary>Exhibit B3 - endorsements agreed beyond the Section 20 baseline.</summary>
+        public InsuranceEndorsementsSnapshot Insurance { get; set; } = new();
+
         public ScopeStructure Scope { get; set; } = new();
 
         /// <summary>
@@ -177,7 +187,47 @@ namespace DreamCleaningBackend.Services.Contracts
         /// </summary>
         public List<string> ServiceDays { get; set; } = new();
 
+        /// <summary>
+        /// LEGACY single start time. The v2.0 agreement quotes an arrival WINDOW instead
+        /// (Section 5(c), "8:30 AM to 9:30 AM"), because a crew that is told one minute is late
+        /// the moment traffic moves and a failed-access charge hangs on whether Contractor
+        /// arrived inside the agreed window at all.
+        ///
+        /// Kept because a contract drafted before the window existed carries its time here and
+        /// nowhere else; <see cref="ResolveArrivalWindow"/> is the one place the two are
+        /// reconciled, and nothing reads either field directly.
+        /// </summary>
         public string ServiceTime { get; set; } = "9:00 AM";
+
+        /// <summary>Opening of the agreed arrival window - Section 5(c) and Exhibit A/B.</summary>
+        public string ArrivalWindowStart { get; set; } = "8:30 AM";
+
+        /// <summary>
+        /// Close of the agreed arrival window. Blank collapses the window back to a single start
+        /// time rather than rendering a dangling "8:30 AM to".
+        /// </summary>
+        public string ArrivalWindowEnd { get; set; } = "9:30 AM";
+
+        /// <summary>
+        /// The clock every time in the document refers to. Stated because Section 32 makes the
+        /// twenty-four-hour cancellation calculation turn on it, and "9:30 AM" with no zone is
+        /// ambiguous the first time a client emails from another one.
+        /// </summary>
+        public string TimeZoneLabel { get; set; } = "local New York time";
+
+        /// <summary>
+        /// Section 5(c) / Exhibit A: a completion deadline, where the Parties agreed one. Blank
+        /// renders "None" - an unanswered completion time and an agreed absence of one are
+        /// different facts, and the draft asks for the second explicitly.
+        /// </summary>
+        public string? CompletionTime { get; set; }
+
+        /// <summary>
+        /// What a "calendar week" means for the weekly commitment (Section 5(a)). Stored rather
+        /// than assumed because a makeup visit is assigned to the week its original visit fell in,
+        /// so where the week boundary sits decides whether a Monday makeup settles last week.
+        /// </summary>
+        public string WeekDefinition { get; set; } = "Monday through Sunday";
 
         /// <summary>False pins the day/time; true keeps the "not permanently fixed" language.</summary>
         public bool FlexibleScheduling { get; set; } = true;
@@ -215,6 +265,141 @@ namespace DreamCleaningBackend.Services.Contracts
         /// <summary>The same, as display names - what the agreement and the admin panel print.</summary>
         public List<string> ResolveServiceDayNames() =>
             ResolveServiceDays().Select(d => d.ToString()).ToList();
+
+        /// <summary>
+        /// The arrival window as the agreement states it: "8:30 AM to 9:30 AM", or a bare start
+        /// time when no end was given.
+        ///
+        /// A METHOD, not a property, for the same reason <see cref="ResolveServiceDays"/> is: a
+        /// getter would be serialised into every frozen snapshot, leaving a third copy of a fact
+        /// already stored twice.
+        ///
+        /// Falls back to <see cref="ServiceTime"/> when neither window bound was recorded, so a
+        /// contract drafted before the window existed keeps rendering the time it was drafted
+        /// with instead of an empty phrase in the middle of Section 5(c).
+        /// </summary>
+        public string ResolveArrivalWindow()
+        {
+            var start = (ArrivalWindowStart ?? string.Empty).Trim();
+            var end = (ArrivalWindowEnd ?? string.Empty).Trim();
+
+            if (start.Length == 0 && end.Length == 0) return (ServiceTime ?? string.Empty).Trim();
+            if (start.Length == 0) return end;
+            if (end.Length == 0 || string.Equals(start, end, StringComparison.OrdinalIgnoreCase)) return start;
+            return $"{start} to {end}";
+        }
+    }
+
+    /// <summary>
+    /// The site facts Exhibit A asks the Parties to record before the first recurring visit -
+    /// restroom counts, floor materials, which glass is included, where the waste goes.
+    ///
+    /// These are the "[COUNTS]" / "[LOCATIONS]" blanks of the drafted agreement. They are stored
+    /// as free text rather than as structured counts on purpose: they describe a building, and
+    /// every attempt to enumerate what a commercial kitchen contains produces a form that cannot
+    /// express the next one. What matters legally is that the description in the executed document
+    /// is the one both sides agreed to, which the frozen snapshot guarantees whatever its shape.
+    ///
+    /// Absent from any snapshot written before this existed, where every field deserialises to
+    /// null and renders as a ruled blank - a visible unanswered question rather than a silent
+    /// assertion that the premises has no employee restroom.
+    /// </summary>
+    public class SiteDetailsSnapshot
+    {
+        /// <summary>e.g. "5,000 square feet". Free text - "approximately" is the point.</summary>
+        public string? ApproximateSquareFootage { get; set; }
+
+        public string? CustomerRestroomCounts { get; set; }
+        public string? EmployeeRestroomCounts { get; set; }
+        public string? FloorMaterials { get; set; }
+        public string? KitchenEquipmentAndSurfaces { get; set; }
+        public string? TouchpointLocations { get; set; }
+        public string? InteriorGlassLocations { get; set; }
+
+        // NO SOAP FIELDS. Hand soap and its dispensers are outside the Services entirely -
+        // Contractor never supplies, replenishes, repairs or replaces them (Exhibit A, A8(a)), so
+        // there is nothing about them for the Parties to record.
+
+        /// <summary>
+        /// Exhibit A: any included food-contact or dining-table sanitizing task, its surface,
+        /// frequency and the required wash/rinse/sanitize procedure.
+        ///
+        /// Blank means NONE, and that is load-bearing rather than a formatting nicety: Section
+        /// 25(e) and A3(d) exclude food-contact sanitizing "except a specifically identified task
+        /// expressly included in Exhibit A", so an unfilled box is the agreement saying Client
+        /// keeps that responsibility.
+        /// </summary>
+        public string? FoodContactSanitizing { get; set; }
+
+        public string? AccessMethodReference { get; set; }
+        public string? EquipmentRestrictions { get; set; }
+        public string? WasteReceptacleLocations { get; set; }
+
+        /// <summary>Legal name of the food-service permit holder - not necessarily the Client.</summary>
+        public string? FoodServicePermitHolder { get; set; }
+
+        /// <summary>Landlord, franchisor or brand requirements affecting access, products or insurance.</summary>
+        public string? SiteRequirements { get; set; }
+
+        public string? BaselineWalkthroughRecord { get; set; }
+        public string? InitialWorkChangeOrder { get; set; }
+    }
+
+    /// <summary>
+    /// Exhibit B4 - who may approve a Change Order and who answers the phone on a Sunday morning.
+    ///
+    /// Deliberately separate from the SIGNER snapshots. A signer is the person who executes the
+    /// agreement; an operational contact is whoever the crew calls when the door is locked, and on
+    /// most commercial accounts those are different people. Section 14 hangs a failed-access charge
+    /// on Contractor having attempted to reach the on-call contact, so the document has to name
+    /// one.
+    ///
+    /// Every field is optional and renders as a ruled blank when unset, except the approval
+    /// emails, which the drafted agreement marks optional outright and which render "None".
+    /// </summary>
+    public class OperationalContactsSnapshot
+    {
+        public string? ContractorApprovalEmail { get; set; }
+        public string? ContractorOperationalEmail { get; set; }
+        public string? ContractorSupervisorName { get; set; }
+        public string? ContractorSupervisorPhone { get; set; }
+        public string? ContractorBackupContact { get; set; }
+
+        public string? ClientApprovalEmail { get; set; }
+
+        /// <summary>
+        /// Where FORMAL notice is served on Client. Kept apart from the client's principal
+        /// address and from the service location: Section 32 serves breach and termination
+        /// notices here, and a business that is registered at an accountant's office, served at a
+        /// restaurant and reads its mail at a third address is the ordinary case, not the corner
+        /// one. Blank falls back to the client's principal address.
+        /// </summary>
+        public string? ClientNoticeMailingAddress { get; set; }
+
+        public string? ClientOperationalEmail { get; set; }
+        public string? ClientOnCallName { get; set; }
+        public string? ClientOnCallPhone { get; set; }
+        public string? ClientBackupContact { get; set; }
+    }
+
+    /// <summary>
+    /// Exhibit B3 - endorsements agreed beyond the baseline coverage in Section 20.
+    ///
+    /// Three separate fields rather than one note, because Section 20(c) says a certificate alone
+    /// does not amend a policy: naming the endorsement, identifying the actual insurer/form/edition
+    /// that issues it, and agreeing who pays for it are three different commitments, and a client
+    /// who is promised the first without the second has been promised nothing.
+    /// </summary>
+    public class InsuranceEndorsementsSnapshot
+    {
+        /// <summary>Blank renders "None" - the drafted agreement asks for "[ENDORSEMENTS OR NONE]".</summary>
+        public string? AgreedEndorsements { get; set; }
+
+        /// <summary>Insurer, policy, endorsement form and edition, protected entity, applicable work.</summary>
+        public string? EndorsementDetails { get; set; }
+
+        /// <summary>Agreed additional premium or price adjustment. Blank renders "None".</summary>
+        public string? AdditionalPremium { get; set; }
     }
 
     /// <summary>
@@ -249,6 +434,34 @@ namespace DreamCleaningBackend.Services.Contracts
         public int MinimumCommitmentMonths { get; set; } = 6;
         public int TerminationNoticeDays { get; set; } = 60;
 
+        /// <summary>
+        /// The first RECURRING service date. Distinct from the Effective Date, and Section 3 hangs
+        /// the whole term on it: the Initial Term and the Minimum Commitment Period both run from
+        /// here, not from signature. An agreement signed in March for a May start commits six
+        /// months of cleaning, not four.
+        ///
+        /// Null leaves Exhibit B's date row a ruled blank rather than guessing the effective date,
+        /// because guessing would silently shorten the commitment the client is being asked to make.
+        /// </summary>
+        public DateTime? ServiceCommencementDate { get; set; }
+
+        /// <summary>
+        /// End of the Minimum Commitment Period - the first date a termination for convenience may
+        /// take effect. Derived from <see cref="ServiceCommencementDate"/> plus
+        /// <see cref="MinimumCommitmentMonths"/>, never stored: two dates that are supposed to be
+        /// the same arithmetic eventually disagree, and this one is quoted in Section 3(b), Section
+        /// 4(a) and Exhibit B1.
+        /// </summary>
+        public DateTime? ResolveMinimumCommitmentEndDate() =>
+            ServiceCommencementDate?.AddMonths(Math.Max(0, MinimumCommitmentMonths));
+
+        /// <summary>
+        /// Last day of the Initial Term: the day immediately preceding the commencement date's
+        /// N-month anniversary, which is what Exhibit B1's wording describes.
+        /// </summary>
+        public DateTime? ResolveInitialTermEndDate() =>
+            ServiceCommencementDate?.AddMonths(Math.Max(0, InitialTermMonths)).AddDays(-1);
+
         /// <summary>Phrase dropped into Section 3(d), e.g. "month-to-month".</summary>
         public string RenewalType { get; set; } = "month-to-month";
 
@@ -279,16 +492,61 @@ namespace DreamCleaningBackend.Services.Contracts
         public decimal PreTaxPrice { get; set; }
         public decimal SalesTaxAmount { get; set; }
         public decimal TotalPrice { get; set; }
+        /// <summary>
+        /// Cap on a short-notice cancellation charge, as a percentage of the PRE-TAX fee.
+        ///
+        /// The basis changed with the v2.0 agreement (Section 15(b), Exhibit B2(d)): it is
+        /// "fifty percent of the pre-tax visit fee", not of the tax-inclusive total. Sales tax is
+        /// charged on a taxable supply, and a cancelled visit is not one - so building the cap on
+        /// the tax-inclusive figure would quietly bill the client half a tax that was never owed.
+        /// See <c>ContractPricingCalculator</c>.
+        /// </summary>
         public decimal CancellationPercent { get; set; } = 50m;
         public decimal CancellationAmount { get; set; }
         public decimal RemainingBalance { get; set; }
+
+        /// <summary>
+        /// Section 14(b): a failed-access charge is capped at that visit's PRE-TAX service fee,
+        /// plus any tax legally applicable to the charge. The pre-tax figure is what the agreement
+        /// quotes, so this holds the pre-tax figure - it is a CAP on documented net loss, not an
+        /// automatic charge, which is why it is never the tax-inclusive total.
+        /// </summary>
         public decimal LockoutFee { get; set; }
+
+        /// <summary>
+        /// Section 29(b): the aggregate liability cap is a MULTIPLE of the recurring pre-tax
+        /// per-visit fee - thirteen in the drafted agreement.
+        ///
+        /// It replaced a lookback in months, and the difference matters: a months-based cap moves
+        /// every time the visit frequency or the billing cadence changes, so the ceiling a client
+        /// agreed to would silently drift. A multiple of a stated per-visit fee is a number both
+        /// sides can compute from the face of the document.
+        /// </summary>
+        public int LiabilityCapMultiple { get; set; } = 13;
+
+        /// <summary>Server-derived: <see cref="LiabilityCapMultiple"/> x <see cref="PreTaxPrice"/>.</summary>
+        public decimal LiabilityCapAmount { get; set; }
 
         public string InvoiceTiming { get; set; } =
             "In advance of each scheduled service visit, generally several days before service.";
         public int PaymentDeadlineHours { get; set; } = 48;
-        public string PaymentMethod { get; set; } = "ACH or bank-to-bank transfer";
-        public decimal LateChargePercent { get; set; } = 1.5m;
+        public string PaymentMethod { get; set; } = "ACH or bank transfer using verified instructions";
+
+        /// <summary>
+        /// Simple monthly interest on an overdue undisputed amount. One percent in the v2.0
+        /// agreement (Section 11(f)), down from 1.5%.
+        /// </summary>
+        public decimal LateChargePercent { get; set; } = 1m;
+
+        /// <summary>
+        /// The same rate stated annually, because Section 11(f) quotes both - "one percent per
+        /// month, calculated daily at twelve percent per year".
+        ///
+        /// DERIVED, never typed: quoting two rates that are supposed to describe one charge is how
+        /// a document ends up contradicting itself, and a usury argument turns on exactly that
+        /// figure.
+        /// </summary>
+        public decimal LateChargeAnnualPercent { get; set; }
 
         /// <summary>
         /// The returned/failed payment fee. DEFAULTS TO ZERO SINCE 2026-09, and the field is no
@@ -312,29 +570,139 @@ namespace DreamCleaningBackend.Services.Contracts
     /// </summary>
     public class AdvancedTermsSnapshot
     {
+        // ── Scheduling, cancellation and makeup ────────────────────────────────
         public int TimelyRescheduleHours { get; set; } = 24;
+
+        /// <summary>
+        /// Section 14(c) / 15: the window inside which a missed visit may be made up before the
+        /// charge for it becomes final. One number, used by every clause that talks about a
+        /// makeup, so the failed-access path and the cancellation path can never offer the client
+        /// two different deadlines.
+        /// </summary>
+        public int MakeupWindowDays { get; set; } = 14;
+
+        /// <summary>Section 14(a): how long a crew waits at a locked door before it is failed access.</summary>
+        public int LockoutWaitMinutes { get; set; } = 20;
+
+        /// <summary>
+        /// Section 15(f): Client-attributable missed visits, in a rolling window of
+        /// <see cref="MissedVisitWindowWeeks"/> weeks, that may establish a material failure to
+        /// maintain the agreed frequency.
+        /// </summary>
+        public int MissedVisitThreshold { get; set; } = 3;
+        public int MissedVisitWindowWeeks { get; set; } = 8;
+
+        /// <summary>Section 15(f): days Client has to supply a workable service plan after warning.</summary>
+        public int ServicePlanDays { get; set; } = 7;
+
+        // ── Termination and cure ───────────────────────────────────────────────
         public int CurePeriodDays { get; set; } = 15;
-        public int PastDueDays { get; set; } = 30;
+
+        /// <summary>Section 4(c): days an undisputed amount may stand after written demand.</summary>
+        public int PastDueDays { get; set; } = 15;
+
+        /// <summary>Section 4(d) / 15: window to return unearned prepayments and unapplied credits.</summary>
+        public int CreditReturnDays { get; set; } = 30;
+
+        /// <summary>Section 30(b): consecutive days of prevented performance that permit termination.</summary>
+        public int ForceMajeureDays { get; set; } = 30;
+
+        // ── Invoicing and money ────────────────────────────────────────────────
+        /// <summary>Section 11(a): how far ahead of a visit the invoice is ordinarily issued.</summary>
+        public int InvoiceLeadDays { get; set; } = 7;
+
+        /// <summary>
+        /// Section 11(a): an invoice delivered fewer than this many days before the payment
+        /// deadline is a LATE invoice, and buys Client
+        /// <see cref="LateInvoiceGraceBusinessDays"/> business days from receipt instead.
+        ///
+        /// The pair exists so a late invoice cannot manufacture a cancellation charge: without it,
+        /// Contractor could invoice inside the payment window and then charge for the visit the
+        /// client had no chance to pay for.
+        /// </summary>
+        public int LateInvoiceThresholdDays { get; set; } = 5;
+        public int LateInvoiceGraceBusinessDays { get; set; } = 3;
+
+        /// <summary>Section 11(f): days an earned undisputed amount may stand before interest runs.</summary>
+        public int InterestGraceDays { get; set; } = 5;
+
+        // ── Disputes, damage and quality ───────────────────────────────────────
+        /// <summary>Section 12: business days to raise a dispute apparent from the invoice.</summary>
         public int BillingDisputeDays { get; set; } = 10;
-        public int QualityComplaintHours { get; set; } = 24;
-        public int VisibleDamageHours { get; set; } = 48;
-        public int LatentDamageDays { get; set; } = 30;
+
+        /// <summary>Section 12: business days the Parties have to exchange information and resolve.</summary>
+        public int DisputeResponseBusinessDays { get; set; } = 10;
+
+        /// <summary>Section 12: business days to pay an amount determined payable after resolution.</summary>
+        public int ResolutionPaymentBusinessDays { get; set; } = 5;
+
+        /// <summary>Section 21: business days after discovery to notify alleged damage.</summary>
+        public int DamageNoticeBusinessDays { get; set; } = 5;
+
+        /// <summary>Section 22(a): hours to identify a material failure to complete an included task.</summary>
+        public int QualityComplaintHours { get; set; } = 48;
+
+        /// <summary>Section 22(b): business days Contractor has to re-perform a deficient task.</summary>
+        public int QualityCorrectionBusinessDays { get; set; } = 2;
+
+        /// <summary>Section 15(e): business days to issue a refund Client has requested.</summary>
+        public int RefundBusinessDays { get; set; } = 10;
+
+        // ── Access ─────────────────────────────────────────────────────────────
+        /// <summary>Section 13(b): business days to return keys and relinquish credentials.</summary>
+        public int KeyReturnBusinessDays { get; set; } = 2;
+
+        // ── Confidentiality ────────────────────────────────────────────────────
         public int ConfidentialityYears { get; set; } = 2;
-        public int NonSolicitMonths { get; set; } = 12;
-        public decimal NonHireDamages { get; set; } = 5000m;
+
+        // ── Insurance ──────────────────────────────────────────────────────────
         public decimal InsurancePerOccurrence { get; set; } = 1000000m;
         public decimal InsuranceAggregate { get; set; } = 2000000m;
 
         /// <summary>Jurisdiction whose workers' comp / disability rules Section 20(b) names.</summary>
         public string InsuranceJurisdiction { get; set; } = "New York";
 
-        public int LiabilityCapLookbackMonths { get; set; } = 3;
-        public int DisputeDiscussionDays { get; set; } = 30;
+        // ── Compliance ─────────────────────────────────────────────────────────
+        /// <summary>
+        /// The layers of law Section 26(a) names - "federal, New York State, and New York City".
+        ///
+        /// Stored as a phrase rather than composed from the governing-law state, because the third
+        /// layer is a CITY and no rule derives it: a Brooklyn premises is governed by New York City
+        /// law, a Yonkers one is not, and the service location's city field says "Brooklyn" either
+        /// way. A phrase an admin can read and correct beats a derivation that is quietly wrong.
+        /// </summary>
+        public string ComplianceJurisdictions { get; set; } = "federal, New York State, and New York City";
 
-        /// <summary>Section 15(b-1)/(d): window to return an unapplied credit after the end.</summary>
-        public int CreditReturnDays { get; set; } = 30;
+        // ── Pricing review ─────────────────────────────────────────────────────
+        /// <summary>Section 8(c): notice Contractor must give to request a prospective price review.</summary>
+        public int PriceReviewNoticeDays { get; set; } = 45;
+
+        // ── Dispute resolution ─────────────────────────────────────────────────
+        /// <summary>Section 34(a): days for senior representatives to confer after a dispute notice.</summary>
+        public int DisputeDiscussionDays { get; set; } = 10;
+
+        /// <summary>Section 34(a): days after which either Party may request nonbinding mediation.</summary>
+        public int MediationRequestDays { get; set; } = 15;
+
+        /// <summary>Section 34(a): days to select a mediator once mediation is requested.</summary>
+        public int MediatorSelectionDays { get; set; } = 10;
+
+        /// <summary>Section 34(a): days after the original dispute notice before suit may be filed.</summary>
+        public int SuitAfterDays { get; set; } = 30;
+
+        /// <summary>Section 34(c): business days to pay after demand before collection may begin.</summary>
+        public int CollectionDemandBusinessDays { get; set; } = 5;
 
         /// <summary>Where Section 34(a) mediation sits. Usually the same as the venue county.</summary>
         public string MediationVenue { get; set; } = "Kings County, New York";
+
+        /// <summary>
+        /// The federal court Section 33 names, for the case where federal subject-matter
+        /// jurisdiction independently exists. Stored rather than hardcoded because it follows the
+        /// venue county, and the two moving apart is a venue clause that names a court with no
+        /// jurisdiction over the parties.
+        /// </summary>
+        public string FederalVenue { get; set; } =
+            "the United States District Court for the Eastern District of New York sitting in Brooklyn";
     }
 }

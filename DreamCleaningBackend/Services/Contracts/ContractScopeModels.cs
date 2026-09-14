@@ -89,6 +89,19 @@ namespace DreamCleaningBackend.Services.Contracts
         public string Label { get; set; } = string.Empty;
 
         /// <summary>
+        /// The right-hand cell when this item is rendered as an Exhibit A TABLE row
+        /// (<c>{{SCOPE_TABLE:key}}</c>): the tasks and limits that apply to the area in
+        /// <see cref="Label"/>.
+        ///
+        /// Null on every ordinary checklist item, which is why the table is a separate token
+        /// rather than a flag on the group - an inline <c>{{SCOPE:key}}</c> joins labels into a
+        /// sentence fragment and has nowhere to put a paragraph. Absent from every snapshot
+        /// written before the area/task table existed, where it deserialises to null and the row
+        /// renders with an empty right cell rather than throwing.
+        /// </summary>
+        public string? Detail { get; set; }
+
+        /// <summary>
         /// Whether this row is ticked. On a MASTER template it is the default the admin sees
         /// pre-selected when they pick the business type; on a CONTRACT it is the admin's own
         /// choice, and an unselected item is not written into the document at all.

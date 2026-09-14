@@ -71,16 +71,19 @@ namespace DreamCleaningBackend.Services.Contracts
         }
 
         /// <summary>
-        /// Makes sure the CURRENT master agreement version exists and is the default a new
-        /// contract starts from.
+        /// Makes sure the CURRENT master agreement version exists, is the default a new contract
+        /// starts from, and is the only agreement version on offer.
         ///
-        /// ADDITIVE ONLY. An existing template row is never rewritten, because it is admin-editable
-        /// and because every version generated from it froze that exact body - a "helpful" upgrade
-        /// in place would discard a SuperAdmin's wording with no trace and leave the picker
-        /// claiming a version whose text had changed underneath it. So a new agreement version is
-        /// a NEW ROW, marked default, with the previous one left active and still selectable.
+        /// INSERTS, NEVER REWRITES. An existing template row is admin-editable and every version
+        /// generated from it froze that exact body, so an "upgrade" in place would discard a
+        /// SuperAdmin's wording with no trace and leave the picker claiming a version whose text
+        /// had changed underneath it. A new agreement version is therefore a NEW ROW.
         ///
-        /// The default flag moves; nothing else does.
+        /// SUPERSEDED VERSIONS ARE DEACTIVATED, NOT DELETED. v1.0 and v1.1 were the pre-review
+        /// wording; leaving superseded legal text selectable is an invitation to issue it by
+        /// accident. Deactivating takes them out of the picker while keeping the row a stored
+        /// snapshot or an audit entry might still point at - a deleted row would turn a historical
+        /// reference into a dangling id for no gain.
         /// </summary>
         private async Task SeedContractTemplateAsync()
         {
@@ -88,24 +91,63 @@ namespace DreamCleaningBackend.Services.Contracts
 
             var current = templates.FirstOrDefault(t =>
                 t.Name == ContractTemplateSeed.TemplateName
-                && t.Version == ContractTemplateSeed.CurrentTemplateVersion);
+                && t.Version == ContractTemplateSeed.TemplateVersion);
 
             if (current == null)
             {
                 current = new ContractTemplate
                 {
                     Name = ContractTemplateSeed.TemplateName,
-                    Version = ContractTemplateSeed.CurrentTemplateVersion,
-                    Description = ContractTemplateSeed.CurrentTemplateDescription,
-                    BodyText = ContractTemplateSeed.CurrentBodyText,
+                    Version = ContractTemplateSeed.TemplateVersion,
+                    Description = ContractTemplateSeed.TemplateDescription,
+                    BodyText = ContractTemplateSeed.BodyText,
                     IsActive = true
                 };
                 _context.ContractTemplates.Add(current);
                 templates.Add(current);
 
                 _logger.LogInformation(
-                    "Seeded master service agreement template v{Version}. Existing versions were left untouched.",
-                    ContractTemplateSeed.CurrentTemplateVersion);
+                    "Seeded master service agreement template v{Version}.",
+                    ContractTemplateSeed.TemplateVersion);
+            }
+            else if (!string.Equals(current.BodyText, ContractTemplateSeed.BodyText, StringComparison.Ordinal))
+            {
+                // THE SEED FILE AND THE DATABASE DISAGREE AT THE SAME VERSION, and the database
+                // wins - this method inserts and never rewrites, so an admin's edit to the master
+                // body survives every restart. That is the intended behaviour and it is also the
+                // trap: editing BodyText without moving TemplateVersion changes NOTHING anywhere,
+                // silently, and the seed file then describes a document the business does not
+                // issue. That is exactly how a corrected body sat in source control while every
+                // contract still promised hand soap and printed its signature block above the
+                // exhibits. The fix is always to raise ContractTemplateSeed.TemplateVersion.
+                _logger.LogWarning(
+                    "Master service agreement template v{Version} in the database does not match "
+                    + "ContractTemplateSeed.BodyText. The STORED body is what contracts render, so "
+                    + "the seed edit has not been applied. If the seed is the correction, raise "
+                    + "ContractTemplateSeed.TemplateVersion so it is inserted as a new version.",
+                    ContractTemplateSeed.TemplateVersion);
+            }
+
+            // Retire the pre-review bodies. Matched on VERSION rather than on "anything that is
+            // not current", so a template an admin authored themselves is left alone.
+            var retired = templates
+                .Where(t => t.Id != current.Id
+                            && t.IsActive
+                            && t.Name == ContractTemplateSeed.TemplateName
+                            && ContractTemplateSeed.SupersededVersions.Contains(t.Version))
+                .ToList();
+
+            foreach (var template in retired)
+            {
+                template.IsActive = false;
+                template.UpdatedAt = DateTime.UtcNow;
+            }
+
+            if (retired.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Retired {Count} superseded agreement template version(s): {Versions}.",
+                    retired.Count, string.Join(", ", retired.Select(t => t.Version)));
             }
 
             // Exactly one default. Assigned every run so a database seeded before the flag existed
@@ -119,34 +161,161 @@ namespace DreamCleaningBackend.Services.Contracts
             await _context.SaveChangesAsync();
         }
 
+        /// <summary>
+        /// Inserts any missing business type, and tops up an existing one that predates the
+        /// Exhibit A area/task table.
+        ///
+        /// THE TOP-UP IS THE ONE THING THIS SEEDER CHANGES ON AN EXISTING ROW, and it is strictly
+        /// additive: it appends the <c>area-tasks</c> group when the template has none, and never
+        /// touches a group that is already there. The reason it has to exist at all is that
+        /// <c>{{SCOPE_TABLE:area-tasks}}</c> is referenced by the agreement body, so a template
+        /// seeded before the table existed would render Exhibit A's grid empty on every contract
+        /// - with nothing on screen to explain why, because the admin never removed anything.
+        ///
+        /// An admin who deliberately deletes the group gets it back on the next restart. That is
+        /// the accepted cost of the alternative being a silently empty exhibit, and deleting the
+        /// group is not how a type opts out of the table - archiving its items is.
+        /// </summary>
         private async Task SeedScopeTemplatesAsync()
         {
-            var existing = await _context.ScopeTemplates
-                .Select(t => t.Name)
-                .ToListAsync();
+            var existing = await _context.ScopeTemplates.ToListAsync();
+            var seeds = ContractScopeTemplateSeed.All();
 
             var added = 0;
-            foreach (var seed in ContractScopeTemplateSeed.All())
-            {
-                if (existing.Contains(seed.Name, StringComparer.OrdinalIgnoreCase)) continue;
+            var toppedUp = 0;
+            var desoaped = 0;
 
-                _context.ScopeTemplates.Add(new ScopeTemplate
+            foreach (var seed in seeds)
+            {
+                var row = existing.FirstOrDefault(t =>
+                    string.Equals(t.Name, seed.Name, StringComparison.OrdinalIgnoreCase));
+
+                if (row == null)
                 {
-                    Name = seed.Name,
-                    PremisesType = seed.PremisesType,
-                    AllowsCustomRows = seed.AllowsCustomRows,
-                    SortOrder = seed.SortOrder,
-                    StructureJson = seed.Structure.ToJson(),
-                    IsActive = true
-                });
-                added++;
+                    _context.ScopeTemplates.Add(new ScopeTemplate
+                    {
+                        Name = seed.Name,
+                        PremisesType = seed.PremisesType,
+                        AllowsCustomRows = seed.AllowsCustomRows,
+                        SortOrder = seed.SortOrder,
+                        StructureJson = seed.Structure.ToJson(),
+                        IsActive = true
+                    });
+                    added++;
+                    continue;
+                }
+
+                var structure = ScopeStructure.Parse(row.StructureJson);
+                var changed = false;
+
+                var hasTable = structure.Groups.Any(g => string.Equals(
+                    g.Key, ContractScopeTemplateSeed.AreaTasksKey, StringComparison.OrdinalIgnoreCase));
+
+                if (!hasTable)
+                {
+                    var seededTable = seed.Structure.Groups.FirstOrDefault(g => string.Equals(
+                        g.Key, ContractScopeTemplateSeed.AreaTasksKey, StringComparison.OrdinalIgnoreCase));
+
+                    if (seededTable != null)
+                    {
+                        // First, so Exhibit A's grid opens the scope list the way the agreement reads it.
+                        structure.Groups.Insert(0, seededTable);
+                        toppedUp++;
+                        changed = true;
+                    }
+                }
+
+                if (RepairSoapWording(row.Name, structure, seed.Structure))
+                {
+                    desoaped++;
+                    changed = true;
+                }
+
+                if (!changed) continue;
+
+                row.StructureJson = structure.ToJson();
+                row.UpdatedAt = DateTime.UtcNow;
             }
 
-            if (added > 0)
+            // A business type an admin created themselves has no seeded counterpart, so it never
+            // reaches the loop above. It can still be carrying soap wording, and the owner's rule
+            // is about the document, not about who typed the row - so every stored template is
+            // checked, not only the seeded ones.
+            foreach (var row in existing.Where(r =>
+                         !seeds.Any(s => string.Equals(s.Name, r.Name, StringComparison.OrdinalIgnoreCase))))
+            {
+                var structure = ScopeStructure.Parse(row.StructureJson);
+                if (!RepairSoapWording(row.Name, structure, null)) continue;
+
+                row.StructureJson = structure.ToJson();
+                row.UpdatedAt = DateTime.UtcNow;
+                desoaped++;
+            }
+
+            if (added > 0 || toppedUp > 0 || desoaped > 0)
             {
                 await _context.SaveChangesAsync();
-                _logger.LogInformation("Seeded {Count} contract scope templates.", added);
+                _logger.LogInformation(
+                    "Contract scope templates: {Added} seeded, {ToppedUp} given the Exhibit A "
+                    + "area/task table, {Desoaped} repaired to drop hand-soap wording.",
+                    added, toppedUp, desoaped);
             }
         }
+
+        /// <summary>
+        /// Takes hand soap out of a STORED scope checklist, in place.
+        ///
+        /// HAND SOAP IS OUT OF THE AGREEMENT ENTIRELY (owner's rule) - Contractor does not supply,
+        /// replenish, repair or replace it, now or in the future. Removing it from the agreement
+        /// body was only half the job: Exhibit A's area/task grid and the restroom checklist are
+        /// SCOPE DATA, seeded into a row that this service inserts once and then never rewrites.
+        /// A database seeded before the rule therefore kept printing "refill identified soap
+        /// dispensers" inside the exhibit, on a document whose Section A8 says the opposite - and
+        /// a contract that contradicts itself about who buys the soap is worse than one that never
+        /// mentioned it.
+        ///
+        /// It is a REPAIR, not a rewrite: only an item that actually mentions soap is touched, and
+        /// it is replaced with the seeded item of the same group and label - never with prose this
+        /// method composed. An item with no seeded counterpart (an admin-authored row, or one whose
+        /// label has been edited) is LOGGED rather than reworded, because guessing which half of
+        /// somebody's sentence to delete is how agreed scope goes missing without anyone noticing.
+        /// </summary>
+        private bool RepairSoapWording(string templateName, ScopeStructure stored, ScopeStructure? seeded)
+        {
+            var repaired = false;
+
+            foreach (var group in stored.Groups)
+            {
+                var seededGroup = seeded?.Groups.FirstOrDefault(g =>
+                    string.Equals(g.Key, group.Key, StringComparison.OrdinalIgnoreCase));
+
+                foreach (var item in group.Items)
+                {
+                    if (!MentionsSoap(item.Label) && !MentionsSoap(item.Detail)) continue;
+
+                    var seededItem = seededGroup?.Items.FirstOrDefault(i =>
+                        string.Equals(i.Label?.Trim(), item.Label?.Trim(), StringComparison.OrdinalIgnoreCase));
+
+                    if (seededItem == null || MentionsSoap(seededItem.Label) || MentionsSoap(seededItem.Detail))
+                    {
+                        _logger.LogWarning(
+                            "Scope template \"{Template}\", group \"{Group}\": the item \"{Item}\" mentions "
+                            + "hand soap, which the agreement excludes in A8. There is no seeded wording to "
+                            + "restore it from, so it was left alone - edit it in Commercial > Business Types.",
+                            templateName, group.Key, item.Label);
+                        continue;
+                    }
+
+                    item.Label = seededItem.Label;
+                    item.Detail = seededItem.Detail;
+                    repaired = true;
+                }
+            }
+
+            return repaired;
+        }
+
+        private static bool MentionsSoap(string? text) =>
+            !string.IsNullOrEmpty(text) && text.Contains("soap", StringComparison.OrdinalIgnoreCase);
     }
 }

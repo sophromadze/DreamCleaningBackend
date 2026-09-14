@@ -10,6 +10,10 @@ namespace DreamCleaningBackend.Services.Contracts
     ///
     /// Rounding is half-up (<see cref="MidpointRounding.AwayFromZero"/>), matching the rest of
     /// the money math in this codebase.
+    ///
+    /// THE CANCELLATION, LOCKOUT AND LIABILITY FIGURES ARE BUILT ON THE PRE-TAX FEE. That is the
+    /// basis the drafted agreement states, and it is the one that survives being read out loud:
+    /// tax attaches to a supply, and a visit that did not happen is not one.
     /// </summary>
     public static class ContractPricingCalculator
     {
@@ -41,21 +45,45 @@ namespace DreamCleaningBackend.Services.Contracts
                 pricing.TotalPrice = pricing.PreTaxPrice + pricing.SalesTaxAmount;
             }
 
-            // Section 15(b): the cancellation charge is a percentage of the SCHEDULED SERVICE FEE
-            // as quoted in Exhibit B - the tax-inclusive per-visit total, not the pre-tax fee.
+            // ── Everything below is built on the PRE-TAX fee, never the tax-inclusive total ──
+            //
+            // Section 15(b) caps a short-notice cancellation charge at "fifty percent of the
+            // pre-tax visit fee", and Section 14(b) caps a failed-access charge at "that visit's
+            // pre-tax service fee, plus any tax legally applicable to the charge". Both used to be
+            // derived from TotalPrice here, which was wrong in the same way twice: sales tax is
+            // charged on a taxable SUPPLY, and a visit nobody performed is not one. Taking half of
+            // $925.43 instead of half of $849.99 bills the client $37.72 of tax that was never
+            // owed and that Contractor would have no basis to remit.
+            //
+            // These are CAPS on reasonable documented net loss, not automatic charges - which is
+            // the other reason they carry no tax of their own. Whatever tax the law puts on the
+            // charge that is actually made is added to that charge when it is made.
+
+            // Section 15(b): cap on the short-notice cancellation charge.
             var cancelPct = Clamp(pricing.CancellationPercent, 0m, 100m);
             pricing.CancellationPercent = cancelPct;
-            pricing.CancellationAmount = Round2(pricing.TotalPrice * cancelPct / 100m);
+            pricing.CancellationAmount = Round2(pricing.PreTaxPrice * cancelPct / 100m);
 
             // What is still payable if the client reschedules a short-notice cancellation. Taken
             // as a subtraction, never a second percentage, so the two halves always add back to
-            // the full fee - Section 15(b) guarantees the pair never exceeds it.
-            pricing.RemainingBalance = pricing.TotalPrice - pricing.CancellationAmount;
+            // the pre-tax fee exactly - Section 15(c) guarantees the aggregate for the original
+            // visit and its makeup never exceeds one full service fee.
+            pricing.RemainingBalance = pricing.PreTaxPrice - pricing.CancellationAmount;
 
-            // Section 14: a lockout is charged at the full scheduled service fee.
-            pricing.LockoutFee = pricing.TotalPrice;
+            // Section 14(b): cap on a failed-access charge.
+            pricing.LockoutFee = pricing.PreTaxPrice;
+
+            // Section 29(b): the aggregate liability cap, a multiple of the pre-tax per-visit fee.
+            // A multiple rather than a lookback in months, so the ceiling cannot drift when the
+            // visit frequency or the billing cadence changes.
+            pricing.LiabilityCapMultiple = Math.Max(0, pricing.LiabilityCapMultiple);
+            pricing.LiabilityCapAmount = Round2(pricing.PreTaxPrice * pricing.LiabilityCapMultiple);
 
             pricing.LateChargePercent = Math.Max(0m, pricing.LateChargePercent);
+            // Section 11(f) quotes the same charge monthly AND annually. Derived so the two can
+            // never disagree - a usury argument turns on exactly that figure.
+            pricing.LateChargeAnnualPercent = pricing.LateChargePercent * 12m;
+
             pricing.ReturnedPaymentFee = Math.Max(0m, pricing.ReturnedPaymentFee);
             pricing.PaymentDeadlineHours = Math.Max(0, pricing.PaymentDeadlineHours);
         }

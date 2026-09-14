@@ -266,9 +266,16 @@ namespace DreamCleaningBackend.Services.Contracts
                     {
                         role = HeadingRole.ExhibitTitle;
                     }
-                    else if (text.Length > 0 && char.IsDigit(text[0]))
+                    else
                     {
-                        // A numbered clause heading means the exhibits have not started yet.
+                        // Any other top-level heading is document-level, not part of an exhibit:
+                        // a numbered clause before the exhibits begin, or SIGNATURES after they
+                        // end. Both leave exhibit state behind them.
+                        //
+                        // The SIGNATURES case is why this is not just a digit test. The signature
+                        // block sits at the very END of the agreement, after Exhibit B, so a
+                        // digits-only reset left `exhibit` reading "B" through it - which would
+                        // style any row after that point as an Exhibit B schedule row.
                         exhibit = null;
                     }
                 }
@@ -481,7 +488,17 @@ namespace DreamCleaningBackend.Services.Contracts
         private static (string Label, string Value)? SplitDefinition(string text)
         {
             var colon = text.IndexOf(": ", StringComparison.Ordinal);
-            if (colon <= 0 || colon > 40) return null;
+
+            // The length cap is generous because Exhibit A's recorded site details carry long
+            // labels - "INCLUDED FOOD-CONTACT OR DINING-TABLE SANITIZING TASK, SURFACE, FREQUENCY
+            // AND PROCEDURE" is the longest - and at 40 they fell through to a justified paragraph
+            // while their shorter neighbours rendered as a definition list, so one continuous
+            // block of site facts came out in two different layouts.
+            //
+            // The real discriminator is the ALL-CAPS test below, not the length: ordinary prose
+            // containing a colon has lowercase in front of it. The label column wraps, so a long
+            // label costs vertical space rather than breaking the layout.
+            if (colon <= 0 || colon > 90) return null;
 
             var label = text[..colon];
             if (!label.Any(char.IsLetter)) return null;

@@ -171,7 +171,9 @@ namespace DreamCleaningBackend.Controllers.Crm
                 PriceMode = dto.PriceMode,
                 PriceInput = dto.PriceInput,
                 SalesTaxRatePercent = dto.SalesTaxRatePercent,
-                CancellationPercent = dto.CancellationPercent
+                CancellationPercent = dto.CancellationPercent,
+                LateChargePercent = dto.LateChargePercent,
+                LiabilityCapMultiple = dto.LiabilityCapMultiple
             };
             ContractPricingCalculator.Recalculate(pricing);
 
@@ -182,7 +184,9 @@ namespace DreamCleaningBackend.Controllers.Crm
                 TotalPrice = pricing.TotalPrice,
                 CancellationAmount = pricing.CancellationAmount,
                 RemainingBalance = pricing.RemainingBalance,
-                LockoutFee = pricing.LockoutFee
+                LockoutFee = pricing.LockoutFee,
+                LiabilityCapAmount = pricing.LiabilityCapAmount,
+                LateChargeAnnualPercent = pricing.LateChargeAnnualPercent
             });
         }
 

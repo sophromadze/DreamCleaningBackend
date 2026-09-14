@@ -48,6 +48,9 @@ namespace DreamCleaningBackend.Services.Contracts
         private static readonly Regex TokenPattern =
             new(@"\{\{([A-Z0-9_]+(?::[a-z0-9\-]+)?)\}\}", RegexOptions.Compiled);
 
+        private const string ScopePrefix = "SCOPE:";
+        private const string ScopeTablePrefix = "SCOPE_TABLE:";
+
         public static RenderedContract Render(ContractSnapshot snapshot)
         {
             if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
@@ -187,13 +190,41 @@ namespace DreamCleaningBackend.Services.Contracts
             foreach (Match m in TokenPattern.Matches(body))
             {
                 var name = m.Groups[1].Value;
-                if (name.StartsWith("SCOPE:", StringComparison.Ordinal))
-                    consumed.Add(name.Substring("SCOPE:".Length));
+                if (name.StartsWith(ScopeTablePrefix, StringComparison.Ordinal))
+                    consumed.Add(name.Substring(ScopeTablePrefix.Length));
+                else if (name.StartsWith(ScopePrefix, StringComparison.Ordinal))
+                    consumed.Add(name.Substring(ScopePrefix.Length));
             }
 
             var output = new List<string>();
             foreach (var line in source)
             {
+                // {{SCOPE_TABLE:key}} expands into one exhibit ROW per selected item - Exhibit
+                // A's "Area | Tasks and limits" grid.
+                //
+                // Expanded here rather than substituted in place because a table is several
+                // lines and Substitute works within one: an inline {{SCOPE:key}} joins labels
+                // into a sentence fragment and has nowhere to put a paragraph of tasks per area.
+                // Emitting real "|Label|Detail" lines means the rows parse through exactly the
+                // same ExhibitRow rule as a hand-written one, so the PDF and HTML writers need
+                // to know nothing about this.
+                var tableKey = ScopeTableKey(line);
+                if (tableKey != null)
+                {
+                    consumed.Add(tableKey);
+                    if (!groups.TryGetValue(tableKey, out var tableGroup)) continue;
+
+                    foreach (var item in tableGroup.Items.Where(i => i.Selected))
+                    {
+                        var label = (item.Label ?? string.Empty).Trim();
+                        if (label.Length == 0) continue;
+                        // A pipe inside either cell would split the row into the wrong columns.
+                        var detail = (item.Detail ?? string.Empty).Trim().Replace("|", "/");
+                        output.Add($"|{label.Replace("|", "/")}|{detail}");
+                    }
+                    continue;
+                }
+
                 if (line.Trim() != "{{SCOPE_ADDITIONAL}}")
                 {
                     output.Add(line);
@@ -210,11 +241,28 @@ namespace DreamCleaningBackend.Services.Contracts
                 output.Add("### A10. ADDITIONAL SCOPE");
                 foreach (var group in extra)
                 {
+                    output.Add("");
+
+                    // A group whose items carry per-item detail is a TABLE, whatever it is called.
+                    // Joining six paragraphs of tasks into one semicolon-separated sentence would
+                    // be unreadable, so an appended group of that shape keeps its row layout.
+                    if (group.Items.Any(i => i.Selected && !string.IsNullOrWhiteSpace(i.Detail)))
+                    {
+                        output.Add($"### {group.Title}");
+                        foreach (var item in group.Items.Where(i => i.Selected))
+                        {
+                            var label = (item.Label ?? string.Empty).Trim();
+                            if (label.Length == 0) continue;
+                            var detail = (item.Detail ?? string.Empty).Trim().Replace("|", "/");
+                            output.Add($"|{label.Replace("|", "/")}|{detail}");
+                        }
+                        continue;
+                    }
+
                     var items = SelectedLabels(group);
                     var verb = string.Equals(group.Kind, "excluded", StringComparison.OrdinalIgnoreCase)
                         ? "The following are not included"
                         : "The following are included";
-                    output.Add("");
                     output.Add($"{group.Title}. {verb}: {items}.");
                 }
                 output.Add("");
@@ -235,9 +283,25 @@ namespace DreamCleaningBackend.Services.Contracts
             {
                 var name = m.Groups[1].Value;
 
-                if (name.StartsWith("SCOPE:", StringComparison.Ordinal))
+                // A table token that survived ExpandLines was not alone on its line, so rows
+                // cannot be emitted for it - a table is several lines and this works within one.
+                //
+                // Fall back to the INLINE joined form rather than returning empty. The key was
+                // already marked consumed by the first pass in ExpandLines, so the group will not
+                // be appended under Additional Scope either, and blanking here would silently
+                // delete agreed scope from the document. Semicolon-joined areas read acceptably;
+                // losing them does not.
+                if (name.StartsWith(ScopeTablePrefix, StringComparison.Ordinal))
                 {
-                    var key = name.Substring("SCOPE:".Length);
+                    var tableKey = name.Substring(ScopeTablePrefix.Length);
+                    if (!groups.TryGetValue(tableKey, out var tableGroup)) return "none";
+                    var tableLabels = SelectedLabels(tableGroup);
+                    return string.IsNullOrWhiteSpace(tableLabels) ? "none" : tableLabels;
+                }
+
+                if (name.StartsWith(ScopePrefix, StringComparison.Ordinal))
+                {
+                    var key = name.Substring(ScopePrefix.Length);
                     consumed.Add(key);
                     if (!groups.TryGetValue(key, out var group)) return "none";
                     var labels = SelectedLabels(group);
@@ -250,7 +314,16 @@ namespace DreamCleaningBackend.Services.Contracts
 
                 if (tokens.TryGetValue(name, out var value))
                 {
-                    if (string.IsNullOrWhiteSpace(value)) unresolved.Add(name);
+                    // A RULED BLANK COUNTS AS UNRESOLVED. It is a mapped token whose value nobody
+                    // supplied - an unanswered restroom count, a missing commencement date - and
+                    // the whole point of printing a visible blank rather than "None" is that the
+                    // gap is a question still open. Flagging it here is what puts it in the
+                    // preview's warning banner, so an admin sees the list before a client does.
+                    if (string.IsNullOrWhiteSpace(value) ||
+                        string.Equals(value, ContractPlaceholders.RuledBlank, StringComparison.Ordinal))
+                    {
+                        unresolved.Add(name);
+                    }
                     return value;
                 }
 
@@ -259,6 +332,22 @@ namespace DreamCleaningBackend.Services.Contracts
                 // {{FOO}} in the preview knows something is unmapped; a blank hides it.
                 return m.Value;
             });
+        }
+
+        /// <summary>
+        /// The group key of a line that is nothing but a {{SCOPE_TABLE:key}} token, or null.
+        ///
+        /// Line-alone only: a table replaces its line with several rows, so a token sharing a
+        /// line with prose has no sensible expansion and is dropped during substitution instead.
+        /// </summary>
+        private static string? ScopeTableKey(string line)
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith("{{" + ScopeTablePrefix, StringComparison.Ordinal)) return null;
+            if (!trimmed.EndsWith("}}", StringComparison.Ordinal)) return null;
+
+            var key = trimmed.Substring(2 + ScopeTablePrefix.Length, trimmed.Length - 4 - ScopeTablePrefix.Length);
+            return key.Contains("{{", StringComparison.Ordinal) ? null : key;
         }
 
         private static string SelectedLabels(ScopeGroup group)
@@ -274,12 +363,26 @@ namespace DreamCleaningBackend.Services.Contracts
             return string.Join("; ", labels);
         }
 
-        /// <summary>True for "(a) ", "(b-1) ", "A1. ", "SERVICE PREMISES:" style clause openers.</summary>
+        /// <summary>
+        /// True for "(a) ", "(b-1) ", "SERVICE PREMISES:" style clause openers - the lines that
+        /// each begin their own paragraph rather than running on from the one above.
+        ///
+        /// The character class allows COMMAS AND HYPHENS inside the label, not just letters and
+        /// spaces. Exhibit A's recorded site details are a run of consecutive labelled lines, and
+        /// several of them legitimately carry punctuation ("WASTE, RECYCLING AND ... LOCATIONS:",
+        /// "FOOD-SERVICE PERMIT HOLDER:"). Without them those lines failed the test and were
+        /// swallowed into the preceding paragraph, so a block of fifteen separate site facts
+        /// rendered as one unreadable run-on - and the PDF writer's definition-list layout, which
+        /// keys off the same shape, never fired for them.
+        ///
+        /// Ordinary prose does not reach four consecutive capitals before a colon, so this stays
+        /// specific to labels.
+        /// </summary>
         private static bool StartsNewClause(string line)
         {
             var t = line.TrimStart();
             if (t.StartsWith("(", StringComparison.Ordinal)) return true;
-            return Regex.IsMatch(t, @"^[A-Z][A-Z /]{3,}:");
+            return Regex.IsMatch(t, @"^[A-Z][A-Z ,\-/&']{3,}:");
         }
 
         private static string BuildPlainText(IEnumerable<ContractBlock> blocks)

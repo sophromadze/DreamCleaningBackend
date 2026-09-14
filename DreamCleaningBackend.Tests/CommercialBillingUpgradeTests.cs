@@ -573,44 +573,59 @@ namespace DreamCleaningBackend.Tests
         }
 
         // ══════════════════════════════════════════════════════════════════════════════════════
-        //  5b. The v1.1 agreement body is really derived, and really different
+        //  5b. The seeded agreement body is the attorney-drafted one
         // ══════════════════════════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// EVERY REVISION MUST STILL MATCH ITS ORIGINAL LINE.
+        /// THE SEEDED BODY CARRIES THE v2.0 STRUCTURE.
         ///
-        /// v1.1 is expressed as a list of exact line replacements applied to the v1.0 body, so the
-        /// difference between the two versions stays readable. A replacement whose original has
-        /// been edited is SKIPPED at runtime - a startup seeder must not be able to take the API
-        /// down over template wording - which means a silent no-op is exactly the failure mode.
-        /// This is the alarm.
+        /// The earlier 1.0/1.1 bodies were the pre-review wording and are retired. This is the
+        /// alarm for the failure mode that would otherwise be silent: a body that seeds, flags
+        /// itself default, and quietly keeps issuing superseded language because somebody reverted
+        /// a merge. It checks the landmarks that only exist in the drafted agreement.
         /// </summary>
         [Fact]
-        public void TemplateV11_EveryRevisionStillApplies()
+        public void SeededTemplate_IsTheAttorneyDraftedAgreement()
         {
-            Assert.Empty(ContractTemplateSeed.UnappliedRevisions());
+            var body = ContractTemplateSeed.BodyText;
+
+            Assert.Equal("2.1", ContractTemplateSeed.TemplateVersion);
+
+            // Sections that only exist in the drafted version.
+            Assert.Contains("## 18. PERSONNEL COORDINATION", body);
+            Assert.Contains("## 11. INVOICING, ADVANCE PAYMENT AND CHARGES", body);
+            Assert.Contains("### B4. AUTHORIZED REPRESENTATIVES AND CONTACTS", body);
+            Assert.Contains("{{SCOPE_TABLE:area-tasks}}", body);
+
+            // The non-solicit / non-hire clause is GONE, replaced by Section 18's express
+            // statement that no such restriction is imposed. Reintroducing it would contradict
+            // the section immediately around it.
+            Assert.DoesNotContain("NON-SOLICITATION", body);
+            Assert.DoesNotContain("{{NON_SOLICIT_MONTHS}}", body);
+            Assert.DoesNotContain("{{NON_HIRE_DAMAGES}}", body);
+            Assert.Contains("imposes no restriction or fee on lawful solicitation", body);
+
+            // The liability cap is a multiple of the per-visit fee, not a lookback in months.
+            Assert.Contains("{{LIABILITY_CAP_MULTIPLE}}", body);
+            Assert.DoesNotContain("{{LIABILITY_CAP_MONTHS}}", body);
         }
 
         /// <summary>
-        /// And the derived body genuinely carries the new tokens. Without this a v1.1 identical to
-        /// v1.0 would seed, flag itself default, and quietly keep issuing superseded language -
-        /// which is the shape of the defect the deployment smoke test caught downstream of it.
+        /// The retired versions are named, so the seeder can take them out of the picker.
+        /// Selecting superseded legal text is not a choice anybody should be offered.
         /// </summary>
         [Fact]
-        public void TemplateV11_CarriesTheMultiDayAndCadenceTokens()
+        public void SupersededVersions_AreNamedSoTheSeederCanRetireThem()
         {
-            var body = ContractTemplateSeed.CurrentBodyText;
+            Assert.Contains("1.0", ContractTemplateSeed.SupersededVersions);
+            Assert.Contains("1.1", ContractTemplateSeed.SupersededVersions);
 
-            Assert.NotEqual(ContractTemplateSeed.BodyText, body);
-            Assert.Contains("{{SERVICE_DAYS}}", body);
-            Assert.Contains("{{SERVICE_DAY_NOUN}}", body);
-            Assert.Contains("{{SERVICE_DAY_VERB}}", body);
-            Assert.Contains("{{SERVICE_DAY_FIXED_TEXT}}", body);
-            Assert.Contains("{{BILLING_CADENCE_TEXT}}", body);
-
-            // And the sentence that could not be made to agree in number is gone.
+            // 2.0 is the soap draft. It seeded into real databases before the owner's rule was
+            // applied, so retiring it is what takes the hand-soap wording out of the picker - the
+            // seeder cannot correct that row in place, it can only stop offering it.
+            Assert.Contains("2.0", ContractTemplateSeed.SupersededVersions);
             Assert.DoesNotContain(
-                "The regular anticipated service day is {{SERVICE_DAY}}. {{SERVICE_DAY}} is not", body);
+                ContractTemplateSeed.TemplateVersion, ContractTemplateSeed.SupersededVersions);
         }
 
         // ══════════════════════════════════════════════════════════════════════════════════════

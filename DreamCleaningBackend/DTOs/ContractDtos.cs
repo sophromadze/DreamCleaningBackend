@@ -289,6 +289,19 @@ namespace DreamCleaningBackend.DTOs
         public ContractPricingInputDto Pricing { get; set; } = new();
         public AdvancedTermsSnapshot Advanced { get; set; } = new();
 
+        /// <summary>
+        /// Exhibit A's recorded site facts - restroom counts, floor materials, glass locations.
+        /// Every field is optional; an unfilled one renders as a visible ruled blank rather than
+        /// asserting the premises does not have that thing.
+        /// </summary>
+        public SiteDetailsSnapshot SiteDetails { get; set; } = new();
+
+        /// <summary>Exhibit B4 - approval, notice and on-call contacts for both Parties.</summary>
+        public OperationalContactsSnapshot Contacts { get; set; } = new();
+
+        /// <summary>Exhibit B3 - endorsements agreed beyond the Section 20 baseline.</summary>
+        public InsuranceEndorsementsSnapshot Insurance { get; set; } = new();
+
         /// <summary>The toggled scope checklist. Sent whole; unchecked items simply arrive false.</summary>
         public ScopeStructure Scope { get; set; } = new();
     }
@@ -308,8 +321,15 @@ namespace DreamCleaningBackend.DTOs
         [StringLength(500)] public string InvoiceTiming { get; set; } =
             "In advance of each scheduled service visit, generally several days before service.";
         public int PaymentDeadlineHours { get; set; } = 48;
-        [StringLength(200)] public string PaymentMethod { get; set; } = "ACH or bank-to-bank transfer";
-        public decimal LateChargePercent { get; set; } = 1.5m;
+        [StringLength(200)] public string PaymentMethod { get; set; } = "ACH or bank transfer using verified instructions";
+        public decimal LateChargePercent { get; set; } = 1m;
+
+        /// <summary>
+        /// Section 29(b): the aggregate liability cap as a multiple of the pre-tax per-visit fee.
+        /// The resulting AMOUNT is derived server-side and has no field here, same as every other
+        /// figure the agreement quotes.
+        /// </summary>
+        public int LiabilityCapMultiple { get; set; } = 13;
 
         /// <summary>
         /// RETIRED FOR NEW CONTRACTS (2026-09) and no longer offered on the form, so it arrives as
@@ -337,9 +357,22 @@ namespace DreamCleaningBackend.DTOs
         public decimal PreTaxPrice { get; set; }
         public decimal SalesTaxAmount { get; set; }
         public decimal TotalPrice { get; set; }
+
+        /// <summary>
+        /// Cap on a short-notice cancellation charge. A percentage of the PRE-TAX fee, not of the
+        /// tax-inclusive total - see <c>ContractPricingCalculator</c>.
+        /// </summary>
         public decimal CancellationAmount { get; set; }
         public decimal RemainingBalance { get; set; }
+
+        /// <summary>Cap on a failed-access charge: the pre-tax visit fee (Section 14(b)).</summary>
         public decimal LockoutFee { get; set; }
+
+        /// <summary>Aggregate liability cap: the multiple times the pre-tax fee (Section 29(b)).</summary>
+        public decimal LiabilityCapAmount { get; set; }
+
+        /// <summary>The monthly late charge stated annually, as Section 11(f) quotes it.</summary>
+        public decimal LateChargeAnnualPercent { get; set; }
     }
 
     // ══════════════════════════════════════════════════════════════════════════

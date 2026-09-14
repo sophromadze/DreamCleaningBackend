@@ -14,8 +14,13 @@ namespace DreamCleaningBackend.Tests
     /// drift between them is not a rounding nit: it is a contract that contradicts itself.
     ///
     /// The reference agreement is the fixture: $849.99 pre-tax at 8.875% is $75.44 tax and $925.43
-    /// total, and a 50% short-notice cancellation splits that into $462.72 retained and $462.71
-    /// still payable.
+    /// total.
+    ///
+    /// THE CAPS ARE ALL BUILT ON THE PRE-TAX FEE. A 50% short-notice cancellation splits $849.99
+    /// into $425.00 retained and $424.99 still payable; a failed-access charge is capped at
+    /// $849.99; the aggregate liability cap is thirteen times it. Sales tax attaches to a taxable
+    /// supply and a visit that did not happen is not one, so none of the three carries tax of its
+    /// own - whatever tax the law puts on the charge actually made is added when it is made.
     /// </summary>
     public class ContractPricingTests
     {
@@ -41,10 +46,33 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(849.99m, p.PreTaxPrice);
             Assert.Equal(75.44m, p.SalesTaxAmount);
             Assert.Equal(925.43m, p.TotalPrice);
-            Assert.Equal(462.72m, p.CancellationAmount);
-            Assert.Equal(462.71m, p.RemainingBalance);
-            // Section 14: a lockout is charged at the FULL scheduled service fee.
-            Assert.Equal(925.43m, p.LockoutFee);
+
+            // Section 15(b): capped at 50% of the PRE-TAX fee. 849.99 / 2 = 424.995, rounded
+            // half-up to 425.00 - the figure Exhibit B2(d) quotes.
+            Assert.Equal(425.00m, p.CancellationAmount);
+            Assert.Equal(424.99m, p.RemainingBalance);
+
+            // Section 14(b): a failed-access charge is capped at the visit's PRE-TAX fee, plus
+            // whatever tax is legally applicable to that charge - not at the tax-inclusive total.
+            Assert.Equal(849.99m, p.LockoutFee);
+
+            // Section 29(b): thirteen times the pre-tax per-visit fee.
+            Assert.Equal(13, p.LiabilityCapMultiple);
+            Assert.Equal(11049.87m, p.LiabilityCapAmount);
+        }
+
+        /// <summary>
+        /// Section 11(f) quotes the late charge monthly AND annually. Derived from the one stored
+        /// rate so the pair can never contradict each other: a usury argument turns on exactly
+        /// that figure, and two numbers typed separately eventually disagree.
+        /// </summary>
+        [Fact]
+        public void TheAnnualLateChargeIsTwelveTimesTheMonthlyOne()
+        {
+            var p = new PricingSnapshot { PriceInput = 849.99m, LateChargePercent = 1m };
+            ContractPricingCalculator.Recalculate(p);
+
+            Assert.Equal(12m, p.LateChargeAnnualPercent);
         }
 
         [Fact]
@@ -75,23 +103,64 @@ namespace DreamCleaningBackend.Tests
         [InlineData(1.00)]
         [InlineData(1234.56)]
         [InlineData(0.03)]
-        public void CancellationAndRemainingBalance_AlwaysAddBackToTheFullFee(decimal preTax)
+        public void CancellationAndRemainingBalance_AlwaysAddBackToThePreTaxFee(decimal preTax)
         {
-            // Section 15(b) guarantees the pair never exceeds the full scheduled service fee.
-            // Taking the remainder as a subtraction rather than a second percentage is what makes
-            // that true for every amount, including the odd-cent ones.
+            // Section 15(c) guarantees that the original visit and its makeup never cost more than
+            // one full service fee between them. Taking the remainder as a subtraction rather than
+            // a second percentage is what makes that true for every amount, odd cents included.
             var p = Recalculate(ContractPriceMode.PreTax, preTax);
-            Assert.Equal(p.TotalPrice, p.CancellationAmount + p.RemainingBalance);
+            Assert.Equal(p.PreTaxPrice, p.CancellationAmount + p.RemainingBalance);
         }
 
+        /// <summary>
+        /// THE BASIS IS THE PRE-TAX FEE, AND THE DIFFERENCE IS REAL MONEY.
+        ///
+        /// Both figures round cleanly, so a wrong basis does not look wrong - it just quietly
+        /// charges the client $37.72 of sales tax on a visit nobody performed, which Contractor
+        /// would then have no basis to remit. This is the assertion that pins it.
+        /// </summary>
         [Fact]
-        public void CancellationIsAPercentageOfTheTaxInclusiveFee_NotThePreTaxFee()
+        public void CancellationIsAPercentageOfThePreTaxFee_NotTheTaxInclusiveTotal()
         {
-            // Exhibit B quotes the cancellation charge against the per-visit total the client
-            // actually pays. Computing it off the pre-tax fee would quote $425.00, not $462.72.
             var p = Recalculate(ContractPriceMode.PreTax, 849.99m);
-            Assert.Equal(462.72m, p.CancellationAmount);
-            Assert.NotEqual(425.00m, p.CancellationAmount);
+
+            Assert.Equal(425.00m, p.CancellationAmount);
+            Assert.NotEqual(462.72m, p.CancellationAmount);
+        }
+
+        /// <summary>
+        /// Section 14(b) caps a failed-access charge at the visit's pre-tax fee. Same reasoning:
+        /// the cap is on documented net loss, and tax rides on the charge actually made.
+        /// </summary>
+        [Fact]
+        public void TheFailedAccessCapIsThePreTaxFee_NotTheTotal()
+        {
+            var p = Recalculate(ContractPriceMode.PreTax, 849.99m);
+
+            Assert.Equal(849.99m, p.LockoutFee);
+            Assert.NotEqual(p.TotalPrice, p.LockoutFee);
+        }
+
+        /// <summary>
+        /// The liability cap follows the pre-tax fee too, and a zero multiple is a real (if
+        /// unusual) choice rather than something to silently replace with the default.
+        /// </summary>
+        [Theory]
+        [InlineData(13, 11049.87)]
+        [InlineData(1, 849.99)]
+        [InlineData(0, 0)]
+        public void TheLiabilityCapIsAMultipleOfThePreTaxFee(int multiple, decimal expected)
+        {
+            var p = new PricingSnapshot
+            {
+                PriceMode = ContractPriceMode.PreTax,
+                PriceInput = 849.99m,
+                SalesTaxRatePercent = 8.875m,
+                LiabilityCapMultiple = multiple
+            };
+            ContractPricingCalculator.Recalculate(p);
+
+            Assert.Equal(expected, p.LiabilityCapAmount);
         }
 
         [Fact]
@@ -119,8 +188,8 @@ namespace DreamCleaningBackend.Tests
         {
             var over = Recalculate(ContractPriceMode.PreTax, 100m, cancelPct: 400m);
             Assert.Equal(100m, over.CancellationPercent);
-            // Even at the clamp, the two halves still add back to the full fee.
-            Assert.Equal(over.TotalPrice, over.CancellationAmount + over.RemainingBalance);
+            // Even at the clamp, the two halves still add back to the pre-tax fee.
+            Assert.Equal(over.PreTaxPrice, over.CancellationAmount + over.RemainingBalance);
         }
     }
 

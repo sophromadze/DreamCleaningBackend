@@ -10,6 +10,17 @@ namespace DreamCleaningBackend.Helpers.Contracts
     /// </summary>
     public static class ContractTextFormat
     {
+        /// <summary>
+        /// What an unanswered field prints: a ruled blank, the way the drafted agreement itself
+        /// presents something the Parties have not filled in yet.
+        ///
+        /// ONE constant, shared with <c>ContractPlaceholders.RuledBlank</c>, because the renderer
+        /// recognises this exact string to flag the field as unresolved in the preview banner.
+        /// Two literals of sixteen underscores look identical in review and would silently stop
+        /// matching the day one of them gained a seventeenth.
+        /// </summary>
+        public const string RuledBlank = "________________";
+
         private static readonly string[] Ones =
         {
             "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -52,6 +63,52 @@ namespace DreamCleaningBackend.Helpers.Contracts
 
         /// <summary>"twelve (12)" - the form every count in the reference agreement takes.</summary>
         public static string WordsWithDigits(int value) => $"{Words(value)} ({value})";
+
+        /// <summary>
+        /// Words with no digits, sentence-cased: "Three".
+        ///
+        /// For the handful of places a count OPENS a sentence, where "Three (3) Client-attributable
+        /// missed visits..." reads like a form and not like an agreement. Everything mid-sentence
+        /// keeps <see cref="WordsWithDigits"/>.
+        /// </summary>
+        public static string WordsCapitalized(int value)
+        {
+            var words = Words(value);
+            return words.Length == 0 ? words : char.ToUpperInvariant(words[0]) + words.Substring(1);
+        }
+
+        /// <summary>
+        /// Ordinal words: 1 -> "first", 2 -> "second", 21 -> "twenty-first".
+        ///
+        /// Section 15(f) counts missed visits and then refers back to "the second such visit" and
+        /// "a third such visit". Those two words have to follow the configured threshold, or an
+        /// admin who raises it to four leaves the clause warning after the second and terminating
+        /// on the third - a paragraph that contradicts its own first sentence.
+        /// </summary>
+        public static string Ordinal(int value)
+        {
+            if (value <= 0) return Words(value);
+
+            var words = Words(value);
+            var lastSpace = Math.Max(words.LastIndexOf(' '), words.LastIndexOf('-'));
+            var head = lastSpace >= 0 ? words.Substring(0, lastSpace + 1) : string.Empty;
+            var tail = lastSpace >= 0 ? words.Substring(lastSpace + 1) : words;
+
+            var ordinalTail = tail switch
+            {
+                "one" => "first",
+                "two" => "second",
+                "three" => "third",
+                "five" => "fifth",
+                "eight" => "eighth",
+                "nine" => "ninth",
+                "twelve" => "twelfth",
+                _ when tail.EndsWith("y", StringComparison.Ordinal) => tail[..^1] + "ieth",
+                _ => tail + "th"
+            };
+
+            return head + ordinalTail;
+        }
 
         /// <summary>
         /// "fifty percent (50%)" / "one and one-half percent (1.5%)". Fractional rates are spelled
@@ -126,7 +183,7 @@ namespace DreamCleaningBackend.Helpers.Contracts
         public static string LongDate(DateTime? value) =>
             value.HasValue
                 ? value.Value.ToString("MMMM d, yyyy", CultureInfo.GetCultureInfo("en-US"))
-                : "________________";
+                : RuledBlank;
 
         /// <summary>
         /// Formats a stored digits-only phone back to (929) 930-1525 for the notice block. Any

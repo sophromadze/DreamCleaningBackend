@@ -75,8 +75,7 @@ namespace DreamCleaningBackend.Services.Contracts
         /// </summary>
         public async Task<Contract> SaveDraftAsync(int? contractId, SaveContractDto dto, int adminId)
         {
-            var template = await _context.ContractTemplates.FirstOrDefaultAsync(t => t.Id == dto.ContractTemplateId)
-                ?? throw new ContractWorkflowException("Select a contract template.");
+            var template = await ResolveAgreementTemplateAsync(dto.ContractTemplateId);
 
             var contractorProfile = await _context.ContractorProfiles
                 .FirstOrDefaultAsync(p => p.Id == dto.ContractorProfileId)
@@ -167,6 +166,14 @@ namespace DreamCleaningBackend.Services.Contracts
 
             var snapshot = ContractSnapshot.Parse(contract.DraftSnapshotJson);
             if (snapshot.Pricing == null) snapshot.Pricing = new PricingSnapshot();
+
+            // A DRAFT MAY STILL BE SITTING ON A RETIRED AGREEMENT VERSION, and generating a
+            // preview is the one route to a document that does not go through SaveDraftAsync -
+            // an admin who reopens an old draft and presses Generate never re-saves, so the
+            // substitution there would never fire and the superseded wording would render.
+            // Refreshing here keeps the two entry points agreeing. A stored VERSION is untouched:
+            // it renders from its own frozen snapshot and never comes back through this method.
+            await RefreshRetiredTemplateBodyAsync(snapshot);
 
             // Recompute rather than trust: the draft may have been written by an older client
             // build, and the derived figures are quoted verbatim in Sections 14 and 15.
@@ -1220,6 +1227,88 @@ namespace DreamCleaningBackend.Services.Contracts
                 "Could not allocate a unique contract number. Please try again.");
         }
 
+        /// <summary>
+        /// The agreement template a draft is built from, with a RETIRED one swapped for the
+        /// current default.
+        ///
+        /// A superseded template is deactivated rather than deleted, so its row stays resolvable
+        /// forever - which is right for reading a version that already rendered from it, and wrong
+        /// for writing a new draft. A contract created before the current wording keeps pointing
+        /// at the old row, and the picker only lists ACTIVE templates, so the stale id is never
+        /// visible on screen: the admin re-saves what looks like an ordinary draft and gets the
+        /// superseded document back, with no way to tell from the form that they did. That is how
+        /// a draft went on promising hand soap after the wording had been corrected.
+        ///
+        /// Substituting is safe precisely where it happens - a DRAFT is the one thing in this
+        /// system that pulls live defaults, and editing anything further along already requires a
+        /// revision, which voids the outstanding signatures anyway. A stored version is untouched:
+        /// it renders from its own frozen snapshot and never comes through here.
+        /// </summary>
+        private async Task<ContractTemplate> ResolveAgreementTemplateAsync(int templateId)
+        {
+            var template = await _context.ContractTemplates.FirstOrDefaultAsync(t => t.Id == templateId)
+                ?? throw new ContractWorkflowException("Select a contract template.");
+
+            if (template.IsActive) return template;
+
+            var replacement = await _context.ContractTemplates
+                .Where(t => t.IsActive)
+                .OrderByDescending(t => t.IsDefault)
+                .ThenByDescending(t => t.Id)
+                .FirstOrDefaultAsync();
+
+            if (replacement == null)
+            {
+                // Nothing active to move to. Refusing would strand every draft in the system on a
+                // seeding fault the admin cannot see or fix from this screen.
+                _logger.LogWarning(
+                    "Contract template v{Version} is retired and no active template exists to "
+                    + "replace it. The draft keeps the superseded wording.", template.Version);
+                return template;
+            }
+
+            _logger.LogInformation(
+                "Draft moved off retired agreement template v{Retired} onto v{Current}.",
+                template.Version, replacement.Version);
+
+            return replacement;
+        }
+
+        /// <summary>
+        /// Moves a DRAFT snapshot off a retired agreement version, in place.
+        ///
+        /// The body a document renders lives on the snapshot, not on the template row, which is
+        /// what makes a stored version immutable — and what lets a draft keep rendering wording
+        /// the business has withdrawn. Only a draft is refreshed, and only when its template has
+        /// actually been retired: a snapshot whose template is still active is left exactly as
+        /// the admin saved it, edits to the master body included.
+        /// </summary>
+        private async Task RefreshRetiredTemplateBodyAsync(ContractSnapshot snapshot)
+        {
+            var current = await _context.ContractTemplates
+                .FirstOrDefaultAsync(t => t.Id == snapshot.ContractTemplateId);
+
+            if (current is { IsActive: true }) return;
+
+            var replacement = await _context.ContractTemplates
+                .Where(t => t.IsActive)
+                .OrderByDescending(t => t.IsDefault)
+                .ThenByDescending(t => t.Id)
+                .FirstOrDefaultAsync();
+
+            if (replacement == null || replacement.Id == snapshot.ContractTemplateId) return;
+
+            _logger.LogInformation(
+                "Draft snapshot moved off retired agreement template v{Retired} onto v{Current} "
+                + "before rendering.", snapshot.ContractTemplateVersion, replacement.Version);
+
+            snapshot.ContractTemplateId = replacement.Id;
+            snapshot.ContractTemplateName = replacement.Name;
+            snapshot.ContractTemplateVersion = replacement.Version;
+            snapshot.TemplateBodyText = replacement.BodyText;
+        }
+
+
         private async Task<ContractClient> ResolveClientAsync(SaveContractDto dto)
         {
             if (dto.ContractClientId.HasValue)
@@ -1475,6 +1564,7 @@ namespace DreamCleaningBackend.Services.Contracts
                 PaymentDeadlineHours = dto.Pricing.PaymentDeadlineHours,
                 PaymentMethod = dto.Pricing.PaymentMethod,
                 LateChargePercent = dto.Pricing.LateChargePercent,
+                LiabilityCapMultiple = dto.Pricing.LiabilityCapMultiple,
                 ReturnedPaymentFee = dto.Pricing.ReturnedPaymentFee
             };
             // Derived figures are computed here and nowhere else - anything the client posted for
@@ -1571,6 +1661,9 @@ namespace DreamCleaningBackend.Services.Contracts
                 Term = dto.Term ?? new TermSnapshot(),
                 Pricing = pricing,
                 Advanced = dto.Advanced ?? new AdvancedTermsSnapshot(),
+                SiteDetails = dto.SiteDetails ?? new SiteDetailsSnapshot(),
+                Contacts = dto.Contacts ?? new OperationalContactsSnapshot(),
+                Insurance = dto.Insurance ?? new InsuranceEndorsementsSnapshot(),
                 Scope = scope
             };
         }
