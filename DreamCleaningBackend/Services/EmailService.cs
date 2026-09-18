@@ -124,12 +124,22 @@ namespace DreamCleaningBackend.Services
             await SendEmailAsync(email, subject, body);
         }
 
-        public async Task SendWelcomeEmailAsync(string email, string firstName)
+        /// <summary>The one welcome mail a customer account gets, from whichever path first gave it
+        /// a usable address (see Helpers/WelcomeEmailPolicy). <paramref name="authProvider"/> is
+        /// "Google" / "Apple" for a social sign-up and null for an ordinary account — a Google
+        /// customer never verified an email here, so telling them their email "has been verified"
+        /// describes a step they never took.</summary>
+        public async Task SendWelcomeEmailAsync(string email, string firstName, string? authProvider = null)
         {
+            var bookingLink = $"{(_configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com").TrimEnd('/')}/booking";
+            var intro = string.IsNullOrWhiteSpace(authProvider)
+                ? "Your email has been verified successfully."
+                : $"Your account is ready — you signed in with {authProvider}, so there is nothing else to set up.";
+
             var subject = "Welcome to Dream Cleaning!";
             var body = $@"
                 <h2>Welcome {firstName}!</h2>
-                <p>Your email has been verified successfully.</p>
+                <p>{intro}</p>
                 <p>You can now enjoy all the features of Dream Cleaning:</p>
                 <ul>
                     <li>Book cleaning services</li>
@@ -137,6 +147,13 @@ namespace DreamCleaningBackend.Services
                     <li>Track your orders</li>
                     <li>Subscribe for discounts</li>
                 </ul>
+                <p style='margin: 30px 0;'>
+                    <a href='{bookingLink}'
+                       style='background-color: #2196F3; color: white; padding: 14px 20px;
+                              text-decoration: none; border-radius: 4px; display: inline-block;'>
+                        Book a Cleaning
+                    </a>
+                </p>
                 <p>If you have any questions, feel free to contact our support team.</p>
                 <br/>
                 <p>Best regards,<br/>Dream Cleaning Team</p>
@@ -2486,6 +2503,123 @@ namespace DreamCleaningBackend.Services
             {
                 _logger.LogError(ex, $"Failed to send payment reminder email to {email} for Order #{orderId}");
                 // Don't throw - we don't want email failures to break the booking creation
+            }
+        }
+
+        /// <summary>
+        /// Asks for ONE agreed slice of an unpaid order's total. Deliberately not the
+        /// payment-reminder template with a different number in it: a customer quoted $2,743.65
+        /// who receives a link for $1,000.00 and no explanation reads it as a price change, or as
+        /// a mistake. Every figure in the breakdown is here for that reason — what they are paying
+        /// now, what the order costs, what has already been received, and what will be left.
+        /// </summary>
+        public async Task SendPartialPaymentRequestEmailAsync(string email, string customerName, decimal amount,
+            decimal orderTotal, decimal amountAlreadyPaid, decimal remainingAfter, int orderId, string paymentLink)
+        {
+            try
+            {
+                var isFinal = remainingAfter < 0.01m;
+                var subject = isFinal
+                    ? $"Final Payment for Your Cleaning - Order #{orderId}"
+                    : $"Payment Request - Order #{orderId}";
+
+                var amountFormatted = amount.ToString("C");
+                var totalFormatted = orderTotal.ToString("C");
+                var paidFormatted = amountAlreadyPaid.ToString("C");
+                var remainingFormatted = remainingAfter.ToString("C");
+
+                var alreadyPaidRow = amountAlreadyPaid >= 0.01m
+                    ? $@"<tr>
+                            <td style='padding: 6px 0; color: #666;'>Already paid</td>
+                            <td style='padding: 6px 0; text-align: right; color: #4CAF50;'>-{paidFormatted}</td>
+                         </tr>"
+                    : "";
+
+                var remainingRow = isFinal
+                    ? @"<tr>
+                            <td style='padding: 6px 0; color: #666;'>Remaining after this payment</td>
+                            <td style='padding: 6px 0; text-align: right;'><strong>Nothing — this completes your order</strong></td>
+                         </tr>"
+                    : $@"<tr>
+                            <td style='padding: 6px 0; color: #666;'>Remaining after this payment</td>
+                            <td style='padding: 6px 0; text-align: right;'><strong>{remainingFormatted}</strong></td>
+                         </tr>";
+
+                var closingNote = isFinal
+                    ? "Once this payment goes through your cleaning is fully confirmed and scheduled."
+                    : "We'll send you a link for the remaining balance when it's due. Your cleaning is confirmed once the full amount has been received.";
+
+                var body = $@"
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                    .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid #4CAF50; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: #4CAF50; }}
+                    .button {{ background-color: #4CAF50; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
+                    .breakdown {{ background-color: #fff; border-radius: 5px; padding: 20px; margin: 20px 0; }}
+                    .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
+                </style>
+            </head>
+            <body>
+                <div class='container'>
+                    <div class='header'>
+                        <h1 style='margin: 0;'>✨ {(isFinal ? "Final Payment" : "Payment Request")}</h1>
+                    </div>
+                    <div class='content'>
+                        <h2>Hi {customerName}!</h2>
+                        <p>Here is the payment link for order #{orderId}, as arranged.</p>
+
+                        <div class='amount-box'>
+                            <div style='color: #666; font-size: 14px; margin-bottom: 5px;'>Amount to pay now</div>
+                            <div class='amount'>{amountFormatted}</div>
+                        </div>
+
+                        <p style='text-align: center;'>
+                            <a href='{paymentLink}' class='button' style='color: white !important; text-decoration: none;'>Pay {amountFormatted}</a>
+                        </p>
+
+                        <p style='font-size: 14px; color: #666;'>Or copy and paste this link into your browser:</p>
+                        <p style='font-size: 12px; word-break: break-all; color: #007bff;'>{paymentLink}</p>
+
+                        <div class='breakdown'>
+                            <strong style='display: block; margin-bottom: 10px;'>Your order total</strong>
+                            <table style='width: 100%; border-collapse: collapse; font-size: 14px;'>
+                                <tr>
+                                    <td style='padding: 6px 0; color: #666;'>Order #{orderId} total</td>
+                                    <td style='padding: 6px 0; text-align: right;'>{totalFormatted}</td>
+                                </tr>
+                                {alreadyPaidRow}
+                                <tr>
+                                    <td style='padding: 6px 0; color: #666;'>Paying now</td>
+                                    <td style='padding: 6px 0; text-align: right;'>{amountFormatted}</td>
+                                </tr>
+                                {remainingRow}
+                            </table>
+                        </div>
+
+                        <p style='color: #666; font-size: 14px; margin-top: 30px;'>
+                            {closingNote} If anything here doesn't look right, just reply to this email and we'll sort it out.
+                        </p>
+                    </div>
+                    <div class='footer'>
+                        <p>Thank you for choosing Dream Cleaning!</p>
+                        <p>&copy; {DateTime.UtcNow.Year} Dream Cleaning. All rights reserved.</p>
+                    </div>
+                </div>
+            </body>
+            </html>";
+
+                await SendEmailAsync(email, subject, body);
+                _logger.LogInformation($"Partial payment request email sent to {email} for Order #{orderId} ({amountFormatted})");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send partial payment request email to {email} for Order #{orderId}");
+                throw;
             }
         }
 

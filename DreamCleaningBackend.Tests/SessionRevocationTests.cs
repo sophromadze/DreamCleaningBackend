@@ -45,7 +45,9 @@ namespace DreamCleaningBackend.Tests
                 Id = 7,
                 TokenVersion = 3,
                 RefreshToken = "still-valid-for-30-days",
-                RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30)
+                RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30),
+                PreviousRefreshToken = "replaced-a-moment-ago",
+                PreviousRefreshTokenExpiryTime = DateTime.UtcNow.AddSeconds(60)
             };
 
             NewService(out _).RevokeSessions(user);
@@ -56,6 +58,33 @@ namespace DreamCleaningBackend.Tests
             // on - a new token, the new role, never a login screen.
             Assert.Null(user.RefreshToken);
             Assert.Null(user.RefreshTokenExpiryTime);
+
+            // And the replay window with it. It exists so a browser racing itself is not thrown
+            // out (User.PreviousRefreshToken); left open across a revoke it would let the session
+            // being ended mint a replacement for up to a minute afterwards.
+            Assert.Null(user.PreviousRefreshToken);
+            Assert.Null(user.PreviousRefreshTokenExpiryTime);
+        }
+
+        [Fact]
+        public void NeitherRolePathRevokesWhenTheRoleDidNotActuallyMove()
+        {
+            // The dedicated role endpoint used to revoke on EVERY call, and the Cleaners tab calls
+            // it with a fixed role ("Make a cleaner" / "Move to Customer") - so a second click, a
+            // double submit, or an admin re-confirming the role somebody already had threw that
+            // person out of their session for nothing. Both writers of User.Role now gate on the
+            // same `roleChanged`.
+            // Newlines normalised so the assertion says what it means on any checkout.
+            var source = ReadBackendFile(Path.Combine("Controllers", "Admin", "AdminUsersController.cs"))
+                .Replace("\r\n", "\n");
+
+            Assert.Equal(2, Occurrences(source, "var roleChanged = targetUser.Role != newRole;"));
+            Assert.Equal(2, Occurrences(source, "if (roleChanged)\n                _tokenVersions.RevokeSessions(targetUser);"));
+            Assert.Equal(2, Occurrences(source, "if (roleChanged)\n                _tokenVersions.SyncCache(targetUser.Id, targetUser.TokenVersion);"));
+
+            // A bare, ungated call (the revoke sitting at statement level, not under the gate)
+            // would put the original bug straight back.
+            Assert.Equal(0, Occurrences(source, "\n            _tokenVersions.RevokeSessions(targetUser);"));
         }
 
         // -- What the per-request check accepts and refuses -----------------------------------

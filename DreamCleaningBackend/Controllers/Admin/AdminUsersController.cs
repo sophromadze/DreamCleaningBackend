@@ -581,7 +581,7 @@ namespace DreamCleaningBackend.Controllers
             if (!Enum.TryParse<UserRole>(dto.Role, out var newRole))
                 return BadRequest("Invalid role");
 
-            var validationResult = ValidateRoleChange(currentUserRole, targetUser.Role, newRole);
+            var validationResult = ValidateRoleChange(currentUserRole, targetUser.Role, targetUser.OrgTitle, newRole);
             if (!validationResult.IsValid)
                 return BadRequest(new { message = validationResult.ErrorMessage });
 
@@ -629,6 +629,14 @@ namespace DreamCleaningBackend.Controllers
                         string.Join(",", released.Select(c => c.Id)), id, newRole);
             }
 
+            // ONLY A REAL MOVE REVOKES (2026-09). This used to fire on every call, including one
+            // that set the role the account already had - and this endpoint is called with a FIXED
+            // role by the Cleaners tab ("Make a cleaner" / "Move to Customer"), so a second click,
+            // a double-submit or an admin re-confirming somebody's existing role threw that person
+            // out of their session for nothing. The edit form below has always guarded on
+            // `roleChanged`; the two writers of User.Role now agree.
+            var roleChanged = targetUser.Role != newRole;
+
             targetUser.Role = newRole;
             targetUser.UpdatedAt = DateTime.UtcNow;
 
@@ -637,12 +645,14 @@ namespace DreamCleaningBackend.Controllers
             // building kept a signed token carrying the OLD role for up to 30 days. Bumping the
             // token version refuses that token on its next request, and dropping the refresh token
             // stops the browser minting a replacement, so they land on the login page.
-            _tokenVersions.RevokeSessions(targetUser);
+            if (roleChanged)
+                _tokenVersions.RevokeSessions(targetUser);
 
             await _context.SaveChangesAsync();
 
             // After the save, so a request racing the commit cannot re-cache the old version.
-            _tokenVersions.SyncCache(targetUser.Id, targetUser.TokenVersion);
+            if (roleChanged)
+                _tokenVersions.SyncCache(targetUser.Id, targetUser.TokenVersion);
 
             // Log audit
             try
@@ -674,18 +684,23 @@ namespace DreamCleaningBackend.Controllers
                 _logger.LogError(ex, "Audit logging failed");
             }
 
-            // Send notification and ensure it's delivered
-            try
+            // Send notification and ensure it's delivered. Gated on the same `roleChanged`: the
+            // frontend answers "RoleChanged" by logging the person out after four seconds, so
+            // broadcasting it for a no-op save would end their session by the other route.
+            if (roleChanged)
             {
-                var userManagementService = HttpContext.RequestServices.GetRequiredService<IUserManagementService>();
-                await userManagementService.NotifyUserRoleChanged(id, newRole.ToString());
+                try
+                {
+                    var userManagementService = HttpContext.RequestServices.GetRequiredService<IUserManagementService>();
+                    await userManagementService.NotifyUserRoleChanged(id, newRole.ToString());
 
-                // Give time for the notification to be delivered via SignalR
-                await Task.Delay(1000);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Failed to send role change notification to user {id}");
+                    // Give time for the notification to be delivered via SignalR
+                    await Task.Delay(1000);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to send role change notification to user {id}");
+                }
             }
 
             return Ok(new { message = "Role updated successfully" });
@@ -862,8 +877,14 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { userId = id, isOnline = isOnline });
         }
 
-        private (bool IsValid, string ErrorMessage) ValidateRoleChange(UserRole currentUserRole, UserRole targetCurrentRole, UserRole newRole)
+        private (bool IsValid, string ErrorMessage) ValidateRoleChange(UserRole currentUserRole, UserRole targetCurrentRole, OrgTitle targetOrgTitle, UserRole newRole)
         {
+            // FIRST, and with no reference to who is asking: the CTO's SuperAdmin role is not
+            // removable by anybody. Checked ahead of the hierarchy rules below precisely because
+            // it does not defer to them - a SuperAdmin passes every one of them.
+            if (CtoRoleLockPolicy.IsRoleChangeLocked(targetOrgTitle, targetCurrentRole, newRole))
+                return (false, CtoRoleLockPolicy.RefusalMessage);
+
             // Moderators cannot change roles at all (they don't have Update permission, but double-check)
             if (currentUserRole == UserRole.Moderator)
                 return (false, "Moderators cannot change user roles");
@@ -1042,6 +1063,12 @@ namespace DreamCleaningBackend.Controllers
 
             if (currentUserRole == UserRole.Admin && newRole == UserRole.SuperAdmin)
                 return BadRequest(new { message = "Admins cannot assign SuperAdmin role" });
+
+            // The role moves from this form too, so the CTO lock has to be enforced here as well -
+            // it is the second of exactly two writers of User.Role, and a guard on only one of
+            // them is no guard at all.
+            if (CtoRoleLockPolicy.IsRoleChangeLocked(targetUser.OrgTitle, targetUser.Role, newRole))
+                return BadRequest(new { message = CtoRoleLockPolicy.RefusalMessage });
 
             targetUser.FirstName = dto.FirstName;
             targetUser.LastName = dto.LastName;
@@ -1415,6 +1442,15 @@ namespace DreamCleaningBackend.Controllers
                         Tips = o.Tips,
                         CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                         IsPaid = o.IsPaid,
+                        // EF cannot translate a helper call inside a projection, so the balance
+                        // rule from Helpers/OrderBalance.cs is written out here by hand — the same
+                        // arrangement OrderPaymentFilter documents. Change both together.
+                        AmountPaid = o.AmountPaid,
+                        AmountDue = o.IsPaid || o.AmountPaid >= o.Total ? 0m : o.Total - o.AmountPaid,
+                        IsPartiallyPaid = !o.IsPaid
+                            && o.PaymentMethod == Models.PaymentMethod.Normal
+                            && o.AmountPaid >= 0.01m
+                            && o.Total - o.AmountPaid >= 0.01m,
                         PaidAt = o.PaidAt,
                         CancellationReason = o.CancellationReason,
                         IsLateCancellation = o.IsLateCancellation,

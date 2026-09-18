@@ -182,6 +182,7 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public DateTime? PaidAt { get; set; }
         public DateTime? LastSentAt { get; set; }
         public bool HasBeenSent { get; set; }
+        public bool IsArchived { get; set; }
     }
 
     /// <summary>The summary cards above the table.</summary>
@@ -457,6 +458,23 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public bool CanVoid { get; set; }
         public bool CanDelete { get; set; }
         public bool CanSendReminder { get; set; }
+
+        /// <summary>Archived: off the admin default list, everything preserved. Not a status.</summary>
+        public bool IsArchived { get; set; }
+        public DateTime? ArchivedAt { get; set; }
+
+        /// <summary>
+        /// Whether the PERMANENT delete option is offered in the invoice action dialog.
+        /// <c>InvoiceHardDeletePolicy</c> decides; the endpoint applies the same policy.
+        /// </summary>
+        public bool CanHardDelete { get; set; }
+
+        /// <summary>
+        /// Why permanent deletion is refused - a payment row, money recorded, Stripe activity,
+        /// claimed cleanings. Null when it is allowed. Shown in the dialog so the admin reads the
+        /// reason instead of finding a disabled button.
+        /// </summary>
+        public string? CannotHardDeleteReason { get; set; }
 
         /// <summary>
         /// True when this invoice has BOTH a Stripe payment and a manual one, and more has been

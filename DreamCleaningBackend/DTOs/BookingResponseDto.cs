@@ -13,6 +13,18 @@ namespace DreamCleaningBackend.DTOs
         // fully covers the order). In that case no PaymentIntent/ClientSecret is created and
         // the frontend must skip the Stripe card step and confirm the booking directly.
         public bool RequiresPayment { get; set; } = true;
+
+        // Set by prepare-payment when the intent for THIS attempt has already been charged on
+        // Stripe but no order came out of it — a confirm-payment that fell over after the
+        // charge. The frontend must skip the card step and confirm against THIS intent id
+        // instead; asking for a new one charges the customer twice for one cleaning.
+        //
+        // Deliberately its own field rather than RequiresPayment=false: that flag already means
+        // "a gift card covers everything", and the frontend answers it by confirming with an
+        // EMPTY intent id — which on this path would ask the server to create an order nobody
+        // paid for. The two outcomes look alike and mean opposite things.
+        public string? AlreadyPaidPaymentIntentId { get; set; }
+
         public string SessionId { get; set; } // For new bookings created via prepare-payment
         // Guest booking: returned when user was auto-created so frontend can authenticate
         public string? GuestToken { get; set; }

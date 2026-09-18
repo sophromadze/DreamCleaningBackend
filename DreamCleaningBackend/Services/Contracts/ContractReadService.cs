@@ -16,17 +16,20 @@ namespace DreamCleaningBackend.Services.Contracts
         private readonly ContractService _contracts;
         private readonly ContractNotificationService _notifications;
         private readonly ContractAuthorizationService _authorization;
+        private readonly ContractPurgeService _purge;
 
         public ContractReadService(
             ApplicationDbContext context,
             ContractService contracts,
             ContractNotificationService notifications,
-            ContractAuthorizationService authorization)
+            ContractAuthorizationService authorization,
+            ContractPurgeService purge)
         {
             _context = context;
             _contracts = contracts;
             _notifications = notifications;
             _authorization = authorization;
+            _purge = purge;
         }
 
         public async Task<List<ContractListItemDto>> GetListAsync(
@@ -135,6 +138,10 @@ namespace DreamCleaningBackend.Services.Contracts
                 .ToListAsync();
 
             var current = versions.FirstOrDefault(v => v.Id == contract.CurrentVersionId);
+
+            // Null when the contract may be permanently destroyed; otherwise the sentence saying
+            // which record is protecting it.
+            var hardDeleteBlocker = await _purge.DescribeBlockerAsync(contract);
             var currentSnapshot = current == null ? null : ContractSnapshot.Parse(current.FullSnapshotJson);
 
             var signers = current == null
@@ -261,6 +268,13 @@ namespace DreamCleaningBackend.Services.Contracts
                 // one — the document and its files survive the retention window either way.
                 CanDelete = !contract.IsHidden,
                 CanRestore = contract.IsHidden,
+
+                // Whether the "Full delete" half of the delete dialog is offered, and why not when
+                // it is withheld. Computed here so the dialog can explain itself BEFORE the admin
+                // types a confirmation and presses a button that was never going to work; the
+                // endpoint re-checks the same policy, which is what actually enforces it.
+                CanHardDelete = hardDeleteBlocker == null,
+                CannotHardDeleteReason = hardDeleteBlocker,
                 IsLocked = !canEdit,
 
                 // Identity only — the matrix decides whether the button is usable, and the API
@@ -279,7 +293,10 @@ namespace DreamCleaningBackend.Services.Contracts
             var brand = string.IsNullOrWhiteSpace(location.BusinessBrand)
                 ? location.LocationName
                 : location.BusinessBrand;
-            var address = $"{location.Address}, {location.City}, {location.State} {location.Zip}".Trim();
+            // Composed the way the AGREEMENT composes it, so a street box that already carries
+            // "Brooklyn, NY" is not printed with the city and state a second time.
+            var address = ContractPlaceholders.ComposeAddress(
+                location.Address, location.City, location.State, location.Zip);
             return string.IsNullOrWhiteSpace(brand) ? address : $"{brand} - {address}";
         }
     }

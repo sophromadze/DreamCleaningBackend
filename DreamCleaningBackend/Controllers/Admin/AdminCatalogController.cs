@@ -15,6 +15,7 @@ using SixLabors.ImageSharp.Processing;
 using DreamCleaningBackend.Services;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -1930,6 +1931,34 @@ namespace DreamCleaningBackend.Controllers
                     IsActive = p.IsActive
                 })
                 .ToListAsync();
+
+            // CurrentUsageCount is never incremented anywhere, so real usage is derived from
+            // actual bookings instead — grouped on the order's stored PromoCode text (MySQL's
+            // case-insensitive collation matches it against the code the same way the booking
+            // flow validated it), restricted to OrderBookedFilter.IsRealBooking so a cancelled or
+            // abandoned checkout doesn't inflate a code's numbers.
+            var usageStats = await _context.Orders
+                .Where(OrderBookedFilter.IsRealBooking)
+                .Where(o => o.PromoCode != null && o.PromoCode != "")
+                .GroupBy(o => o.PromoCode)
+                .Select(g => new
+                {
+                    PromoCode = g.Key!,
+                    TimesUsed = g.Count(),
+                    UniqueUsersUsed = g.Select(o => o.UserId).Distinct().Count()
+                })
+                .ToListAsync();
+
+            var usageByCode = usageStats.ToDictionary(u => u.PromoCode, u => u, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var dto in promoCodes)
+            {
+                if (usageByCode.TryGetValue(dto.Code, out var stats))
+                {
+                    dto.TimesUsed = stats.TimesUsed;
+                    dto.UniqueUsersUsed = stats.UniqueUsersUsed;
+                }
+            }
 
             return Ok(promoCodes);
         }

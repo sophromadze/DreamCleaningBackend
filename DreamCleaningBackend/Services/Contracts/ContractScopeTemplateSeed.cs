@@ -38,6 +38,39 @@ namespace DreamCleaningBackend.Services.Contracts
         /// </summary>
         public const string AreaTasksKey = "area-tasks";
 
+        /// <summary>
+        /// The A1 task row covering circulation space and the rooms A1 actually lists.
+        ///
+        /// IT NAMES NO INDIVIDUAL ROOM, and that is the whole point. Included Areas is a checklist
+        /// an admin ticks per contract, so a room baked into this FIXED label can contradict it -
+        /// the row read "Hallways, office and doors" on a contract whose A1 list had no office,
+        /// because the client has none. Substituting another room ("meeting room") would only move
+        /// the same bug to the next client, so the label defers to the list instead of competing
+        /// with it: whichever rooms were ticked are the included rooms, and this row describes the
+        /// work done in them.
+        /// </summary>
+        public const string IncludedRoomsAreaLabel = "Hallways, included rooms and doors";
+
+        /// <summary>
+        /// Labels this row used to carry, retired by the change above.
+        ///
+        /// Declared rather than hardcoded in the repair for the same reason
+        /// <c>ContractTemplateSeed.SupersededVersions</c> is: a scope template is seeded ONCE and
+        /// then never rewritten, so an edit to the seed reaches no database that already has the
+        /// row. <c>ContractSeedService.RepairRoomSpecificAreaLabel</c> matches a stored label
+        /// against this list and replaces it with <see cref="IncludedRoomsAreaLabel"/> - so the
+        /// correction reaches existing databases, and a label an admin has deliberately reworded
+        /// matches nothing here and is left alone.
+        ///
+        /// Both spellings appear because the restaurant template said "office" and the shared
+        /// non-restaurant skeleton said "offices".
+        /// </summary>
+        public static IReadOnlyList<string> RetiredAreaLabels => new[]
+        {
+            "Hallways, office and doors",
+            "Hallways, offices and doors"
+        };
+
         public static IReadOnlyList<SeedTemplate> All() => new List<SeedTemplate>
         {
             new("Restaurant", "restaurant", false, 1, Restaurant()),
@@ -61,7 +94,7 @@ namespace DreamCleaningBackend.Services.Contracts
                         "Clean toilets, sinks, fixtures, mirrors and floors and remove ordinary trash under A5. Specialized biohazard remediation is excluded."),
                     ("Kitchen",
                         "Clean exposed floors and identified accessible exterior non-food-contact equipment and fixture surfaces, including stainless steel, subject to the limited scope and exclusions in A3."),
-                    ("Hallways, office and doors",
+                    (IncludedRoomsAreaLabel,
                         "Clean exposed floors, identified touchpoints and accessible cleared surfaces. Do not handle files, electronics, cash or private materials."),
                     ("Interior glass",
                         "Clean identified interior windows and glass safely reachable from the floor with ordinary extension tools, subject to Section 25."),
@@ -119,7 +152,7 @@ namespace DreamCleaningBackend.Services.Contracts
                         "Clean toilets, sinks, fixtures, mirrors and floors and remove ordinary trash under A5. Specialized biohazard remediation is excluded."),
                     ("Kitchen or pantry",
                         "Clean exposed floors and identified accessible exterior non-food-contact surfaces, subject to the limited scope and exclusions in A3."),
-                    ("Hallways, offices and doors",
+                    (IncludedRoomsAreaLabel,
                         "Clean exposed floors, identified touchpoints and accessible cleared surfaces. Do not handle files, electronics, cash or private materials."),
                     ("Interior glass",
                         "Clean identified interior windows and glass safely reachable from the floor with ordinary extension tools, subject to Section 25."),

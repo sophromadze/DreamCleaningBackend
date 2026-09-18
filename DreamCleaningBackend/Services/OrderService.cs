@@ -89,6 +89,9 @@ namespace DreamCleaningBackend.Services
                 Tips = o.Tips,
                 CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                 IsPaid = o.IsPaid,
+                AmountPaid = o.AmountPaid,
+                AmountDue = OrderBalance.AmountDue(o),
+                IsPartiallyPaid = OrderBalance.IsPartiallyPaid(o),
                 PaidAt = o.PaidAt,
                 CancellationReason = o.CancellationReason,
                 IsLateCancellation = o.IsLateCancellation,
@@ -149,9 +152,13 @@ namespace DreamCleaningBackend.Services
                 })
                 .ToListAsync();
             var firstOriginalByOrderId = firstOriginalList.ToDictionary(x => x.OrderId, x => x.FirstOriginalWithoutTips);
-            // Amount already paid by customer (sum of paid update-history rows) so we only show unpaid portion
+            // Amount already paid by customer (sum of paid update-history rows) so we only show
+            // unpaid portion. POSITIVE rows only — a negative row is a price decrease, and
+            // subtracting one adds to the bill (OrderAdditionalCharge). EF cannot translate the
+            // helper inside the bigger Where, so the shared predicate is chained on its own.
             var alreadyPaidList = await _context.OrderUpdateHistories
-                .Where(h => unpaidOrderIds.Contains(h.OrderId) && h.IsPaid)
+                .Where(h => unpaidOrderIds.Contains(h.OrderId))
+                .Where(OrderAdditionalCharge.WasCollected)
                 .GroupBy(h => h.OrderId)
                 .Select(g => new { OrderId = g.Key, AlreadyPaid = g.Sum(x => x.AdditionalAmount) })
                 .ToListAsync();
@@ -189,13 +196,15 @@ namespace DreamCleaningBackend.Services
                 Tips = o.Tips,
                 CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                 IsPaid = o.IsPaid,
+                AmountPaid = o.AmountPaid,
+                AmountDue = OrderBalance.AmountDue(o),
+                IsPartiallyPaid = OrderBalance.IsPartiallyPaid(o),
                 PaidAt = o.PaidAt,
                 PendingUpdateAmount = o.IsPaid && unpaidOrderIds.Contains(o.Id)
-                    ? Math.Max(0m, (o.Total - o.Tips - o.CompanyDevelopmentTips) - (
-                        (o.InitialTotal != 0 || o.InitialTips != 0 || o.InitialCompanyDevelopmentTips != 0)
-                            ? (o.InitialTotal - o.InitialTips - o.InitialCompanyDevelopmentTips)
-                            : (firstOriginalByOrderId.TryGetValue(o.Id, out var firstOrig) ? firstOrig : 0m))
-                        - (alreadyPaidByOrderId.TryGetValue(o.Id, out var paid) ? paid : 0m))
+                    ? OrderAdditionalCharge.Outstanding(
+                        o,
+                        firstOriginalByOrderId.TryGetValue(o.Id, out var firstOrig) ? firstOrig : (decimal?)null,
+                        alreadyPaidByOrderId.TryGetValue(o.Id, out var paid) ? paid : 0m)
                     : 0m,
                 PendingUpdateHistoryId = latestHistoryByOrderId.TryGetValue(o.Id, out var lid) ? lid : null,
                 CancellationReason = o.CancellationReason,
@@ -240,23 +249,9 @@ namespace DreamCleaningBackend.Services
                     .AnyAsync(h => h.OrderId == order.Id && !h.IsPaid && h.AdditionalAmount > 0.01m);
                 if (hasUnpaid)
                 {
-                    var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
-                    decimal originalWithoutTips;
-                    if (order.InitialTotal != 0 || order.InitialTips != 0 || order.InitialCompanyDevelopmentTips != 0)
-                        originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
-                    else
-                    {
-                        var firstHist = await _context.OrderUpdateHistories
-                            .Where(h => h.OrderId == order.Id)
-                            .OrderBy(h => h.UpdatedAt)
-                            .Select(h => new { h.OriginalTotal, h.OriginalTips, h.OriginalCompanyDevelopmentTips })
-                            .FirstOrDefaultAsync();
-                        originalWithoutTips = firstHist != null ? (firstHist.OriginalTotal - firstHist.OriginalTips - firstHist.OriginalCompanyDevelopmentTips) : 0m;
-                    }
-                    var alreadyPaid = await _context.OrderUpdateHistories
-                        .Where(h => h.OrderId == order.Id && h.IsPaid)
-                        .SumAsync(h => h.AdditionalAmount);
-                    dto.PendingUpdateAmount = Math.Max(0m, currentWithoutTips - originalWithoutTips - alreadyPaid);
+                    // This is the figure the customer's payment page charges, so it goes through
+                    // the shared resolver — no local copy of the subtraction (OrderAdditionalCharge).
+                    dto.PendingUpdateAmount = await OrderAdditionalCharge.OutstandingAsync(_context, order);
                     var latest = await _context.OrderUpdateHistories
                         .Where(h => h.OrderId == order.Id && !h.IsPaid && h.AdditionalAmount > 0.01m)
                         .OrderByDescending(h => h.UpdatedAt)
@@ -304,6 +299,10 @@ namespace DreamCleaningBackend.Services
                 // auto-cancel them once their service date passes. Treat both Stripe-paid
                 // and manual-paid orders as "paid" for the purposes of auto-cancel.
                 if (order.IsPaid || order.PaymentMethod != PaymentMethod.Normal) continue;
+                // Part-paid orders are NOT abandoned checkouts. Money has actually arrived, and
+                // quietly cancelling the order it arrived for would leave it owed back to a
+                // customer nobody has been told to refund. An admin decides what happens to these.
+                if (OrderBalance.IsPartiallyPaid(order)) continue;
                 if (order.IsAutoCancelExempt) continue;
                 if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase)) continue;
@@ -330,6 +329,8 @@ namespace DreamCleaningBackend.Services
             // Phase 1: manual-paid orders have IsPaid=false by design. Treat them as "paid"
             // here so they don't get auto-cancelled when their service date passes.
             if (order.IsPaid || order.PaymentMethod != PaymentMethod.Normal) return;
+            // Part-paid orders are NOT abandoned checkouts — see the batch sweep above.
+            if (OrderBalance.IsPartiallyPaid(order)) return;
             if (order.IsAutoCancelExempt) return;
             if (string.Equals(order.Status, "Cancelled", StringComparison.OrdinalIgnoreCase)) return;
             if (string.Equals(order.Status, "Done", StringComparison.OrdinalIgnoreCase)) return;
@@ -531,6 +532,15 @@ namespace DreamCleaningBackend.Services
 
             // Create update history record for ALL changes (not just when there's additional amount)
             // This ensures audit logs show changes even when there's no monetary difference
+            //
+            // AdditionalAmount is floored at zero (and ONLY that field — every Original*/New*
+            // value below is recorded as it happened, so the audit record stays complete). A
+            // negative stored here is read as money the customer handed over by every "what is
+            // still owed" sum, which doubled order #359's bill — see OrderAdditionalCharge.
+            // This path already refuses a decrease outright above; the clamp states the rule
+            // where the row is written, so it holds if that guard is ever relaxed.
+            var collectableAmount = OrderAdditionalCharge.Collectable(additionalAmount);
+
             var updateHistory = new OrderUpdateHistory
             {
                 OrderId = order.Id,
@@ -548,8 +558,8 @@ namespace DreamCleaningBackend.Services
                 NewTips = order.Tips,
                 NewCompanyDevelopmentTips = order.CompanyDevelopmentTips,
                 NewTotal = order.Total,
-                AdditionalAmount = additionalAmount,
-                IsPaid = additionalAmount <= 0.01m // Mark as paid if no additional amount required
+                AdditionalAmount = collectableAmount,
+                IsPaid = collectableAmount <= OrderAdditionalCharge.MinimumCollectableAmount // Mark as paid if no additional amount required
             };
 
             _context.OrderUpdateHistories.Add(updateHistory);
@@ -873,6 +883,9 @@ namespace DreamCleaningBackend.Services
                 Tips = o.Tips,
                 CompanyDevelopmentTips = o.CompanyDevelopmentTips,
                 IsPaid = o.IsPaid,
+                AmountPaid = o.AmountPaid,
+                AmountDue = OrderBalance.AmountDue(o),
+                IsPartiallyPaid = OrderBalance.IsPartiallyPaid(o),
                 PaidAt = o.PaidAt,
                 CancellationReason = o.CancellationReason,
                 IsLateCancellation = o.IsLateCancellation,
@@ -1172,6 +1185,15 @@ namespace DreamCleaningBackend.Services
             // changes anything at all keeps writing a row exactly as before.
             if (anythingChanged)
             {
+                // AdditionalAmount is floored at zero — and ONLY that field. A downward edit keeps
+                // its complete record (OriginalTotal/NewTotal and every other value below are
+                // written as they happened) and still shows up in the Update History panel; it
+                // simply stops claiming to be a settled payment. Storing the decrease as a
+                // negative made every "what is still owed" sum treat it as money the customer had
+                // handed over, which is what doubled order #359's bill. This is the path that
+                // could actually produce one — see OrderAdditionalCharge for the worked example.
+                var collectableAmount = OrderAdditionalCharge.Collectable(additionalAmount);
+
                 var updateHistory = new OrderUpdateHistory
                 {
                     OrderId = order.Id,
@@ -1187,8 +1209,8 @@ namespace DreamCleaningBackend.Services
                     NewTips = order.Tips,
                     NewCompanyDevelopmentTips = order.CompanyDevelopmentTips,
                     NewTotal = order.Total,
-                    AdditionalAmount = additionalAmount,
-                    IsPaid = additionalAmount <= 0.01m
+                    AdditionalAmount = collectableAmount,
+                    IsPaid = collectableAmount <= OrderAdditionalCharge.MinimumCollectableAmount
                 };
 
                 _context.OrderUpdateHistories.Add(updateHistory);

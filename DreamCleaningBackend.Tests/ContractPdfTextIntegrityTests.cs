@@ -99,6 +99,13 @@ namespace DreamCleaningBackend.Tests
         private static string LettersOnly(string value) =>
             new string(value.Where(char.IsLetter).ToArray()).ToLowerInvariant();
 
+        /// <summary>
+        /// Letters AND digits, lowercased. Same wrapping-proof comparison, for the assertions that
+        /// turn on a number — a ZIP, a price — which <see cref="LettersOnly"/> would discard.
+        /// </summary>
+        private static string AlphanumericOnly(string value) =>
+            new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+
         // ── the regression that started this ───────────────────────────────────
 
         [Theory]
@@ -202,6 +209,254 @@ namespace DreamCleaningBackend.Tests
             // block is wrapped in ShowEntire.
             Assert.True(pagesWithContractorBox.Intersect(pagesWithClientBox).Any(),
                 "The contractor and client signature boxes did not appear together on any page.");
+        }
+
+        // ── the preview and the PDF are ONE render (2026-09-15) ────────────────
+
+        /// <summary>
+        /// THE PREVIEW HTML AND THE PDF COME FROM THE SAME <see cref="RenderedContract"/>.
+        ///
+        /// Both `GeneratePreviewAsync` and `RenderAndFileExecutedAsync` call
+        /// <c>ContractRenderer.Render(snapshot)</c> and hand the result to their writer, so the
+        /// two cannot say different things about the same version by construction. This proves it
+        /// on the three changes most able to diverge if anyone ever re-derived one of them: the
+        /// de-duplicated premises address, the dropped Client mailing-address row, and the two
+        /// optional site-detail lines.
+        /// </summary>
+        [Fact]
+        public void ThePdfSaysExactlyWhatThePreviewSays()
+        {
+            var snapshot = Snapshot();
+            // Typed the way a person actually types it: the city and state are already in the
+            // street box, and the structured columns repeat them.
+            snapshot.ServiceLocation.Address = "1569 Flatbush Ave., Brooklyn, NY";
+            snapshot.SiteDetails = new SiteDetailsSnapshot();   // nothing recorded at all
+
+            var rendered = ContractRenderer.Render(snapshot);
+            var bytes = new ContractPdfService()
+                .GenerateDocument(rendered, snapshot, Block(), certificate: null, draftWatermark: true);
+
+            using var pdf = PdfDocument.Open(bytes);
+            // Letters AND digits here, because a ZIP is exactly what LettersOnly would throw away
+            // and the ZIP is half of what makes the duplicate visible.
+            var pdfText = AlphanumericOnly(string.Join(" ", pdf.GetPages().Select(p => p.Text)));
+            var previewText = AlphanumericOnly(rendered.PlainText);
+
+            // The address is written once, in both.
+            Assert.Contains(AlphanumericOnly("1569 Flatbush Ave., Brooklyn, NY 11210"), previewText);
+            Assert.Contains(AlphanumericOnly("1569 Flatbush Ave., Brooklyn, NY 11210"), pdfText);
+            Assert.DoesNotContain(AlphanumericOnly("Brooklyn, NY, Brooklyn"), previewText);
+            Assert.DoesNotContain(AlphanumericOnly("Brooklyn, NY, Brooklyn"), pdfText);
+
+            // The retired row and the two optional lines are absent from both.
+            foreach (var gone in new[]
+                     {
+                         "Client notice mailing address",
+                         "business mailing address",
+                         "FLOOR AND SURFACE MATERIALS",
+                         "FOOD-SERVICE PERMIT HOLDER"
+                     })
+            {
+                Assert.DoesNotContain(AlphanumericOnly(gone), previewText);
+                Assert.DoesNotContain(AlphanumericOnly(gone), pdfText);
+            }
+
+            // And the contractor's own mailing-address row is still on both — it was never the
+            // one being removed.
+            Assert.Contains(AlphanumericOnly("Contractor notice mailing address"), previewText);
+            Assert.Contains(AlphanumericOnly("Contractor notice mailing address"), pdfText);
+        }
+
+        /// <summary>
+        /// THE PREAMBLE NAMES THE PREMISES ON BOTH SURFACES, AND NAMES IT THE SAME WAY.
+        ///
+        /// The introductory paragraph is the one place the PDF and the preview are most likely to
+        /// diverge without anybody noticing: it is a long justified paragraph that wraps
+        /// differently on every page width, so an admin comparing the two by eye is comparing two
+        /// shapes. The wording matters as much as the address — the service location must never
+        /// be presented as Client's principal office or mailing address, and a misread on the
+        /// executed copy is the version a counterparty keeps.
+        /// </summary>
+        [Fact]
+        public void ThePreamblePremisesAddressIsOnBothThePreviewAndThePdf()
+        {
+            var snapshot = Snapshot();
+            var rendered = ContractRenderer.Render(snapshot);
+            var bytes = new ContractPdfService()
+                .GenerateDocument(rendered, snapshot, Block(), certificate: null, draftWatermark: true);
+
+            using var pdf = PdfDocument.Open(bytes);
+            var pdfText = AlphanumericOnly(string.Join(" ", pdf.GetPages().Select(p => p.Text)));
+            var previewText = AlphanumericOnly(rendered.PlainText);
+
+            var clause =
+                "Chick Tastic LLC, a limited liability company, with Services to be performed at "
+                + "1569 Flatbush Ave., Brooklyn, NY 11210 (\"Client\")";
+            Assert.Contains(AlphanumericOnly(clause), previewText);
+            Assert.Contains(AlphanumericOnly(clause), pdfText);
+
+            // The Contractor's principal office is still the only principal office in either.
+            var contractorOffice =
+                "with its principal office at 8800 20th Ave, Apt 2B, Brooklyn, NY 11214";
+            Assert.Contains(AlphanumericOnly(contractorOffice), previewText);
+            Assert.Contains(AlphanumericOnly(contractorOffice), pdfText);
+
+            foreach (var mislabel in new[]
+                     {
+                         "principal office at 1569 Flatbush",
+                         "Client's principal office",
+                         "registered office",
+                         "business mailing address"
+                     })
+            {
+                Assert.DoesNotContain(AlphanumericOnly(mislabel), previewText);
+                Assert.DoesNotContain(AlphanumericOnly(mislabel), pdfText);
+            }
+
+            // Section 1(b) and Exhibit A still carry their own premises sentences, word for word,
+            // on both surfaces - the preamble repeats the address rather than replacing them.
+            foreach (var kept in new[]
+                     {
+                         "The Premises address is the service location only and is not necessarily "
+                         + "Client's legal or principal business address.",
+                         "Service location only; not necessarily the legal or principal business "
+                         + "address of Client."
+                     })
+            {
+                Assert.Contains(AlphanumericOnly(kept), previewText);
+                Assert.Contains(AlphanumericOnly(kept), pdfText);
+            }
+        }
+
+        /// <summary>
+        /// THE OPTIONAL BACKUP CONTACTS RENDER THE SAME WAY IN BOTH, blank and filled.
+        ///
+        /// Same guarantee as the test above and the same reason to prove it: Exhibit B4 is a run
+        /// of exhibit ROWS, and the PDF lays those out through its own table writer. A row the
+        /// preview drops and the PDF keeps would put a ruled blank into an executed agreement that
+        /// the admin who approved it never saw.
+        /// </summary>
+        [Fact]
+        public void ABlankBackupContactIsAbsentFromBothThePreviewAndThePdf()
+        {
+            // Nothing recorded - the fixture never sets Contacts, so both backups are empty.
+            var blankSnapshot = Snapshot();
+            var blank = ContractRenderer.Render(blankSnapshot);
+            var blankPdf = AlphanumericOnly(string.Join(" ", PdfDocument
+                .Open(new ContractPdfService().GenerateDocument(
+                    blank, blankSnapshot, Block(), certificate: null, draftWatermark: true))
+                .GetPages().Select(p => p.Text)));
+            var blankPreview = AlphanumericOnly(blank.PlainText);
+
+            foreach (var gone in new[]
+                     {
+                         "Contractor backup on-call contact",
+                         "Client backup on-call contact"
+                     })
+            {
+                Assert.DoesNotContain(AlphanumericOnly(gone), blankPreview);
+                Assert.DoesNotContain(AlphanumericOnly(gone), blankPdf);
+            }
+
+            // No ruled blank reached either surface, and the sentinel never leaked into one.
+            Assert.DoesNotContain(AlphanumericOnly(ContractPlaceholders.OmitLineSentinel), blankPdf);
+
+            // The primary rows are on both — dropping a backup must not take its primary along.
+            Assert.Contains(AlphanumericOnly("Client primary on-call contact"), blankPreview);
+            Assert.Contains(AlphanumericOnly("Client primary on-call contact"), blankPdf);
+
+            // Filled in, the rows and their values come back on both surfaces.
+            var filled = Snapshot();
+            filled.Contacts.ContractorBackupContact = "Operations desk, (929) 930-1526";
+            filled.Contacts.ClientBackupContact = "Security desk, (212) 555-9000";
+
+            var filledRender = ContractRenderer.Render(filled);
+            var filledPdf = AlphanumericOnly(string.Join(" ", PdfDocument
+                .Open(new ContractPdfService().GenerateDocument(
+                    filledRender, filled, Block(), certificate: null, draftWatermark: true))
+                .GetPages().Select(p => p.Text)));
+            var filledPreview = AlphanumericOnly(filledRender.PlainText);
+
+            foreach (var present in new[]
+                     {
+                         "Contractor backup on-call contact",
+                         "Operations desk, (929) 930-1526",
+                         "Client backup on-call contact",
+                         "Security desk, (212) 555-9000"
+                     })
+            {
+                Assert.Contains(AlphanumericOnly(present), filledPreview);
+                Assert.Contains(AlphanumericOnly(present), filledPdf);
+            }
+        }
+
+        /// <summary>
+        /// NO FIXED WORDING NAMES A ROOM, in the preview OR the PDF.
+        ///
+        /// Both offenders lived in Exhibit A, which the PDF lays out through its own exhibit-row
+        /// and definition-list writers rather than as plain paragraphs — so "the preview is right"
+        /// is not evidence that the executed document is. With the office unticked, neither
+        /// surface may name it.
+        /// </summary>
+        [Fact]
+        public void NeitherThePreviewNorThePdfNamesARoomThatWasNotIncluded()
+        {
+            var snapshot = Snapshot();
+
+            var included = snapshot.Scope.Groups.First(g => g.Key == "included-areas");
+            included.Items.First(i => i.Label == "the office").Selected = false;
+
+            var rendered = ContractRenderer.Render(snapshot);
+            var bytes = new ContractPdfService()
+                .GenerateDocument(rendered, snapshot, Block(), certificate: null, draftWatermark: true);
+
+            using var pdf = PdfDocument.Open(bytes);
+            var pdfText = AlphanumericOnly(string.Join(" ", pdf.GetPages().Select(p => p.Text)));
+            var previewText = AlphanumericOnly(rendered.PlainText);
+
+            // The retired A1 label and the retired A2 examples are absent from both.
+            foreach (var gone in new[]
+                     {
+                         "Hallways, office and doors",
+                         "Hallways, offices and doors",
+                         "such as the office",
+                         "the employee restroom or hallways"
+                     })
+            {
+                Assert.DoesNotContain(AlphanumericOnly(gone), previewText);
+                Assert.DoesNotContain(AlphanumericOnly(gone), pdfText);
+            }
+
+            // The replacements are present on both, so the row and the rule did not simply vanish.
+            foreach (var present in new[]
+                     {
+                         "Hallways, included rooms and doors",
+                         "An area expressly identified as an Included Area in A1 remains included "
+                         + "even if it is physically located in a back-of-house portion of the Premises."
+                     })
+            {
+                Assert.Contains(AlphanumericOnly(present), previewText);
+                Assert.Contains(AlphanumericOnly(present), pdfText);
+            }
+        }
+
+        /// <summary>
+        /// And with the office TICKED it prints on both, as an ordinary Included Area. The fix
+        /// removed fixed references, not the selectable room.
+        /// </summary>
+        [Fact]
+        public void AnIncludedOfficeStillPrintsOnBothSurfaces()
+        {
+            var snapshot = Snapshot();
+            var rendered = ContractRenderer.Render(snapshot);
+            var bytes = new ContractPdfService()
+                .GenerateDocument(rendered, snapshot, Block(), certificate: null, draftWatermark: true);
+
+            using var pdf = PdfDocument.Open(bytes);
+            var pdfText = AlphanumericOnly(string.Join(" ", pdf.GetPages().Select(p => p.Text)));
+
+            Assert.Contains(AlphanumericOnly("the office"), AlphanumericOnly(rendered.PlainText));
+            Assert.Contains(AlphanumericOnly("the office"), pdfText);
         }
 
         [Fact]

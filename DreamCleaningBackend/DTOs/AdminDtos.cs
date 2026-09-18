@@ -302,6 +302,11 @@ namespace DreamCleaningBackend.DTOs
         public DateTime? ValidTo { get; set; }
         public decimal? MinimumOrderAmount { get; set; }
         public bool IsActive { get; set; }
+
+        // Derived from real bookings (OrderBookedFilter.IsRealBooking) that used this code —
+        // CurrentUsageCount above is never incremented anywhere, so it can't be trusted for reporting.
+        public int TimesUsed { get; set; }
+        public int UniqueUsersUsed { get; set; }
     }
 
     public class CreatePromoCodeDto : IValidatableObject

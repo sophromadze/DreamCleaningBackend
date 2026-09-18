@@ -119,6 +119,28 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>True when the generator created this order rather than a person.</summary>
         public bool IsGeneratedByRecurringSeries { get; set; }
 
+        // ── Part-payments of this order's own total (2026-09) ──────────────────────────────
+        // Separate from PendingUpdateAmount below, which is money owed on TOP of a settled order
+        // because its price went up. A surface showing "still owed" adds the two; nothing merges
+        // them. All zero/false/null on an ordinary order, so every existing view is unchanged.
+
+        /// <summary>Money already received against this order's total through part-payments.</summary>
+        public decimal AmountPaid { get; set; }
+
+        /// <summary>What is still owed on the order's own total. Zero once it is paid, whatever
+        /// AmountPaid holds — see Helpers/OrderBalance.cs.</summary>
+        public decimal AmountDue { get; set; }
+
+        /// <summary>True when money has arrived but has not settled the order — what the
+        /// "Partially paid" pill is driven by. Never a bare AmountPaid &gt; 0, which stays true
+        /// after the final payment lands.</summary>
+        public bool IsPartiallyPaid { get; set; }
+
+        /// <summary>The live part-payment request, when the order has one. Requires the caller to
+        /// have Included Order.PartialPayments — null means "no request", so the payment page
+        /// falls back to charging the whole balance, which is the safe direction.</summary>
+        public OrderPartialPaymentDto? PendingPartialPayment { get; set; }
+
         /// <summary>Sum of unpaid additional payments created by order updates.</summary>
         public decimal PendingUpdateAmount { get; set; }
         /// <summary>Latest unpaid update-history id (if any).</summary>
@@ -329,6 +351,19 @@ namespace DreamCleaningBackend.DTOs
         public decimal CompanyDevelopmentTips { get; set; }
         public bool IsPaid { get; set; }
         public DateTime? PaidAt { get; set; }
+
+        // ── Part-payments (2026-09) ────────────────────────────────────────────────────────
+        // Surfaced on the LIST dto so the orders table can render the "Partially paid" pill
+        // without fetching each order's details. All zero/false on an ordinary order.
+
+        /// <summary>Money received against this order's own total through part-payments.</summary>
+        public decimal AmountPaid { get; set; }
+
+        /// <summary>What is still owed on the order's own total; zero once it is paid.</summary>
+        public decimal AmountDue { get; set; }
+
+        /// <summary>Money has arrived but has not settled the order.</summary>
+        public bool IsPartiallyPaid { get; set; }
 
         /// <summary>
         /// Sum of unpaid additional payments created by order updates (e.g. admin increased total after initial payment).

@@ -32,6 +32,10 @@ namespace DreamCleaningBackend.Repositories
                 .Include(o => o.OrderExtraServices)
                     .ThenInclude(oes => oes.ExtraService)
                 .Include(o => o.AssignedAdmin)
+                // The details DTO reports the order's live part-payment request; without this
+                // it would read as "no request" and the payment page would ask for the whole
+                // balance instead of the deposit the admin agreed.
+                .Include(o => o.PartialPayments)
                 .FirstOrDefaultAsync(o => o.Id == id);
         }
 

@@ -10,6 +10,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<ExpenseDto> UpdateAsync(int id, UpdateExpenseDto dto);
         Task<bool> DeleteAsync(int id);
 
+        // Splits a recurring row at EffectiveDate into "was" (capped there) and "now" (a new row
+        // at NewAmount) — see AdjustExpenseAmountDto for why this needs no new schema.
+        Task<ExpenseDto> AdjustAmountAsync(int id, AdjustExpenseAmountDto dto, int byUserId);
+
         // Projects all expense occurrences (one-time + each recurring instance) that fall
         // within [from, to). Amounts are already prorated for expenses that opt into day-based
         // proration. Used both for statistics aggregation and per-day attribution.

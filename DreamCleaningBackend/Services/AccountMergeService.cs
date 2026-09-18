@@ -224,6 +224,10 @@ namespace DreamCleaningBackend.Services
                 if (oldAccount.WelcomeBonusGranted) newAccount.WelcomeBonusGranted = true;
                 if (oldAccount.ReviewBonusGranted) newAccount.ReviewBonusGranted = true;
 
+                // Same idea for the welcome email: this is one person, and they have already had it.
+                if (oldAccount.WelcomeEmailSentAt != null && newAccount.WelcomeEmailSentAt == null)
+                    newAccount.WelcomeEmailSentAt = oldAccount.WelcomeEmailSentAt;
+
                 // Referral: if new account has no referrer but old account does, carry it over
                 if (!newAccount.ReferredByUserId.HasValue && oldAccount.ReferredByUserId.HasValue)
                     newAccount.ReferredByUserId = oldAccount.ReferredByUserId;

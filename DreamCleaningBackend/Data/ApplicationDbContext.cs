@@ -74,6 +74,10 @@ namespace DreamCleaningBackend.Data
         // Deliberately NOT the commercial invoice ledger; see OrderPaymentBatch.
         public DbSet<OrderPaymentBatch> OrderPaymentBatches { get; set; }
         public DbSet<OrderPaymentBatchItem> OrderPaymentBatchItems { get; set; }
+
+        // Admin-requested part-payments of an order's own total ("$1,000 now, the rest later").
+        // Deliberately NOT OrderUpdateHistory, which is money owed on TOP of a settled order.
+        public DbSet<OrderPartialPayment> OrderPartialPayments { get; set; }
         public DbSet<OrderUnassignedPayout> OrderUnassignedPayouts { get; set; }
         public DbSet<NotificationLog> NotificationLogs { get; set; }
         public DbSet<PollQuestion> PollQuestions { get; set; }
@@ -458,6 +462,16 @@ namespace DreamCleaningBackend.Data
 
                 entity.HasOne(e => e.VoidedByUser).WithMany()
                     .HasForeignKey(e => e.VoidedByUserId).OnDelete(DeleteBehavior.SetNull);
+
+                // The archive flag, alongside the two columns every list query already filters on.
+                // The default list is "not archived", so this index carries the common case.
+                entity.HasIndex(e => new { e.IsArchived, e.InvoiceDate })
+                    .HasDatabaseName("IX_CommercialInvoices_Archived_InvoiceDate");
+
+                // SetNull, like VoidedByUser above: who archived it is a convenience link, and the
+                // invoice must survive that admin's account being removed.
+                entity.HasOne(e => e.ArchivedByUser).WithMany()
+                    .HasForeignKey(e => e.ArchivedByUserId).OnDelete(DeleteBehavior.SetNull);
             });
 
             // One invoice ↔ many orders, with the amount allocated to each. See
@@ -900,6 +914,26 @@ namespace DreamCleaningBackend.Data
 
                 entity.HasOne(e => e.Order).WithMany()
                     .HasForeignKey(e => e.OrderId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── Part-payments of one order ───────────────────────────────────────────────────
+            modelBuilder.Entity<OrderPartialPayment>(entity =>
+            {
+                entity.HasIndex(e => new { e.OrderId, e.Status })
+                    .HasDatabaseName("IX_OrderPartialPayments_Order_Status");
+
+                // UNIQUE — the idempotency guard. The browser's confirm and the Stripe webhook
+                // race for the same intent, and Stripe retries deliveries, so two settlements of
+                // one charge must collide here rather than credit the money twice. Nullable, and
+                // MySQL allows many NULLs in a unique index, so unsent requests do not collide.
+                entity.HasIndex(e => e.PaymentIntentId).IsUnique()
+                    .HasDatabaseName("IX_OrderPartialPayments_PaymentIntent");
+
+                entity.HasOne(e => e.Order).WithMany(o => o.PartialPayments)
+                    .HasForeignKey(e => e.OrderId).OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(e => e.RequestedByUser).WithMany()
+                    .HasForeignKey(e => e.RequestedByUserId).OnDelete(DeleteBehavior.SetNull);
             });
 
             // Order configuration

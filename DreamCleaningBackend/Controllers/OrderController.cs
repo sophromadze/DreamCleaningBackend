@@ -26,9 +26,14 @@ namespace DreamCleaningBackend.Controllers
         private readonly IOrderPaymentStatusReconciler _reconciler;
         private readonly ILogger<OrderController> _logger;
 
-        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService, IAdminBonusService adminBonusService, IOrderPaymentStatusReconciler reconciler, ILogger<OrderController> logger)
+        // Detached notifications run in a scope of their own — never this request's
+        // DbContext. See Helpers/BackgroundWork.
+        private readonly IServiceScopeFactory _scopeFactory;
+
+        public OrderController(IOrderService orderService, ApplicationDbContext context, IAuditService auditService, IStripeService stripeService, IEmailService emailService, IAdminBonusService adminBonusService, IOrderPaymentStatusReconciler reconciler, ILogger<OrderController> logger, IServiceScopeFactory scopeFactory)
         {
             _logger = logger;
+            _scopeFactory = scopeFactory;
             _orderService = orderService;
             _context = context;
             _auditService = auditService;
@@ -421,28 +426,13 @@ namespace DreamCleaningBackend.Controllers
                 if (order.Status == "Cancelled" || order.Status == "Done")
                     return BadRequest(new { message = $"Cannot pay for a {order.Status.ToLower()} order" });
 
-                // Use same unpaid amount as displayed: (current total − tips) − (original total − tips) − already paid
-                var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
-                decimal originalWithoutTips;
-                if (order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m)
-                    originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
-                else
-                {
-                    var firstHist = await _context.OrderUpdateHistories
-                        .Where(h => h.OrderId == orderId)
-                        .OrderBy(h => h.UpdatedAt)
-                        .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
-                        .FirstOrDefaultAsync();
-                    originalWithoutTips = firstHist ?? 0m;
-                }
-                var totalDelta = Math.Max(0m, currentWithoutTips - originalWithoutTips);
-                var alreadyPaid = await _context.OrderUpdateHistories
-                    .Where(h => h.OrderId == orderId && h.IsPaid)
-                    .SumAsync(h => h.AdditionalAmount);
-                var amountToCharge = Math.Max(0m, totalDelta - alreadyPaid);
-                amountToCharge = Math.Round(amountToCharge, 2);
+                // Same unpaid amount the panel and the emails display: (current total − tips) −
+                // (original total − tips) − what has already been collected against that rise.
+                // Resolved by the shared helper so the card is never charged a figure no other
+                // surface shows — see OrderAdditionalCharge and the order #359 example in it.
+                var amountToCharge = await OrderAdditionalCharge.OutstandingAsync(_context, order);
 
-                if (amountToCharge < 0.01m)
+                if (amountToCharge < OrderAdditionalCharge.MinimumCollectableAmount)
                     return BadRequest(new { message = "No pending additional payment found for this order" });
 
                 var unpaidHistories = await _context.OrderUpdateHistories
@@ -552,18 +542,20 @@ namespace DreamCleaningBackend.Controllers
                 // settled, so the webhook winning the race can't produce a duplicate email.
                 if (amountPaid > 0.01m)
                 {
-                    _ = Task.Run(async () =>
+                    // Read off the tracked order here: the send is detached and must not touch
+                    // the entity or the request's DbContext (the GetOrderById below uses it).
+                    var notifiedOrderId = order.Id;
+                    var notifiedEmail = order.ContactEmail ?? "";
+                    var notifiedName = $"{order.ContactFirstName} {order.ContactLastName}".Trim();
+
+                    BackgroundWork.Run(_scopeFactory, _logger, $"additional-payment notification for order {notifiedOrderId}", async services =>
                     {
-                        try
-                        {
-                            await _emailService.SendCompanyAdditionalPaymentReceivedAsync(
-                                order.Id,
-                                order.ContactEmail ?? "",
-                                $"{order.ContactFirstName} {order.ContactLastName}".Trim(),
-                                amountPaid
-                            );
-                        }
-                        catch { /* best-effort */ }
+                        await services.GetRequiredService<IEmailService>().SendCompanyAdditionalPaymentReceivedAsync(
+                            notifiedOrderId,
+                            notifiedEmail,
+                            notifiedName,
+                            amountPaid
+                        );
                     });
                 }
 

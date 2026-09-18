@@ -111,6 +111,56 @@ namespace DreamCleaningBackend.Services
             return (await GetByIdAsync(row.Id))!;
         }
 
+        public async Task<ExpenseDto> AdjustAmountAsync(int id, AdjustExpenseAmountDto dto, int byUserId)
+        {
+            var row = await _context.Expenses.FirstOrDefaultAsync(e => e.Id == id);
+            if (row == null)
+                throw new InvalidOperationException("Expense not found.");
+            if (!row.IsRecurring)
+                throw new InvalidOperationException("Only a recurring expense can be raised or reduced from a date. Edit a one-time expense directly.");
+
+            var effectiveDate = dto.EffectiveDate.Date;
+            if (effectiveDate <= row.StartDate.Date)
+                throw new InvalidOperationException("The effective date must be after this entry's start date.");
+            if (row.EndDate.HasValue && effectiveDate > row.EndDate.Value.Date)
+                throw new InvalidOperationException("This entry already ends before that date.");
+
+            // Full scalar copy before anything moves — same reason UpdateAsync takes one.
+            var before = AuditSnapshot.Of(row);
+            // The row's OWN end date (if it already had one scheduled) carries onto the new row —
+            // splitting the amount must not silently cancel a cancellation that was already planned.
+            var carriedEndDate = row.EndDate;
+
+            row.EndDate = effectiveDate.AddDays(-1);
+            row.UpdatedAt = DateTime.UtcNow;
+
+            var newRow = new Expense
+            {
+                Name = row.Name,
+                StaffUserId = row.StaffUserId,
+                Amount = dto.NewAmount,
+                Currency = row.Currency,
+                CategoryId = row.CategoryId,
+                StartDate = effectiveDate,
+                IsRecurring = true,
+                FrequencyMonths = row.FrequencyMonths,
+                EndDate = carriedEndDate,
+                ProrateByDay = row.ProrateByDay,
+                Notes = string.IsNullOrWhiteSpace(dto.Notes) ? row.Notes : dto.Notes.Trim(),
+                CreatedByUserId = byUserId,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            _context.Expenses.Add(newRow);
+            await _context.SaveChangesAsync();
+
+            await _audit.LogUpdateAsync(before, row);
+            await _audit.LogCreateAsync(newRow);
+
+            return (await GetByIdAsync(newRow.Id))!;
+        }
+
         public async Task<bool> DeleteAsync(int id)
         {
             var row = await _context.Expenses.FirstOrDefaultAsync(e => e.Id == id);
@@ -739,8 +789,6 @@ namespace DreamCleaningBackend.Services
             var namedByStaff = SalaryExpenseRules.IsSalaryCategory(dto.CategoryId) && dto.StaffUserId.HasValue;
             if (!namedByStaff && string.IsNullOrWhiteSpace(dto.Name))
                 throw new InvalidOperationException("Name is required.");
-            if (dto.Amount < 0)
-                throw new InvalidOperationException("Amount cannot be negative.");
             if (!await _context.ExpenseCategories.AnyAsync(c => c.Id == dto.CategoryId))
                 throw new InvalidOperationException("Selected category does not exist.");
             if (dto.IsRecurring)

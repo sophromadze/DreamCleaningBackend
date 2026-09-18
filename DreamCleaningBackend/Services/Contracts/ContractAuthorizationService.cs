@@ -103,18 +103,38 @@ namespace DreamCleaningBackend.Services.Contracts
         /// The full capability set for the signed-in account, so the Angular panel can render
         /// exactly the buttons the API would honour rather than maintaining its own copy of the
         /// matrix.
+        ///
+        /// It also reports the AUTHORITY LEVEL itself, under a key no action can collide with.
+        /// That is not decoration: an untitled account silently loses Back to Edit, Create
+        /// Amendment and Delete, and with only the booleans to go on the panel can say nothing
+        /// about why - which reads exactly like a broken deployment, and did. The level is what
+        /// lets the page explain that an officer title is missing instead of rendering a gap.
+        ///
+        /// Reported by the SERVER rather than re-derived in Angular from the role, for the same
+        /// reason the booleans are: the matrix deliberately does not follow the app's role
+        /// hierarchy, so a local copy of that rule would be free to drift from this one.
         /// </summary>
-        public async Task<Dictionary<string, bool>> DescribeCapabilitiesAsync()
+        public async Task<Dictionary<string, object>> DescribeCapabilitiesAsync()
         {
             var authority = await GetAuthorityAsync();
-            var map = new Dictionary<string, bool>();
+            var map = new Dictionary<string, object>();
             foreach (ContractAction action in Enum.GetValues<ContractAction>())
             {
                 map[ToCamelCase(action.ToString())] =
                     authority.HasValue && ContractPermissionMatrix.Can(authority.Value, action);
             }
+
+            // "manager" / "ceo" / "cto", or "none" for an account with no business in the module.
+            // Lower-cased so the client compares a stable token rather than an enum spelling.
+            map[AuthorityKey] = (authority?.ToString() ?? "None").ToLowerInvariant();
             return map;
         }
+
+        /// <summary>
+        /// The key <see cref="DescribeCapabilitiesAsync"/> reports the authority level under.
+        /// Not a member of <see cref="ContractAction"/>, so it can never shadow an action name.
+        /// </summary>
+        public const string AuthorityKey = "authority";
 
         private static string Describe(ContractAction action) => action switch
         {

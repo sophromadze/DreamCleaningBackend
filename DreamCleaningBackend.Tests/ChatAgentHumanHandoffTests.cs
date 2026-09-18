@@ -27,6 +27,15 @@ namespace DreamCleaningBackend.Tests
     /// </para>
     ///
     /// <para>
+    /// A second transcript from the same month is here too, because it is the same mistake
+    /// pointing the other way: "can i pay extra to get my dishwasher cleaned?" was answered
+    /// with a flat "we don't offer that", invented out of the catalog's silence. We do that
+    /// work. The rule against inventing a SERVICE had been read as licence to invent a
+    /// REFUSAL, so the prompt now has to say that an unsourced no is an invention too, and
+    /// that the honest answer is an offer to hand off.
+    /// </para>
+    ///
+    /// <para>
     /// The prompt assertions are deliberately about WORDING. The prompt is the whole
     /// implementation of this behaviour, so "the rule is still in there" is the only thing
     /// there is to assert; an edit that drops one of these sentences is the regression.
@@ -175,6 +184,106 @@ namespace DreamCleaningBackend.Tests
 
             Assert.Contains("EmailAddressValidator.DescribeProblem", controller);
             Assert.Contains("BadRequest(new { message = problem })", controller);
+        }
+
+        // ===== Refusing work we actually do =====
+        //
+        // 2026-09, a second real transcript. "can i pay extra to get my dishwasher cleaned?"
+        // was answered "we don't offer dishwasher interior cleaning as an extra" — a flat no,
+        // derived from nothing but the catalog's silence. We do that work; our cleaners can do
+        // most of what a customer asks for, and the extras grid is only what can be BOOKED
+        // online. The assistant had been told never to invent a service, and read that as
+        // licence to invent a refusal instead.
+
+        [Fact]
+        public void TheCatalogsSilenceIsNotARefusal()
+        {
+            Assert.Contains("NEVER REFUSE ON OUR BEHALF", Prompt);
+            Assert.Contains(
+                "tells you exactly one thing: you cannot price it or promise it yourself. It never tells you the answer is no",
+                Prompt);
+        }
+
+        [Fact]
+        public void TheRefusalWordingIsNamed_NotJustDiscouraged()
+        {
+            // A general "be humble about what you know" would not have caught this: the model
+            // did not think it was guessing. The phrases themselves have to be on the list.
+            Assert.Contains("NEVER say \"we don't offer that\"", Prompt);
+            Assert.Contains("that isn't available", Prompt);
+            Assert.Contains("do not imply unavailability by answering only with what IS on the list", Prompt);
+        }
+
+        [Fact]
+        public void TheDishwasherTranscriptIsQuotedSoTheRuleCannotBeReadAsAbstract()
+        {
+            Assert.Contains("can i pay extra to get my dishwasher cleaned?", Prompt);
+            Assert.Contains("we don't offer dishwasher interior cleaning as an extra", Prompt);
+        }
+
+        [Fact]
+        public void TheHandoffIsMandatoryHere_NotTheOnceOrTwicePerConversationOffer()
+        {
+            // The light ESCALATION offer is capped and must never be re-offered after a
+            // decline. This one is a different thing wearing the same clothes: the customer
+            // asked a question only a human can answer, so the cap must not swallow it.
+            Assert.Contains(
+                "Step 3 is MANDATORY here, exactly as it is under REQUESTS TO CHECK, CONFIRM OR LOOK SOMETHING UP, and the once-or-twice-per-conversation limit under ESCALATION does not apply to it",
+                Prompt);
+            Assert.Contains("If they accept, call escalate_to_human", Prompt);
+        }
+
+        [Fact]
+        public void AnUnsourcedNoIsAsMuchAnInventionAsAnUnsourcedYes()
+        {
+            // KNOWLEDGE BOUNDARIES already forbade stating unsourced facts, and was read as
+            // applying only to claims in the affirmative. Spelling out the other direction is
+            // the whole fix.
+            Assert.Contains("This cuts BOTH ways", Prompt);
+            Assert.Contains(
+                "A \"no\" you cannot source is just as much an invention as a \"yes\" you cannot source",
+                Prompt);
+        }
+
+        [Fact]
+        public void TheOldDoesNotExistSentenceNoLongerReadsAsAnAuthorityToRefuse()
+        {
+            // "If a service appears in NEITHER tool, it does not exist" is what the refusal was
+            // built on. It has to keep banning invented SERVICES without licensing a no.
+            Assert.DoesNotContain("If a service appears in NEITHER tool, it does not exist", Prompt);
+            Assert.Contains(
+                "If a service appears in NEITHER tool, you cannot quote it, price it or promise it",
+                Prompt);
+            Assert.Contains("not a statement that we don't do it", Prompt);
+        }
+
+        [Fact]
+        public void NotIncludedStaysASeparateAnswerFromWeCannotDoIt()
+        {
+            // The counterweight. cleaning_checklist is still exhaustive for what is already
+            // covered by the price (see REDUNDANT EXTRAS) — this rule must not be read as
+            // permission to start hedging about inclusions, only about capability.
+            Assert.Contains("cleaning_checklist stays exhaustive for what is ALREADY INCLUDED at no extra cost", Prompt);
+            Assert.Contains("an item missing from the checklist is a paid extra or a question for the team — never a refusal", Prompt);
+        }
+
+        [Fact]
+        public void TheNearestBookableExtraMayBeOfferedOnlyAlongsideTheHandoff()
+        {
+            // The transcript's second half: the Dishes add-on was offered INSTEAD of a route to
+            // a human, which reads as "here is what you may have instead" — the refusal again,
+            // one sentence later.
+            Assert.Contains("only ALONGSIDE the handoff, never INSTEAD of it", Prompt);
+        }
+
+        [Fact]
+        public void TheRuleIsRecordedInTheFilesOwnContract()
+        {
+            // The prompt is the implementation, and this list at the top of the file is what a
+            // future edit reads before rewriting a section.
+            var source = ReadBackendFile("Services", "ChatAgentSystemPrompt.cs");
+
+            Assert.Contains("The agent NEVER refuses work on the company's behalf", source);
         }
 
         // ===== Helpers =====

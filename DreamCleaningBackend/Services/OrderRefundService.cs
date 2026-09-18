@@ -66,6 +66,17 @@ namespace DreamCleaningBackend.Services
             // later top-ups — that is what a customer reading their statement expects.
             var intentIds = new List<string>();
 
+            // Part-payments first, oldest first: on an order paid in slices these ARE the original
+            // booking charges, and Order.PaymentIntentId holds only the LAST of them (the ordinary
+            // confirmation path stamps it when the final slice settles the order). Taking a refund
+            // off that one first would work backwards through the customer's deposits.
+            foreach (var partial in order.PartialPayments
+                         .Where(p => p.Status == OrderPartialPaymentStatus.Paid && IsStripeIntent(p.PaymentIntentId))
+                         .OrderBy(p => p.PaidAt ?? p.CreatedAt))
+            {
+                intentIds.Add(partial.PaymentIntentId!);
+            }
+
             if (IsStripeIntent(order.PaymentIntentId))
                 intentIds.Add(order.PaymentIntentId!);
 
@@ -106,6 +117,7 @@ namespace DreamCleaningBackend.Services
         {
             var order = await _context.Orders
                 .Include(o => o.UpdateHistory)
+                .Include(o => o.PartialPayments)
                 .FirstOrDefaultAsync(o => o.Id == orderId);
 
             if (order == null)
@@ -203,6 +215,7 @@ namespace DreamCleaningBackend.Services
         {
             var order = await _context.Orders
                 .Include(o => o.UpdateHistory)
+                .Include(o => o.PartialPayments)
                 .FirstOrDefaultAsync(o => o.Id == orderId);
 
             if (order == null)
@@ -315,6 +328,7 @@ namespace DreamCleaningBackend.Services
         {
             var order = await _context.Orders
                 .Include(o => o.UpdateHistory)
+                .Include(o => o.PartialPayments)
                 .FirstOrDefaultAsync(o => o.Id == orderId);
 
             if (order == null)
@@ -643,6 +657,7 @@ namespace DreamCleaningBackend.Services
 
             var order = await _context.Orders
                 .Include(o => o.UpdateHistory)
+                .Include(o => o.PartialPayments)
                 .FirstOrDefaultAsync(o => o.Id == orderId);
 
             if (order == null)

@@ -59,6 +59,12 @@ namespace DreamCleaningBackend.Controllers
         /// Deliberately does not test <c>ContractClient.IsActive</c>: a client can be retired while
         /// invoices are still outstanding, and hiding a bill somebody owes because the account was
         /// tidied up would be the wrong kind of tidy.
+        ///
+        /// It does not test <c>IsArchived</c> either, for the same reason. Archiving is OUR filing
+        /// decision about OUR list; a customer's copy of a bill they were sent is not ours to
+        /// retract, and hiding a receipt they may need for their own accounts is the same mistake
+        /// one step further on. The Draft / FirstSentAt gate below is what decides whether they
+        /// ever saw it at all.
         /// </summary>
         private IQueryable<CommercialInvoice> OwnedInvoices() =>
             _context.CommercialInvoices

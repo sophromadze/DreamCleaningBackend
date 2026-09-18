@@ -2093,6 +2093,12 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<decimal>("AmountPaid")
                         .HasColumnType("decimal(10,2)");
 
+                    b.Property<DateTime?>("ArchivedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("ArchivedByUserId")
+                        .HasColumnType("int");
+
                     b.Property<decimal>("BalanceDue")
                         .HasColumnType("decimal(10,2)");
 
@@ -2162,6 +2168,9 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)");
+
+                    b.Property<bool>("IsArchived")
+                        .HasColumnType("tinyint(1)");
 
                     b.Property<DateTime?>("LastSentAt")
                         .HasColumnType("datetime(6)");
@@ -2239,6 +2248,8 @@ namespace DreamCleaningBackend.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ArchivedByUserId");
+
                     b.HasIndex("ContractClientId")
                         .HasDatabaseName("IX_CommercialInvoices_ClientId");
 
@@ -2261,6 +2272,9 @@ namespace DreamCleaningBackend.Migrations
                         .HasDatabaseName("IX_CommercialInvoices_PublicToken");
 
                     b.HasIndex("VoidedByUserId");
+
+                    b.HasIndex("IsArchived", "InvoiceDate")
+                        .HasDatabaseName("IX_CommercialInvoices_Archived_InvoiceDate");
 
                     b.HasIndex("Status", "DueDate")
                         .HasDatabaseName("IX_CommercialInvoices_Status_DueDate");
@@ -4562,6 +4576,9 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
 
+                    b.Property<decimal>("AmountPaid")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<int?>("ApartmentId")
                         .HasColumnType("int");
 
@@ -5065,6 +5082,85 @@ namespace DreamCleaningBackend.Migrations
                     b.HasIndex("OrderId");
 
                     b.ToTable("OrderExtraServices");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.OrderPartialPayment", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("CancelledByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("ManualPaymentRecordedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("ManualPaymentRecordedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<DateTime?>("NotificationSentAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("PaidAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime?>("PaidAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("PaymentIntentId")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<int>("PaymentMethod")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PaymentNotes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("PaymentReference")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<decimal>("RequestedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("RequestedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ManualPaymentRecordedByUserId");
+
+                    b.HasIndex("PaymentIntentId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_OrderPartialPayments_PaymentIntent");
+
+                    b.HasIndex("RequestedByUserId");
+
+                    b.HasIndex("OrderId", "Status")
+                        .HasDatabaseName("IX_OrderPartialPayments_Order_Status");
+
+                    b.ToTable("OrderPartialPayments");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.OrderPaymentBatch", b =>
@@ -7133,6 +7229,12 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("varchar(20)");
 
+                    b.Property<string>("PreviousRefreshToken")
+                        .HasColumnType("longtext");
+
+                    b.Property<DateTime?>("PreviousRefreshTokenExpiryTime")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<string>("ProfilePictureUrl")
                         .HasMaxLength(500)
                         .HasColumnType("varchar(500)");
@@ -7211,6 +7313,9 @@ namespace DreamCleaningBackend.Migrations
 
                     b.Property<bool>("WelcomeBonusGranted")
                         .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("WelcomeEmailSentAt")
+                        .HasColumnType("datetime(6)");
 
                     b.HasKey("Id");
 
@@ -7706,6 +7811,11 @@ namespace DreamCleaningBackend.Migrations
 
             modelBuilder.Entity("DreamCleaningBackend.Models.Commercial.CommercialInvoice", b =>
                 {
+                    b.HasOne("DreamCleaningBackend.Models.User", "ArchivedByUser")
+                        .WithMany()
+                        .HasForeignKey("ArchivedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("DreamCleaningBackend.Models.Contracts.ContractClient", "Client")
                         .WithMany()
                         .HasForeignKey("ContractClientId")
@@ -7732,6 +7842,8 @@ namespace DreamCleaningBackend.Migrations
                         .WithMany()
                         .HasForeignKey("VoidedByUserId")
                         .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("ArchivedByUser");
 
                     b.Navigation("Client");
 
@@ -8361,6 +8473,30 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("Order");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.OrderPartialPayment", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.User", "ManualPaymentRecordedByUser")
+                        .WithMany()
+                        .HasForeignKey("ManualPaymentRecordedByUserId");
+
+                    b.HasOne("DreamCleaningBackend.Models.Order", "Order")
+                        .WithMany("PartialPayments")
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "RequestedByUser")
+                        .WithMany()
+                        .HasForeignKey("RequestedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("ManualPaymentRecordedByUser");
+
+                    b.Navigation("Order");
+
+                    b.Navigation("RequestedByUser");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.OrderPaymentBatch", b =>
                 {
                     b.HasOne("DreamCleaningBackend.Models.RecurringOrderSeries", "RecurringSeries")
@@ -8939,6 +9075,8 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("OrderExtraServices");
 
                     b.Navigation("OrderServices");
+
+                    b.Navigation("PartialPayments");
 
                     b.Navigation("Refunds");
 

@@ -64,10 +64,46 @@ namespace DreamCleaningBackend.Services.Contracts
             void PutOrNone(string key, string? value) =>
                 map[key] = string.IsNullOrWhiteSpace(value) ? "None" : value.Trim();
 
+            // A GENUINELY OPTIONAL detail - a site fact, or a backup on-call contact: printed
+            // when it was recorded, and its whole LINE dropped from the document when it was not.
+            //
+            // Distinct from both of the above, and the distinction is what "optional" means here.
+            // A ruled blank says the question is still open and puts the field in the preview's
+            // warning banner, which is exactly how an optional field comes to look mandatory to
+            // the admin filling the form in. "None" is worse still - it is a positive statement
+            // about the premises ("Food-service permit holder: None") that nobody made. Omitting
+            // the line leaves an exhibit that is complete and internally consistent either way,
+            // which is the same line-level mechanism the retired returned-payment fee uses.
+            void PutOrOmitLine(string key, string? value) =>
+                map[key] = string.IsNullOrWhiteSpace(value) ? OmitLineSentinel : value.Trim();
+
             // ── Dates / identity ───────────────────────────────────────────────
             Put("EFFECTIVE_DATE", ContractTextFormat.LongDate(s.EffectiveDate));
             Put("CONTRACT_NUMBER", s.ContractNumber);
             Put("CONTRACT_VERSION", s.VersionNumber.ToString());
+
+            // ── Published policies (Section 36(o)) ─────────────────────────────
+            // Read from the SNAPSHOT, never from CommercialPolicyDocument.Version. The published
+            // policy is revised over time, and resolving it live would rewrite what an executed
+            // agreement records as having been in force on the day it was signed.
+            //
+            // A snapshot frozen before Section 36 existed carries neither value, and its body
+            // references neither token - but it falls back to the current constant rather than to
+            // a ruled blank, because the only way to reach these tokens with an empty snapshot is
+            // a draft saved in the window between deploying this and the draft being re-saved,
+            // where the current version genuinely is the one in force.
+            Put("POLICY_VERSION", string.IsNullOrWhiteSpace(s.PolicyVersion)
+                ? Helpers.Commercial.CommercialPolicyDocument.Version
+                : s.PolicyVersion);
+            Put("POLICY_EFFECTIVE_DATE", Helpers.Commercial.CommercialPolicyDocument.FormatEffectiveDate(
+                string.IsNullOrWhiteSpace(s.PolicyEffectiveDate)
+                    ? Helpers.Commercial.CommercialPolicyDocument.EffectiveDate
+                    : s.PolicyEffectiveDate));
+
+            // The address the policies are published at - a pointer, deliberately NOT snapshotted
+            // alongside the version, so a historical contract points somewhere that still resolves.
+            Put("CONTRACTOR_PUBLISHED_POLICY_URL",
+                Helpers.Commercial.CommercialPolicyDocument.PublishedPolicyUrl);
 
             // ── Contractor ─────────────────────────────────────────────────────
             var c = s.Contractor;
@@ -112,12 +148,16 @@ namespace DreamCleaningBackend.Services.Contracts
             Put("CLIENT_NOTICE_EMAIL", cl.NoticeEmail);
             Put("CLIENT_PHONE", ContractTextFormat.Phone(cl.Phone));
 
-            // Where FORMAL notice is served (the preamble and Section 32 / Exhibit B4).
+            // KEPT ONLY FOR BODIES WRITTEN BEFORE v2.2. The current agreement does not ask Client
+            // for a notice mailing address at all: the preamble identifies Client by legal entity
+            // name, entity type and formation state, Exhibit B4 no longer carries the row, and
+            // Section 32 serves formal notice on the designated notice EMAIL. Removing the token
+            // would leave a frozen v2.0/v2.1 snapshot rendering a literal {{...}} years after it
+            // was executed, which is why it stays mapped - exactly as the retired $35 returned-
+            // payment fee does.
             //
-            // Falls back to the principal address rather than blanking, because the two are the
-            // same for most clients and leaving the PREAMBLE of the agreement a ruled blank would
-            // look like a drafting error on the first line a counterparty reads. A client that
-            // reads its mail somewhere else overrides it on the form.
+            // The fallback to the principal address is likewise preserved so such a document
+            // re-renders byte-for-byte the way it did when it was signed.
             var clientNoticeAddress = string.IsNullOrWhiteSpace(s.Contacts?.ClientNoticeMailingAddress)
                 ? JoinAddress(cl.PrincipalAddress, cl.City, cl.State, cl.Zip)
                 : s.Contacts!.ClientNoticeMailingAddress!.Trim();
@@ -324,21 +364,31 @@ namespace DreamCleaningBackend.Services.Contracts
             Put("FEDERAL_VENUE", a.FederalVenue);
 
             // ── Exhibit A: recorded site details ───────────────────────────────
-            // Every one of these is a blank the Parties fill in. An unanswered one renders as a
-            // ruled blank so it is visibly unanswered, rather than as "None" - which would assert
-            // that the premises has no employee restroom.
+            // Most of these are blanks the Parties fill in. An unanswered one renders as a ruled
+            // blank so it is visibly unanswered, rather than as "None" - which would assert that
+            // the premises has no employee restroom. The two PutOrOmitLine fields below are the
+            // exception and are marked as such.
             var sd = s.SiteDetails ?? new SiteDetailsSnapshot();
             PutBlank("SQUARE_FOOTAGE", sd.ApproximateSquareFootage);
             PutBlank("CUSTOMER_RESTROOM_COUNTS", sd.CustomerRestroomCounts);
             PutBlank("EMPLOYEE_RESTROOM_COUNTS", sd.EmployeeRestroomCounts);
-            PutBlank("FLOOR_MATERIALS", sd.FloorMaterials);
+            // FULLY OPTIONAL (2026-09-15). A4 no longer hangs the floor-cleaning obligation on
+            // this field being populated - Contractor uses commercially reasonable,
+            // surface-appropriate products and methods whether or not the materials were written
+            // down - so an unanswered one is not an open question and must not print a blank.
+            PutOrOmitLine("FLOOR_MATERIALS", sd.FloorMaterials);
             PutBlank("KITCHEN_EQUIPMENT_SURFACES", sd.KitchenEquipmentAndSurfaces);
             PutBlank("TOUCHPOINT_LOCATIONS", sd.TouchpointLocations);
             PutBlank("INTERIOR_GLASS_LOCATIONS", sd.InteriorGlassLocations);
             PutBlank("ACCESS_METHOD_REFERENCE", sd.AccessMethodReference);
             PutBlank("EQUIPMENT_RESTRICTIONS", sd.EquipmentRestrictions);
             PutBlank("WASTE_RECEPTACLE_LOCATIONS", sd.WasteReceptacleLocations);
-            PutBlank("FOOD_PERMIT_HOLDER", sd.FoodServicePermitHolder);
+            // FULLY OPTIONAL (2026-09-15), same rule and the same reason: Section 16(c) no longer
+            // requires Client to identify the permit holder before work begins, and Section 26(b)
+            // leaves Client responsible for its own permits, sanitation and food handling whether
+            // or not a name was recorded here. A blank line would imply a missing precondition
+            // that no longer exists.
+            PutOrOmitLine("FOOD_PERMIT_HOLDER", sd.FoodServicePermitHolder);
             PutBlank("BASELINE_WALKTHROUGH", sd.BaselineWalkthroughRecord);
 
             // These three the drafted agreement writes as "[... OR NONE]": an empty answer is a
@@ -384,11 +434,29 @@ namespace DreamCleaningBackend.Services.Contracts
             PutBlank("CONTRACTOR_SUPERVISOR", NameAndPhone(
                 contacts.ContractorSupervisorName,
                 Coalesce(contacts.ContractorSupervisorPhone, c.Phone)));
-            PutBlank("CONTRACTOR_BACKUP_CONTACT", contacts.ContractorBackupContact);
             PutBlank("CLIENT_ON_CALL_CONTACT", NameAndPhone(
                 contacts.ClientOnCallName,
                 Coalesce(contacts.ClientOnCallPhone, cl.Phone)));
-            PutBlank("CLIENT_BACKUP_CONTACT", contacts.ClientBackupContact);
+
+            // THE BACKUP ON-CALL CONTACTS ARE FULLY OPTIONAL (2026-09-16), on both sides.
+            //
+            // Section 16(c) asks Client for a PRIMARY contact and says a backup is one it "may
+            // designate ... if available", so an empty one is not an unanswered question - and a
+            // ruled blank would both say it was and put the field in the preview's warning
+            // banner, which is how an optional field comes to look mandatory to the admin filling
+            // the form in. "None" is no better on an Exhibit B4 row: it reads as a positive
+            // statement that no second person exists, which nobody made.
+            //
+            // So the whole ROW leaves the exhibit - the same line-level mechanism the retired
+            // returned-payment fee and Exhibit A's optional site details use. A backup that WAS
+            // recorded still prints its row exactly as before, which is what keeps every existing
+            // contract and draft rendering unchanged.
+            //
+            // The primaries above deliberately keep PutBlank: Section 14 hangs a failed-access
+            // charge on Contractor having tried to reach one, so a missing primary IS an open
+            // question the preview must chase.
+            PutOrOmitLine("CONTRACTOR_BACKUP_CONTACT", contacts.ContractorBackupContact);
+            PutOrOmitLine("CLIENT_BACKUP_CONTACT", contacts.ClientBackupContact);
 
             // ── Derived scheduling prose ───────────────────────────────────────
             // Section 5(f) / Exhibit A CONDITIONS: whether the premises are open during service.
@@ -469,13 +537,92 @@ namespace DreamCleaningBackend.Services.Contracts
         private static string? DateOrNull(DateTime? value) =>
             value.HasValue ? ContractTextFormat.LongDate(value) : null;
 
+        /// <summary>
+        /// "1569 Flatbush Ave., Brooklyn, NY 11210" - one address line, with each part written
+        /// EXACTLY ONCE.
+        ///
+        /// THE STREET FIELD ROUTINELY ALREADY CARRIES THE CITY AND STATE. A service location is
+        /// typed by a person, pasted out of a listing or filled from an autocomplete, so
+        /// "1569 Flatbush Ave., Brooklyn, NY" in the street box is ordinary rather than a mistake
+        /// - and appending the structured city and state to it produced
+        /// "1569 Flatbush Ave., Brooklyn, NY, Brooklyn, NY 11210" in Section 1(b), in Exhibit A's
+        /// SERVICE PREMISES line, and in the preamble's contractor address. Printed in an
+        /// executed agreement it reads as a broken document, on the line identifying where the
+        /// work happens.
+        ///
+        /// So the street is split on its commas and any TRAILING component that merely restates
+        /// the structured city, state or ZIP is dropped before the structured parts are appended.
+        /// Only a trailing component qualifies, which is what keeps the rule safe: "Brooklyn
+        /// Bridge Blvd" in Brooklyn is one component that is not the word "Brooklyn", and a
+        /// "Floor 3" or "Apt 2B" component is never mistaken for a city. Matching ignores case
+        /// and punctuation so "NY", "ny" and "N.Y." are the same state, and a component that
+        /// carries the pair ("NY 11210", "Brooklyn, NY") is recognised as well.
+        ///
+        /// The structured columns win because they are the fields the rest of the system reads -
+        /// nothing here rewrites them from the free-text box.
+        /// </summary>
         private static string JoinAddress(string? street, string? city, string? state, string? zip)
         {
             var sb = new StringBuilder();
-            if (!string.IsNullOrWhiteSpace(street)) sb.Append(street.Trim());
+
+            foreach (var component in StripRepeatedTail(street, city, state, zip))
+                sb.Append(sb.Length > 0 ? ", " : string.Empty).Append(component);
+
             if (!string.IsNullOrWhiteSpace(city)) sb.Append(sb.Length > 0 ? ", " : "").Append(city.Trim());
             if (!string.IsNullOrWhiteSpace(state)) sb.Append(sb.Length > 0 ? ", " : "").Append(state.Trim());
             if (!string.IsNullOrWhiteSpace(zip)) sb.Append(sb.Length > 0 ? " " : "").Append(zip.Trim());
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// The same one-line address the DOCUMENT prints, for the admin list and the customer
+        /// portal to label a service location with.
+        ///
+        /// Exposed rather than copied: those labels are read beside the contract they belong to,
+        /// and a list row saying "1569 Flatbush Ave., Brooklyn, NY, Brooklyn, NY 11210" next to a
+        /// PDF that says it once is the same defect in a second place. See
+        /// <see cref="JoinAddress"/> for why the duplication happens at all.
+        /// </summary>
+        public static string ComposeAddress(string? street, string? city, string? state, string? zip) =>
+            JoinAddress(street, city, state, zip);
+
+        /// <summary>
+        /// The comma-separated components of a street line, with any trailing ones that repeat the
+        /// structured city / state / ZIP removed. Repeated until nothing more matches, so
+        /// "1569 Flatbush Ave., Brooklyn, NY 11210" comes back as just "1569 Flatbush Ave.".
+        /// </summary>
+        private static List<string> StripRepeatedTail(string? street, string? city, string? state, string? zip)
+        {
+            var components = (street ?? string.Empty)
+                .Split(',')
+                .Select(p => p.Trim())
+                .Where(p => p.Length > 0)
+                .ToList();
+
+            // Every spelling of the tail this line could already be carrying. Compared on letters
+            // and digits alone, so "NY 11210" and "NY, 11210" collapse to the same key.
+            var repeats = new[]
+            {
+                zip, state, city,
+                $"{state} {zip}", $"{city} {state}", $"{city} {state} {zip}"
+            }
+            .Select(Alphanumeric)
+            .Where(k => k.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+
+            while (components.Count > 0 && repeats.Contains(Alphanumeric(components[^1])))
+                components.RemoveAt(components.Count - 1);
+
+            return components;
+        }
+
+        /// <summary>Letters and digits only, upper-cased: the comparison key for an address part.</summary>
+        private static string Alphanumeric(string? value)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            var sb = new StringBuilder(value.Length);
+            foreach (var ch in value)
+                if (char.IsLetterOrDigit(ch)) sb.Append(char.ToUpperInvariant(ch));
             return sb.ToString();
         }
     }

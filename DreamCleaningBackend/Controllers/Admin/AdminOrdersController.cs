@@ -2883,25 +2883,10 @@ namespace DreamCleaningBackend.Controllers
             if (order == null)
                 return NotFound(new { message = "Order not found" });
 
-            var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
-            decimal originalWithoutTips;
-            if (order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m)
-                originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
-            else
-            {
-                var firstHist = await _context.OrderUpdateHistories
-                    .Where(h => h.OrderId == orderId)
-                    .OrderBy(h => h.UpdatedAt)
-                    .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
-                    .FirstOrDefaultAsync();
-                originalWithoutTips = firstHist ?? 0m;
-            }
-            var totalDelta = Math.Max(0m, currentWithoutTips - originalWithoutTips);
-            var alreadyPaid = await _context.OrderUpdateHistories
-                .Where(h => h.OrderId == orderId && h.IsPaid)
-                .SumAsync(h => h.AdditionalAmount);
-            var amountToSend = Math.Round(Math.Max(0m, totalDelta - alreadyPaid), 2);
-            if (amountToSend < 0.01m)
+            // The amount the reminder quotes is resolved by the shared helper, so it can never
+            // differ from what the payment page will charge — see OrderAdditionalCharge.
+            var amountToSend = await OrderAdditionalCharge.OutstandingAsync(_context, order);
+            if (amountToSend < OrderAdditionalCharge.MinimumCollectableAmount)
                 return BadRequest(new { message = "No unpaid additional payment for this order." });
 
             var customerName = !string.IsNullOrWhiteSpace(order.ContactFirstName) || !string.IsNullOrWhiteSpace(order.ContactLastName)
@@ -3077,27 +3062,11 @@ namespace DreamCleaningBackend.Controllers
             if (order == null)
                 return NotFound(new { message = "Order not found" });
 
-            // Compute outstanding amount the same way SendPaymentReminder does — unpaid delta
-            // since the original booking, less anything already paid via prior update rows.
-            var currentWithoutTips = order.Total - order.Tips - order.CompanyDevelopmentTips;
-            decimal originalWithoutTips;
-            if (order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m)
-                originalWithoutTips = order.InitialTotal - order.InitialTips - order.InitialCompanyDevelopmentTips;
-            else
-            {
-                var firstHist = await _context.OrderUpdateHistories
-                    .Where(h => h.OrderId == orderId)
-                    .OrderBy(h => h.UpdatedAt)
-                    .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
-                    .FirstOrDefaultAsync();
-                originalWithoutTips = firstHist ?? 0m;
-            }
-            var totalDelta = Math.Max(0m, currentWithoutTips - originalWithoutTips);
-            var alreadyPaid = await _context.OrderUpdateHistories
-                .Where(h => h.OrderId == orderId && h.IsPaid)
-                .SumAsync(h => h.AdditionalAmount);
-            var amountToSend = Math.Round(Math.Max(0m, totalDelta - alreadyPaid), 2);
-            if (amountToSend < 0.01m)
+            // Outstanding amount — the unpaid delta since the original booking, less anything
+            // already collected via prior update rows. Shared with SendPaymentReminder and with
+            // the payment page itself, by resolving it in one place (OrderAdditionalCharge).
+            var amountToSend = await OrderAdditionalCharge.OutstandingAsync(_context, order);
+            if (amountToSend < OrderAdditionalCharge.MinimumCollectableAmount)
                 return BadRequest(new { message = "No unpaid additional payment for this order." });
 
             var customerName = !string.IsNullOrWhiteSpace(order.ContactFirstName) || !string.IsNullOrWhiteSpace(order.ContactLastName)
@@ -3182,6 +3151,420 @@ namespace DreamCleaningBackend.Controllers
             if (smsInvalid) return $"{label}: not sent — the phone number on file is invalid and there is no email.";
             return $"{label} sent.";
         }
+        // ── Part-payments: splitting one order's total across several links (2026-09) ─────────
+        //
+        // "Can you please clarify the amount of the pre-payment needed?" — an admin agrees a
+        // deposit on the phone, asks for it here, and the customer gets a link for that amount.
+        // The order stays Pending and unpaid, carrying a visible balance, until the last slice
+        // lands; then the ordinary payment-completion path activates it.
+        //
+        // Every rule about what may be asked for lives in OrderPartialPaymentService /
+        // Helpers/OrderBalance.cs, never here — the payment page enforces the same ones.
+
+        /// <summary>The order's balance, its live request and its part-payment history.</summary>
+        [HttpGet("orders/{orderId}/partial-payments")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<OrderPaymentBalanceDto>> GetOrderPartialPayments(int orderId)
+        {
+            try
+            {
+                var service = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+                return Ok(await service.GetBalanceAsync(orderId));
+            }
+            catch (PartialPaymentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Asks the customer for part of what they still owe, and sends them the link for it.
+        ///
+        /// The request is created BEFORE anything is sent, and a failed send is reported without
+        /// undoing it: the agreed amount is the thing that matters, and an admin who has to retry
+        /// the email should not also have to re-enter the figure.
+        /// </summary>
+        [HttpPost("orders/{orderId}/partial-payments")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> RequestPartialPayment(int orderId, [FromBody] CreatePartialPaymentRequestDto dto)
+        {
+            if (dto == null)
+                return BadRequest(new { message = "An amount is required." });
+
+            var order = await _context.Orders
+                .Include(o => o.User)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            var service = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+
+            OrderPartialPayment request;
+            try
+            {
+                request = await service.CreateRequestAsync(orderId, dto.Amount, dto.Note, GetCurrentUserId());
+            }
+            catch (PartialPaymentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+
+            var send = await SendPartialPaymentLinkAsync(order, request, dto.SendEmail, dto.SendSms);
+            var balance = await service.GetBalanceAsync(orderId);
+
+            return Ok(new
+            {
+                message = send.Message,
+                partialPayment = service.ToDto(request),
+                balance,
+                emailSent = send.EmailSent,
+                smsSent = send.SmsSent
+            });
+        }
+
+        /// <summary>Re-sends the link for a request the customer has not paid yet — a corrected
+        /// email address, or a nudge. Creates nothing and changes no amount.</summary>
+        [HttpPost("orders/{orderId}/partial-payments/{requestId}/resend")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> ResendPartialPaymentLink(int orderId, int requestId, [FromBody] SendPaymentLinkDto dto)
+        {
+            if (dto == null || (!dto.SendEmail && !dto.SendSms))
+                return BadRequest(new { message = "Select at least one channel (email or phone)." });
+
+            var order = await _context.Orders
+                .Include(o => o.User)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            var request = await _context.OrderPartialPayments
+                .FirstOrDefaultAsync(p => p.Id == requestId && p.OrderId == orderId);
+            if (request == null)
+                return NotFound(new { message = "Payment request not found" });
+            if (request.Status != OrderPartialPaymentStatus.Pending)
+                return BadRequest(new { message = "That payment request is no longer waiting to be paid." });
+
+            var send = await SendPartialPaymentLinkAsync(order, request, dto.SendEmail, dto.SendSms);
+            if (!send.EmailSent && !send.SmsSent)
+                return BadRequest(new { message = send.Message });
+
+            var service = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+            return Ok(new
+            {
+                message = send.Message,
+                partialPayment = service.ToDto(request),
+                emailSent = send.EmailSent,
+                smsSent = send.SmsSent
+            });
+        }
+
+        /// <summary>Withdraws a request the customer has not paid. The row stays in the history as
+        /// Cancelled — an amount that was asked for and dropped is part of the conversation.</summary>
+        [HttpDelete("orders/{orderId}/partial-payments/{requestId}")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> CancelPartialPaymentRequest(int orderId, int requestId)
+        {
+            var service = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+            try
+            {
+                await service.CancelRequestAsync(orderId, requestId, GetCurrentUserId());
+                return Ok(new
+                {
+                    message = "Payment request cancelled.",
+                    balance = await service.GetBalanceAsync(orderId)
+                });
+            }
+            catch (PartialPaymentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Records a live part-payment request as paid OUTSIDE Stripe — the customer handed over
+        /// cash, Zelle'd it, wrote a check, or it's going on a commercial invoice. This is how an
+        /// order can be split "part card, part something else": create a request for a slice (as
+        /// above), and instead of sending the Stripe link, record it here.
+        ///
+        /// When this is the LAST slice, the order is completed exactly as a card payment would
+        /// complete it — marked paid/active, loyalty consumed, subscription activated, the
+        /// ordinary residential confirmation sent — via <see cref="CompletePartialPaymentOrderAsync"/>.
+        /// </summary>
+        [HttpPost("orders/{orderId}/partial-payments/{requestId}/record-manual-payment")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> RecordPartialPaymentManually(
+            int orderId, int requestId, [FromBody] RecordPartialPaymentManuallyDto dto)
+        {
+            if (!Enum.TryParse<PaymentMethod>(dto?.PaymentMethod, ignoreCase: true, out var pm) ||
+                pm == PaymentMethod.Normal)
+            {
+                return BadRequest(new { message = "PaymentMethod must be one of: Cash, Zelle, Check, Other, Invoice." });
+            }
+
+            var order = await _context.Orders
+                .Include(o => o.User)
+                .Include(o => o.ServiceType)
+                .Include(o => o.OrderExtraServices).ThenInclude(oes => oes.ExtraService)
+                .FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            var service = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+
+            PartialPaymentSettlement settlement;
+            try
+            {
+                settlement = await service.RecordManualPaymentAsync(
+                    orderId, requestId, pm,
+                    dto!.PaymentReference, dto.PaymentNotes,
+                    GetCurrentUserId());
+            }
+            catch (PartialPaymentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+
+            if (settlement.OrderNowFullyPaid && !order.IsPaid)
+                await CompletePartialPaymentOrderAsync(order);
+
+            return Ok(new
+            {
+                message = $"Recorded {pm} payment of ${settlement.AmountApplied:F2}.",
+                balance = await service.GetBalanceAsync(orderId),
+                status = order.Status,
+                orderFullyPaid = order.IsPaid
+            });
+        }
+
+        /// <summary>
+        /// Finishes an order whose balance a MANUAL part-payment slice just cleared to zero — the
+        /// admin-recorded equivalent of what <c>BookingController.ConfirmPayment</c> does when a
+        /// Stripe slice is the one that clears it (see <c>OrderPartialPaymentService.SettleAsync</c>
+        /// callers). Deliberately narrower than that method: there is no new booking session, no
+        /// card to save on file, no bubble points/reward-balance redemption to apply (those were
+        /// already resolved at order creation, long before any part-payment existed), and no
+        /// Total/Tax to recompute (nothing about the order's pricing changed here) — this only
+        /// covers what genuinely still applies to an EXISTING order being activated for the first
+        /// time: marking it paid, consuming a loyalty discount, activating/renewing a subscription,
+        /// flipping the first-time-order flag, and sending the ordinary residential confirmation.
+        /// </summary>
+        private async Task CompletePartialPaymentOrderAsync(Order order)
+        {
+            order.IsPaid = true;
+            order.PaidAt = DateTime.UtcNow;
+            order.Status = "Active";
+
+            var userId = order.UserId;
+            var user = order.User;
+
+            if (order.LoyaltyDiscountAmount > 0m && order.LoyaltyDiscountPercentage > 0m)
+            {
+                try
+                {
+                    await _loyaltyDiscountService.ApplyToOrderAsync(order.Id);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Loyalty discount apply failed for order {OrderId} after a manual part-payment — order is paid but user state may be stale", order.Id);
+                }
+            }
+
+            var subscription = await _context.Subscriptions.FindAsync(order.SubscriptionId);
+            if (subscription != null && subscription.SubscriptionDays > 0)
+            {
+                var userForSubscription = await _context.Users
+                    .Include(u => u.Subscription)
+                    .FirstOrDefaultAsync(u => u.Id == userId);
+                var hasActiveSubscription = await _subscriptionService.CheckAndUpdateSubscriptionStatus(userId);
+                if (!hasActiveSubscription)
+                {
+                    var userSubscription = await _context.Subscriptions
+                        .FirstOrDefaultAsync(s => s.SubscriptionDays == subscription.SubscriptionDays);
+                    if (userSubscription != null)
+                        await _subscriptionService.ActivateSubscription(userId, userSubscription.Id, order.ServiceDate);
+                }
+                else if (userForSubscription?.SubscriptionId.HasValue == true)
+                {
+                    await _subscriptionService.RenewSubscription(userId, order.ServiceDate);
+                }
+            }
+
+            if (user != null && user.FirstTimeOrder)
+            {
+                user.FirstTimeOrder = false;
+                user.UpdatedAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+
+            // Same suppression rule every other confirmation path uses — always true in practice
+            // here, since CanRequestPartialPayment already refuses any order whose PaymentMethod
+            // isn't Normal, but applied rather than assumed.
+            if (!ResidentialBookingCommunicationPolicy.ShouldSendResidentialBookingCommunication(order))
+                return;
+
+            var scopeFactory = HttpContext.RequestServices.GetRequiredService<IServiceScopeFactory>();
+            var notifiedOrderId = order.Id;
+            var contactEmail = order.ContactEmail;
+            var contactPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : user?.Phone;
+            var customerName = order.ContactFirstName;
+            var addressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
+            var serviceTimeStr = order.ServiceTime.ToString();
+            var serviceDate = order.ServiceDate;
+            var displayServiceTypeName = order.GetDisplayServiceTypeName();
+            var floorTypes = order.FloorTypes;
+            var floorTypeOther = order.FloorTypeOther;
+            var propertyType = order.PropertyType;
+            var levelsQuantity = order.LevelsQuantity;
+            var contactFirstName = order.ContactFirstName;
+            var contactLastName = order.ContactLastName;
+            var orderContactPhone = order.ContactPhone;
+            var serviceAddress = order.ServiceAddress;
+            var aptSuite = order.AptSuite;
+            var city = order.City;
+            var state = order.State;
+            var zipCode = order.ZipCode;
+            var specialInstructions = order.SpecialInstructions;
+            var isCustomServiceType = order.ServiceType?.IsCustom == true;
+            var supplyChecklist = CustomerSupplyChecklist.Resolve(order);
+
+            var isAppleHiddenMail = !string.IsNullOrEmpty(contactEmail) &&
+                contactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+
+            if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(contactEmail))
+            {
+                BackgroundWork.Run(scopeFactory, _logger, $"booking confirmation email for order {notifiedOrderId}", async services =>
+                {
+                    await services.GetRequiredService<IEmailService>().SendCustomerBookingConfirmationAsync(
+                        contactEmail, customerName, serviceDate, serviceTimeStr, displayServiceTypeName,
+                        addressDisplay, notifiedOrderId, supplyChecklist, floorTypes, floorTypeOther,
+                        propertyType: propertyType, levelsQuantity: levelsQuantity);
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(contactPhone))
+            {
+                BackgroundWork.Run(scopeFactory, _logger, $"booking confirmation SMS for order {notifiedOrderId}", async services =>
+                {
+                    await services.GetRequiredService<ISmsService>().SendBookingConfirmationSmsAsync(
+                        contactPhone, customerName, serviceDate, serviceTimeStr, supplyChecklist);
+                });
+            }
+
+            BackgroundWork.Run(scopeFactory, _logger, $"company booking notification for order {notifiedOrderId}", async services =>
+            {
+                await services.GetRequiredService<IEmailService>().SendCompanyBookingNotificationAsync(
+                    contactFirstName, contactLastName, contactEmail, orderContactPhone, serviceDate,
+                    serviceTimeStr, displayServiceTypeName, serviceAddress, aptSuite, city, state, zipCode,
+                    notifiedOrderId, isCustomServiceType, specialInstructions, null);
+            });
+        }
+
+        private record PartialLinkSendResult(bool EmailSent, bool SmsSent, string Message);
+
+        /// <summary>
+        /// Sends one request's payment link by email and/or SMS. Contact resolution matches the
+        /// payment-reminder path — the order's own contact details first, the account as the
+        /// fallback — because that is the person who agreed the deposit.
+        ///
+        /// A channel that cannot be used is REPORTED, never treated as a failure of the whole
+        /// operation: an order with a phone number and no email is normal (no-email cash
+        /// customers), and the admin needs to know which half went out.
+        /// </summary>
+        private async Task<PartialLinkSendResult> SendPartialPaymentLinkAsync(
+            Order order, OrderPartialPayment request, bool sendEmail, bool sendSms)
+        {
+            var service = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+
+            if (!sendEmail && !sendSms)
+                return new PartialLinkSendResult(false, false,
+                    $"Payment request for {request.RequestedAmount:C} created. Nothing was sent — copy the link to the customer yourself.");
+
+            var customerName = !string.IsNullOrWhiteSpace(order.ContactFirstName) || !string.IsNullOrWhiteSpace(order.ContactLastName)
+                ? $"{order.ContactFirstName?.Trim()} {order.ContactLastName?.Trim()}".Trim()
+                : (order.User != null ? $"{order.User.FirstName?.Trim()} {order.User.LastName?.Trim()}".Trim() : "Valued Customer");
+            if (string.IsNullOrWhiteSpace(customerName))
+                customerName = order.User?.FirstName ?? order.ContactFirstName ?? "Valued Customer";
+
+            var customerEmail = NoEmailHelper.ResolveOrderNotificationEmail(order.ContactEmail, order.User);
+            var customerPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
+
+            var frontendUrl = _configuration["Frontend:Url"] ?? "https://dreamcleaningnyc.com";
+            var paymentLink = await PaymentLinkHelper.BuildPaymentLinkAsync(_context, order, frontendUrl);
+
+            // The figures the customer sees. Computed from the order as it stands right now, so a
+            // link re-sent after an edit quotes the balance that is actually owed.
+            var amountDue = OrderBalance.AmountDue(order);
+            var amount = Math.Min(request.RequestedAmount, amountDue);
+            var remainingAfter = OrderPricingCalculator.Round2(Math.Max(0m, amountDue - amount));
+            if (OrderBalance.SettlesOrder(remainingAfter)) remainingAfter = 0m;
+
+            bool emailSent = false, smsSent = false, smsInvalid = false;
+            string? failure = null;
+
+            if (sendEmail && !string.IsNullOrWhiteSpace(customerEmail))
+            {
+                try
+                {
+                    await _emailService.SendPartialPaymentRequestEmailAsync(
+                        customerEmail, customerName, amount, order.Total, order.AmountPaid,
+                        remainingAfter, order.Id, paymentLink);
+                    emailSent = true;
+                }
+                catch (Exception ex)
+                {
+                    failure = "The email could not be sent: " + ex.Message;
+                }
+            }
+
+            if (sendSms && !string.IsNullOrWhiteSpace(customerPhone) && _smsService.IsSmsEnabled())
+            {
+                try
+                {
+                    var e164 = SmsService.NormalizePhoneToE164(customerPhone);
+                    if (string.IsNullOrEmpty(e164))
+                        smsInvalid = true;
+                    else
+                    {
+                        await _smsService.SendPartialPaymentRequestSmsAsync(
+                            e164, customerName, amount, order.Total, remainingAfter, order.Id, paymentLink);
+                        smsSent = true;
+                    }
+                }
+                catch (InvalidPhoneNumberException)
+                {
+                    smsInvalid = true;
+                }
+                catch (Exception ex)
+                {
+                    failure ??= "The text message could not be sent: " + ex.Message;
+                }
+            }
+
+            if (emailSent || smsSent)
+            {
+                await service.MarkNotificationSentAsync(request.Id);
+                await LogOrderNotificationIfSentAsync(order.Id, "PartialPaymentLinkSent", emailSent, smsSent,
+                    $"Payment request for {amount:C} of {order.Total:C}");
+            }
+
+            var label = $"Payment request for {amount:C}";
+            if (emailSent || smsSent)
+                return new PartialLinkSendResult(emailSent, smsSent, BuildSendResultMessage(label, emailSent, smsSent, smsInvalid));
+
+            // Nothing went out. Say which of the reasons applies rather than a generic failure —
+            // "no email on file" and "the mail server rejected it" need different actions.
+            var reason = failure
+                ?? (sendEmail && string.IsNullOrWhiteSpace(customerEmail)
+                    ? "there is no email address on this order or the customer's account"
+                    : smsInvalid ? "the phone number on file is invalid"
+                    : sendSms && !_smsService.IsSmsEnabled() ? "SMS sending is currently disabled"
+                    : "there is no email address or phone number to send to");
+
+            return new PartialLinkSendResult(false, false,
+                $"{label} created, but nothing was sent — {reason}. Copy the payment link to the customer instead.");
+        }
+
         // ── Order Reminder Acknowledgments ────────────────────
 
         /// <summary>

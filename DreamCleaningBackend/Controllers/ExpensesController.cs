@@ -81,6 +81,23 @@ namespace DreamCleaningBackend.Controllers
             return ok ? NoContent() : NotFound();
         }
 
+        // Raise/reduce a recurring expense (salary, subscription, …) from a given date without
+        // hand-authoring the cap-old-row-and-add-new-row split. See AdjustExpenseAmountDto.
+        [HttpPost("{id}/adjust-amount")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<ExpenseDto>> AdjustAmount(int id, [FromBody] AdjustExpenseAmountDto dto)
+        {
+            try
+            {
+                var created = await _expenseService.AdjustAmountAsync(id, dto, GetUserId());
+                return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         // Breakdown for statistics — expands recurring expenses into per-occurrence rows
         // within [from, to]. Defaults to the last 12 months when omitted.
         [HttpGet("breakdown")]

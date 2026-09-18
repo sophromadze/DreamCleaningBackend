@@ -88,6 +88,29 @@ namespace DreamCleaningBackend.Models
         public DateTime? RefreshTokenExpiryTime { get; set; }
 
         /// <summary>
+        /// THE REFRESH TOKEN THIS ACCOUNT HELD IMMEDIATELY BEFORE THE LAST RENEWAL (2026-09).
+        ///
+        /// A refresh token is single-use: AuthService.RefreshToken writes a new one on every
+        /// renewal, so presenting the old one a second time is refused. That is right against a
+        /// STOLEN token and wrong against the browser, which presents the same one twice for
+        /// reasons nobody chose - a panel fires six requests at once and they 401 together, the
+        /// admin has the site open in two tabs, a 60-second poll lands in the same instant as a
+        /// click. One renewal wins and the rest were told "Invalid refresh token", which the
+        /// frontend answered by logging the person out - destroying the session that had just
+        /// been renewed successfully.
+        ///
+        /// So the previous token stays acceptable for AuthService.RefreshTokenReplayGrace after it
+        /// is replaced. Inside that window a duplicate presentation does NOT rotate anything: it
+        /// hands back the tokens the winning call already issued, so every racing caller ends up
+        /// on the same current session. Outside it the token is dead, which is the single-use
+        /// property that actually matters.
+        /// </summary>
+        public string? PreviousRefreshToken { get; set; }
+
+        /// <summary>When <see cref="PreviousRefreshToken"/> stops being accepted. Null = no replay window is open.</summary>
+        public DateTime? PreviousRefreshTokenExpiryTime { get; set; }
+
+        /// <summary>
         /// Bumped whenever every session this account holds must end NOW - a role change, today.
         /// The value is stamped into each JWT as the "tv" claim and re-checked on every request
         /// (TokenVersionService), so an access token issued before the bump is refused even though
@@ -185,6 +208,12 @@ namespace DreamCleaningBackend.Models
         public DateTime? EmailVerificationTokenExpiry { get; set; }
         /// <summary>Hash of the token that was used to verify (so re-clicking the same link returns success).</summary>
         public string? LastEmailVerificationTokenHash { get; set; }
+
+        /// <summary>When the one-per-account welcome email was sent; null when it has not been.
+        /// This column is the claim that keeps it to exactly one — see Helpers/WelcomeEmailPolicy.
+        /// Null on every pre-existing row on purpose: nothing re-sends to an old account, because
+        /// the four paths that send it only fire when an account FIRST gains a usable address.</summary>
+        public DateTime? WelcomeEmailSentAt { get; set; }
 
         // Password recovery
         public string? PasswordResetToken { get; set; }

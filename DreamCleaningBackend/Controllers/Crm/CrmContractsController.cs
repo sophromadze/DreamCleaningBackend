@@ -4,7 +4,9 @@ using DreamCleaningBackend.Helpers.Contracts;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Models.Contracts;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Contracts;
+using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -222,8 +224,14 @@ namespace DreamCleaningBackend.Controllers.Crm
         }
 
         /// <summary>
-        /// Soft-deletes a contract. CTO-only, as Void was. The row survives for six months and can
-        /// be restored; the retention job then removes it permanently.
+        /// ARCHIVES a contract - the UI's "Archive" option. CTO-only, as Void was.
+        ///
+        /// The route keeps its original <c>/delete</c> spelling because deployed clients call it
+        /// and links to it exist; only the label changed. The row and everything under it survive
+        /// and can be restored. A contract archived for longer than the retention window is then
+        /// considered for permanent removal by <c>ContractRetentionService</c> - which now applies
+        /// <c>ContractHardDeletePolicy</c>, so a signed agreement is kept indefinitely rather than
+        /// silently destroyed on a timer.
         /// </summary>
         [HttpPost("{id}/delete")]
         [RequirePermission(Permission.Update)]
@@ -241,6 +249,93 @@ namespace DreamCleaningBackend.Controllers.Crm
             await _authorization.EnsureCanAsync(ContractAction.RestoreContract);
             await _contracts.RestoreAsync(id, CurrentUserId);
             return Ok(await _read.GetDetailAsync(id));
+        }
+
+        /// <summary>
+        /// PERMANENT delete. Destroys the contract, every version, signature, file, signer and
+        /// audit row under it, and the PDFs on disk. There is no undo.
+        ///
+        /// CTO-only, like archiving — the same decision, taken further. Three separate gates stand
+        /// in front of it and each catches a different mistake:
+        ///
+        ///  * <see cref="ContractHardDeletePolicy"/>, applied server-side in
+        ///    <see cref="ContractPurgeService"/>, refuses anything carrying a signature, a linked
+        ///    invoice, a recurring template or an amendment built from it. The same policy gates
+        ///    the retention sweep, so a timer cannot destroy what this endpoint would refuse.
+        ///  * The typed confirmation below, verified HERE and not only in Angular. A request
+        ///    hand-rolled against this route has to name the contract it means, which is what
+        ///    stops a mistyped id destroying somebody else's agreement.
+        ///  * The shared client, location, contractor profile, template and contacts are all
+        ///    Restrict-mapped, so nothing shared can follow the contract out.
+        /// </summary>
+        [HttpDelete("{id}/permanent")]
+        [RequirePermission(Permission.Delete)]
+        public async Task<ActionResult> PermanentlyDelete(
+            int id,
+            [FromQuery] string? confirmation,
+            [FromServices] ContractPurgeService purge,
+            [FromServices] IAuditService audit)
+        {
+            await _authorization.EnsureCanAsync(ContractAction.DeleteContract);
+
+            var contract = await _context.Contracts
+                .Include(c => c.ContractClient)
+                .Include(c => c.HiddenByUser)
+                .FirstOrDefaultAsync(c => c.Id == id);
+
+            if (contract == null) return NotFound(new { message = "Contract not found." });
+
+            // "DELETE DCC-2026-48392175". Compared case-insensitively on the trimmed string: the
+            // point is that the admin read the number off the contract in front of them, not that
+            // they matched our capitalisation.
+            var expected = $"DELETE {contract.ContractNumber}";
+            if (!string.Equals(confirmation?.Trim(), expected, StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = $"Type {expected} to confirm permanent deletion." });
+
+            // Captured before the row goes: after the purge there is nothing left to read them off.
+            var number = contract.ContractNumber;
+            var clientName = contract.ContractClient?.LegalEntityName;
+            var status = contract.Status.ToString();
+            var versionCount = await _context.ContractVersions.CountAsync(v => v.ContractId == id);
+
+            try
+            {
+                await purge.PurgeAsync(contract, await AdminNameForLogAsync());
+            }
+            catch (ContractPurgeRefusedException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+
+            // The app-wide trail, which lives outside the aggregate that was just destroyed.
+            // ContractDeletionLog is the module's own durable record and was written inside the
+            // purge transaction; this is the copy a finance-wide audit search finds.
+            await audit.LogActionAsync(
+                AuditEntityTypes.ContractHardDelete,
+                id,
+                "ContractPermanentlyDeleted",
+                null,
+                new
+                {
+                    Contract = number,
+                    Client = clientName,
+                    StatusAtDeletion = status,
+                    VersionCount = versionCount,
+                    DeletedAt = DateTime.UtcNow
+                },
+                actingUserId: CurrentUserId);
+
+            return Ok(new { message = $"Contract {number} was permanently deleted." });
+        }
+
+        /// <summary>The acting admin's name, for the surviving ContractDeletionLog row.</summary>
+        private async Task<string> AdminNameForLogAsync()
+        {
+            var name = await _context.Users
+                .Where(u => u.Id == CurrentUserId)
+                .Select(u => (u.FirstName + " " + u.LastName).Trim())
+                .FirstOrDefaultAsync();
+            return string.IsNullOrWhiteSpace(name) ? "Admin" : name;
         }
 
         /// <summary>
@@ -305,7 +400,7 @@ namespace DreamCleaningBackend.Controllers.Crm
 
         /// <summary>What the signed-in account may do, so the panel renders only real options.</summary>
         [HttpGet("my-permissions")]
-        public async Task<ActionResult<Dictionary<string, bool>>> GetMyPermissions()
+        public async Task<ActionResult<Dictionary<string, object>>> GetMyPermissions()
         {
             return Ok(await _authorization.DescribeCapabilitiesAsync());
         }

@@ -37,6 +37,11 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// Notify customer that their order was updated and an additional payment is required. Includes payment link.
         /// </summary>
         Task SendAdditionalPaymentRequiredSmsAsync(string phoneNumber, string customerName, decimal additionalAmount, int orderId, string paymentLink);
+
+        /// <summary>One agreed slice of an unpaid order's total. Names what is left afterwards,
+        /// because "pay $1,000" on a $2,743.65 order reads as a price change otherwise.</summary>
+        Task SendPartialPaymentRequestSmsAsync(string phoneNumber, string customerName, decimal amount,
+            decimal orderTotal, decimal remainingAfter, int orderId, string paymentLink);
         /// <summary>Gentle reminder that the customer has an unpaid additional amount.</summary>
         Task SendAdditionalPaymentReminderSmsAsync(string phoneNumber, string customerName, decimal additionalAmount, int orderId, string paymentLink);
         /// <summary>Send a review request SMS to the customer after order completion.</summary>

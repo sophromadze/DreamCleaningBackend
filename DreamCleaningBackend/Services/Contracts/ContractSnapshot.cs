@@ -74,6 +74,24 @@ namespace DreamCleaningBackend.Services.Contracts
         /// </summary>
         public string PremisesType { get; set; } = "premises";
 
+        /// <summary>
+        /// The published Commercial Cleaning Policies version in force when this draft was built,
+        /// copied from <c>CommercialPolicyDocument.Version</c> and rendered by Section 36(o).
+        ///
+        /// IT IS SNAPSHOT DATA, not read live at render time, and that is the entire point. The
+        /// published policy is a file in source control that will be revised; resolving the token
+        /// from the constant would silently rewrite what an executed agreement says was in force
+        /// on the day it was signed - the same failure the frozen snapshot exists to prevent for
+        /// the client's name and the template body.
+        ///
+        /// Empty on every pre-v2.6 snapshot, which costs nothing: a body frozen before Section 36
+        /// existed does not reference the token at all.
+        /// </summary>
+        public string PolicyVersion { get; set; } = string.Empty;
+
+        /// <summary>ISO-8601 effective date of <see cref="PolicyVersion"/>. Frozen with it.</summary>
+        public string PolicyEffectiveDate { get; set; } = string.Empty;
+
         public static ContractSnapshot Parse(string? json)
         {
             if (string.IsNullOrWhiteSpace(json)) return new ContractSnapshot();
@@ -311,6 +329,18 @@ namespace DreamCleaningBackend.Services.Contracts
 
         public string? CustomerRestroomCounts { get; set; }
         public string? EmployeeRestroomCounts { get; set; }
+
+        /// <summary>
+        /// FULLY OPTIONAL (2026-09-15), and the odd one out among the fields around it: blank
+        /// omits its whole Exhibit A line rather than ruling a blank.
+        ///
+        /// A4 used to oblige "products and methods compatible with the identified floor
+        /// materials", which is an obligation with no content when nothing was identified - the
+        /// exhibit contradicted itself the moment the box was left empty, and the ruled blank
+        /// then put the field in the preview's unresolved banner, which is how an optional field
+        /// comes to look mandatory. A4 now states the general standard, so this is site
+        /// information and nothing depends on it.
+        /// </summary>
         public string? FloorMaterials { get; set; }
         public string? KitchenEquipmentAndSurfaces { get; set; }
         public string? TouchpointLocations { get; set; }
@@ -335,7 +365,15 @@ namespace DreamCleaningBackend.Services.Contracts
         public string? EquipmentRestrictions { get; set; }
         public string? WasteReceptacleLocations { get; set; }
 
-        /// <summary>Legal name of the food-service permit holder - not necessarily the Client.</summary>
+        /// <summary>
+        /// Legal name of the food-service permit holder - not necessarily the Client.
+        ///
+        /// FULLY OPTIONAL (2026-09-15), same rule as <see cref="FloorMaterials"/>: blank omits
+        /// its Exhibit A line. Section 16(c) no longer requires Client to identify the holder
+        /// before work begins, and Section 26(b) leaves Client responsible for its own permits,
+        /// sanitation and food handling either way - so an unrecorded name is not a missing
+        /// precondition, and printing a blank implied one.
+        /// </summary>
         public string? FoodServicePermitHolder { get; set; }
 
         /// <summary>Landlord, franchisor or brand requirements affecting access, products or insurance.</summary>
@@ -354,8 +392,12 @@ namespace DreamCleaningBackend.Services.Contracts
     /// on Contractor having attempted to reach the on-call contact, so the document has to name
     /// one.
     ///
-    /// Every field is optional and renders as a ruled blank when unset, except the approval
-    /// emails, which the drafted agreement marks optional outright and which render "None".
+    /// An unset field renders as a ruled blank, with two exceptions: the approval emails, which
+    /// the drafted agreement marks optional outright and which render "None", and the two BACKUP
+    /// on-call contacts, whose whole Exhibit B4 row is dropped when blank. Section 16(c) asks
+    /// Client for a primary contact and says a backup is one it "may designate ... if available",
+    /// so a missing backup is not an open question and must not be chased as one - the primaries
+    /// keep the blank precisely because Section 14 does depend on one existing.
     /// </summary>
     public class OperationalContactsSnapshot
     {
@@ -363,22 +405,39 @@ namespace DreamCleaningBackend.Services.Contracts
         public string? ContractorOperationalEmail { get; set; }
         public string? ContractorSupervisorName { get; set; }
         public string? ContractorSupervisorPhone { get; set; }
+        /// <summary>
+        /// OPTIONAL (2026-09-16). Blank drops its whole Exhibit B4 row rather than printing a
+        /// ruled blank - nothing in the agreement depends on a second contact existing. The
+        /// field is NOT removed: contracts and drafts already carrying one must keep printing it.
+        /// </summary>
         public string? ContractorBackupContact { get; set; }
 
         public string? ClientApprovalEmail { get; set; }
 
         /// <summary>
-        /// Where FORMAL notice is served on Client. Kept apart from the client's principal
-        /// address and from the service location: Section 32 serves breach and termination
-        /// notices here, and a business that is registered at an accountant's office, served at a
-        /// restaurant and reads its mail at a third address is the ordinary case, not the corner
-        /// one. Blank falls back to the client's principal address.
+        /// RETIRED FROM THE DOCUMENT (2026-09-15), kept so older versions still render.
+        ///
+        /// Template v2.2 asks Client for no mailing address: the preamble identifies Client by
+        /// legal entity name, entity type and formation state, Exhibit B4 dropped the row, and
+        /// Section 32 serves formal notice on the designated notice EMAIL. There is no form field
+        /// for it any more.
+        ///
+        /// The PROPERTY stays, and so does <c>{{CLIENT_NOTICE_MAILING_ADDRESS}}</c> in
+        /// <see cref="ContractPlaceholders"/>, because a version frozen against v2.0/v2.1 still
+        /// references the token - and an executed agreement must keep rendering the words it was
+        /// signed with rather than a literal "{{...}}". Same arrangement as the retired $35
+        /// returned-payment fee. Blank still falls back to the client's principal address there.
         /// </summary>
         public string? ClientNoticeMailingAddress { get; set; }
 
         public string? ClientOperationalEmail { get; set; }
         public string? ClientOnCallName { get; set; }
         public string? ClientOnCallPhone { get; set; }
+        /// <summary>
+        /// OPTIONAL. Blank drops its Exhibit B4 row; a recorded one prints exactly as before, so
+        /// an existing contract or draft that carries one renders unchanged. See
+        /// <see cref="ContractorBackupContact"/>.
+        /// </summary>
         public string? ClientBackupContact { get; set; }
     }
 
@@ -427,18 +486,25 @@ namespace DreamCleaningBackend.Services.Contracts
 
     public class TermSnapshot
     {
-        // Defaults changed 2026-09 to the commercial terms actually being offered: committed for
-        // six months, then month-to-month with sixty days notice. They apply to NEW drafts only -
-        // every generated version carries its own frozen copy, so nothing already signed moves.
-        public int InitialTermMonths { get; set; } = 6;
-        public int MinimumCommitmentMonths { get; set; } = 6;
+        // The commercial terms actually being offered: committed for TEN months (raised from six
+        // on 2026-09-15), then month-to-month with sixty days notice. They apply to NEW drafts
+        // only - every generated version carries its own frozen copy, so nothing already signed
+        // moves, and a draft in progress keeps whatever an admin typed.
+        //
+        // The two are separate columns and are deliberately equal rather than merged: the Initial
+        // Term is how long the fixed term runs, the Minimum Commitment Period is the earliest a
+        // termination for convenience may TAKE EFFECT, and Section 3 states them as different
+        // facts even when the numbers agree. Section 3(a)/(b), Exhibit B1 and both derived end
+        // dates read these two fields, so there is no third place to keep in step.
+        public int InitialTermMonths { get; set; } = 10;
+        public int MinimumCommitmentMonths { get; set; } = 10;
         public int TerminationNoticeDays { get; set; } = 60;
 
         /// <summary>
         /// The first RECURRING service date. Distinct from the Effective Date, and Section 3 hangs
         /// the whole term on it: the Initial Term and the Minimum Commitment Period both run from
-        /// here, not from signature. An agreement signed in March for a May start commits six
-        /// months of cleaning, not four.
+        /// here, not from signature. An agreement signed in March for a May start commits the full
+        /// term of cleaning from May, not from March.
         ///
         /// Null leaves Exhibit B's date row a ruled blank rather than guessing the effective date,
         /// because guessing would silently shorten the commitment the client is being asked to make.

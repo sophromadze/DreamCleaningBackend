@@ -9,7 +9,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendEmailVerificationAsync(string email, string firstName, string verificationLink);
         Task SendPasswordResetAsync(string email, string firstName, string resetLink);
         Task SendAdminWelcomeEmailAsync(string email, string firstName, string? setPasswordLink = null);
-        Task SendWelcomeEmailAsync(string email, string firstName);
+        Task SendWelcomeEmailAsync(string email, string firstName, string? authProvider = null);
         Task SendGiftCardNotificationAsync(string recipientEmail, string recipientName,
             string senderName, string giftCardCode, decimal amount, string message, string senderEmail);
         Task SendGiftCardSenderConfirmationAsync(string senderEmail, string senderName,
@@ -75,6 +75,12 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendAdditionalPaymentRequiredEmailAsync(string email, string customerName, decimal additionalAmount, int orderId, string paymentLink);
         /// <summary>Gentle reminder that the customer has an unpaid additional amount. Same styling as required email.</summary>
         Task SendAdditionalPaymentReminderEmailAsync(string email, string customerName, decimal additionalAmount, int orderId, string paymentLink);
+
+        /// <summary>One agreed slice of an unpaid order's total ("$1,000 now, the rest later").
+        /// Separate from the payment-reminder mail because it must show the slice AND the balance:
+        /// an amount smaller than the quoted total, sent on its own, reads as a price change.</summary>
+        Task SendPartialPaymentRequestEmailAsync(string email, string customerName, decimal amount,
+            decimal orderTotal, decimal amountAlreadyPaid, decimal remainingAfter, int orderId, string paymentLink);
         /// <summary>Notify the company about an order cancellation with reason, fee info, and user details.</summary>
         Task SendCancellationNotificationToCompanyAsync(int orderId, string userEmail, int userId, string reason, bool isLateCancellation, DateTime serviceDate, string serviceTime);
         /// <summary>Notify an assigned cleaner that their order has been cancelled.</summary>

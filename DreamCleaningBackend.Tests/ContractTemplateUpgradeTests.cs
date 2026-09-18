@@ -387,5 +387,409 @@ namespace DreamCleaningBackend.Tests
 
             Assert.Equal(new[] { ContractTemplateSeed.TemplateVersion }, offered);
         }
+
+        // ── the A1 task label that named a room (2026-09-16) ───────────────────
+
+        /// <summary>
+        /// THE STORED LABEL IS REPAIRED, because editing the seed alone reaches nothing.
+        ///
+        /// Scope checklists are seeded ONCE and never rewritten — the same insert-never-rewrite
+        /// rule that let the hand-soap wording outlive its own correction. So a database seeded
+        /// before this change keeps printing "Hallways, office and doors" in Exhibit A, on a
+        /// contract whose Included Areas list may well have no office ticked, with the corrected
+        /// seed sitting in source control saying otherwise.
+        /// </summary>
+        [Fact]
+        public async Task AStoredA1TaskLabelNamingARoomIsRepaired()
+        {
+            using var context = NewContext();
+
+            var stale = new ScopeStructure
+            {
+                Groups =
+                {
+                    new ScopeGroup
+                    {
+                        Key = ContractScopeTemplateSeed.AreaTasksKey,
+                        Title = "Areas and tasks at each visit",
+                        Kind = "included",
+                        Inline = false,
+                        Items =
+                        {
+                            new ScopeItem
+                            {
+                                Label = "Hallways, office and doors",
+                                Detail = "Clean exposed floors, identified touchpoints and accessible "
+                                    + "cleared surfaces. Do not handle files, electronics, cash or "
+                                    + "private materials.",
+                                Selected = true
+                            }
+                        }
+                    },
+                    // The office as a SELECTABLE AREA is legitimate and must survive untouched —
+                    // this is the half an over-broad repair would delete.
+                    new ScopeGroup
+                    {
+                        Key = "included-areas",
+                        Title = "Included Areas",
+                        Kind = "included",
+                        Inline = true,
+                        Items = { new ScopeItem { Label = "the office", Selected = true } }
+                    }
+                }
+            };
+
+            context.ScopeTemplates.Add(new ScopeTemplate
+            {
+                Name = "Restaurant",
+                PremisesType = "restaurant",
+                SortOrder = 1,
+                StructureJson = stale.ToJson(),
+                IsActive = true
+            });
+            await context.SaveChangesAsync();
+
+            await Seeder(context).SeedAsync();
+
+            var repaired = ScopeStructure.Parse(
+                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant")).StructureJson);
+
+            var table = repaired.Groups.Single(g => g.Key == ContractScopeTemplateSeed.AreaTasksKey);
+            var row = table.Items.Single();
+
+            Assert.Equal(ContractScopeTemplateSeed.IncludedRoomsAreaLabel, row.Label);
+            Assert.DoesNotContain("office", row.Label, StringComparison.OrdinalIgnoreCase);
+
+            // ONLY THE LABEL. The task description never named a room, so there was nothing wrong
+            // with it to fix and an admin who reworded it keeps their wording.
+            Assert.Contains("Do not handle files, electronics, cash or private materials", row.Detail);
+
+            // And the checklist item is untouched: "the office" is an area somebody can tick.
+            var areas = repaired.Groups.Single(g => g.Key == "included-areas");
+            Assert.Equal("the office", areas.Items.Single().Label);
+        }
+
+        /// <summary>The plural spelling the non-restaurant skeleton used is repaired too.</summary>
+        [Fact]
+        public async Task ThePluralSpellingOfTheStaleLabelIsAlsoRepaired()
+        {
+            using var context = NewContext();
+
+            var stale = new ScopeStructure
+            {
+                Groups =
+                {
+                    new ScopeGroup
+                    {
+                        Key = ContractScopeTemplateSeed.AreaTasksKey,
+                        Title = "Areas and tasks at each visit",
+                        Kind = "included",
+                        Inline = false,
+                        Items =
+                        {
+                            new ScopeItem { Label = "Hallways, offices and doors", Selected = true }
+                        }
+                    }
+                }
+            };
+
+            context.ScopeTemplates.Add(new ScopeTemplate
+            {
+                Name = "Office",
+                PremisesType = "office",
+                SortOrder = 2,
+                StructureJson = stale.ToJson(),
+                IsActive = true
+            });
+            await context.SaveChangesAsync();
+
+            await Seeder(context).SeedAsync();
+
+            var repaired = ScopeStructure.Parse(
+                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Office")).StructureJson);
+
+            Assert.Equal(
+                ContractScopeTemplateSeed.IncludedRoomsAreaLabel,
+                repaired.Groups.Single(g => g.Key == ContractScopeTemplateSeed.AreaTasksKey)
+                    .Items.Single().Label);
+        }
+
+        /// <summary>
+        /// A BUSINESS TYPE AN ADMIN CREATED THEMSELVES IS REPAIRED TOO — it has no seeded
+        /// counterpart, so it never reaches the seeded loop, and the rule is about the document
+        /// rather than about who typed the row.
+        /// </summary>
+        [Fact]
+        public async Task AnAdminAuthoredTypeCarryingTheStaleLabelIsRepaired()
+        {
+            using var context = NewContext();
+
+            var stale = new ScopeStructure
+            {
+                Groups =
+                {
+                    new ScopeGroup
+                    {
+                        Key = ContractScopeTemplateSeed.AreaTasksKey,
+                        Title = "Areas and tasks at each visit",
+                        Kind = "included",
+                        Inline = false,
+                        Items =
+                        {
+                            new ScopeItem { Label = "Hallways, office and doors", Selected = true }
+                        }
+                    }
+                }
+            };
+
+            context.ScopeTemplates.Add(new ScopeTemplate
+            {
+                Name = "Client's own type",
+                PremisesType = "premises",
+                SortOrder = 9,
+                StructureJson = stale.ToJson(),
+                IsActive = true
+            });
+            await context.SaveChangesAsync();
+
+            await Seeder(context).SeedAsync();
+
+            var repaired = ScopeStructure.Parse(
+                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Client's own type"))
+                    .StructureJson);
+
+            Assert.Equal(
+                ContractScopeTemplateSeed.IncludedRoomsAreaLabel,
+                repaired.Groups.Single(g => g.Key == ContractScopeTemplateSeed.AreaTasksKey)
+                    .Items.Single().Label);
+        }
+
+        /// <summary>
+        /// A LABEL AN ADMIN DELIBERATELY REWORDED IS LEFT ALONE.
+        ///
+        /// The repair matches the retired literals and nothing else. Anything a person typed
+        /// themselves is their wording, even when it happens to name a room — guessing which half
+        /// of somebody's sentence to rewrite is how agreed scope goes missing unnoticed.
+        /// </summary>
+        [Fact]
+        public async Task AnAdminRewordedTaskLabelIsNotTouched()
+        {
+            using var context = NewContext();
+
+            var custom = new ScopeStructure
+            {
+                Groups =
+                {
+                    new ScopeGroup
+                    {
+                        Key = ContractScopeTemplateSeed.AreaTasksKey,
+                        Title = "Areas and tasks at each visit",
+                        Kind = "included",
+                        Inline = false,
+                        Items =
+                        {
+                            new ScopeItem { Label = "Corridors, the back office and doors", Selected = true },
+                            new ScopeItem { Label = "Monitoring room", Selected = true }
+                        }
+                    }
+                }
+            };
+
+            context.ScopeTemplates.Add(new ScopeTemplate
+            {
+                Name = "Client's own type",
+                PremisesType = "premises",
+                SortOrder = 9,
+                StructureJson = custom.ToJson(),
+                IsActive = true
+            });
+            await context.SaveChangesAsync();
+
+            await Seeder(context).SeedAsync();
+
+            var after = ScopeStructure.Parse(
+                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Client's own type"))
+                    .StructureJson);
+            var items = after.Groups.Single(g => g.Key == ContractScopeTemplateSeed.AreaTasksKey).Items;
+
+            Assert.Equal("Corridors, the back office and doors", items[0].Label);
+            Assert.Equal("Monitoring room", items[1].Label);
+        }
+
+        /// <summary>Seeding twice changes nothing the second time — the repair is idempotent.</summary>
+        [Fact]
+        public async Task RepairingTheLabelTwiceIsANoOp()
+        {
+            using var context = NewContext();
+
+            var stale = new ScopeStructure
+            {
+                Groups =
+                {
+                    new ScopeGroup
+                    {
+                        Key = ContractScopeTemplateSeed.AreaTasksKey,
+                        Title = "Areas and tasks at each visit",
+                        Kind = "included",
+                        Inline = false,
+                        Items =
+                        {
+                            new ScopeItem { Label = "Hallways, office and doors", Selected = true }
+                        }
+                    }
+                }
+            };
+
+            context.ScopeTemplates.Add(new ScopeTemplate
+            {
+                Name = "Restaurant",
+                PremisesType = "restaurant",
+                SortOrder = 1,
+                StructureJson = stale.ToJson(),
+                IsActive = true
+            });
+            await context.SaveChangesAsync();
+
+            await Seeder(context).SeedAsync();
+            var afterFirst = (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant"))
+                .StructureJson;
+
+            await Seeder(context).SeedAsync();
+            var afterSecond = (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant"))
+                .StructureJson;
+
+            Assert.Equal(afterFirst, afterSecond);
+        }
+
+        /// <summary>
+        /// THE SAME MECHANISM, EVERY ROUND — every stale seeded version leaves the picker, not
+        /// just the most recent one.
+        ///
+        /// Each correction adds one: v2.2 dropped the Client mailing address, v2.3 made a backup
+        /// on-call contact optional, v2.4 took the example rooms out of A2, v2.5 put the service
+        /// address in the preamble, and v2.6 added the consolidated Section 36. A database
+        /// carrying every earlier row has to end with ALL of them retired and only the current one default;
+        /// retiring just the newest would leave the soap draft selectable again, which is the
+        /// failure the SupersededVersions list exists to prevent.
+        /// </summary>
+        [Fact]
+        public async Task EveryStaleSeededVersionIsRetiredTogether()
+        {
+            using var context = NewContext();
+            context.ContractTemplates.Add(SoapDraftRow());
+            context.ContractTemplates.Add(new ContractTemplate
+            {
+                Name = ContractTemplateSeed.TemplateName,
+                Version = "2.1",
+                Description = "The drafted agreement, before the mailing address came out of it.",
+                BodyText =
+                    "This Agreement is between the Parties, with its business mailing address at "
+                    + "{{CLIENT_NOTICE_MAILING_ADDRESS}}.\n"
+                    + "@SIGNATURE_BLOCK\n",
+                IsActive = true,
+                IsDefault = false
+            });
+            context.ContractTemplates.Add(new ContractTemplate
+            {
+                Name = ContractTemplateSeed.TemplateName,
+                Version = "2.2",
+                Description = "The drafted agreement, while a backup on-call contact was obliged.",
+                BodyText =
+                    "(c) Client shall designate primary and backup on-call contacts in Exhibit B.\n"
+                    + "@SIGNATURE_BLOCK\n",
+                IsActive = true,
+                IsDefault = false
+            });
+            context.ContractTemplates.Add(new ContractTemplate
+            {
+                Name = ContractTemplateSeed.TemplateName,
+                Version = "2.3",
+                Description = "The drafted agreement, while A2 still named example rooms.",
+                BodyText =
+                    "An area expressly identified as an Included Area in A1, such as the office, "
+                    + "the employee restroom or hallways, remains included.\n"
+                    + "@SIGNATURE_BLOCK\n",
+                IsActive = true,
+                IsDefault = false
+            });
+            context.ContractTemplates.Add(new ContractTemplate
+            {
+                Name = ContractTemplateSeed.TemplateName,
+                Version = "2.4",
+                Description = "The drafted agreement, while the preamble named no premises.",
+                BodyText =
+                    "...and {{CLIENT_LEGAL_NAME}}, {{CLIENT_ENTITY_DESCRIPTION}} (\"Client\").\n"
+                    + "@SIGNATURE_BLOCK\n",
+                IsActive = true,
+                IsDefault = false
+            });
+            context.ContractTemplates.Add(new ContractTemplate
+            {
+                Name = ContractTemplateSeed.TemplateName,
+                Version = "2.5",
+                Description = "The drafted agreement, before Section 36 consolidated cancellation.",
+                BodyText =
+                    "By signing below, each Party agrees to this Master Service Agreement, "
+                    + "including Sections 1 through 35, Exhibit A and Exhibit B.\n"
+                    + "@SIGNATURE_BLOCK\n",
+                IsActive = true,
+                IsDefault = false
+            });
+            await context.SaveChangesAsync();
+
+            await Seeder(context).SeedAsync();
+
+            var rows = await context.ContractTemplates
+                .Where(t => t.Name == ContractTemplateSeed.TemplateName)
+                .ToListAsync();
+
+            Assert.False(rows.Single(t => t.Version == "2.0").IsActive);
+            Assert.False(rows.Single(t => t.Version == "2.1").IsActive);
+            Assert.False(rows.Single(t => t.Version == "2.2").IsActive);
+            Assert.False(rows.Single(t => t.Version == "2.3").IsActive);
+            Assert.False(rows.Single(t => t.Version == "2.4").IsActive);
+            Assert.False(rows.Single(t => t.Version == "2.5").IsActive);
+
+            var current = rows.Single(t => t.Version == ContractTemplateSeed.TemplateVersion);
+            Assert.True(current.IsActive);
+            Assert.True(current.IsDefault);
+            Assert.Single(rows.Where(t => t.IsDefault));
+
+            // Each retired row keeps its OWN wording, so a version generated from it still renders
+            // the text it was signed with — the seeder stops offering them, it never rewrites them.
+            Assert.Contains("business mailing address",
+                rows.Single(t => t.Version == "2.1").BodyText);
+            Assert.DoesNotContain("business mailing address", current.BodyText);
+
+            Assert.Contains("designate primary and backup on-call contacts",
+                rows.Single(t => t.Version == "2.2").BodyText);
+            Assert.DoesNotContain("designate primary and backup on-call contacts", current.BodyText);
+            Assert.Contains("may designate a backup on-call contact if available", current.BodyText);
+
+            Assert.Contains("such as the office",
+                rows.Single(t => t.Version == "2.3").BodyText);
+            Assert.DoesNotContain("such as the office", current.BodyText);
+            Assert.Contains(
+                "An area expressly identified as an Included Area in A1 remains included",
+                current.BodyText);
+
+            // 2.4's preamble named no premises at all, and keeps not naming one - an executed
+            // agreement re-renders the sentence its counterparty signed, however the current
+            // template reads.
+            Assert.DoesNotContain("with Services to be performed at",
+                rows.Single(t => t.Version == "2.4").BodyText);
+            Assert.Contains(
+                "{{CLIENT_ENTITY_DESCRIPTION}}, with Services to be performed at "
+                + "{{SERVICE_FULL_ADDRESS}}",
+                current.BodyText);
+
+            // 2.5's signature block named 35 sections and had no Section 36; an agreement executed
+            // against it keeps saying so, while the current template executes 36 sections.
+            Assert.DoesNotContain("## 36.", rows.Single(t => t.Version == "2.5").BodyText);
+            Assert.Contains("Sections 1 through 35", rows.Single(t => t.Version == "2.5").BodyText);
+            Assert.Contains("## 36. CANCELLATION, RESCHEDULING AND CONTRACT TERMINATION",
+                current.BodyText);
+            Assert.Contains("Sections 1 through 36", current.BodyText);
+        }
     }
 }

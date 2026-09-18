@@ -19,6 +19,10 @@ namespace DreamCleaningBackend.Helpers
     ///    when someone happens to load the order — rows nobody opens stay Pending forever. Manual
     ///    payments (cash/Zelle/check) carry IsPaid=false BY DESIGN, so they qualify on PaymentMethod
     ///    instead; this is the same "paid" test AdminStatisticsController and the auto-cancel use.
+    ///    <b>A PART-PAID order counts</b> (2026-09): somebody who has handed over a $1,000
+    ///    deposit has manifestly not abandoned their checkout, which is the only thing this
+    ///    clause is here to exclude. It stays out of the REVENUE figures until it is settled —
+    ///    that is <see cref="OrderPaymentFilter"/>, a different question with a different answer.
     ///
     /// Status comparisons rely on MySQL's case-insensitive collation, like the rest of the codebase
     /// (see <see cref="OrderStatuses"/>) — keep this predicate in SQL, not in memory.
@@ -29,6 +33,6 @@ namespace DreamCleaningBackend.Helpers
         public static readonly Expression<Func<Order, bool>> IsRealBooking = o =>
             o.Status != OrderStatuses.Cancelled
             && o.Status != OrderStatuses.Refunded
-            && (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal);
+            && (o.IsPaid || o.PaymentMethod != PaymentMethod.Normal || o.AmountPaid >= 0.01m);
     }
 }

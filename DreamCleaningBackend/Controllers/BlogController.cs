@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 
 namespace DreamCleaningBackend.Controllers
@@ -47,12 +48,14 @@ namespace DreamCleaningBackend.Controllers
         private readonly ApplicationDbContext _context;
         private readonly IMemoryCache _cache;
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly ILogger<BlogController> _logger;
 
-        public BlogController(ApplicationDbContext context, IMemoryCache cache, IServiceScopeFactory scopeFactory)
+        public BlogController(ApplicationDbContext context, IMemoryCache cache, IServiceScopeFactory scopeFactory, ILogger<BlogController> logger)
         {
             _context = context;
             _cache = cache;
             _scopeFactory = scopeFactory;
+            _logger = logger;
         }
 
         /// <summary>Public visibility probe — one cheap cached call shared by the header
@@ -191,21 +194,12 @@ namespace DreamCleaningBackend.Controllers
             // Fire-and-forget view count — atomic UPDATE, never blocks the response and
             // runs even on cache hits (the cached DTO skips the SELECT, not the count).
             var postSlug = dto.Slug;
-            var scopeFactory = _scopeFactory;
-            _ = Task.Run(async () =>
+            BackgroundWork.Run(_scopeFactory, _logger, $"blog view count for {postSlug}", async services =>
             {
-                try
-                {
-                    using var scope = scopeFactory.CreateScope();
-                    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                    await db.BlogPosts
-                        .Where(p => p.Slug == postSlug)
-                        .ExecuteUpdateAsync(s => s.SetProperty(p => p.ViewCount, p => p.ViewCount + 1));
-                }
-                catch
-                {
-                    // View counts are best-effort; never surface failures.
-                }
+                var db = services.GetRequiredService<ApplicationDbContext>();
+                await db.BlogPosts
+                    .Where(p => p.Slug == postSlug)
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.ViewCount, p => p.ViewCount + 1));
             });
 
             return Ok(dto);

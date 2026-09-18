@@ -486,19 +486,22 @@ namespace DreamCleaningBackend.Tests
         // ══════════════════════════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// A NEW contract is committed for six months, then month-to-month on sixty days notice,
-        /// under New York law in Kings County.
+        /// A NEW contract is committed for TEN months (2026-09-15, raised from six), then
+        /// month-to-month on sixty days notice, under New York law in Kings County.
         ///
         /// Defaults only — every generated version freezes its own copy, so changing these can
-        /// never move a contract that already exists.
+        /// never move a contract that already exists. The frontend's <c>defaultTerm()</c> carries
+        /// the same three numbers and is asserted in <c>contracts.component.spec.ts</c>; they
+        /// have to move together or a draft the server fills in disagrees with the form that
+        /// submitted it.
         /// </summary>
         [Fact]
-        public void NewContract_TermDefaults_AreSixSixtyAndMonthToMonth()
+        public void NewContract_TermDefaults_AreTenSixtyAndMonthToMonth()
         {
             var term = new TermSnapshot();
 
-            Assert.Equal(6, term.InitialTermMonths);
-            Assert.Equal(6, term.MinimumCommitmentMonths);
+            Assert.Equal(10, term.InitialTermMonths);
+            Assert.Equal(10, term.MinimumCommitmentMonths);
             Assert.Equal(60, term.TerminationNoticeDays);
             Assert.Equal("month-to-month", term.RenewalType);
             Assert.Equal("New York", term.GoverningLawState);
@@ -589,13 +592,20 @@ namespace DreamCleaningBackend.Tests
         {
             var body = ContractTemplateSeed.BodyText;
 
-            Assert.Equal("2.1", ContractTemplateSeed.TemplateVersion);
+            Assert.Equal("2.6", ContractTemplateSeed.TemplateVersion);
 
             // Sections that only exist in the drafted version.
             Assert.Contains("## 18. PERSONNEL COORDINATION", body);
             Assert.Contains("## 11. INVOICING, ADVANCE PAYMENT AND CHARGES", body);
             Assert.Contains("### B4. AUTHORIZED REPRESENTATIVES AND CONTACTS", body);
             Assert.Contains("{{SCOPE_TABLE:area-tasks}}", body);
+
+            // Section 16(c) asks for ONE contact. The backup is permissive, and a body still
+            // obliging both is a superseded version that somebody reverted a merge onto.
+            Assert.Contains(
+                "Client shall designate a primary on-call contact in Exhibit B and may designate "
+                + "a backup on-call contact if available", body);
+            Assert.DoesNotContain("designate primary and backup on-call contacts", body);
 
             // The non-solicit / non-hire clause is GONE, replaced by Section 18's express
             // statement that no such restriction is imposed. Reintroducing it would contradict
@@ -608,6 +618,29 @@ namespace DreamCleaningBackend.Tests
             // The liability cap is a multiple of the per-visit fee, not a lookback in months.
             Assert.Contains("{{LIABILITY_CAP_MULTIPLE}}", body);
             Assert.DoesNotContain("{{LIABILITY_CAP_MONTHS}}", body);
+
+            // The preamble says where the Services are performed, from the SERVICE location - and
+            // says it in those words. A body identifying Client by entity alone is v2.4 or older;
+            // one calling that address a principal or mailing address of Client's is a rewording
+            // nobody signed off, and both would be a reverted merge rather than a deliberate edit.
+            Assert.Contains(
+                "{{CLIENT_LEGAL_NAME}}, {{CLIENT_ENTITY_DESCRIPTION}}, with Services to be "
+                + "performed at {{SERVICE_FULL_ADDRESS}} (\"Client\")",
+                body);
+            Assert.DoesNotContain("{{CLIENT_ENTITY_DESCRIPTION}} (\"Client\")", body);
+            Assert.DoesNotContain("{{CLIENT_NOTICE_MAILING_ADDRESS}}", body);
+
+            // Section 1(b) and Exhibit A keep their own premises wording, unchanged.
+            Assert.Contains(
+                "(b) The Premises are the {{PREMISES_DESCRIPTION}} operated by Client and located "
+                + "at {{SERVICE_FULL_ADDRESS}}. The Premises address is the service location only "
+                + "and is not necessarily Client's legal or principal business address.",
+                body);
+            Assert.Contains(
+                "SERVICE PREMISES: {{PREMISES_DESCRIPTION}} operated by Client, "
+                + "{{SERVICE_FULL_ADDRESS}}. Service location only; not necessarily the legal or "
+                + "principal business address of Client.",
+                body);
         }
 
         /// <summary>
@@ -624,6 +657,32 @@ namespace DreamCleaningBackend.Tests
             // applied, so retiring it is what takes the hand-soap wording out of the picker - the
             // seeder cannot correct that row in place, it can only stop offering it.
             Assert.Contains("2.0", ContractTemplateSeed.SupersededVersions);
+
+            // 2.1 is the same situation one round later: it printed the Client's mailing address
+            // in the preamble and in Exhibit B4, and required floor materials and a permit holder.
+            Assert.Contains("2.1", ContractTemplateSeed.SupersededVersions);
+
+            // 2.2 obliged Client to "designate primary and backup on-call contacts" - a second
+            // person as a term of the agreement, on accounts that often only have one. Retiring
+            // it is what takes that obligation out of the picker; the seeder cannot reword the
+            // row in place.
+            Assert.Contains("2.2", ContractTemplateSeed.SupersededVersions);
+
+            // 2.3 named example rooms in A2 ("...such as the office, the employee restroom or
+            // hallways..."). Included Areas is a per-contract checklist, so a room fixed in the
+            // prose contradicted it the moment that room was not ticked.
+            Assert.Contains("2.3", ContractTemplateSeed.SupersededVersions);
+
+            // 2.4 identified Client by legal entity alone, so the only address on the first page
+            // was the CONTRACTOR's principal office and a reader had to reach Section 1(b) to
+            // learn which premises the agreement covers.
+            Assert.Contains("2.4", ContractTemplateSeed.SupersededVersions);
+
+            // 2.5 had no Section 36: the cancellation, rescheduling and termination terms were
+            // spread across Sections 4, 5, 14 and 15 with nothing consolidating them, and nothing
+            // recorded which published policy version the agreement was signed against.
+            Assert.Contains("2.5", ContractTemplateSeed.SupersededVersions);
+
             Assert.DoesNotContain(
                 ContractTemplateSeed.TemplateVersion, ContractTemplateSeed.SupersededVersions);
         }

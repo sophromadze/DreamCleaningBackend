@@ -13,6 +13,10 @@ namespace DreamCleaningBackend.Services
         private readonly IEmailService _emailService;
         private readonly IAuditService _auditService;
         private readonly ISmsService _smsService;
+
+        // The removal notice is detached, so it gets a DI scope of its own rather than
+        // borrowing this service's DbContext. See Helpers/BackgroundWork.
+        private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<CleanerService> _logger;
 
         public CleanerService(
@@ -20,13 +24,15 @@ namespace DreamCleaningBackend.Services
             IEmailService emailService,
             IAuditService auditService,
             ISmsService smsService,
-            ILogger<CleanerService> logger)
+            ILogger<CleanerService> logger,
+            IServiceScopeFactory scopeFactory)
         {
             _context = context;
             _emailService = emailService;
             _auditService = auditService;
             _smsService = smsService;
             _logger = logger;
+            _scopeFactory = scopeFactory;
         }
 
         // Dispatch a cleaner assignment notification. Cleaners with an email get the full HTML
@@ -637,22 +643,15 @@ namespace DreamCleaningBackend.Services
             // cleaner would otherwise learn of the order only by being removed from it.
             if (notifyOfRemoval)
             {
-                _ = Task.Run(async () =>
+                BackgroundWork.Run(_scopeFactory, _logger, "cleaner removal notification", async services =>
                 {
-                    try
-                    {
-                        await _emailService.SendCleanerRemovalNotificationAsync(
-                            cleanerEmail,
-                            cleanerFirstName,
-                            serviceDate,
-                            serviceTime,
-                            serviceTypeName
-                        );
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Background removal email sending failed");
-                    }
+                    await services.GetRequiredService<IEmailService>().SendCleanerRemovalNotificationAsync(
+                        cleanerEmail,
+                        cleanerFirstName,
+                        serviceDate,
+                        serviceTime,
+                        serviceTypeName
+                    );
                 });
             }
 

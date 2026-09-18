@@ -119,6 +119,69 @@ namespace DreamCleaningBackend.Tests
             Assert.False(ContractPermissionMatrix.Can(ContractAuthority.Manager, ContractAction.CreateAmendment));
         }
 
+        /// <summary>
+        /// THE PRODUCTION-VS-LOCAL BUTTON MISMATCH, pinned as a regression.
+        ///
+        /// Reported 2026-09-16: localhost showed Back to edit, Approve &amp; send for client review,
+        /// Send for signature, Create amendment, Duplicate as new contract and Delete; production
+        /// showed only the three in the middle. It read as a stale deployment and was not one.
+        ///
+        /// The cause is DATA, not code: the production account holds <c>OrgTitle.None</c>, so it
+        /// resolves to Manager, and Manager is withheld exactly BackToEdit, CreateAmendment and
+        /// DeleteContract. Nothing seeds an officer title — deliberately, see
+        /// <c>OrgTitlePolicy</c>'s bootstrap mode — so on a freshly migrated database every admin
+        /// is a Manager and those three are absent for everybody.
+        ///
+        /// This test asserts the exact split that was observed, so that if anybody later "fixes"
+        /// the symptom by widening the matrix, the deliberate design fails loudly rather than
+        /// quietly handing contract-destroying powers to every admin.
+        /// </summary>
+        [Fact]
+        public void AnUntitledAccountSeesExactlyTheThreeActionsProductionWasMissing()
+        {
+            const ContractAuthority untitled = ContractAuthority.Manager;
+
+            // Present in production, and correctly so.
+            Assert.True(ContractPermissionMatrix.Can(untitled, ContractAction.SendForReview));
+            Assert.True(ContractPermissionMatrix.Can(untitled, ContractAction.SendForSignature));
+            Assert.True(ContractPermissionMatrix.Can(untitled, ContractAction.Duplicate));
+
+            // Missing in production, and correctly so.
+            Assert.False(ContractPermissionMatrix.Can(untitled, ContractAction.BackToEdit));
+            Assert.False(ContractPermissionMatrix.Can(untitled, ContractAction.CreateAmendment));
+            Assert.False(ContractPermissionMatrix.Can(untitled, ContractAction.DeleteContract));
+
+            // And the remedy is a title, not a code change: granting CTO restores all three.
+            Assert.True(ContractPermissionMatrix.Can(ContractAuthority.CTO, ContractAction.BackToEdit));
+            Assert.True(ContractPermissionMatrix.Can(ContractAuthority.CTO, ContractAction.CreateAmendment));
+            Assert.True(ContractPermissionMatrix.Can(ContractAuthority.CTO, ContractAction.DeleteContract));
+        }
+
+        /// <summary>
+        /// A SUPERADMIN WITH NO TITLE IS THE PRODUCTION ACCOUNT, and the role alone tells you
+        /// nothing here. Stated as its own test because "but I am a SuperAdmin" is the first
+        /// response to the missing buttons, and it is the wrong question in this module.
+        /// </summary>
+        [Fact]
+        public void BeingASuperAdminDoesNotRestoreTheThreeWithheldActions()
+        {
+            foreach (var action in new[]
+                     {
+                         ContractAction.BackToEdit,
+                         ContractAction.CreateAmendment,
+                         ContractAction.DeleteContract
+                     })
+            {
+                Assert.False(
+                    ContractPermissionMatrix.Can(UserRole.SuperAdmin, OrgTitle.None, action),
+                    $"{action} must stay withheld from an untitled SuperAdmin.");
+
+                Assert.True(
+                    ContractPermissionMatrix.Can(UserRole.SuperAdmin, OrgTitle.CTO, action),
+                    $"{action} must come back with the CTO title.");
+            }
+        }
+
         // ── CEO vs CTO: exactly two differences ────────────────────────────────
 
         [Fact]

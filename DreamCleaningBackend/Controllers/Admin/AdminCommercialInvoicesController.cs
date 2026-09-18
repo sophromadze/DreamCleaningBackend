@@ -90,6 +90,7 @@ namespace DreamCleaningBackend.Controllers.Admin
             [FromQuery] InvoicePaymentMethod? paymentMethod = null,
             [FromQuery] DateTime? fromDate = null,
             [FromQuery] DateTime? toDate = null,
+            [FromQuery] bool archived = false,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 25)
         {
@@ -97,6 +98,12 @@ namespace DreamCleaningBackend.Controllers.Admin
                 .Include(i => i.Client)
                 .Include(i => i.Contract)
                 .AsQueryable();
+
+            // ARCHIVED IS A SEPARATE AXIS FROM STATUS, and the default list is the active one.
+            // Passing archived=true shows ONLY archived invoices rather than adding them to the
+            // list: the Archived tab is a place an admin goes to find something they filed away,
+            // and mixing the two would leave no view that is just the live billing.
+            query = query.Where(i => i.IsArchived == archived);
 
             if (status.HasValue) query = query.Where(i => i.Status == status.Value);
             if (clientId is > 0) query = query.Where(i => i.ContractClientId == clientId.Value);
@@ -150,7 +157,8 @@ namespace DreamCleaningBackend.Controllers.Admin
                     PaymentMethod = i.PaymentMethod,
                     PaidAt = i.PaidAt,
                     LastSentAt = i.LastSentAt,
-                    HasBeenSent = i.FirstSentAt != null
+                    HasBeenSent = i.FirstSentAt != null,
+                    IsArchived = i.IsArchived
                 })
                 .ToListAsync();
 
@@ -427,6 +435,106 @@ namespace DreamCleaningBackend.Controllers.Admin
                 actingUserId: CurrentUserId);
 
             return Ok(await _invoices.GetDetailAsync(id));
+        }
+
+        // ── Archive and permanent delete ──────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Takes an invoice off the default list. Preserves everything - status, figures, payments,
+        /// email and activity history, and the public token the client reads it through.
+        ///
+        /// Ordinary Admin work, unlike Void: archiving states nothing about the money and is
+        /// reversible from the Archived tab, so it does not need the level Void sits at.
+        /// </summary>
+        [HttpPost("{id:int}/archive")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<InvoiceDetailDto>> Archive(int id)
+        {
+            var invoice = await _invoices.ArchiveAsync(id, CurrentUserId);
+
+            await _audit.LogActionAsync(
+                AuditEntityTypes.CommercialInvoiceArchive,
+                invoice.Id,
+                "InvoiceArchived",
+                null,
+                new { Invoice = invoice.InvoiceNumber, invoice.Status, invoice.ArchivedAt },
+                actingUserId: CurrentUserId);
+
+            return Ok(await _invoices.GetDetailAsync(id));
+        }
+
+        /// <summary>Puts an archived invoice back on the active list.</summary>
+        [HttpPost("{id:int}/unarchive")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<InvoiceDetailDto>> Unarchive(int id)
+        {
+            var invoice = await _invoices.UnarchiveAsync(id, CurrentUserId);
+
+            await _audit.LogActionAsync(
+                AuditEntityTypes.CommercialInvoiceArchive,
+                invoice.Id,
+                "InvoiceUnarchived",
+                null,
+                new { Invoice = invoice.InvoiceNumber, invoice.Status },
+                actingUserId: CurrentUserId);
+
+            return Ok(await _invoices.GetDetailAsync(id));
+        }
+
+        /// <summary>
+        /// PERMANENT delete, for a test or mistaken invoice that never touched money. Destroys the
+        /// invoice, its line items, activity and email logs, reminders, payment attempts and any
+        /// uncommitted order allocations. There is no undo.
+        ///
+        /// SuperAdmin-only, matching Void: both are the end of an invoice's life, and this one is
+        /// the more final of the two. Three gates in front of it, each catching a different
+        /// mistake:
+        ///
+        ///  * <see cref="InvoiceHardDeletePolicy"/>, applied in the service, refuses any invoice
+        ///    with a payment row, money recorded, Stripe activity, or cleanings it has claimed.
+        ///  * The typed confirmation below, verified HERE and not only in Angular.
+        ///  * The client, contract, service location and orders are Restrict/SetNull-mapped, so
+        ///    nothing shared can follow the invoice out.
+        ///
+        /// The app-wide audit row is written AFTER the delete from the returned entity, because
+        /// the invoice's own activity log cascades away with it - unlike every other action here,
+        /// that row is the only record left.
+        /// </summary>
+        [HttpDelete("{id:int}/permanent")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult> PermanentlyDelete(int id, [FromQuery] string? confirmation)
+        {
+            var invoice = await _context.CommercialInvoices
+                .AsNoTracking()
+                .Include(i => i.Client)
+                .FirstOrDefaultAsync(i => i.Id == id);
+
+            if (invoice == null) return NotFound(new { message = "Invoice not found." });
+
+            // "DELETE DCI-2026-48392175". Trimmed and case-insensitive: the point is that the
+            // admin read the number off the invoice in front of them.
+            var expected = $"DELETE {invoice.InvoiceNumber}";
+            if (!string.Equals(confirmation?.Trim(), expected, StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = $"Type {expected} to confirm permanent deletion." });
+
+            var deleted = await _invoices.PermanentlyDeleteAsync(id, CurrentUserId);
+
+            await _audit.LogActionAsync(
+                AuditEntityTypes.CommercialInvoiceHardDelete,
+                id,
+                "InvoicePermanentlyDeleted",
+                null,
+                new
+                {
+                    Invoice = deleted.InvoiceNumber,
+                    Client = invoice.Client?.LegalEntityName,
+                    deleted.Total,
+                    StatusAtDeletion = deleted.Status.ToString(),
+                    DeletedAt = DateTime.UtcNow
+                },
+                actingUserId: CurrentUserId);
+
+            return Ok(new { message = $"Invoice {deleted.InvoiceNumber} was permanently deleted." });
         }
 
         [HttpPost("{id:int}/duplicate")]

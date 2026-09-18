@@ -477,7 +477,14 @@ namespace DreamCleaningBackend.Services.Commercial
             return invoice;
         }
 
-        /// <summary>Only an unsent Draft may be removed outright.</summary>
+        /// <summary>
+        /// Only an unsent Draft may be removed outright.
+        ///
+        /// KEPT EXACTLY AS IT WAS. The newer <see cref="PermanentlyDeleteAsync"/> is a superset -
+        /// it accepts a Draft too - but this is what the long-standing
+        /// <c>DELETE api/admin/commercial/invoices/{id}</c> route calls, and a route other code and
+        /// other admins already rely on does not change meaning underneath them.
+        /// </summary>
         public async Task DeleteDraftAsync(int invoiceId, int userId)
         {
             var invoice = await LoadForWriteAsync(invoiceId);
@@ -494,6 +501,126 @@ namespace DreamCleaningBackend.Services.Commercial
 
             _logger.LogInformation(
                 "Draft invoice {Number} deleted by user {UserId}.", invoice.InvoiceNumber, userId);
+        }
+
+        // ── Archive ───────────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Takes an invoice off the default list. CHANGES NOTHING ELSE: not the status, not a
+        /// figure, not a payment row, and not the public token - a client who was sent this
+        /// invoice keeps being able to open it, because archiving is our filing decision and not
+        /// a statement to them.
+        ///
+        /// Idempotent, so a double-click or a retried request is not an error.
+        /// </summary>
+        public async Task<CommercialInvoice> ArchiveAsync(int invoiceId, int userId)
+        {
+            var invoice = await LoadForWriteAsync(invoiceId);
+            if (invoice.IsArchived) return invoice;
+
+            invoice.IsArchived = true;
+            invoice.ArchivedAt = DateTime.UtcNow;
+            invoice.ArchivedByUserId = userId;
+            invoice.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+            await LogActivityAsync(invoice.Id, "invoice_archived",
+                "Invoice archived. Figures, payments and history are unchanged.", userId);
+
+            return invoice;
+        }
+
+        /// <summary>Puts an archived invoice back on the active list.</summary>
+        public async Task<CommercialInvoice> UnarchiveAsync(int invoiceId, int userId)
+        {
+            var invoice = await LoadForWriteAsync(invoiceId);
+            if (!invoice.IsArchived) return invoice;
+
+            invoice.IsArchived = false;
+            invoice.ArchivedAt = null;
+            invoice.ArchivedByUserId = null;
+            invoice.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+            await LogActivityAsync(invoice.Id, "invoice_unarchived", "Invoice unarchived.", userId);
+
+            return invoice;
+        }
+
+        // ── Permanent delete ──────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Everything <see cref="InvoiceHardDeletePolicy"/> needs, counted in the database.
+        /// Separate from the delete because the detail endpoint asks the same question to decide
+        /// whether to offer the option at all.
+        /// </summary>
+        public async Task<InvoiceDeletionFacts> GatherDeletionFactsAsync(int invoiceId)
+        {
+            var invoice = await _context.CommercialInvoices
+                .AsNoTracking()
+                .FirstOrDefaultAsync(i => i.Id == invoiceId)
+                ?? throw new InvoiceWorkflowException("Invoice not found.");
+
+            var paymentCount = await _context.CommercialInvoicePayments
+                .CountAsync(p => p.CommercialInvoiceId == invoiceId);
+
+            // Only attempts that actually reached Stripe. A row created and abandoned before the
+            // API call carries neither id and is ours alone, so it does not protect anything.
+            var attemptCount = await _context.CommercialInvoicePaymentAttempts
+                .CountAsync(a => a.CommercialInvoiceId == invoiceId
+                                 && (a.StripeCheckoutSessionId != null || a.StripePaymentIntentId != null));
+
+            var committedAllocations = await _context.CommercialInvoiceOrders
+                .CountAsync(o => o.CommercialInvoiceId == invoiceId && o.CommittedAt != null);
+
+            return new InvoiceDeletionFacts
+            {
+                Status = invoice.Status,
+                AmountPaid = invoice.AmountPaid,
+                PaymentCount = paymentCount,
+                ExternalPaymentAttemptCount = attemptCount,
+                CommittedOrderAllocationCount = committedAllocations
+            };
+        }
+
+        /// <summary>The blocker sentence for this invoice, or null when it may be destroyed.</summary>
+        public async Task<string?> DescribeHardDeleteBlockerAsync(int invoiceId) =>
+            InvoiceHardDeletePolicy.DescribeBlocker(await GatherDeletionFactsAsync(invoiceId));
+
+        /// <summary>
+        /// PERMANENTLY destroys an invoice that never touched money - a test or a mistake.
+        ///
+        /// Everything invoice-owned cascades from the row itself (items, payment attempts, email
+        /// logs, activity logs, reminders and any uncommitted order allocations), so the delete is
+        /// one Remove inside one transaction. There is deliberately no manual RemoveRange of those
+        /// children: duplicating a cascade in code is how one of them gets forgotten when a new
+        /// child table is added.
+        ///
+        /// WHAT IT CANNOT REACH, by policy rather than by luck: payment rows and Stripe activity
+        /// make the invoice undeletable in the first place, so the cascade on
+        /// <c>CommercialInvoicePayments</c> never fires here. The client, the contract, the service
+        /// location and the orders are all Restrict- or SetNull-mapped and are untouched.
+        /// </summary>
+        public async Task<CommercialInvoice> PermanentlyDeleteAsync(int invoiceId, int userId)
+        {
+            var invoice = await LoadForWriteAsync(invoiceId);
+
+            var blocker = InvoiceHardDeletePolicy.DescribeBlocker(
+                await GatherDeletionFactsAsync(invoiceId));
+            if (blocker != null) throw new InvoiceWorkflowException(blocker);
+
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+
+            _context.CommercialInvoices.Remove(invoice);
+            await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            _logger.LogInformation(
+                "Invoice {Number} permanently deleted by user {UserId}.", invoice.InvoiceNumber, userId);
+
+            // Returned so the caller can write the surviving audit row from it - after this the
+            // invoice's own activity log is gone with the invoice.
+            return invoice;
         }
 
         /// <summary>
@@ -715,6 +842,12 @@ namespace DreamCleaningBackend.Services.Commercial
                 .Take(50)
                 .ToListAsync();
 
+
+            // Null when this invoice may be permanently destroyed; otherwise the sentence naming
+            // the financial activity that protects it. Resolved here so the action dialog can
+            // explain itself before the admin types a confirmation.
+            var hardDeleteBlocker = InvoiceHardDeletePolicy.DescribeBlocker(
+                await GatherDeletionFactsAsync(invoiceId));
             var serviceDates = DescribeServiceDates(invoice);
             var currentContract = invoice.Status == InvoiceStatus.Draft && invoice.Contract != null
                 ? await RecurringInvoiceService.LoadSnapshotAsync(_context, invoice.Contract) : null;
@@ -868,6 +1001,11 @@ namespace DreamCleaningBackend.Services.Commercial
                 CanVoid = InvoiceStatusPolicy.CanVoid(invoice.Status),
                 CanDelete = InvoiceStatusPolicy.CanDelete(invoice.Status),
                 CanSendReminder = InvoiceStatusPolicy.CanSendReminder(invoice.Status),
+
+                IsArchived = invoice.IsArchived,
+                ArchivedAt = invoice.ArchivedAt,
+                CanHardDelete = hardDeleteBlocker == null,
+                CannotHardDeleteReason = hardDeleteBlocker,
 
                 PotentialDuplicatePayment = hasStripePayment && hasManualPayment && overpaid > 0m,
                 HasProcessingStripePayment =

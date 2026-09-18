@@ -255,6 +255,10 @@ builder.Services.AddSingleton<IBookingDataService, BookingDataService>();
 builder.Services.AddScoped<IStripeService, StripeService>();
 // Admin-initiated refunds. Only ever runs from the orders panel — nothing refunds automatically.
 builder.Services.AddScoped<IOrderRefundService, OrderRefundService>();
+
+// Admin-requested part-payments of an order's own total ("$1,000 now, the rest later"). The only
+// writer of Order.AmountPaid — see Helpers/OrderBalance.cs for the balance rule it enforces.
+builder.Services.AddScoped<IOrderPartialPaymentService, OrderPartialPaymentService>();
 // Card on file: one saved card per user, charged only by explicit customer/admin action.
 builder.Services.AddScoped<ICardOnFileService, CardOnFileService>();
 builder.Services.AddScoped<IMaintenanceModeService, MaintenanceModeService>();
@@ -438,7 +442,11 @@ builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractAutho
 builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractService>();
 builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractReadService>();
 builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractSeedService>();
-// Daily sweep: hard-deletes contracts soft-deleted longer than ContractRetention:HiddenMonths.
+// The ONE permanent-delete path, shared by the admin Full delete action and the retention sweep
+// below so a timer cannot destroy what the button would refuse.
+builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractPurgeService>();
+// Daily sweep: hard-deletes ARCHIVED contracts past ContractRetention:HiddenMonths that the
+// shared hard-delete policy permits. Anything carrying a signature, invoice or amendment is kept.
 builder.Services.AddHostedService<DreamCleaningBackend.Services.Contracts.ContractRetentionService>();
 
 // The User(IsBusiness) <-> ContractClient link. One owner for create/reactivate/deactivate, called
@@ -446,6 +454,12 @@ builder.Services.AddHostedService<DreamCleaningBackend.Services.Contracts.Contra
 // read endpoint.
 builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.BusinessClientService>();
 builder.Services.AddHostedService<DreamCleaningBackend.Services.Contracts.BusinessClientBackfillService>();
+
+// ── Published commercial policies ───────────────────────────────────────────────────────────
+// The two public policy PDFs behind /commercial-cleaning-policies. Singleton because the content
+// is a compile-time constant and the service memoizes the rendered bytes; it reads no database
+// and takes no per-request state.
+builder.Services.AddSingleton<DreamCleaningBackend.Services.Commercial.CommercialPolicyPdfService>();
 
 // ── Commercial invoicing ────────────────────────────────────────────────────────────────────
 // Billed against a commercial contract, settled by ACH out of band, recorded by an admin. Shares
@@ -706,7 +720,8 @@ app.Use(async (context, next) =>
         "/api/auth/confirm-account-merge", // Merge temp Apple account with existing account (email code only)
         "/api/auth/resend-merge-code",     // Resend merge confirmation code
         "/api/auth/logout",
-        "/api/blog"                        // Public blog content — readable pre-verification
+        "/api/blog",                       // Public blog content — readable pre-verification
+        "/api/commercial-policies"         // Published policy documents — public, client-agnostic
     };
     if (allowPaths.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
     {
@@ -753,17 +768,20 @@ app.Use(async (context, next) =>
 {
     if (!app.Environment.IsDevelopment())
     {
-        context.Response.Headers.Add("X-Content-Type-Options", "nosniff");
-        context.Response.Headers.Add("X-Frame-Options", "SAMEORIGIN");
-        context.Response.Headers.Add("X-XSS-Protection", "1; mode=block");
-        context.Response.Headers.Add("Referrer-Policy", "strict-origin-when-cross-origin");
-        context.Response.Headers.Add("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
-        
-        // Add cookie security headers for production
-        if (useCookieAuth)
-        {
-            context.Response.Headers.Add("Set-Cookie", "SameSite=Strict; Secure");
-        }
+        // Indexer, not .Add(): IHeaderDictionary.Add THROWS when the key is already present, and
+        // an exception raised here escapes as a 500 on a response that was otherwise fine.
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        context.Response.Headers["X-Frame-Options"] = "SAMEORIGIN";
+        context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
+        context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+        context.Response.Headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups";
+
+        // There used to be a `Set-Cookie: SameSite=Strict; Secure` here, on EVERY production
+        // response. Set-Cookie carries attributes for one named cookie, it is not a policy
+        // header - so what that actually did was set a junk cookie literally named "SameSite",
+        // on every response, path-scoped to whatever URL happened to be answering. The auth
+        // cookies get Secure/SameSite/HttpOnly from CookieOptions in AuthController.SetAuthCookies,
+        // which is the only place that can set them correctly. Nothing replaces it.
     }
     await next();
 });

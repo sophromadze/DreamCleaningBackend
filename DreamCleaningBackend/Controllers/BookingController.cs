@@ -45,6 +45,11 @@ namespace DreamCleaningBackend.Controllers
         // not an admin action, so the customer flow deliberately writes no audit row.
         private readonly IAuditService _auditService;
 
+        // Fire-and-forget notifications get a DI scope of their own through
+        // Helpers/BackgroundWork — never this controller's scoped DbContext. See that file for
+        // the double-charge incident behind the rule.
+        private readonly IServiceScopeFactory _scopeFactory;
+
         // Stripe rejects any charge below $0.50 USD. When the payable total falls under this
         // (a gift card / credits fully cover the order), we skip Stripe entirely and treat the
         // order as fully paid — the customer pays nothing. Any sub-minimum remainder is waived.
@@ -67,7 +72,8 @@ namespace DreamCleaningBackend.Controllers
             IBookingCreationService bookingCreationService,
             IAdminBonusService adminBonusService,
             ICardOnFileService cardOnFileService,
-            IAuditService auditService)
+            IAuditService auditService,
+            IServiceScopeFactory scopeFactory)
         {
             _context = context;
             _configuration = configuration;
@@ -87,6 +93,7 @@ namespace DreamCleaningBackend.Controllers
             _adminBonusService = adminBonusService;
             _cardOnFileService = cardOnFileService;
             _auditService = auditService;
+            _scopeFactory = scopeFactory;
         }
 
         // Mirrors AuthController.SetAuthCookies — used by the guest auto-registration path in
@@ -796,33 +803,35 @@ namespace DreamCleaningBackend.Controllers
                     var manualIsCustomServiceType = order.ServiceType?.IsCustom ?? false;
                     var manualSupplyChecklist = CustomerSupplyChecklist.Resolve(manualExtraNames, manualIsCustomServiceType);
 
+                    // Read off the tracked order HERE — detached work never touches the entity.
+                    var manualOrderId = order.Id;
+                    var manualServiceDate = order.ServiceDate;
+                    var manualServiceTypeName = order.GetDisplayServiceTypeName();
+                    var manualFloorTypes = order.FloorTypes;
+                    var manualFloorTypeOther = order.FloorTypeOther;
+                    var manualPropertyType = order.PropertyType;
+                    var manualLevelsQuantity = order.LevelsQuantity;
+
                     // Fire-and-forget email (skip Apple hidden mail). Same isAppleHiddenMail
                     // check the Stripe path uses below — keep behavior aligned.
                     if (notifyCustomerByEmail)
                     {
-                        _ = Task.Run(async () =>
+                        BackgroundWork.Run(_scopeFactory, _logger, $"manual-payment booking confirmation email for order {manualOrderId}", async services =>
                         {
-                            try
+                            var isAppleHiddenMail = !string.IsNullOrEmpty(manualContactEmail) &&
+                                manualContactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+                            if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(manualContactEmail))
                             {
-                                var isAppleHiddenMail = !string.IsNullOrEmpty(manualContactEmail) &&
-                                    manualContactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
-                                if (!isAppleHiddenMail && !string.IsNullOrWhiteSpace(manualContactEmail))
-                                {
-                                    await _emailService.SendCustomerBookingConfirmationAsync(
-                                        manualContactEmail, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
-                                        order.GetDisplayServiceTypeName(), manualAddressDisplay, order.Id,
-                                        manualSupplyChecklist,
-                                        order.FloorTypes, order.FloorTypeOther,
-                                        // Manual payment path: customer pays cleaners on arrival, so drop
-                                        // the "payment processed successfully" phrasing from the greeting.
-                                        paymentAlreadyProcessed: false,
-                                        propertyType: order.PropertyType, levelsQuantity: order.LevelsQuantity);
-                                    _logger.LogInformation($"Manual-payment booking confirmation email sent to {manualContactEmail} for order {order.Id}");
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, $"Failed to send manual-payment booking confirmation email for order {order.Id}");
+                                await services.GetRequiredService<IEmailService>().SendCustomerBookingConfirmationAsync(
+                                    manualContactEmail, manualCustomerName, manualServiceDate, manualServiceTimeStr,
+                                    manualServiceTypeName, manualAddressDisplay, manualOrderId,
+                                    manualSupplyChecklist,
+                                    manualFloorTypes, manualFloorTypeOther,
+                                    // Manual payment path: customer pays cleaners on arrival, so drop
+                                    // the "payment processed successfully" phrasing from the greeting.
+                                    paymentAlreadyProcessed: false,
+                                    propertyType: manualPropertyType, levelsQuantity: manualLevelsQuantity);
+                                _logger.LogInformation($"Manual-payment booking confirmation email sent to {manualContactEmail} for order {manualOrderId}");
                             }
                         });
                     }
@@ -835,22 +844,20 @@ namespace DreamCleaningBackend.Controllers
 
                     if (notifyCustomerBySms && !string.IsNullOrWhiteSpace(manualContactPhone))
                     {
-                        _ = Task.Run(async () =>
+                        BackgroundWork.Run(_scopeFactory, _logger, $"manual-payment booking confirmation SMS for order {manualOrderId}", async services =>
                         {
                             try
                             {
-                                await _smsService.SendBookingConfirmationSmsAsync(
-                                    manualContactPhone, manualCustomerName, order.ServiceDate, manualServiceTimeStr,
+                                await services.GetRequiredService<ISmsService>().SendBookingConfirmationSmsAsync(
+                                    manualContactPhone, manualCustomerName, manualServiceDate, manualServiceTimeStr,
                                     manualSupplyChecklist);
-                                _logger.LogInformation($"Manual-payment booking confirmation SMS sent to {manualContactPhone} for order {order.Id}");
+                                _logger.LogInformation($"Manual-payment booking confirmation SMS sent to {manualContactPhone} for order {manualOrderId}");
                             }
                             catch (InvalidPhoneNumberException)
                             {
-                                _logger.LogWarning($"Manual-payment SMS skipped for order {order.Id}: invalid phone");
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, $"Failed to send manual-payment booking confirmation SMS for order {order.Id}");
+                                // Kept local: a number we cannot text is a data problem, not a
+                                // failure worth an error-level line on every such order.
+                                _logger.LogWarning($"Manual-payment SMS skipped for order {manualOrderId}: invalid phone");
                             }
                         });
                     }
@@ -1241,6 +1248,13 @@ namespace DreamCleaningBackend.Controllers
                 string paymentIntentId = null;
                 string paymentClientSecret = null;
 
+                // Set when the intent this attempt already holds turns out to have been CHARGED
+                // (see ResolveAlreadyChargedPrepareAsync). Either the booking is already on file,
+                // or it is not and the existing charge is what must pay for it.
+                var alreadyBookedOrderId = 0;
+                string alreadyBookedStatus = null;
+                string alreadyPaidPaymentIntentId = null;
+
                 // Find-or-create under a per-user lock: two genuinely concurrent prepares would
                 // otherwise both miss the lookup and both create an intent.
                 using (await _bookingDataService.AcquirePrepareLockAsync(userId, HttpContext.RequestAborted))
@@ -1257,6 +1271,25 @@ namespace DreamCleaningBackend.Controllers
                         _logger.LogInformation(
                             "Reusing outstanding prepare-payment session {SessionId} for user {UserId} (intent {PaymentIntentId})",
                             sessionId, userId, paymentIntentId ?? "none yet");
+
+                        // A reused attempt may ALREADY have been paid for. Handing its client
+                        // secret back unconditionally assumes the card was never charged on it —
+                        // and on 2026-09-16 that assumption cost a customer $386.16 twice.
+                        if (!string.IsNullOrEmpty(paymentIntentId))
+                        {
+                            var charged = await ResolveAlreadyChargedPrepareAsync(paymentIntentId);
+                            if (charged.OrderId > 0)
+                            {
+                                alreadyBookedOrderId = charged.OrderId;
+                                alreadyBookedStatus = charged.Status;
+                                paymentClientSecret = null;
+                            }
+                            else if (charged.IsPaidWithNoOrder)
+                            {
+                                alreadyPaidPaymentIntentId = paymentIntentId;
+                                paymentClientSecret = null;
+                            }
+                        }
                     }
                     else
                     {
@@ -1274,6 +1307,9 @@ namespace DreamCleaningBackend.Controllers
                         _bookingDataService.StorePreparedSession(session);
                     }
 
+                    // Nothing left to create when the money is already in: both already-charged
+                    // outcomes leave paymentIntentId set, so this is belt-and-braces on the one
+                    // condition that actually matters.
                     if (requiresPayment && string.IsNullOrEmpty(paymentIntentId))
                     {
                         // Create Stripe payment intent with sessionId in metadata
@@ -1337,17 +1373,34 @@ namespace DreamCleaningBackend.Controllers
 
                 return Ok(new BookingResponseDto
                 {
-                    OrderId = 0, // No order created yet
-                    Status = "Pending",
+                    // 0 unless this attempt already produced an order — see the reuse branch.
+                    OrderId = alreadyBookedOrderId,
+                    Status = alreadyBookedStatus ?? "Pending",
                     Total = total,
-                    RequiresPayment = requiresPayment,
+                    // Either already-charged outcome owes nothing more.
+                    RequiresPayment = requiresPayment && alreadyBookedOrderId == 0
+                        && string.IsNullOrEmpty(alreadyPaidPaymentIntentId),
                     PaymentIntentId = paymentIntentId,
                     PaymentClientSecret = paymentClientSecret,
+                    AlreadyPaidPaymentIntentId = alreadyPaidPaymentIntentId,
                     SessionId = sessionId, // Return sessionId so frontend can use it in confirm-payment
                     // Guest booking: include auth token so frontend can authenticate before calling confirm-payment
                     GuestToken = guestAuth?.Token,
                     GuestRefreshToken = guestAuth?.RefreshToken,
                     GuestUser = guestAuth?.User
+                });
+            }
+            catch (GuestAccountRequiresLoginException ex)
+            {
+                // The contact email belongs to somebody who signs in properly — see
+                // GuestAccountClaimPolicy. Answered ahead of the generic catch below so the
+                // customer reads "sign in and book from there" rather than "Failed to prepare
+                // payment: ...", which reads as our fault and says nothing about what to do next.
+                // "code" is the stable contract; the wording is free to change.
+                return BadRequest(new
+                {
+                    code = GuestAccountRequiresLoginException.Code,
+                    message = ex.Message
                 });
             }
             catch (Exception ex)
@@ -1484,15 +1537,22 @@ namespace DreamCleaningBackend.Controllers
                 if (PaymentConsentPolicy.RequiresConsent(order))
                     return BadRequest(new { message = PaymentConsentPolicy.ConsentRequiredMessage, requiresConsent = true });
 
-                // Fully covered (e.g. gift card) — payable total below Stripe's minimum. Skip the
-                // PaymentIntent; the frontend confirms directly and confirm-payment marks it paid.
-                if (order.Total < StripeMinimumChargeAmount)
+                // What is actually left to charge. Identical to order.Total on every ordinary
+                // order — AmountPaid is zero unless an admin has collected part of the total
+                // through part-payments, and charging the full total then would take a deposit
+                // the customer has already handed over a second time.
+                var amountDue = OrderBalance.AmountDue(order);
+
+                // Fully covered (e.g. gift card, or part-payments have all but cleared it) —
+                // payable amount below Stripe's minimum. Skip the PaymentIntent; the frontend
+                // confirms directly and confirm-payment marks it paid.
+                if (amountDue < StripeMinimumChargeAmount)
                 {
                     return Ok(new BookingResponseDto
                     {
                         OrderId = order.Id,
                         Status = order.Status,
-                        Total = order.Total,
+                        Total = amountDue,
                         RequiresPayment = false,
                         PaymentIntentId = null,
                         PaymentClientSecret = null
@@ -1520,7 +1580,7 @@ namespace DreamCleaningBackend.Controllers
                         .FirstOrDefaultAsync();
                 }
 
-                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(order.Total, metadata,
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amountDue, metadata,
                     receiptEmail: OrderReceiptEmail(order), customerId: ownerStripeCustomerId);
 
                 // Update order with payment intent ID
@@ -1532,7 +1592,9 @@ namespace DreamCleaningBackend.Controllers
                 {
                     OrderId = order.Id,
                     Status = order.Status,
-                    Total = order.Total,
+                    // The amount still owed, not the order's headline total — they differ only
+                    // when part-payments have already been taken.
+                    Total = amountDue,
                     RequiresPayment = true,
                     PaymentIntentId = paymentIntent.Id,
                     PaymentClientSecret = paymentIntent.ClientSecret
@@ -1733,8 +1795,10 @@ namespace DreamCleaningBackend.Controllers
                     if (!hasPaymentIntent)
                     {
                         // Fully-covered existing order (e.g. gift card) — no Stripe charge possible.
-                        // Only allow it when the persisted Total is genuinely below Stripe's minimum.
-                        if (order.Total >= StripeMinimumChargeAmount)
+                        // Only allow it when what is genuinely still OWED is below Stripe's
+                        // minimum. That is the persisted Total on every ordinary order, and less
+                        // than it only when part-payments have already been collected.
+                        if (OrderBalance.AmountDue(order) >= StripeMinimumChargeAmount)
                             return BadRequest(new { message = "Payment is required to complete this booking." });
 
                         // Same consent gate as create-payment-intent. Safe to reject here because
@@ -1978,203 +2042,29 @@ namespace DreamCleaningBackend.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                // Ensure extra services are loaded for email/SMS templates (new-booking flow may not include navigation properties).
-                await _context.Entry(order).Collection(o => o.OrderExtraServices).Query().Include(oes => oes.ExtraService).LoadAsync();
-
-                // Send booking confirmation email and SMS to customer.
+                // ── PAST THIS LINE THE BOOKING IS DONE ───────────────────────────────────
+                // The order row is committed, IsPaid is true and the card has been charged.
+                // Everything that follows is notifications and bookkeeping, so NONE of it may
+                // be reported to the customer as a failed payment.
                 //
-                // Gated on the same shared rule every other creation path uses. A commercial
-                // invoice-backed order cannot normally reach here at all — this is the Stripe
-                // confirmation, and an Invoice order is never charged through it — but the rule is
-                // applied rather than assumed, so that a future path that routes one through
-                // confirm-payment does not silently start mailing residential templates to a
-                // commercial client. The company/admin notification below is internal and unaffected.
-                var sendResidentialConfirmation =
-                    ResidentialBookingCommunicationPolicy.ShouldSendResidentialBookingCommunication(order);
-                if (!sendResidentialConfirmation)
+                // On 2026-09-16 it was. A DbContext collision in that tail (see
+                // Helpers/BackgroundWork) turned a completed, paid booking into
+                // "Failed to confirm payment: A second operation was started on this context
+                // instance..." — the customer read it as a decline, clicked Pay again, and was
+                // charged a second time for the same cleaning. An order that exists and is paid
+                // must be REPORTED as such whatever happens after it, or the error itself is
+                // what produces the duplicate charge.
+                try
                 {
-                    _logger.LogInformation(
-                        "Order {OrderId} is billed through a commercial invoice; residential booking confirmation email/SMS suppressed.",
+                    await CompleteConfirmedBookingAsync(
+                        order, user, userId, bookingDataDto, sessionId, chargedNewBookingPaymentIntentId);
+                }
+                catch (Exception tailEx)
+                {
+                    _logger.LogError(tailEx,
+                        "Order {OrderId} is paid and committed, but the post-confirmation work failed. " +
+                        "The booking stands — reconcile notifications / subscription state separately.",
                         order.Id);
-                }
-
-                var contactEmail = order.ContactEmail;
-                var contactPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : user?.Phone;
-                var customerName = CapitalizeName(order.ContactFirstName);
-                var addressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
-                var serviceTimeStr = order.ServiceTime.ToString();
-
-                var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
-                    .Select(x => x.ExtraService?.Name ?? "")
-                    .Where(n => !string.IsNullOrWhiteSpace(n))
-                    .ToList();
-
-                var isCustomServiceType = order.ServiceType.IsCustom;
-                var supplyChecklist = CustomerSupplyChecklist.Resolve(extraNames, isCustomServiceType);
-
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        // Skip email if Apple hidden mail or no email
-                        var isAppleHiddenMail = !string.IsNullOrEmpty(contactEmail) &&
-                            contactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
-
-                        if (sendResidentialConfirmation && !isAppleHiddenMail && !string.IsNullOrWhiteSpace(contactEmail))
-                        {
-                            await _emailService.SendCustomerBookingConfirmationAsync(
-                                contactEmail,
-                                customerName,
-                                order.ServiceDate,
-                                serviceTimeStr,
-                                order.GetDisplayServiceTypeName(),
-                                addressDisplay,
-                                order.Id,
-                                supplyChecklist,
-                                order.FloorTypes,
-                                order.FloorTypeOther,
-                                propertyType: order.PropertyType,
-                                levelsQuantity: order.LevelsQuantity
-                            );
-                            _logger.LogInformation($"Booking confirmation email sent to {contactEmail} for order {order.Id}");
-                        }
-                        else if (isAppleHiddenMail)
-                        {
-                            _logger.LogInformation($"Skipping booking confirmation email for order {order.Id} - Apple hidden mail");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"Failed to send booking confirmation email for order {order.Id}");
-                    }
-                });
-
-                // Send booking confirmation SMS if phone exists
-                if (sendResidentialConfirmation && !string.IsNullOrWhiteSpace(contactPhone))
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await _smsService.SendBookingConfirmationSmsAsync(
-                                contactPhone,
-                                customerName,
-                                order.ServiceDate,
-                                serviceTimeStr,
-                                supplyChecklist
-                            );
-                            _logger.LogInformation($"Booking confirmation SMS sent to {contactPhone} for order {order.Id}");
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, $"Failed to send booking confirmation SMS for order {order.Id}");
-                        }
-                    });
-                }
-                else
-                {
-                    _logger.LogInformation($"Skipping booking confirmation SMS for order {order.Id} - no phone number");
-                }
-
-                // Send booking notification to company email with photos
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await _emailService.SendCompanyBookingNotificationAsync(
-                            order.ContactFirstName,
-                            order.ContactLastName,
-                            order.ContactEmail,
-                            order.ContactPhone,
-                            order.ServiceDate,
-                            order.ServiceTime.ToString(),
-                            order.GetDisplayServiceTypeName(),
-                            order.ServiceAddress,
-                            order.AptSuite,
-                            order.City,
-                            order.State,
-                            order.ZipCode,
-                            order.Id,
-                            order.ServiceType.IsCustom,
-                            order.SpecialInstructions,
-                            bookingDataDto?.UploadedPhotos
-                        );
-                        _logger.LogInformation($"Booking notification with photos sent to company email for order {order.Id}");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"Failed to send company notification email for order {order.Id}");
-                    }
-                });
-
-                // Persist booking-uploaded photos to the per-user cleaning photo library
-                // (same resize/webp pipeline as the admin upload), then prune so the user
-                // keeps only their two most recent cleanings on disk.
-                await PersistBookingPhotosAsync(userId, order.Id, bookingDataDto?.UploadedPhotos);
-
-                // Clean up booking data after successful payment
-                _bookingDataService.RemoveBookingData(sessionId);
-
-                // Handle subscription activation for paid orders
-                var subscription = await _context.Subscriptions.FindAsync(order.SubscriptionId);
-                if (subscription != null && subscription.SubscriptionDays > 0)
-                {
-                    var userForSubscription = await _context.Users
-                        .Include(u => u.Subscription)
-                        .FirstOrDefaultAsync(u => u.Id == userId);
-                    bool hasActiveSubscription = await _subscriptionService.CheckAndUpdateSubscriptionStatus(userId);
-                    if (!hasActiveSubscription)
-                    {
-                        var userSubscription = await _context.Subscriptions
-                            .FirstOrDefaultAsync(s => s.SubscriptionDays == subscription.SubscriptionDays);
-                        if (userSubscription != null)
-                        {
-                            await _subscriptionService.ActivateSubscription(userId, userSubscription.Id, order.ServiceDate);
-                        }
-                    }
-                    else if (userForSubscription.SubscriptionId.HasValue)
-                    {
-                        await _subscriptionService.RenewSubscription(userId, order.ServiceDate);
-                    }
-                }
-
-                // Update first-time order status if this is their first order
-                var wasFirstTimeOrder = user.FirstTimeOrder;
-                if (user.FirstTimeOrder)
-                {
-                    user.FirstTimeOrder = false;
-                    user.UpdatedAt = DateTime.UtcNow;
-                }
-
-                await _context.SaveChangesAsync();
-
-                // Card on file (opt-in checkbox at booking): the card that just paid THIS
-                // booking becomes the customer's saved card, only after the payment actually
-                // succeeded and only when a real charge was taken (a gift-card-fully-covered
-                // booking saved no card). TrySave never throws — a card-save problem must
-                // never break the paid booking.
-                if (bookingDataDto != null && bookingDataDto.SaveCardForFutureUse &&
-                    chargedNewBookingPaymentIntentId != null)
-                {
-                    await _cardOnFileService.TrySaveCardFromPaymentIntentAsync(userId, chargedNewBookingPaymentIntentId);
-                }
-
-                // Bubble Rewards: safety net — welcome bonus is granted at registration; this covers legacy accounts created before that
-                if (wasFirstTimeOrder && userId > 0)
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var bubbleService = HttpContext.RequestServices.GetService<IBubblePointsService>();
-                            if (bubbleService != null)
-                                await bubbleService.GrantWelcomeBonus(userId);
-                        }
-                        catch (Exception rewardsEx)
-                        {
-                            _logger.LogError(rewardsEx, $"[BubbleRewards] GrantWelcomeBonus failed for user {userId}");
-                        }
-                    });
                 }
 
                 return Ok(new
@@ -2249,10 +2139,567 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        // ─── Part-payments (2026-09) ──────────────────────────────────────────────────────────
+        //
+        // An admin can split an unpaid order's total into slices the customer pays one at a time
+        // ("$1,000 now, the rest before the cleaning"). Each slice is an OrderPartialPayment row
+        // created from the admin panel; these two endpoints are what the payment link then opens.
+        //
+        // They are SEPARATE endpoints rather than a mode on create-payment-intent/confirm-payment
+        // on purpose. Those two carry the whole residential booking flow — the gift-card branch,
+        // the recurring sequencing lock, the post-charge refund net — and teaching them to
+        // sometimes charge a different number would put every ordinary booking at risk of a
+        // regression for the sake of a case none of them share.
+        //
+        // The one thing that is NOT duplicated is what happens when an order becomes fully paid:
+        // the final slice hands over to ConfirmPayment, so the loyalty discount, the subscription
+        // activation and the customer's booking confirmation are run by exactly the same code a
+        // single full payment runs.
+
+        /// <summary>
+        /// Creates the Stripe intent for the slice an admin has asked this order's customer for.
+        /// With <paramref name="payFullBalance"/> the payer settles everything still owed instead —
+        /// the amount is derived from the order either way and never accepted from the client.
+        /// </summary>
+        [HttpPost("create-partial-payment-intent/{orderId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<PartialPaymentIntentDto>> CreatePartialPaymentIntent(
+            int orderId, [FromQuery] string? guestToken = null, [FromQuery] bool payFullBalance = false)
+        {
+            try
+            {
+                // Same access rule as every other payment endpoint: the owner, or anyone holding
+                // the secret payment-link token.
+                var userId = GetUserId();
+                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+
+                if (order == null)
+                    return NotFound(new { message = "Order not found" });
+                if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, guestToken))
+                    return NotFound(new { message = "Order not found" });
+
+                var callerIsOwner = order.UserId == userId;
+
+                if (order.IsPaid)
+                    return BadRequest(new { message = "Order is already paid" });
+                if (order.PaymentMethod != PaymentMethod.Normal)
+                    return BadRequest(new { message = "This order was paid outside the website and has no payment due." });
+
+                // Identical consent gate to the full-payment path, and enforced for the same
+                // reason: no PaymentIntent means no client secret, so an admin-created order
+                // physically cannot be charged before the customer accepts. A deposit is still a
+                // first payment.
+                if (PaymentConsentPolicy.RequiresConsent(order))
+                    return BadRequest(new { message = PaymentConsentPolicy.ConsentRequiredMessage, requiresConsent = true });
+
+                var partialPayments = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+                var request = await partialPayments.GetPendingRequestAsync(orderId);
+                if (request == null)
+                    return BadRequest(new { message = "There is no payment request open for this order.", noPartialRequest = true });
+
+                var amountDue = OrderBalance.AmountDue(order);
+
+                // The requested slice is clamped to what is actually still owed. An admin lowering
+                // the price after asking for a deposit must not be able to charge the old figure.
+                var amount = payFullBalance
+                    ? amountDue
+                    : Math.Min(request.RequestedAmount, amountDue);
+
+                var remainingAfter = OrderPricingCalculator.Round2(Math.Max(0m, amountDue - amount));
+                var isFinalPayment = OrderBalance.SettlesOrder(remainingAfter);
+
+                var response = new PartialPaymentIntentDto
+                {
+                    OrderId = order.Id,
+                    PartialPaymentId = request.Id,
+                    Amount = amount,
+                    RequestedAmount = request.RequestedAmount,
+                    AmountDue = amountDue,
+                    RemainingAfterPayment = isFinalPayment ? 0m : remainingAfter,
+                    IsFinalPayment = isFinalPayment
+                };
+
+                // Nothing chargeable left (credits or an edit took the balance under Stripe's
+                // minimum). Confirming settles the order without a charge, exactly as the
+                // gift-card-covered branch of the full-payment flow does.
+                if (amount < StripeMinimumChargeAmount)
+                {
+                    response.RequiresPayment = false;
+                    return Ok(response);
+                }
+
+                // The previous client secret must stop working BEFORE a new one exists. The payer
+                // switching between "pay the deposit" and "pay the full balance", or simply
+                // reloading, would otherwise leave two live intents for one slice and both could
+                // be confirmed. Same rule the combined recurring payment follows.
+                if (!string.IsNullOrWhiteSpace(request.PaymentIntentId))
+                {
+                    try
+                    {
+                        await RecurringPaymentAttemptGuard.CancelOpenAsync(_stripeService, request.PaymentIntentId);
+                    }
+                    catch (CombinedPaymentException ex)
+                    {
+                        return BadRequest(new { message = ex.Message });
+                    }
+                }
+
+                var metadata = new Dictionary<string, string>
+                {
+                    { "orderId", order.Id.ToString() },
+                    { "userId", order.UserId.ToString() },
+                    { "partialPaymentId", request.Id.ToString() },
+                    // NOT "booking": the webhook's booking handler marks the whole order paid from
+                    // that discriminator alone, which is exactly what must not happen for a slice.
+                    { "type", OrderPartialPaymentService.StripeMetadataType }
+                };
+
+                // Card on file is owner-only — a payment-link guest is often a relative paying on
+                // the owner's behalf and must never reach the owner's saved card.
+                string? ownerStripeCustomerId = null;
+                if (callerIsOwner)
+                {
+                    ownerStripeCustomerId = await _context.Users
+                        .AsNoTracking()
+                        .Where(u => u.Id == order.UserId)
+                        .Select(u => u.StripeCustomerId)
+                        .FirstOrDefaultAsync();
+                }
+
+                var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amount, metadata,
+                    receiptEmail: OrderReceiptEmail(order), customerId: ownerStripeCustomerId);
+
+                // Stamped before the customer can pay, so a webhook arriving ahead of the browser's
+                // confirm still finds the row this charge belongs to.
+                request.PaymentIntentId = paymentIntent.Id;
+                request.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                response.PaymentIntentId = paymentIntent.Id;
+                response.PaymentClientSecret = paymentIntent.ClientSecret;
+                return Ok(response);
+            }
+            catch (PartialPaymentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to create partial payment intent for order {OrderId}", orderId);
+                return BadRequest(new { message = "Failed to create payment intent: " + ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Records a slice Stripe has taken. Idempotent — the browser and the webhook both call
+        /// into the same settlement, and only the first moves the balance.
+        ///
+        /// When the slice clears the balance this hands over to <see cref="ConfirmPayment"/>, so an
+        /// order completed by instalments finishes exactly as one paid in a single charge: the
+        /// loyalty discount consumed, the subscription activated, the confirmation email and SMS
+        /// sent. Nothing about "the order is now paid" is re-implemented here.
+        /// </summary>
+        [HttpPost("confirm-partial-payment/{orderId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult> ConfirmPartialPayment(int orderId, [FromBody] ConfirmPaymentDto dto)
+        {
+            try
+            {
+                var paymentIntentId = dto?.PaymentIntentId;
+                if (string.IsNullOrWhiteSpace(paymentIntentId))
+                    return BadRequest(new { message = "Payment intent ID is required." });
+
+                var userId = GetUserId();
+                var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+                if (order == null)
+                    return NotFound(new { message = "Order not found" });
+                if (order.UserId != userId && !PaymentLinkHelper.TokenMatches(order, dto?.GuestToken))
+                    return NotFound(new { message = "Order not found" });
+
+                // Verify with Stripe before anything is written. The client tells us WHICH intent;
+                // Stripe tells us whether it succeeded and for how much.
+                Stripe.PaymentIntent paymentIntent;
+                try
+                {
+                    paymentIntent = await _stripeService.GetPaymentIntentAsync(paymentIntentId);
+                }
+                catch (Exception stripeEx)
+                {
+                    _logger.LogError(stripeEx, "ConfirmPartialPayment: could not read intent {PaymentIntentId} for order {OrderId}", paymentIntentId, orderId);
+                    return BadRequest(new { message = "Could not verify payment with Stripe. " + stripeEx.Message });
+                }
+
+                // The intent must be one WE created for THIS order. Without this check a caller
+                // could present any succeeded intent of their own and have its amount credited here.
+                var intentOrderId = paymentIntent.Metadata != null
+                    && paymentIntent.Metadata.TryGetValue("orderId", out var metaOrderId)
+                    && int.TryParse(metaOrderId, out var parsedOrderId)
+                        ? parsedOrderId
+                        : 0;
+                var intentType = paymentIntent.Metadata?.GetValueOrDefault("type");
+                if (intentOrderId != orderId || intentType != OrderPartialPaymentService.StripeMetadataType)
+                    return BadRequest(new { message = "That payment does not belong to this order." });
+
+                var status = paymentIntent.Status ?? "";
+                var paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase)
+                    || status.Equals("processing", StringComparison.OrdinalIgnoreCase);
+                if (!paid)
+                {
+                    await Task.Delay(2000);
+                    paymentIntent = await _stripeService.GetPaymentIntentAsync(paymentIntentId);
+                    status = paymentIntent.Status ?? "";
+                    paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase)
+                        || status.Equals("processing", StringComparison.OrdinalIgnoreCase);
+                    if (!paid)
+                        return BadRequest(new { message = "Payment not completed. Status: " + status });
+                }
+
+                var partialPayments = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+                var settlement = await partialPayments.SettleAsync(
+                    orderId, paymentIntentId, ResolveAmountReceived(paymentIntent));
+
+                if (settlement.OrderNowFullyPaid && !order.IsPaid)
+                {
+                    // The balance is clear. Hand the finishing work to the ordinary confirmation
+                    // path — it marks the order paid, consumes the loyalty discount, activates the
+                    // subscription and sends the confirmation, and an order completed in slices
+                    // must end up in exactly the state a single payment leaves it in.
+                    return await ConfirmPayment(orderId, dto);
+                }
+
+                await _context.Entry(order).ReloadAsync();
+                return Ok(new PartialPaymentConfirmationDto
+                {
+                    Success = true,
+                    OrderId = order.Id,
+                    AmountPaid = order.AmountPaid,
+                    AmountDue = OrderBalance.AmountDue(order),
+                    OrderFullyPaid = order.IsPaid,
+                    Status = order.Status,
+                    Message = settlement.Applied
+                        ? "Payment received"
+                        : "This payment has already been recorded"
+                });
+            }
+            catch (PartialPaymentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error confirming partial payment for order {OrderId}", orderId);
+                return BadRequest(new { message = "Failed to confirm payment: " + ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// What Stripe says actually arrived, in dollars. <c>AmountReceived</c> is the truthful
+        /// figure but reads 0 while an intent is still "processing", so the authorized amount is
+        /// the fallback — never a number supplied by the caller.
+        /// </summary>
+        private static decimal ResolveAmountReceived(Stripe.PaymentIntent paymentIntent)
+        {
+            var cents = paymentIntent.AmountReceived > 0 ? paymentIntent.AmountReceived : paymentIntent.Amount;
+            return OrderPricingCalculator.Round2(cents / 100m);
+        }
+
         /// <param name="paymentIntentId">The Stripe intent this order is being created for, or
         /// null for a fully-covered booking that takes no charge. Passed so the row carries it
         /// from the INSERT and the unique index on Order.PaymentIntentId can reject a concurrent
         /// duplicate — stamping it afterwards would let both racers commit a row first.</param>
+        /// <summary>
+        /// Everything ConfirmPayment does AFTER the order is persisted and marked paid:
+        /// the customer email and SMS, the company notification, the uploaded photos, the
+        /// subscription, the card on file, the first-time flag, and finally consuming the
+        /// prepare session.
+        ///
+        /// Split out so its failures can be caught in one place. Nothing in here is load-bearing
+        /// for the payment: the money has moved and the order exists before the first line of it
+        /// runs. Its caller logs a failure and still answers the customer with their order.
+        ///
+        /// The session removal is deliberately the LAST statement — see the comment there.
+        /// </summary>
+        private async Task CompleteConfirmedBookingAsync(
+            Order order,
+            User? user,
+            int userId,
+            CreateBookingDto? bookingDataDto,
+            string? sessionId,
+            string? chargedNewBookingPaymentIntentId)
+        {
+            // Ensure extra services are loaded for email/SMS templates (new-booking flow may not include navigation properties).
+            await _context.Entry(order).Collection(o => o.OrderExtraServices).Query().Include(oes => oes.ExtraService).LoadAsync();
+
+            // Send booking confirmation email and SMS to customer.
+            //
+            // Gated on the same shared rule every other creation path uses. A commercial
+            // invoice-backed order cannot normally reach here at all — this is the Stripe
+            // confirmation, and an Invoice order is never charged through it — but the rule is
+            // applied rather than assumed, so that a future path that routes one through
+            // confirm-payment does not silently start mailing residential templates to a
+            // commercial client. The company/admin notification below is internal and unaffected.
+            var sendResidentialConfirmation =
+                ResidentialBookingCommunicationPolicy.ShouldSendResidentialBookingCommunication(order);
+            if (!sendResidentialConfirmation)
+            {
+                _logger.LogInformation(
+                    "Order {OrderId} is billed through a commercial invoice; residential booking confirmation email/SMS suppressed.",
+                    order.Id);
+            }
+
+            // EVERY value the three detached sends need is read off the order HERE, on the
+            // request thread. `order` is tracked by the request DbContext and its change
+            // tracker is not thread-safe, so detached work must never touch the entity —
+            // see Helpers/BackgroundWork for the incident that made this a rule.
+            var notifiedOrderId = order.Id;
+            var contactEmail = order.ContactEmail;
+            var contactPhone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : user?.Phone;
+            var customerName = CapitalizeName(order.ContactFirstName);
+            var addressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
+            var serviceTimeStr = order.ServiceTime.ToString();
+            var serviceDate = order.ServiceDate;
+            var displayServiceTypeName = order.GetDisplayServiceTypeName();
+            var floorTypes = order.FloorTypes;
+            var floorTypeOther = order.FloorTypeOther;
+            var propertyType = order.PropertyType;
+            var levelsQuantity = order.LevelsQuantity;
+            var contactFirstName = order.ContactFirstName;
+            var contactLastName = order.ContactLastName;
+            var orderContactPhone = order.ContactPhone;
+            var serviceAddress = order.ServiceAddress;
+            var aptSuite = order.AptSuite;
+            var city = order.City;
+            var state = order.State;
+            var zipCode = order.ZipCode;
+            var specialInstructions = order.SpecialInstructions;
+            var uploadedPhotos = bookingDataDto?.UploadedPhotos;
+
+            var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
+                .Select(x => x.ExtraService?.Name ?? "")
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .ToList();
+
+            var isCustomServiceType = order.ServiceType.IsCustom;
+            var supplyChecklist = CustomerSupplyChecklist.Resolve(extraNames, isCustomServiceType);
+
+            BackgroundWork.Run(_scopeFactory, _logger, $"booking confirmation email for order {notifiedOrderId}", async services =>
+            {
+                // Skip email if Apple hidden mail or no email
+                var isAppleHiddenMail = !string.IsNullOrEmpty(contactEmail) &&
+                    contactEmail.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase);
+
+                if (sendResidentialConfirmation && !isAppleHiddenMail && !string.IsNullOrWhiteSpace(contactEmail))
+                {
+                    await services.GetRequiredService<IEmailService>().SendCustomerBookingConfirmationAsync(
+                        contactEmail,
+                        customerName,
+                        serviceDate,
+                        serviceTimeStr,
+                        displayServiceTypeName,
+                        addressDisplay,
+                        notifiedOrderId,
+                        supplyChecklist,
+                        floorTypes,
+                        floorTypeOther,
+                        propertyType: propertyType,
+                        levelsQuantity: levelsQuantity
+                    );
+                    _logger.LogInformation($"Booking confirmation email sent to {contactEmail} for order {notifiedOrderId}");
+                }
+                else if (isAppleHiddenMail)
+                {
+                    _logger.LogInformation($"Skipping booking confirmation email for order {notifiedOrderId} - Apple hidden mail");
+                }
+            });
+
+            // Send booking confirmation SMS if phone exists
+            if (sendResidentialConfirmation && !string.IsNullOrWhiteSpace(contactPhone))
+            {
+                BackgroundWork.Run(_scopeFactory, _logger, $"booking confirmation SMS for order {notifiedOrderId}", async services =>
+                {
+                    await services.GetRequiredService<ISmsService>().SendBookingConfirmationSmsAsync(
+                        contactPhone,
+                        customerName,
+                        serviceDate,
+                        serviceTimeStr,
+                        supplyChecklist
+                    );
+                    _logger.LogInformation($"Booking confirmation SMS sent to {contactPhone} for order {notifiedOrderId}");
+                });
+            }
+            else
+            {
+                _logger.LogInformation($"Skipping booking confirmation SMS for order {notifiedOrderId} - no phone number");
+            }
+
+            // Send booking notification to company email with photos
+            BackgroundWork.Run(_scopeFactory, _logger, $"company booking notification for order {notifiedOrderId}", async services =>
+            {
+                await services.GetRequiredService<IEmailService>().SendCompanyBookingNotificationAsync(
+                    contactFirstName,
+                    contactLastName,
+                    contactEmail,
+                    orderContactPhone,
+                    serviceDate,
+                    serviceTimeStr,
+                    displayServiceTypeName,
+                    serviceAddress,
+                    aptSuite,
+                    city,
+                    state,
+                    zipCode,
+                    notifiedOrderId,
+                    isCustomServiceType,
+                    specialInstructions,
+                    uploadedPhotos
+                );
+                _logger.LogInformation($"Booking notification with photos sent to company email for order {notifiedOrderId}");
+            });
+
+            // Persist booking-uploaded photos to the per-user cleaning photo library
+            // (same resize/webp pipeline as the admin upload), then prune so the user
+            // keeps only their two most recent cleanings on disk.
+            await PersistBookingPhotosAsync(userId, order.Id, uploadedPhotos);
+
+            // Handle subscription activation for paid orders
+            var subscription = await _context.Subscriptions.FindAsync(order.SubscriptionId);
+            if (subscription != null && subscription.SubscriptionDays > 0)
+            {
+                var userForSubscription = await _context.Users
+                    .Include(u => u.Subscription)
+                    .FirstOrDefaultAsync(u => u.Id == userId);
+                bool hasActiveSubscription = await _subscriptionService.CheckAndUpdateSubscriptionStatus(userId);
+                if (!hasActiveSubscription)
+                {
+                    var userSubscription = await _context.Subscriptions
+                        .FirstOrDefaultAsync(s => s.SubscriptionDays == subscription.SubscriptionDays);
+                    if (userSubscription != null)
+                    {
+                        await _subscriptionService.ActivateSubscription(userId, userSubscription.Id, order.ServiceDate);
+                    }
+                }
+                else if (userForSubscription.SubscriptionId.HasValue)
+                {
+                    await _subscriptionService.RenewSubscription(userId, order.ServiceDate);
+                }
+            }
+
+            // Update first-time order status if this is their first order
+            var wasFirstTimeOrder = user?.FirstTimeOrder ?? false;
+            if (user != null && user.FirstTimeOrder)
+            {
+                user.FirstTimeOrder = false;
+                user.UpdatedAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+
+            // Card on file (opt-in checkbox at booking): the card that just paid THIS
+            // booking becomes the customer's saved card, only after the payment actually
+            // succeeded and only when a real charge was taken (a gift-card-fully-covered
+            // booking saved no card). TrySave never throws — a card-save problem must
+            // never break the paid booking.
+            if (bookingDataDto != null && bookingDataDto.SaveCardForFutureUse &&
+                chargedNewBookingPaymentIntentId != null)
+            {
+                await _cardOnFileService.TrySaveCardFromPaymentIntentAsync(userId, chargedNewBookingPaymentIntentId);
+            }
+
+            // Bubble Rewards: safety net — welcome bonus is granted at registration; this covers legacy accounts created before that
+            if (wasFirstTimeOrder && userId > 0)
+            {
+                BackgroundWork.Run(_scopeFactory, _logger, $"welcome bonus for user {userId}", async services =>
+                {
+                    var bubbleService = services.GetService<IBubblePointsService>();
+                    if (bubbleService != null)
+                        await bubbleService.GrantWelcomeBonus(userId);
+                });
+            }
+
+            // Consume the prepare session LAST. Everything above it can fail; while the
+            // session is still here, a retry of this booking finds the intent that has
+            // already been charged instead of minting a second one (see PreparePayment).
+            if (!string.IsNullOrEmpty(sessionId))
+                _bookingDataService.RemoveBookingData(sessionId);
+        }
+
+        /// <summary>
+        /// "Has the card on this prepare attempt already been charged?" — asked of the DATABASE
+        /// first and of Stripe second, for a session prepare-payment is about to reuse.
+        ///
+        /// WHY (2026-09-16). Reuse existed to stop a second PaymentIntent being minted for one
+        /// booking, and it worked — for an attempt whose card had not been charged yet. It had
+        /// nothing to say about the case that actually happened: the browser charged the card,
+        /// confirm-payment created the order and then threw in its notification tail, and the
+        /// customer read the error as a decline and clicked Pay again. Handing the same client
+        /// secret back is no answer either — Stripe refuses to confirm an intent that has already
+        /// succeeded, so the customer would simply be stuck.
+        ///
+        /// The two answers are different and both matter:
+        ///   * an ORDER exists for the intent — the booking is done; say so and charge nothing;
+        ///   * the intent SUCCEEDED but there is no order — the money is ours and the booking is
+        ///     owed; the frontend re-confirms against THIS intent rather than paying again.
+        ///
+        /// The DB half is deliberately first: it is authoritative, it needs no network, and it
+        /// is the half that is still right when Stripe is unreachable. Either lookup failing is
+        /// answered with "don't know", which falls back to today's behaviour — this is a guard
+        /// on top of the pre-insert lookup and the unique index on Order.PaymentIntentId, never
+        /// a replacement for them.
+        /// </summary>
+        private async Task<(int OrderId, string? Status, bool IsPaidWithNoOrder)>
+            ResolveAlreadyChargedPrepareAsync(string paymentIntentId)
+        {
+            try
+            {
+                var existing = await _context.Orders
+                    .AsNoTracking()
+                    .Where(o => o.PaymentIntentId == paymentIntentId)
+                    .Select(o => new { o.Id, o.Status })
+                    .FirstOrDefaultAsync();
+
+                if (existing != null)
+                {
+                    _logger.LogWarning(
+                        "Prepare-payment: intent {PaymentIntentId} already produced order {OrderId}; returning it instead of charging again.",
+                        paymentIntentId, existing.Id);
+                    return (existing.Id, existing.Status, false);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Prepare-payment: could not check whether intent {PaymentIntentId} already has an order",
+                    paymentIntentId);
+                return (0, null, false);
+            }
+
+            try
+            {
+                var intent = await _stripeService.GetPaymentIntentAsync(paymentIntentId);
+                var status = intent?.Status ?? "";
+                var paid = status.Equals("succeeded", StringComparison.OrdinalIgnoreCase)
+                    || status.Equals("processing", StringComparison.OrdinalIgnoreCase);
+
+                if (!paid)
+                    return (0, null, false);
+
+                _logger.LogWarning(
+                    "Prepare-payment: intent {PaymentIntentId} is {Status} on Stripe but has no order. " +
+                    "Handing it back for confirmation instead of creating a second chargeable intent.",
+                    paymentIntentId, status);
+                return (0, null, true);
+            }
+            catch (Exception ex)
+            {
+                // Unreachable Stripe means "don't know", which is the same as "not charged" for
+                // this decision: the customer is offered the existing intent's card step, and
+                // confirm-payment's own guards still stand behind it.
+                _logger.LogError(ex,
+                    "Prepare-payment: could not read intent {PaymentIntentId} from Stripe", paymentIntentId);
+                return (0, null, false);
+            }
+        }
+
         private async Task<Order> CreateOrderFromBookingData(CreateBookingDto dto, int userId,
             string paymentIntentId = null)
         {

@@ -301,6 +301,14 @@ namespace DreamCleaningBackend.Controllers
                             await HandleRecurringBatchPayment(paymentIntent);
                             break;
 
+                        // A slice of ONE order's total ("$1,000 now, the rest later", 2026-09).
+                        // Its own discriminator because the booking handler above marks the whole
+                        // order paid from the orderId alone — which is precisely what a part
+                        // payment must not do.
+                        case Services.OrderPartialPaymentService.StripeMetadataType:
+                            await HandlePartialOrderPayment(paymentIntent, cancellationToken);
+                            break;
+
                         // Commercial invoicing (2026-09). Slots in as another discriminator value
                         // rather than a second webhook system, so there is one signature
                         // verification, one idempotency table and one endpoint to configure —
@@ -325,6 +333,69 @@ namespace DreamCleaningBackend.Controllers
                 _logger.LogError(ex, "Error handling payment intent succeeded: {PaymentIntentId}", paymentIntent?.Id);
                 throw; // Re-throw to be caught by the main handler
             }
+        }
+
+        /// <summary>
+        /// Backstop for a part-payment: records the slice when the browser never got to confirm
+        /// it (tab closed, network dropped). Idempotent through the service, so the ordinary case —
+        /// this arriving alongside the browser's own confirm — moves nothing twice.
+        ///
+        /// When the slice clears the balance this marks the order paid the same way
+        /// <see cref="HandleBookingPayment"/> does, and with the same limitation: a webhook-only
+        /// completion sets the flags but sends no confirmation email, because the mail is sent by
+        /// the confirmation endpoint the customer's browser calls. That is pre-existing behaviour
+        /// for full payments and is deliberately not diverged from here.
+        /// </summary>
+        private async Task HandlePartialOrderPayment(PaymentIntent paymentIntent, CancellationToken cancellationToken = default)
+        {
+            var metadata = paymentIntent.Metadata;
+
+            if (!metadata.TryGetValue("orderId", out var orderIdStr) || !int.TryParse(orderIdStr, out var orderId))
+            {
+                _logger.LogWarning("Invalid orderId in partial payment metadata: {PaymentIntentId}", paymentIntent.Id);
+                return;
+            }
+
+            var partialPayments = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+
+            // AmountReceived reads 0 while an intent is still processing; the authorized amount is
+            // the fallback. Never a figure from anywhere but Stripe.
+            var cents = paymentIntent.AmountReceived > 0 ? paymentIntent.AmountReceived : paymentIntent.Amount;
+            var amount = Math.Round(cents / 100m, 2, MidpointRounding.AwayFromZero);
+
+            var settlement = await partialPayments.SettleAsync(orderId, paymentIntent.Id, amount, cancellationToken);
+
+            if (!settlement.OrderNowFullyPaid)
+            {
+                _logger.LogInformation(
+                    "Partial payment webhook applied {Applied} to order {OrderId}; {Due} still due.",
+                    settlement.AmountApplied, orderId, settlement.AmountDue);
+                return;
+            }
+
+            var order = await _context.Orders.FindAsync(new object[] { orderId }, cancellationToken);
+            if (order == null || order.IsPaid)
+                return;
+
+            order.IsPaid = true;
+            order.PaidAt = DateTime.UtcNow;
+            order.Status = OrderStatuses.Active;
+            order.PaymentIntentId ??= paymentIntent.Id;
+
+            // Same initial-pricing snapshot the full-payment webhook takes: the order-edit top-up
+            // flow measures its delta against these, so an order that was never snapshotted would
+            // report its whole total as an additional amount owing.
+            if (order.InitialSubTotal == 0 && order.InitialTax == 0 && order.InitialTotal == 0)
+            {
+                order.InitialSubTotal = order.SubTotal;
+                order.InitialTax = order.Tax;
+                order.InitialTips = order.Tips;
+                order.InitialCompanyDevelopmentTips = order.CompanyDevelopmentTips;
+                order.InitialTotal = order.Total;
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogInformation("Order {OrderId} fully paid by part-payments; marked paid from the webhook.", orderId);
         }
 
         private async Task HandleBookingPayment(PaymentIntent paymentIntent, CancellationToken cancellationToken = default)

@@ -80,6 +80,12 @@ namespace DreamCleaningBackend.Services
             user.TokenVersion++;
             user.RefreshToken = null;
             user.RefreshTokenExpiryTime = null;
+            // The replay window (User.PreviousRefreshToken) exists so a browser racing itself is
+            // not thrown out. It must not survive a revoke: leaving it open would let the very
+            // session being ended mint a replacement for up to a minute afterwards, which is the
+            // one thing this method is for.
+            user.PreviousRefreshToken = null;
+            user.PreviousRefreshTokenExpiryTime = null;
         }
 
         public void SyncCache(int userId, int tokenVersion)

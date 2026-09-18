@@ -271,6 +271,25 @@ namespace DreamCleaningBackend.Models
         public bool IsPaid { get; set; } = false;
         public DateTime? PaidAt { get; set; }
 
+        /// <summary>
+        /// Money already received against THIS order's own total through admin-requested
+        /// part-payments ("$1,000 now, the rest later"). Maintained by
+        /// <c>OrderPartialPaymentService</c> in the same transaction that settles each
+        /// <see cref="OrderPartialPayment"/> row, and it is a CACHE of their sum in exactly the
+        /// way <see cref="TotalRefundedAmount"/> is — the rows are the record, this column is
+        /// what the orders list can read without a join.
+        ///
+        /// <b>Zero on every ordinary order, paid or not.</b> The normal full-payment flow settles
+        /// an order by setting <see cref="IsPaid"/> and never touches this, so a bare
+        /// <c>Total - AmountPaid</c> would report every paid order as owing its whole total.
+        /// Read it through <see cref="Helpers.OrderBalance"/>, which answers that correctly.
+        ///
+        /// Deliberately NOT related to <see cref="OrderUpdateHistory"/>: money owed because an
+        /// admin later raised the price is a top-up on a settled order, not a slice of this one.
+        /// </summary>
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal AmountPaid { get; set; } = 0;
+
         // Manual payment tracking. Default Normal (=0) preserves the pre-existing Stripe/IsPaid
         // flow exactly — no behavioral change for existing rows after migration. When set to
         // anything else the order was paid outside Stripe and IsPaid stays false; statistics
@@ -395,6 +414,11 @@ namespace DreamCleaningBackend.Models
 
         // Navigation property for update history
         public virtual ICollection<OrderUpdateHistory> UpdateHistory { get; set; } = new List<OrderUpdateHistory>();
+
+        // Admin-requested part-payments of this order's own total. See OrderPartialPayment;
+        // AmountPaid above is the maintained sum of the settled ones.
+        public virtual ICollection<OrderPartialPayment> PartialPayments { get; set; }
+            = new List<OrderPartialPayment>();
 
         // Admin-initiated refunds. Audit log only — see OrderRefund; the refundable ceiling is
         // read live from Stripe, never summed from here.

@@ -96,6 +96,10 @@ namespace DreamCleaningBackend.Services
                 PropertyType = order.PropertyType,
                 LevelsQuantity = order.LevelsQuantity,
                 IsPaid = order.IsPaid,
+                AmountPaid = order.AmountPaid,
+                AmountDue = OrderBalance.AmountDue(order),
+                IsPartiallyPaid = OrderBalance.IsPartiallyPaid(order),
+                PendingPartialPayment = MapPendingPartialPayment(order),
                 PaidAt = order.PaidAt,
                 // Payment-page consent gate: admin-created orders re-collect the /booking
                 // consents from the customer before their first payment.
@@ -141,6 +145,35 @@ namespace DreamCleaningBackend.Services
                 ConvertingSource = order.ConvertingSource,
                 ConvertingMedium = order.ConvertingMedium,
                 ConvertingCampaign = order.ConvertingCampaign
+            };
+        }
+
+        /// <summary>
+        /// The order's live part-payment request, or null. Reads the collection, so a caller that
+        /// did not Include it gets null — which the payment page reads as "charge the whole
+        /// balance". That is the safe direction to be wrong in: it can never charge LESS than is
+        /// owed. OrderRepository.GetByIdWithDetailsAsync includes it for every details view.
+        /// </summary>
+        private static OrderPartialPaymentDto? MapPendingPartialPayment(Order order)
+        {
+            var pending = order.PartialPayments?
+                .Where(p => p.Status == OrderPartialPaymentStatus.Pending)
+                .OrderByDescending(p => p.CreatedAt).ThenByDescending(p => p.Id)
+                .FirstOrDefault();
+
+            if (pending == null) return null;
+
+            return new OrderPartialPaymentDto
+            {
+                Id = pending.Id,
+                OrderId = pending.OrderId,
+                RequestedAmount = pending.RequestedAmount,
+                PaidAmount = pending.PaidAmount,
+                Status = pending.Status.ToString(),
+                PaidAt = pending.PaidAt,
+                CreatedAt = pending.CreatedAt,
+                NotificationSentAt = pending.NotificationSentAt,
+                Note = pending.Note
             };
         }
 

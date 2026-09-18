@@ -180,6 +180,32 @@ namespace DreamCleaningBackend.Models.Commercial
         [ForeignKey("VoidedByUserId")]
         public virtual User? VoidedByUser { get; set; }
 
+        /// <summary>
+        /// ARCHIVED: off the default list, everything preserved. DELIBERATELY NOT A STATUS.
+        ///
+        /// <see cref="InvoiceStatus"/> is derived from payment arithmetic by
+        /// <c>InvoiceStatusPolicy.Resolve</c> - an invoice is Paid because the payment rows say so,
+        /// not because anybody set it. Archiving is an orthogonal, purely presentational decision
+        /// by an admin, so folding it into that enum would mean either inventing a status the
+        /// arithmetic cannot produce, or overloading Void - which is a permanent financial
+        /// statement that a number was issued and cancelled, and means something completely
+        /// different. A separate flag keeps both meanings intact: an invoice can be Paid AND
+        /// archived, or Void AND archived, and the status still says what happened to the money.
+        ///
+        /// Same shape as <c>Contract.IsHidden</c> and <c>Order.IsHidden</c>. Unlike the contract
+        /// flag it revokes nothing: the public token keeps working, because a client who was sent
+        /// an invoice is entitled to keep reading it whatever the admin's list looks like.
+        /// </summary>
+        public bool IsArchived { get; set; } = false;
+
+        /// <summary>When it was archived. Null while it is on the active list.</summary>
+        public DateTime? ArchivedAt { get; set; }
+
+        public int? ArchivedByUserId { get; set; }
+
+        [ForeignKey("ArchivedByUserId")]
+        public virtual User? ArchivedByUser { get; set; }
+
         public int CreatedByUserId { get; set; }
         [ForeignKey("CreatedByUserId")]
         public virtual User? CreatedByUser { get; set; }

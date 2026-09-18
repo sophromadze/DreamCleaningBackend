@@ -184,6 +184,7 @@ namespace DreamCleaningBackend.Services.Contracts
             var added = 0;
             var toppedUp = 0;
             var desoaped = 0;
+            var relabelled = 0;
 
             foreach (var seed in seeds)
             {
@@ -231,6 +232,12 @@ namespace DreamCleaningBackend.Services.Contracts
                     changed = true;
                 }
 
+                if (RepairRoomSpecificAreaLabel(row.Name, structure))
+                {
+                    relabelled++;
+                    changed = true;
+                }
+
                 if (!changed) continue;
 
                 row.StructureJson = structure.ToJson();
@@ -238,27 +245,32 @@ namespace DreamCleaningBackend.Services.Contracts
             }
 
             // A business type an admin created themselves has no seeded counterpart, so it never
-            // reaches the loop above. It can still be carrying soap wording, and the owner's rule
-            // is about the document, not about who typed the row - so every stored template is
-            // checked, not only the seeded ones.
+            // reaches the loop above. It can still be carrying soap wording or a copied A1 task
+            // label naming a room, and both rules are about the DOCUMENT rather than about who
+            // typed the row - so every stored template is checked, not only the seeded ones.
             foreach (var row in existing.Where(r =>
                          !seeds.Any(s => string.Equals(s.Name, r.Name, StringComparison.OrdinalIgnoreCase))))
             {
                 var structure = ScopeStructure.Parse(row.StructureJson);
-                if (!RepairSoapWording(row.Name, structure, null)) continue;
+
+                var soapRepaired = RepairSoapWording(row.Name, structure, null);
+                var labelRepaired = RepairRoomSpecificAreaLabel(row.Name, structure);
+                if (!soapRepaired && !labelRepaired) continue;
 
                 row.StructureJson = structure.ToJson();
                 row.UpdatedAt = DateTime.UtcNow;
-                desoaped++;
+                if (soapRepaired) desoaped++;
+                if (labelRepaired) relabelled++;
             }
 
-            if (added > 0 || toppedUp > 0 || desoaped > 0)
+            if (added > 0 || toppedUp > 0 || desoaped > 0 || relabelled > 0)
             {
                 await _context.SaveChangesAsync();
                 _logger.LogInformation(
                     "Contract scope templates: {Added} seeded, {ToppedUp} given the Exhibit A "
-                    + "area/task table, {Desoaped} repaired to drop hand-soap wording.",
-                    added, toppedUp, desoaped);
+                    + "area/task table, {Desoaped} repaired to drop hand-soap wording, "
+                    + "{Relabelled} repaired to drop a room name from an A1 task label.",
+                    added, toppedUp, desoaped, relabelled);
             }
         }
 
@@ -309,6 +321,63 @@ namespace DreamCleaningBackend.Services.Contracts
                     item.Label = seededItem.Label;
                     item.Detail = seededItem.Detail;
                     repaired = true;
+                }
+            }
+
+            return repaired;
+        }
+
+
+        /// <summary>
+        /// Takes the room-specific wording out of a STORED A1 task label, in place.
+        ///
+        /// THE DEFECT: the fixed label read "Hallways, office and doors" (or "...offices...") while
+        /// Included Areas immediately above it is a checklist the admin ticks per contract. A
+        /// client with no office, or one who ticked "Meeting room" instead, still got a contract
+        /// whose task table named the office as an area being cleaned. The A1 list is meant to be
+        /// the single authority on what is in scope, and a fixed label naming a room competes with
+        /// it.
+        ///
+        /// WHY IT NEEDS A REPAIR AT ALL: scope checklists are seeded ONCE and never rewritten -
+        /// the same insert-never-rewrite rule that made the hand-soap wording outlive its own
+        /// correction. Editing <c>ContractScopeTemplateSeed</c> alone would leave every existing
+        /// database printing the old label with the seed file in front of you saying otherwise.
+        ///
+        /// It is a REPAIR, not a rewrite, and deliberately narrower than
+        /// <see cref="RepairSoapWording"/> in two ways:
+        ///
+        ///  * Only the LABEL is replaced. The task description never named a room, so an admin who
+        ///    has reworded it keeps their wording - there is nothing wrong with it to fix.
+        ///  * Only a label matching <c>RetiredAreaLabels</c> is touched, and it is replaced with
+        ///    the seeded constant rather than prose composed here. A row an admin has deliberately
+        ///    renamed matches nothing and is left exactly as they wrote it.
+        ///
+        /// Scoped to the area/task group: "office" is a perfectly legitimate ITEM in the Included
+        /// Areas checklist, and stripping it from there would delete an area somebody agreed to.
+        /// </summary>
+        private bool RepairRoomSpecificAreaLabel(string templateName, ScopeStructure stored)
+        {
+            var repaired = false;
+
+            foreach (var group in stored.Groups.Where(g => string.Equals(
+                         g.Key, ContractScopeTemplateSeed.AreaTasksKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                foreach (var item in group.Items)
+                {
+                    var label = item.Label?.Trim();
+                    if (string.IsNullOrEmpty(label)) continue;
+
+                    if (!ContractScopeTemplateSeed.RetiredAreaLabels.Any(retired =>
+                            string.Equals(retired, label, StringComparison.OrdinalIgnoreCase)))
+                        continue;
+
+                    item.Label = ContractScopeTemplateSeed.IncludedRoomsAreaLabel;
+                    repaired = true;
+
+                    _logger.LogInformation(
+                        "Scope template \"{Template}\": A1 task row \"{Old}\" renamed to \"{New}\" so the "
+                        + "fixed label no longer names a room that may not be an Included Area.",
+                        templateName, label, ContractScopeTemplateSeed.IncludedRoomsAreaLabel);
                 }
             }
 

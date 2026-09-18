@@ -32,41 +32,113 @@ namespace DreamCleaningBackend.Services.Contracts
         public const string TemplateName = "Commercial Cleaning Master Service Agreement";
 
         /// <summary>
-        /// 2.1 - the attorney-drafted agreement, with hand soap struck out of it entirely.
+        /// 2.6 - Section 36 consolidates the cancellation, rescheduling and termination terms into
+        /// one place, and records the published policy version the agreement was signed against
+        /// (2026-09-16).
         ///
-        /// IT IS A NEW ROW RATHER THAN A CORRECTION TO 2.0, and the reason is the seeder: it
-        /// matches on Name AND Version and INSERTS ONLY WHAT IS MISSING, so once a "2.0" row
-        /// exists in a database no later edit to <c>BodyText</c> can ever reach it. A 2.0 seeded
-        /// from the pre-correction body therefore kept promising hand soap, and kept printing the
-        /// signature block above both exhibits, on every contract drafted from it - with the seed
-        /// file in front of you saying otherwise. Editing the body without moving the version is
-        /// the failure this constant exists to prevent; <c>ContractSeedService</c> now also logs
+        /// WHY A NEW SECTION RATHER THAN EDITS TO SECTIONS 4, 5, 14 AND 15. Those sections already
+        /// state every one of these terms operatively, spread across the document exactly where
+        /// each belongs - a visit cancellation beside the scheduling clause, a termination notice
+        /// beside the term. Restating a term in a second operative clause is how an agreement comes
+        /// to contradict itself the first time one of the two is edited. So 36 is expressly a
+        /// CONSOLIDATED REFERENCE that creates no right, charge, notice requirement or restriction
+        /// of its own, and 36(a) says the operative sections control over any inconsistency with it.
+        ///
+        /// EVERY FIGURE IN IT IS THE SAME TOKEN THE OPERATIVE CLAUSE USES. {{CANCELLATION_PERCENT}}
+        /// in 36(c) is the identical token Section 15(b) and Exhibit B read, so the summary cannot
+        /// quote a different number from the clause it summarises - not on a contract where an
+        /// admin has changed the percentage, and not on one drafted years from now.
+        ///
+        /// 36(o) RECORDS the published policy version; it does not INCORPORATE it. Incorporating a
+        /// web page into an executed agreement would let a later edit to that page change what a
+        /// client already signed, which is the precise thing Section 35(b) and the published policy
+        /// both say cannot happen. {{POLICY_VERSION}} and {{POLICY_EFFECTIVE_DATE}} come off the
+        /// frozen snapshot rather than off CommercialPolicyDocument's constants, for the same
+        /// reason the template body itself is copied rather than referenced.
+        ///
+        /// The SIGNATURES paragraph moved from "Sections 1 through 35" to "1 through 36" with it -
+        /// a signature block that does not name a section of the document it executes is an
+        /// invitation to argue that section was not agreed.
+        ///
+        /// 2.5 - the preamble now says WHERE the Services are performed. It identified Client by
+        /// legal entity alone, so the only address on the first page was the CONTRACTOR's
+        /// principal office; the reader had to reach Section 1(b) to learn which building the
+        /// agreement is about (2026-09-16).
+        ///
+        /// IT IS THE SERVICE ADDRESS, AND IT IS WORDED AS ONE. "with Services to be performed at"
+        /// - never "principal office", "registered office", "legal address" or "business mailing
+        /// address", each of which asserts something about Client that the service location does
+        /// not establish. A company registered in Delaware, reading its post at an accountant's
+        /// office and operating a restaurant in Brooklyn is the ordinary case, which is why
+        /// ServiceLocation is its own entity and why Section 1(b) says outright that the Premises
+        /// address "is not necessarily Client's legal or principal business address".
+        ///
+        /// This is NOT the v2.1 mailing address coming back. That field was optional, so requiring
+        /// it in the preamble printed a ruled blank on the first line a counterparty reads - see
+        /// the v2.2 note below. The service location is required to save a contract at all
+        /// (ContractService.ResolveServiceLocationAsync refuses without one, and every part of it
+        /// is [Required] on SaveContractServiceLocationDto), so {{SERVICE_FULL_ADDRESS}} cannot
+        /// come back empty here and needs no collapsing form.
+        ///
+        /// SECTION 1(b) AND EXHIBIT A ARE UNCHANGED. The repetition is deliberate: the preamble
+        /// identifies the deal, Section 1(b) and Exhibit A define the Premises, and all three read
+        /// the one {{SERVICE_FULL_ADDRESS}} token, so they cannot disagree.
+        ///
+        /// 2.4 - A2 no longer names example rooms. The sentence read "An area expressly identified
+        /// as an Included Area in A1, SUCH AS THE OFFICE, the employee restroom or hallways,
+        /// remains included..."; it now stops after "in A1" (2026-09-16).
+        ///
+        /// WHY THE EXAMPLES HAD TO GO. Included Areas is a checklist an admin ticks per contract,
+        /// so a room named in the fixed prose can contradict it: an agreement whose A1 list omits
+        /// the office, because the client has none, still told the reader the office was included.
+        /// Naming a different room instead would only move the same bug, so the sentence names no
+        /// room at all and the A1 list stays the single authority on what is in scope.
+        ///
+        /// A NEW ROW AGAIN, for the reason every bump since 2.1 has been: the sentence lives in
+        /// BodyText, and the seeder matches on Name AND Version, so leaving the number at 2.3
+        /// would have left every existing database printing the old examples while this file said
+        /// otherwise. The matching Exhibit A change is NOT here - the "Hallways, office and doors"
+        /// task label is scope DATA in ContractScopeTemplateSeed, repaired in place by
+        /// ContractSeedService for the same insert-never-rewrite reason.
+        ///
+        /// THE SEEDER INSERTS ONLY WHAT IS MISSING, matched on Name AND Version, so once a row
+        /// exists at a version no later edit to <c>BodyText</c> can ever reach it. A 2.0 seeded
+        /// from the pre-correction body kept promising hand soap, and kept printing the signature
+        /// block above both exhibits, on every contract drafted from it - with the seed file in
+        /// front of you saying otherwise. Editing the body without moving the version is the
+        /// failure this constant exists to prevent; <c>ContractSeedService</c> now also logs
         /// loudly when a stored body has drifted from the seed at the same version.
         ///
-        /// 1.0/1.1 were the pre-review wording and 2.0 is the soap draft. None of them stay in
-        /// the picker: superseded legal text left selectable is an invitation to issue it by
-        /// accident. <c>ContractSeedService</c> retires them rather than deleting them, so a
-        /// version that did render still resolves its frozen body.
+        /// 1.0/1.1 were the pre-review wording, 2.0 is the soap draft, 2.1 is the mailing-address
+        /// draft, 2.2 obliged a backup contact, 2.3 named example rooms in A2 and 2.4 left the
+        /// premises out of the preamble entirely. None of them stay in the picker: superseded
+        /// legal text left selectable is an invitation to issue it by accident. The seeder retires them rather than deleting them, so a version that did
+        /// render still resolves its frozen body - which is also why
+        /// <c>{{CLIENT_NOTICE_MAILING_ADDRESS}}</c> is still mapped in <c>ContractPlaceholders</c>
+        /// even though no current body references it.
         /// </summary>
-        public const string TemplateVersion = "2.1";
+        public const string TemplateVersion = "2.6";
 
         public const string TemplateDescription =
-            "Attorney-drafted commercial MSA: Sections 1-35, Exhibit A (scope of work and recorded "
+            "Attorney-drafted commercial MSA: Sections 1-36, Exhibit A (scope of work and recorded "
             + "site details), Exhibit B (pricing, billing, insurance and contacts), then the "
-            + "signature block last. Contractor supplies no hand soap.";
+            + "signature block last. Contractor supplies no hand soap; Client is identified by "
+            + "legal entity and by the service location where the Services are performed, rather "
+            + "than by a mailing address, and is served notice by email. Client designates a "
+            + "primary on-call contact; a backup contact is optional.";
 
         /// <summary>
         /// Seeded versions this template supersedes. <c>ContractSeedService</c> deactivates them
         /// on startup so they leave the picker; nothing is deleted, because a template row is
         /// still what an audit trail points at even when no version was ever generated from it.
         /// </summary>
-        public static IReadOnlyList<string> SupersededVersions => new[] { "1.0", "1.1", "2.0" };
+        public static IReadOnlyList<string> SupersededVersions => new[] { "1.0", "1.1", "2.0", "2.1", "2.2", "2.3", "2.4", "2.5" };
 
         public const string BodyText = """
 # MASTER SERVICE AGREEMENT
 # COMMERCIAL CLEANING SERVICES
 
-This Master Service Agreement (the "Agreement") is entered into as of {{EFFECTIVE_DATE}} (the "Effective Date") by and between {{CONTRACTOR_LEGAL_NAME}}, {{CONTRACTOR_ENTITY_TYPE}} doing business as {{CONTRACTOR_DBA}}, with its principal office at {{CONTRACTOR_ADDRESS}} ("Contractor"), and {{CLIENT_LEGAL_NAME}}, {{CLIENT_ENTITY_DESCRIPTION}}, with its business mailing address at {{CLIENT_NOTICE_MAILING_ADDRESS}} ("Client"). Contractor and Client are each a "Party" and together the "Parties."
+This Master Service Agreement (the "Agreement") is entered into as of {{EFFECTIVE_DATE}} (the "Effective Date") by and between {{CONTRACTOR_LEGAL_NAME}}, {{CONTRACTOR_ENTITY_TYPE}} doing business as {{CONTRACTOR_DBA}}, with its principal office at {{CONTRACTOR_ADDRESS}} ("Contractor"), and {{CLIENT_LEGAL_NAME}}, {{CLIENT_ENTITY_DESCRIPTION}}, with Services to be performed at {{SERVICE_FULL_ADDRESS}} ("Client"). Contractor and Client are each a "Party" and together the "Parties."
 
 Each Party represents that it is duly organized and authorized to enter into this Agreement, and each individual signing on behalf of a Party represents that the individual has authority to bind that Party. Client represents that it has authority to engage Contractor and grant access for the Services at the Premises. Neither the use of a brand name nor identification of the Premises makes any franchisor, landlord, affiliate, or individual signatory a party or guarantor.
 
@@ -163,7 +235,7 @@ Client shall identify any invoice dispute promptly and, for matters reasonably a
 ## 16. CLIENT RESPONSIBILITIES
 (a) Client shall, at its own cost, provide working water, lighting and electrical power; access to designated lawful waste and recycling receptacles; adequate stocks of its allocated consumables; and surfaces and floors reasonably cleared for cleaning. Client shall secure cash, valuables and confidential materials and promptly disclose known hazards, damage and conditions affecting the Services.
 (b) Client shall arrange all between-visit and excluded cleaning, food-contact sanitation, pest control, waste hauling, and maintenance required for its operation. Before the crew arrives, Client shall remove or protect exposed food and utensils, safely cool or shut down equipment that must be cleaned while off, identify equipment that must remain operating, and disclose manufacturer restrictions known to Client. Contractor shall not disconnect gas, move connected cooking equipment, alter refrigeration settings, or move heavy equipment unless specifically authorized through a safe, qualified procedure. Each Party remains responsible for the consequences of its own negligence; Client's responsibility to secure property does not waive a claim for negligent damage or theft attributable to Contractor.
-(c) Client shall designate primary and backup on-call contacts in Exhibit B, identify the food-service permit holder and provide applicable landlord, franchisor and site requirements affecting access, products, insurance or the Services before work begins. Requirements changing the agreed scope or cost are subject to Sections 8 and 9.
+(c) Client shall designate a primary on-call contact in Exhibit B and may designate a backup on-call contact if available, and shall provide applicable landlord, franchisor and site requirements affecting access, products, insurance or the Services before work begins. Requirements changing the agreed scope or cost are subject to Sections 8 and 9. Client remains responsible for its own food-service permits and operational compliance as provided in Section 26(b), whether or not a permit holder is identified in Exhibit A.
 
 ## 17. PERSONNEL AND SUBCONTRACTORS
 (a) Contractor controls the staffing, work scheduling and supervision of its personnel, subject to the agreed service schedule. Contractor may substitute qualified personnel; substitution alone is not a breach.
@@ -241,9 +313,9 @@ Client shall notify Contractor of alleged damage promptly and, where reasonably 
 (b) A permitted successor shall assume this Agreement in writing, possess the authority and practical ability to perform, and receive all relevant notices and records. Assignment does not release the assigning Party from accrued obligations or from further responsibility without the other Party's express written release. No assignment expands the Premises or Services or increases the other Party's burden without written agreement. Subcontracting permitted under Section 17 is not an assignment of this Agreement.
 
 ## 32. NOTICES
-(a) Formal notices of breach, termination, assignment, or dispute shall be sent to the designated notice email or delivered personally or by recognized courier to the designated mailing address. An email is deemed received on the next business day after sending if the sender retains a transmission record and receives no delivery-failure message; if the sender knows delivery failed, another permitted method must be used. Personal or courier delivery is effective on documented receipt. A business day excludes Saturdays, Sundays, and {{GOVERNING_LAW_STATE}} State public holidays. All times refer to {{SERVICE_TIMEZONE}}.
+(a) Formal notices of breach, termination, assignment, or dispute shall be sent to the receiving Party's designated notice email. A Party is not required to designate a mailing address for notices; where a Party has designated one in Exhibit B, notice to that Party may instead be delivered personally or by recognized courier to that address. An email is deemed received on the next business day after sending if the sender retains a transmission record and receives no delivery-failure message; if the sender knows delivery failed, another permitted method must be used. Personal or courier delivery is effective on documented receipt. A business day excludes Saturdays, Sundays, and {{GOVERNING_LAW_STATE}} State public holidays. All times refer to {{SERVICE_TIMEZONE}}.
 (b) Scheduling, cancellation, access, and urgent safety notices may be sent to the operational email and on-call contact designated in Exhibit B, including on weekends. For the {{TIMELY_RESCHEDULE_HOURS_WORDS}}-hour cancellation calculation, an email to the operational address is effective when sent, provided it is not returned undeliverable. Text messages are effective for operational notice only when acknowledged by the designated recipient. Operational communications do not amend price, substantive scope, or liability terms. A method expressly required by statute controls over this Section.
-(c) The designated notice mailing addresses, notice emails, operational emails and on-call contacts are stated in Exhibit B. A Party may update its contact information by formal notice under this Section. Actual access credentials shall not be included in those notices or in the circulated Agreement.
+(c) The designated notice emails, operational emails, on-call contacts and any designated notice mailing address are stated in Exhibit B. A Party may update its contact information by formal notice under this Section. Actual access credentials shall not be included in those notices or in the circulated Agreement.
 
 ## 33. GOVERNING LAW AND VENUE
 {{GOVERNING_LAW_STATE}} law governs this Agreement, without regard to its conflict-of-laws rules. Subject to Section 34 and mandatory law, the Parties consent to exclusive venue in the state courts sitting in {{VENUE_COUNTY}}, {{GOVERNING_LAW_STATE}}, and, only where federal subject-matter jurisdiction independently exists, {{FEDERAL_VENUE}}. Nothing restricts a lawful claim before an agency or a court or tribunal whose jurisdiction cannot be waived by agreement.
@@ -263,6 +335,23 @@ Client shall notify Contractor of alleged damage promptly and, where reasonably 
 (f) Headings are for convenience and do not affect interpretation. Unless expressly stated otherwise, a reference to a Section means a section of this Agreement; references beginning with A or B refer to the corresponding exhibit. "Calendar days" include weekends and holidays. "Business days" and applicable local time are defined in Section 32.
 (g) Except for persons expressly protected by lawful indemnity or an applicable insurance endorsement, this Agreement creates no contractual enforcement right in a person other than the Parties and their permitted successors. It does not eliminate a nonparty's rights under tort law, employment law, or another applicable statute.
 
+## 36. CANCELLATION, RESCHEDULING AND CONTRACT TERMINATION
+(a) This Section consolidates, in one place and for convenience of reference, the cancellation, rescheduling and termination terms stated operatively elsewhere in this Agreement. It creates no additional right, charge, notice requirement, restriction or remedy, and it removes none. Sections 3, 4, 5, 10, 11, 12, 14, 15, 24, 30 and 32 and Exhibit B state these terms operatively and control over any inconsistency with the summary in this Section.
+(b) Cancelling or rescheduling an individual scheduled visit. Notice is measured against the beginning of the agreed arrival window. With notice at least {{TIMELY_RESCHEDULE_HOURS}} hours before that window begins, Client may request one rescheduling of a scheduled visit without additional charge, to a mutually agreed date within {{MAKEUP_WINDOW_DAYS}} calendar days of the original visit, and advance payment carries to the makeup visit, as provided in Section 15(a). A makeup visit is assigned to the service {{SERVICE_PERIOD}} of the original visit.
+(c) Late cancellation. A cancellation fewer than {{TIMELY_RESCHEDULE_HOURS}} hours before the agreed arrival window begins, or a failure reasonably to cooperate in arranging a makeup within {{MAKEUP_WINDOW_DAYS}} calendar days after a timely request, permits a charge under Section 15(b) limited to Contractor's reasonable, documented net loss after avoided costs and net replacement earnings, capped at {{CANCELLATION_PERCENT}} of the pre-tax visit fee, plus any legally applicable tax. The cap is a ceiling on proven loss and not an automatic charge. No Client cancellation charge applies where Contractor cannot offer a reasonable makeup opportunity after a timely request.
+(d) Failed access to the Premises. A failed-access charge arises only on the conditions stated in Section 14: Contractor arrived within the agreed window, was ready and able to perform, could not obtain required access for a reason within Client's reasonable control, attempted to contact the designated on-call representative, waited at least {{LOCKOUT_WAIT_MINUTES}} minutes unless remaining would be unsafe, and documented the attempt. The charge is limited to reasonable, documented net loss and may not exceed that visit's pre-tax service fee plus legally applicable tax. It replaces any cancellation charge for the same visit and is credited to a makeup visit scheduled within {{MAKEUP_WINDOW_DAYS}} calendar days.
+(e) Cancellation by Contractor. If Contractor cancels a visit for a reason other than an emergency described in paragraph (f), Client may choose a reasonably prompt makeup or a credit for the unperformed Services, and a refund requested where a makeup is not reasonably useful or possible is issued within {{REFUND_BUSINESS_DAYS}} business days, as provided in Section 15(e).
+(f) Emergency exceptions. No cancellation or reservation charge applies where an emergency beyond the affected Party's reasonable control prevents performance, as provided in Section 15(d), subject to prompt notice and reasonable mitigation.
+(g) Repeated missed visits. {{MISSED_VISIT_THRESHOLD_CAP}} Client-attributable missed visits in a rolling {{MISSED_VISIT_WINDOW_WEEKS}}-week period are addressed under Section 15(f): written notice and a request for a workable service plan within {{SERVICE_PLAN_DAYS}} calendar days after the {{MISSED_VISIT_WARNING_ORDINAL}} such visit, and recourse to Section 4(b) if the plan is not provided and followed and a {{MISSED_VISIT_FINAL_ORDINAL}} such visit occurs. No automatic price increase or additional penalty applies.
+(h) Minimum contractual commitment. The Initial Term is {{INITIAL_TERM_MONTHS}} months from the Service Commencement Date and the Minimum Commitment Period is {{MINIMUM_COMMITMENT_MONTHS}} calendar months from that date, each as stated in Section 3 and Exhibit B. The Minimum Commitment Period restricts termination for convenience only; it does not restrict termination for cause, lawful safety measures, or termination under Section 30.
+(i) Termination for convenience and required notice. Either Party may terminate for convenience on at least {{TERMINATION_NOTICE_DAYS}} calendar days' written notice under Section 4(a). Notice may be delivered during the Minimum Commitment Period, but termination for convenience shall not take effect before the Minimum Commitment End Date. After the Initial Term the Agreement continues on a {{RENEWAL_TYPE}} basis and does not renew for a further fixed term; that continuation is terminable on the same notice.
+(j) Early termination for cause, nonpayment and safety. Either Party may terminate for an uncured material breach after {{CURE_PERIOD_DAYS}} calendar days' written notice describing it. Contractor may terminate for nonpayment of an undisputed amount that remains unpaid for {{PAST_DUE_DAYS}} calendar days following written demand. Either Party may terminate immediately where continued performance would be unlawful or expose persons to an imminent serious danger that cannot reasonably be eliminated through suspension or other protective measures. Where substantial performance is prevented for {{FORCE_MAJEURE_DAYS}} consecutive calendar days, either Party may terminate the affected Services without an early-termination charge under Section 30(b).
+(k) No early-termination charge. This Agreement provides no early-termination fee, exit charge or liquidated sum payable on termination, and no remaining fees are automatically accelerated. A claim arising from wrongful termination or repudiation is limited to proven direct damages under Section 4(d), subject to mitigation, Section 29 and no duplicate recovery.
+(l) Prepaid Services and refunds. Upon termination Client shall pay earned fees and properly supported accrued charges; Contractor shall provide a final itemized statement and refund unearned prepayments and unapplied credits, after applying undisputed amounts due, within {{CREDIT_RETURN_DAYS}} calendar days, as provided in Section 4(d). An undisputed refund shall not be delayed pending resolution of a separate dispute.
+(m) Outstanding payment obligations. Accrued payment and refund duties survive termination. An undisputed earned amount unpaid for more than {{INTEREST_GRACE_DAYS}} calendar days after its due date accrues simple interest under Section 11(f) at {{LATE_CHARGE_PERCENT}} per month, calculated daily at {{LATE_CHARGE_ANNUAL_PERCENT}} per year, or the maximum lawful rate if lower. Collection of an undisputed amount may be pursued after written demand and {{COLLECTION_DEMAND_BUSINESS_DAYS}} business days to pay, under Section 34(c).
+(n) Written cancellation and termination notices. A cancellation, rescheduling or access notice is an operational notice under Section 32(b) and is sent to the operational email and on-call contact stated in Exhibit B; for the {{TIMELY_RESCHEDULE_HOURS_WORDS}}-hour calculation in paragraphs (b) and (c), such an email is effective when sent, provided it is not returned undeliverable. A notice of termination, breach, assignment or dispute is a formal notice under Section 32(a) and is sent to the receiving Party's designated notice email stated in Exhibit B.
+(o) Published policies. Contractor publishes general Commercial Cleaning Policies, and a Cancellation and Termination Policy drawn from them, at {{CONTRACTOR_PUBLISHED_POLICY_URL}}. The version in effect on the date this document was prepared is version {{POLICY_VERSION}}, effective {{POLICY_EFFECTIVE_DATE}}, and it is recorded here so that both Parties can identify the general policies then published. Those published policies are not incorporated into this Agreement and do not amend it. This Agreement, its Exhibits and any signed amendment or Change Order govern the Parties' rights and obligations, and a later revision of the published policies does not change any term of this Agreement.
+
 ## EXHIBIT A
 ## SCOPE OF WORK
 
@@ -280,7 +369,7 @@ Unless expressly assigned a different frequency, each listed task shall be compl
 |Area|Tasks and limits at each scheduled visit
 {{SCOPE_TABLE:area-tasks}}
 
-The Parties shall complete the following site details and record the baseline before the first recurring visit. These details identify the agreed work; an expansion beyond the listed tasks requires a Change Order.
+The Parties shall record the following site details, to the extent each applies to the Premises, and record the baseline before the first recurring visit. These details identify the agreed work as site information; a detail left unrecorded does not narrow or expand the tasks listed above, and an expansion beyond the listed tasks requires a Change Order.
 
 APPROXIMATE SERVICED SQUARE FOOTAGE: {{SQUARE_FOOTAGE}}.
 CUSTOMER RESTROOM AND FIXTURE COUNTS: {{CUSTOMER_RESTROOM_COUNTS}}.
@@ -297,7 +386,7 @@ FOOD-SERVICE PERMIT HOLDER: {{FOOD_PERMIT_HOLDER}}.
 SITE, LANDLORD OR BRAND REQUIREMENTS AFFECTING THE SERVICES: {{SITE_REQUIREMENTS}}.
 
 ### A2. EXCLUDED AREAS
-Back-of-house areas are excluded except for Included Areas expressly identified in A1. The following are excluded: {{SCOPE:excluded-areas}}. An area expressly identified as an Included Area in A1, such as the office, the employee restroom or hallways, remains included even if it is physically located in a back-of-house portion of the Premises. The kitchen is included only to the extent stated in A3.
+Back-of-house areas are excluded except for Included Areas expressly identified in A1. The following are excluded: {{SCOPE:excluded-areas}}. An area expressly identified as an Included Area in A1 remains included even if it is physically located in a back-of-house portion of the Premises. The kitchen is included only to the extent stated in A3.
 
 ### A3. LIMITED KITCHEN SCOPE
 (a) Included work is {{SCOPE:kitchen-included}}, together with floor cleaning under A4. Ordinary light surface grease is included within the agreed baseline.
@@ -306,7 +395,7 @@ Back-of-house areas are excluded except for Included Areas expressly identified 
 (d) Food-contact cleaning and sanitizing are excluded except a task expressly identified in A1. For an included sanitizing task, Contractor shall follow the stated procedure, applicable sanitation requirements and product-label directions. Client remains responsible for all other operational sanitation and between-visit requirements.
 
 ### A4. FLOOR CLEANING
-(a) Included floor work is {{SCOPE:floor-included}} in the Included Areas, using products and methods compatible with the identified floor materials. Excluded floor work is {{SCOPE:floor-excluded}}, unless added under Section 9.
+(a) Included floor work is {{SCOPE:floor-included}} in the Included Areas, using commercially reasonable products and methods appropriate to the surfaces actually encountered and following available manufacturer instructions where applicable. Identification of floor or surface materials in A1 is optional site information; where none is identified, Contractor shall select appropriate products and methods in accordance with this paragraph. Client shall disclose a surface requiring special treatment, and a resulting change in scope or cost is subject to Sections 8 and 9. Excluded floor work is {{SCOPE:floor-excluded}}, unless added under Section 9.
 (b) Contractor shall use appropriate wet-floor warnings and reasonable barriers during work, leave floors as dry as reasonably practicable, and communicate any remaining hazard before departure. Client shall inspect before reopening and manage conditions occurring afterward; that inspection obligation does not waive the liability of Contractor for hazards it creates.
 
 ### A5. RESTROOM CLEANING
@@ -388,7 +477,6 @@ The representatives designated below may approve amendments and Change Orders. O
 |Client legal name|{{CLIENT_LEGAL_NAME}}
 |Client authorized representative|{{CLIENT_REPRESENTATIVE}}
 |Client approval email|{{CLIENT_APPROVAL_EMAIL}}
-|Client notice mailing address|{{CLIENT_NOTICE_MAILING_ADDRESS}}
 |Client notice email|{{CLIENT_NOTICE_EMAIL}}
 |Client operational email|{{CLIENT_OPERATIONAL_EMAIL}}
 |Client primary on-call contact|{{CLIENT_ON_CALL_CONTACT}}
@@ -397,7 +485,7 @@ The representatives designated below may approve amendments and Change Orders. O
 Contact changes shall be communicated under Section 32. Actual keys, alarm codes, passwords and bank credentials shall be exchanged separately through appropriate verified channels.
 
 ## SIGNATURES
-By signing below, each Party agrees to this Master Service Agreement, including Sections 1 through 35, Exhibit A and Exhibit B, and the representations concerning authority in the introductory paragraph.
+By signing below, each Party agrees to this Master Service Agreement, including Sections 1 through 36, Exhibit A and Exhibit B, and the representations concerning authority in the introductory paragraph.
 
 @SIGNATURE_BLOCK
 """;

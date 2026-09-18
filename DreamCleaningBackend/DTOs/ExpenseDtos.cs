@@ -46,7 +46,10 @@ namespace DreamCleaningBackend.DTOs
         [StringLength(200)]
         public string Name { get; set; } = string.Empty;
 
-        [Range(0, double.MaxValue)]
+        // Negative is allowed on purpose — a credit or refund (e.g. a Google Ads promotional
+        // credit) is recorded as a negative amount so it reduces the month's total instead of
+        // requiring a separate "income" concept. Validated only at the service layer (no [Range]),
+        // since "negative is fine, just not something absurd" isn't a fixed-bound check.
         public decimal Amount { get; set; }
 
         // "USD" or "GEL". Accepted only on the Salaries category — everything else is forced to
@@ -79,6 +82,27 @@ namespace DreamCleaningBackend.DTOs
 
     public class UpdateExpenseDto : CreateExpenseDto
     {
+    }
+
+    // Splits a recurring row in two at EffectiveDate: the existing row is capped with
+    // EndDate = EffectiveDate - 1 day (its history — past occurrences, including any already in
+    // the past — is untouched), and a new row is created starting EffectiveDate at NewAmount,
+    // carrying over everything else (name/staff link, category, currency, frequency, proration,
+    // and whatever end date the original row already had). This is the "raise or reduce this
+    // salary/subscription from a given month" action — it automates exactly the
+    // cancel-and-re-add-with-EndDate convention the Expense model already documents, so no new
+    // schema is needed and the two rows group under one line exactly like a manual split would.
+    public class AdjustExpenseAmountDto
+    {
+        public decimal NewAmount { get; set; }
+
+        [Required]
+        public DateTime EffectiveDate { get; set; }
+
+        // Optional note for the NEW row. Falls back to the original row's note when left blank,
+        // since most raises don't need a fresh explanation.
+        [StringLength(1000)]
+        public string? Notes { get; set; }
     }
 
     // One projected occurrence of an expense within a date window. Recurring rows produce

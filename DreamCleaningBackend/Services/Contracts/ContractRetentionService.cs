@@ -1,27 +1,36 @@
 using DreamCleaningBackend.Data;
-using DreamCleaningBackend.Models.Contracts;
 using Microsoft.EntityFrameworkCore;
 
 namespace DreamCleaningBackend.Services.Contracts
 {
     /// <summary>
-    /// Permanently removes contracts that have been soft-deleted for longer than the retention
-    /// window (default six months, <c>ContractRetention:HiddenMonths</c>).
+    /// Permanently removes contracts that have been ARCHIVED for longer than the retention window
+    /// (default six months, <c>ContractRetention:HiddenMonths</c>).
     ///
     /// Pattern follows the other background workers here — hourly loop, one scope per cycle,
     /// backoff on repeated failures. It only acts once a day, because a retention sweep has no
     /// reason to run more often and a daily cadence keeps the log readable.
     ///
-    /// The order of operations matters: the <see cref="ContractDeletionLog"/> row is written and
-    /// committed BEFORE the contract is removed. The contract's own audit trail cascades away with
-    /// it, so a record written afterwards could be lost to a failure mid-delete, and the one
-    /// question anyone asks later — "was DC-2026-000X deleted, and when" — would have no answer.
+    /// IT NO LONGER PURGES WHATEVER IT FINDS. The sweep and the admin's "Full delete" button share
+    /// <see cref="ContractPurgeService"/>, which refuses anything
+    /// <see cref="Helpers.Contracts.ContractHardDeletePolicy"/> protects — a signature, a linked
+    /// invoice, an amendment built from it. Before that gate existed this job would silently
+    /// destroy an executed agreement six months after somebody archived it, unattended and with no
+    /// decision behind it. Archive now means the document is preserved, and a test draft still
+    /// ages out exactly as it always did.
+    ///
+    /// A contract the policy protects is simply SKIPPED and stays archived indefinitely, which is
+    /// the intended resting place for it. It is logged once per sweep rather than per contract, so
+    /// a steady population of preserved agreements does not fill the log every day.
     /// </summary>
     public class ContractRetentionService : BackgroundService
     {
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<ContractRetentionService> _logger;
         private readonly IConfiguration _configuration;
+
+        /// <summary>What the surviving ContractDeletionLog row names as the actor.</summary>
+        public const string DeletedByLabel = "Retention job";
 
         private static readonly TimeSpan Interval = TimeSpan.FromHours(1);
         private DateTime _lastSweepUtc = DateTime.MinValue;
@@ -68,11 +77,12 @@ namespace DreamCleaningBackend.Services.Contracts
         }
 
         /// <summary>Exposed so the behaviour can be exercised directly rather than only on a timer.</summary>
+        /// <summary>Exposed so the behaviour can be exercised directly rather than only on a timer.</summary>
         public async Task<int> SweepAsync(CancellationToken cancellationToken = default)
         {
             using var scope = _serviceProvider.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var storage = scope.ServiceProvider.GetRequiredService<ContractStorage>();
+            var purge = scope.ServiceProvider.GetRequiredService<ContractPurgeService>();
 
             var cutoff = DateTime.UtcNow.AddMonths(-RetentionMonths);
 
@@ -85,12 +95,21 @@ namespace DreamCleaningBackend.Services.Contracts
             if (expired.Count == 0) return 0;
 
             var purged = 0;
+            var preserved = 0;
+
             foreach (var contract in expired)
             {
                 try
                 {
-                    await PurgeAsync(context, storage, contract, cancellationToken);
+                    await purge.PurgeAsync(contract, DeletedByLabel, cancellationToken);
                     purged++;
+                }
+                catch (ContractPurgeRefusedException)
+                {
+                    // Protected by the shared policy — a signature, a linked invoice, an amendment
+                    // built from it. It stays archived, which is where it belongs; this is the
+                    // normal resting state for an executed agreement, not a failure.
+                    preserved++;
                 }
                 catch (Exception ex)
                 {
@@ -103,66 +122,12 @@ namespace DreamCleaningBackend.Services.Contracts
                 _logger.LogInformation("Permanently deleted {Count} contract(s) past the {Months}-month retention window.",
                     purged, RetentionMonths);
 
+            if (preserved > 0)
+                _logger.LogInformation(
+                    "Kept {Count} archived contract(s) that carry signatures, invoices or amendments.",
+                    preserved);
+
             return purged;
-        }
-
-        private async Task PurgeAsync(
-            ApplicationDbContext context, ContractStorage storage,
-            Contract contract, CancellationToken cancellationToken)
-        {
-            var versionIds = await context.ContractVersions
-                .Where(v => v.ContractId == contract.Id)
-                .Select(v => v.Id)
-                .ToListAsync(cancellationToken);
-
-            var files = await context.ContractFiles
-                .Where(f => versionIds.Contains(f.ContractVersionId))
-                .ToListAsync(cancellationToken);
-
-            var signatureCount = await context.ContractSignatures
-                .CountAsync(s => s.ContractSigner != null
-                                 && versionIds.Contains(s.ContractSigner.ContractVersionId),
-                            cancellationToken);
-
-            // Written and committed FIRST — see the class summary.
-            context.ContractDeletionLogs.Add(new ContractDeletionLog
-            {
-                ContractNumber = contract.ContractNumber,
-                ContractId = contract.Id,
-                ClientLegalName = contract.ContractClient?.LegalEntityName,
-                StatusAtDeletion = contract.Status.ToString(),
-                HiddenAt = contract.HiddenAt,
-                HiddenBy = contract.HiddenByUser == null
-                    ? null
-                    : $"{contract.HiddenByUser.FirstName} {contract.HiddenByUser.LastName}".Trim(),
-                DeletedAt = DateTime.UtcNow,
-                VersionCount = versionIds.Count,
-                SignatureCount = signatureCount,
-                FileCount = files.Count,
-                DeletedBy = "Retention job"
-            });
-            await context.SaveChangesAsync(cancellationToken);
-
-            // Then the documents on disk. A file that has already gone is not an error — the row
-            // is what we are authoritative about.
-            foreach (var file in files)
-            {
-                try
-                {
-                    var path = storage.Resolve(file.FilePath);
-                    if (File.Exists(path)) File.Delete(path);
-                }
-                catch (IOException ex)
-                {
-                    _logger.LogWarning(ex, "Could not delete contract file {Path}.", file.FilePath);
-                }
-            }
-
-            // Finally the row. Versions, signers, signatures, files and the contract's own audit
-            // rows all cascade from here (see the delete behaviour in ApplicationDbContext); the
-            // deletion log deliberately does not, because it has no foreign key to follow.
-            context.Contracts.Remove(contract);
-            await context.SaveChangesAsync(cancellationToken);
         }
     }
 }

@@ -140,6 +140,32 @@ namespace DreamCleaningBackend.Services
         public const string CommercialInvoiceVoid = "CommercialInvoiceVoid";
 
         /// <summary>
+        /// A commercial invoice ARCHIVED or unarchived - taken off the default list without
+        /// touching a figure. EntityId = invoice id.
+        /// </summary>
+        public const string CommercialInvoiceArchive = "CommercialInvoiceArchive";
+
+        /// <summary>
+        /// A commercial invoice PERMANENTLY DELETED. EntityId = invoice id, which by definition no
+        /// longer resolves - the payload carries the number, client and total, because after this
+        /// row there is nothing else left to read.
+        ///
+        /// The invoice's own activity log cascades away with it, so unlike every other entry here
+        /// this one is not a second copy of anything. It is the only record.
+        /// </summary>
+        public const string CommercialInvoiceHardDelete = "CommercialInvoiceHardDelete";
+
+        /// <summary>
+        /// A contract PERMANENTLY DELETED from the admin panel. EntityId = the contract id it used
+        /// to have.
+        ///
+        /// <c>ContractDeletionLog</c> is the module's own durable record and is written in the
+        /// same transaction as the delete; this row is the copy an app-wide audit search finds,
+        /// alongside every other destructive admin action.
+        /// </summary>
+        public const string ContractHardDelete = "ContractHardDelete";
+
+        /// <summary>
         /// An invoice's allocation to the ORDERS it covers — proposed on a draft, committed when
         /// the invoice is finalized, and reversed when it is voided. EntityId = order id, because
         /// the question this stream answers is "why did this cleaning's price change?"; the
@@ -248,6 +274,9 @@ namespace DreamCleaningBackend.Services
                 [SpecialOfferGrant] = "Offers may already have been used. Withdraw the offer from the Special Offers tab.",
                 [CommercialInvoicePaymentAction] = "Money has already changed hands. Record a reversing payment on the invoice instead.",
                 [CommercialInvoiceVoid] = "A voided invoice number stays permanently reserved. Duplicate it to issue a corrected invoice.",
+                [CommercialInvoiceArchive] = "Unarchive the invoice from Commercial → Invoices instead.",
+                [CommercialInvoiceHardDelete] = "The invoice and everything under it were destroyed. Nothing survives to write back.",
+                [ContractHardDelete] = "The contract and every version, signature and file under it were destroyed. Nothing survives to write back.",
                 [BillingSettingsChange] = "Bank details are not stored in this row. Set them back from the billing settings page.",
                 [CommercialClient] = "Commercial clients are never deleted. Edit or restore the client from Commercial → Clients, or set the business flag back on the customer's account.",
                 [SiteSetting] = "Toggle the setting back from its own page.",

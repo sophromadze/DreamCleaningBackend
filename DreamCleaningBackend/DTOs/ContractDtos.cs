@@ -505,11 +505,25 @@ namespace DreamCleaningBackend.DTOs
         public bool CanGeneratePreview { get; set; }
         public bool CanSendForReview { get; set; }
         public bool CanSendForSignature { get; set; }
-        /// <summary>Soft-deleted: hidden from the default list, restorable, purged after 6 months.</summary>
+        /// <summary>ARCHIVED: hidden from the default list and restorable. The soft-delete flag.</summary>
         public bool IsHidden { get; set; }
         public DateTime? HiddenAt { get; set; }
         public bool CanDelete { get; set; }
         public bool CanRestore { get; set; }
+
+        /// <summary>
+        /// Whether the PERMANENT delete option is offered in the delete dialog.
+        /// <c>ContractHardDeletePolicy</c> decides; the endpoint applies the same policy, so this
+        /// only governs whether the option is presented.
+        /// </summary>
+        public bool CanHardDelete { get; set; }
+
+        /// <summary>
+        /// Why permanent deletion is refused — a signature, a linked invoice, an amendment built
+        /// from it. Null when it is allowed. Shown in the dialog so the admin reads which record
+        /// is protecting the contract rather than finding a greyed-out button.
+        /// </summary>
+        public string? CannotHardDeleteReason { get; set; }
         public bool IsLocked { get; set; }
 
         /// <summary>

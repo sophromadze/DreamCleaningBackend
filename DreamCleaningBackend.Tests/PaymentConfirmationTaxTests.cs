@@ -54,6 +54,9 @@ public class PaymentConfirmationTaxTests
         // The company notification is asynchronous; all notification methods are inert doubles.
         var email = RecurringDiscountRegressionTests.Stub<IEmailService>((_, _) => Task.CompletedTask);
         var constructor = typeof(BookingController).GetConstructors().Single();
+        // Built first so the controller's IServiceScopeFactory (detached notifications — see
+        // Helpers/BackgroundWork) can be taken from it.
+        using var provider = new ServiceCollection().BuildServiceProvider();
         var args = constructor.GetParameters().Select(p => p.Name switch {
             "context" => (object)db,
             "configuration" => new ConfigurationBuilder().Build(),
@@ -61,9 +64,9 @@ public class PaymentConfirmationTaxTests
             "stripeService" => stripe,
             "emailService" => email,
             "logger" => NullLogger<BookingController>.Instance,
+            "scopeFactory" => provider.GetRequiredService<IServiceScopeFactory>(),
             _ => null // Unused dependencies on this existing-order confirmation path.
         }).ToArray();
-        using var provider = new ServiceCollection().BuildServiceProvider();
         var controller = (BookingController)constructor.Invoke(args);
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext {
             RequestServices = provider, User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("UserId", "1") }, "test"))

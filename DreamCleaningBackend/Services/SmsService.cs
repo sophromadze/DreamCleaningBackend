@@ -224,6 +224,20 @@ namespace DreamCleaningBackend.Services
             await SendSmsAsync(phoneNumber, msg);
         }
 
+        public async Task SendPartialPaymentRequestSmsAsync(string phoneNumber, string customerName, decimal amount,
+            decimal orderTotal, decimal remainingAfter, int orderId, string paymentLink)
+        {
+            var amountFormatted = amount.ToString("C");
+            var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
+            // The balance line is the whole point of a separate template: without it the customer
+            // reads a smaller figure than the one they were quoted and assumes the price changed.
+            var balanceLine = remainingAfter >= 0.01m
+                ? $" This covers part of your {orderTotal:C} order; {remainingAfter:C} will remain."
+                : $" This completes your {orderTotal:C} order.";
+            var msg = $"Hi {firstName}, here is your payment link for order #{orderId}: {amountFormatted}.{balanceLine} Pay here: {paymentLink}";
+            await SendSmsAsync(phoneNumber, msg);
+        }
+
         public async Task SendReviewRequestSmsAsync(string phoneNumber, string customerName)
         {
             var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;

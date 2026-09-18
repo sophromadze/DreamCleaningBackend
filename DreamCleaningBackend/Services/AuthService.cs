@@ -31,8 +31,13 @@ namespace DreamCleaningBackend.Services
         private readonly IBubblePointsService _bubblePointsService;
         private readonly ICleanerAccountService _cleanerAccountService;
 
-        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService, IUserRepository userRepository, IReferralService referralService, IBubblePointsService bubblePointsService, ICleanerAccountService cleanerAccountService)
+        // Detached sends (the login OTP) take a DI scope of their own rather than borrowing
+        // this service's DbContext. See Helpers/BackgroundWork.
+        private readonly IServiceScopeFactory _scopeFactory;
+
+        public AuthService(ApplicationDbContext context, IConfiguration configuration, IEmailService emailService, ILogger<AuthService> logger, ISpecialOfferService specialOfferService, IAuditService auditService, IUserRepository userRepository, IReferralService referralService, IBubblePointsService bubblePointsService, ICleanerAccountService cleanerAccountService, IServiceScopeFactory scopeFactory)
         {
+            _scopeFactory = scopeFactory;
             _cleanerAccountService = cleanerAccountService;
             _context = context;
             _configuration = configuration;
@@ -84,6 +89,51 @@ namespace DreamCleaningBackend.Services
             {
                 _logger.LogError(ex, "Failed to link cleaner {CleanerId} to user {UserId}", cleanerId, userId);
             }
+        }
+
+        /// <summary>Sends the one-per-account welcome email, if this account is owed one.
+        ///
+        /// Called from every path that can FIRST give an account a usable address: a Google
+        /// sign-up, an Apple sign-up, local email verification, and an Apple relay account
+        /// supplying a real address. Whether it actually sends is <see cref="WelcomeEmailPolicy"/>'s
+        /// decision alone — no caller re-states the rule.
+        ///
+        /// The column is CLAIMED with a conditional update before anything is sent: two sign-in
+        /// requests racing each other (a retried Apple login, two tabs) both read a null column,
+        /// and only the one whose update touches a row may mail. The send itself is detached with
+        /// its own DI scope — EmailService is scoped and shares this service's DbContext, so
+        /// letting it run on the caller's scope is the collision Helpers/BackgroundWork exists to
+        /// stop — and it is best-effort: a customer who is signed in is not shown an error because
+        /// SMTP was slow.</summary>
+        private async Task TrySendWelcomeEmailAsync(User user)
+        {
+            if (!WelcomeEmailPolicy.ShouldSend(user)) return;
+
+            var recipient = WelcomeEmailPolicy.ResolveRecipient(user);
+            if (recipient == null) return;
+            var firstName = user.FirstName;
+            var provider = WelcomeEmailPolicy.ResolveProviderLabel(user);
+            var sentAt = DateTime.UtcNow;
+
+            try
+            {
+                var claimed = await _context.Users
+                    .Where(u => u.Id == user.Id && u.WelcomeEmailSentAt == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(u => u.WelcomeEmailSentAt, sentAt));
+                if (claimed == 0) return; // another request is already sending it
+                user.WelcomeEmailSentAt = sentAt; // keep the tracked entity in step with the row
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to claim the welcome email for user {UserId}", user.Id);
+                return;
+            }
+
+            BackgroundWork.Run(_scopeFactory, _logger, $"welcome email for {recipient}", async services =>
+            {
+                await services.GetRequiredService<IEmailService>()
+                    .SendWelcomeEmailAsync(recipient, firstName, provider);
+            });
         }
 
         private async Task TryGrantWelcomeBonusAsync(int userId)
@@ -368,6 +418,10 @@ namespace DreamCleaningBackend.Services
                         try { await _referralService.ProcessReferralRegistration(user.Id, googleLoginDto.ReferralCode); }
                         catch (Exception ex) { _logger.LogError(ex, "Failed to process referral for Google user {UserId}", user.Id); }
                     }
+
+                    // A Google account arrives already verified, so it never passes through the
+                    // local verification path that used to be the only sender of this mail.
+                    await TrySendWelcomeEmailAsync(user);
                 }
 
                 return new AuthResponseDto
@@ -568,6 +622,11 @@ namespace DreamCleaningBackend.Services
                     try { await _referralService.ProcessReferralRegistration(user.Id, appleLoginDto.ReferralCode); }
                     catch (Exception ex) { _logger.LogError(ex, "Failed to process referral for Apple user {UserId}", user.Id); }
                 }
+
+                // Shared-email sign-ups are welcomed here. A "Hide My Email" account is not —
+                // WelcomeEmailPolicy refuses the relay address — and is welcomed instead when it
+                // supplies a real one in VerifyRealEmailCode.
+                await TrySendWelcomeEmailAsync(user);
             }
 
                 var requiresRealEmail = user.RequiresRealEmail || (user.Email?.EndsWith("@privaterelay.appleid.com", StringComparison.OrdinalIgnoreCase) == true);
@@ -651,6 +710,34 @@ namespace DreamCleaningBackend.Services
             return Convert.FromBase64String(output);
         }
 
+        /// <summary>
+        /// How long the refresh token a renewal REPLACED stays acceptable (see
+        /// <see cref="User.PreviousRefreshToken"/>).
+        ///
+        /// Long enough to cover a browser race - a burst of parallel 401s, two tabs, a poll
+        /// colliding with a click - and nowhere near long enough to be a second session. Every
+        /// caller inside the window gets the SAME current tokens back, so it widens no privilege:
+        /// the number of live sessions is exactly one either way.
+        /// </summary>
+        public static readonly TimeSpan RefreshTokenReplayGrace = TimeSpan.FromSeconds(60);
+
+        /// <summary>
+        /// True when the caller presented the token this account held immediately before its last
+        /// renewal, and that renewal was recent enough to still be a race rather than a replay.
+        /// </summary>
+        private static bool IsWithinRefreshReplayGrace(User user, string suppliedRefreshToken)
+        {
+            return !string.IsNullOrEmpty(user.PreviousRefreshToken)
+                && !string.IsNullOrEmpty(user.RefreshToken)
+                && user.PreviousRefreshToken == suppliedRefreshToken
+                && user.PreviousRefreshTokenExpiryTime.HasValue
+                && user.PreviousRefreshTokenExpiryTime.Value > DateTime.UtcNow
+                // A dead session is never resurrected by a replay: the current token has to be
+                // live in its own right for the window to mean anything.
+                && user.RefreshTokenExpiryTime.HasValue
+                && user.RefreshTokenExpiryTime.Value > DateTime.UtcNow;
+        }
+
         public async Task<AuthResponseDto> RefreshToken(RefreshTokenDto refreshTokenDto)
         {
             try
@@ -704,13 +791,40 @@ namespace DreamCleaningBackend.Services
                     throw new Exception("User account is blocked");
                 }
 
-                // PRESERVED: Validate refresh token
+                // A DUPLICATE PRESENTATION OF THE TOKEN WE JUST REPLACED IS NOT AN ATTACK.
+                //
+                // The browser sends the same refresh token twice all the time and never on
+                // purpose: a panel opens and fires six requests that 401 together, the admin has
+                // two tabs open, a 60-second poll collides with a click. Refusing the loser used
+                // to end the session the winner had just renewed - see User.PreviousRefreshToken.
+                //
+                // Inside the grace window we rotate NOTHING and hand back what the winning call
+                // already issued, so every racing caller converges on one current session. The
+                // access token is minted fresh because the caller's copy is, by definition, the
+                // expired one that started all this.
                 if (user.RefreshToken != suppliedRefreshToken)
                 {
-                    _logger.LogWarning($"Invalid refresh token for user ID: {userId}");
-                    _logger.LogWarning($"Expected refresh token: {user.RefreshToken}");
-                    _logger.LogWarning($"Received refresh token: {suppliedRefreshToken}");
-                    _logger.LogWarning($"Token lengths - Expected: {user.RefreshToken?.Length}, Received: {suppliedRefreshToken.Length}");
+                    if (IsWithinRefreshReplayGrace(user, suppliedRefreshToken))
+                    {
+                        _logger.LogInformation(
+                            "Refresh token replay for user ID: {UserId} inside the {Seconds}s grace window - returning the current session without rotating",
+                            userId, RefreshTokenReplayGrace.TotalSeconds);
+
+                        return new AuthResponseDto
+                        {
+                            User = MapUserToDto(user),
+                            Token = CreateToken(user),
+                            // Non-null by the grace check above: a window with no current token
+                            // behind it is not a window.
+                            RefreshToken = user.RefreshToken!
+                        };
+                    }
+
+                    // Never log token material: these lines used to print the expected and the
+                    // received refresh token in full, which puts a live credential in the log.
+                    _logger.LogWarning(
+                        "Invalid refresh token for user ID: {UserId} (a token is on file: {HasCurrent}; a replay window is open: {HasPrevious})",
+                        userId, user.RefreshToken != null, user.PreviousRefreshToken != null);
                     throw new Exception("Invalid refresh token");
                 }
 
@@ -725,7 +839,10 @@ namespace DreamCleaningBackend.Services
                 var newAccessToken = CreateToken(user);
                 var newRefreshToken = GenerateRefreshToken();
 
-                // Update user's refresh token
+                // Update user's refresh token. The one being replaced stays acceptable for the
+                // grace window above - that is the whole mechanism.
+                user.PreviousRefreshToken = user.RefreshToken;
+                user.PreviousRefreshTokenExpiryTime = DateTime.UtcNow.Add(RefreshTokenReplayGrace);
                 user.RefreshToken = newRefreshToken;
                 user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30); // Extended for better UX
                 user.UpdatedAt = DateTime.UtcNow;
@@ -1014,8 +1131,9 @@ namespace DreamCleaningBackend.Services
 
             await _context.SaveChangesAsync();
 
-            // Send welcome email
-            await _emailService.SendWelcomeEmailAsync(user.Email, user.FirstName);
+            // Send welcome email (detached and best-effort — the address IS verified whether or
+            // not SMTP cooperates, and this used to throw out of a successful verification).
+            await TrySendWelcomeEmailAsync(user);
 
             return true;
         }
@@ -1044,18 +1162,15 @@ namespace DreamCleaningBackend.Services
 
             await _context.SaveChangesAsync();
 
-            // SEND OTP IN BACKGROUND
-            _ = Task.Run(async () =>
+            // SEND OTP IN BACKGROUND — in a DI scope of its own. `user` is tracked by this
+            // service's DbContext and EmailService shares it, so the old fire-and-forget could
+            // collide with whatever the request did next. See Helpers/BackgroundWork.
+            var otpEmail = user.Email;
+            var otpFirstName = user.FirstName;
+            BackgroundWork.Run(_scopeFactory, _logger, $"login OTP for {otpEmail}", async services =>
             {
-                try
-                {
-                    await _emailService.SendLoginOtpAsync(user.Email, user.FirstName, otp);
-                    _logger.LogInformation($"Verification OTP sent successfully to {user.Email}");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"Failed to send verification OTP to {user.Email}");
-                }
+                await services.GetRequiredService<IEmailService>().SendLoginOtpAsync(otpEmail, otpFirstName, otp);
+                _logger.LogInformation($"Verification OTP sent successfully to {otpEmail}");
             });
 
             return true;
@@ -1292,6 +1407,27 @@ namespace DreamCleaningBackend.Services
             User user;
             if (existingUser != null)
             {
+                // This method ends by handing the ANONYMOUS caller a signed token for whatever
+                // account it returns, so the matched row has to be one nobody holds a credential
+                // for. GuestAccountClaimPolicy is the whole rule; the checks it makes (password,
+                // external identity, role, blocked) are load-bearing individually — read it there
+                // rather than re-deriving a shorter version here.
+                //
+                // Refused FIRST, before the phone backfill below: a match we are not going to
+                // return is a stranger's row, and writing to it would let an anonymous caller
+                // edit an account they cannot sign into.
+                if (!GuestAccountClaimPolicy.MayClaimWithoutCredentials(existingUser))
+                {
+                    _logger.LogWarning(
+                        "Guest checkout refused for user {UserId}: the contact email belongs to an account that must sign in " +
+                        "(provider {AuthProvider}, role {Role}, hasPassword {HasPassword}, active {IsActive}).",
+                        existingUser.Id, existingUser.AuthProvider ?? "Local", existingUser.Role,
+                        !string.IsNullOrEmpty(existingUser.PasswordHash), existingUser.IsActive);
+
+                    throw new GuestAccountRequiresLoginException(
+                        GuestAccountClaimPolicy.LoginRequiredMessage);
+                }
+
                 user = existingUser;
                 // Update phone if user has none
                 if (string.IsNullOrEmpty(user.Phone) && !string.IsNullOrEmpty(phone))
@@ -1654,6 +1790,10 @@ namespace DreamCleaningBackend.Services
             user.RefreshToken = GenerateRefreshToken();
             user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(30);
             await _context.SaveChangesAsync();
+
+            // First address on this account we can actually mail — an Apple "Hide My Email"
+            // sign-up was deliberately not welcomed at its relay address.
+            await TrySendWelcomeEmailAsync(user);
 
             return new VerifyRealEmailResultDto
             {

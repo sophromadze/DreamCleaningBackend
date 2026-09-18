@@ -1599,6 +1599,13 @@ namespace DreamCleaningBackend.Services.Contracts
                     ? (scopeTemplate?.PremisesType ?? "premises")
                     : dto.PremisesType.Trim(),
 
+                // The published policy version in force as this draft is built, frozen with the
+                // rest of the snapshot so Section 36(o) keeps naming it after the website's copy
+                // has moved on. A Draft is the only thing that pulls live defaults; from the
+                // moment a version is generated these two are read-only like every other field.
+                PolicyVersion = Helpers.Commercial.CommercialPolicyDocument.Version,
+                PolicyEffectiveDate = Helpers.Commercial.CommercialPolicyDocument.EffectiveDate,
+
                 Contractor = new ContractorSnapshot
                 {
                     Id = profile.Id,
