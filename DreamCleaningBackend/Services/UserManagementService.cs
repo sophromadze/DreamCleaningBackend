@@ -67,6 +67,15 @@ namespace DreamCleaningBackend.Services
                 });
         }
 
+        public async Task NotifySessionsEnded(int userId)
+        {
+            await _hubContext.Clients.Group($"User_{userId}")
+                .SendAsync("SessionsEnded", new
+                {
+                    timestamp = DateTime.UtcNow
+                });
+        }
+
         public async Task NotifyUserDeleted(int userId, string message)
         {
             await _hubContext.Clients.Group($"User_{userId}")

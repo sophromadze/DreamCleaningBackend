@@ -252,19 +252,23 @@ namespace DreamCleaningBackend.Services
             }).ToList();
         }
 
-        public async Task RevokeTrustedDeviceAsync(int userId, int trustedDeviceId)
+        public async Task<bool> RevokeTrustedDeviceAsync(int userId, int trustedDeviceId)
         {
             var row = await _context.TrustedDevices
                 .FirstOrDefaultAsync(d => d.Id == trustedDeviceId && d.UserId == userId);
-            if (row == null) return;
-            row.RevokedAt = DateTime.UtcNow;
+            if (row == null) return false;
+            row.RevokedAt ??= DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            return true;
         }
 
-        public async Task RevokeAllTrustedDevicesAsync(int userId)
+        public Task RevokeAllTrustedDevicesAsync(int userId) =>
+            RevokeAllTrustedDevicesExceptAsync(userId, Array.Empty<int>());
+
+        public async Task RevokeAllTrustedDevicesExceptAsync(int userId, IReadOnlyCollection<int> keepDeviceIds)
         {
             var rows = await _context.TrustedDevices
-                .Where(d => d.UserId == userId && d.RevokedAt == null)
+                .Where(d => d.UserId == userId && d.RevokedAt == null && !keepDeviceIds.Contains(d.Id))
                 .ToListAsync();
             if (rows.Count == 0) return;
             var now = DateTime.UtcNow;

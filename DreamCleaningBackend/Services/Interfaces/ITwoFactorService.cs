@@ -48,12 +48,19 @@ namespace DreamCleaningBackend.Services.Interfaces
         // Lists this user's currently-active trusted devices.
         Task<List<TrustedDeviceDto>> ListTrustedDevicesAsync(int userId);
 
-        // Revokes one trusted device (no-op if it doesn't belong to this user).
-        Task RevokeTrustedDeviceAsync(int userId, int trustedDeviceId);
+        // Revokes one trusted device. False when no such device belongs to this user.
+        // This only withdraws the device's 2FA skip - it does NOT end a session that device is
+        // already signed in with. AuthController pairs it with ending the account's other
+        // sessions, which is what actually signs the device out.
+        Task<bool> RevokeTrustedDeviceAsync(int userId, int trustedDeviceId);
 
         // Revokes ALL of a user's trusted devices. Called on password change/reset and
         // when SuperAdmin resets a staff PIN.
         Task RevokeAllTrustedDevicesAsync(int userId);
+
+        // Revokes every trusted device except the listed ones - "sign out all other devices"
+        // keeps the device the request came from trusted.
+        Task RevokeAllTrustedDevicesExceptAsync(int userId, IReadOnlyCollection<int> keepDeviceIds);
 
         // SuperAdmin recovery action: wipes a staff member's PIN, clears the failed-attempt
         // lockout, and revokes all their trusted devices. Their next login then flows through

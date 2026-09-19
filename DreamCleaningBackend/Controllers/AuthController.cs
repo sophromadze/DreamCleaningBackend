@@ -29,6 +29,8 @@ namespace DreamCleaningBackend.Controllers
         private readonly ITwoFactorService _twoFactorService;
         private readonly ApplicationDbContext _dbContext;
         private readonly ILogger<AuthController> _logger;
+        private readonly ITokenVersionService _tokenVersions;
+        private readonly IUserManagementService _userManagementService;
 
         public AuthController(
             IAuthService authService,
@@ -37,9 +39,13 @@ namespace DreamCleaningBackend.Controllers
             IMemoryCache cache,
             ITwoFactorService twoFactorService,
             ApplicationDbContext dbContext,
-            ILogger<AuthController> logger)
+            ILogger<AuthController> logger,
+            ITokenVersionService tokenVersions,
+            IUserManagementService userManagementService)
         {
             _logger = logger;
+            _tokenVersions = tokenVersions;
+            _userManagementService = userManagementService;
             _authService = authService;
             _accountMergeService = accountMergeService;
             _configuration = configuration;
@@ -300,6 +306,17 @@ namespace DreamCleaningBackend.Controllers
             return Ok(devices);
         }
 
+        // Removing a device withdraws its 2FA skip AND signs it out. Withdrawing trust alone
+        // (all this endpoint used to do) left a device that was already signed in signed in for
+        // the rest of its 30-day token, which is the opposite of what "Remove" promises.
+        //
+        // There is one session version per ACCOUNT (User.TokenVersion) and one refresh token, so a
+        // single device cannot be singled out: every other session ends, and the browser making
+        // this request is re-issued a fresh one so its owner stays in. The owner's other devices
+        // sign in again with their password; they stay trusted, so no 2FA challenge.
+        //
+        // Removing the device you are ON only means "ask me for 2FA here next time" - nobody else
+        // is being removed, so no other session is ended.
         [HttpDelete("2fa/trusted-devices/{id}")]
         [Authorize]
         public async Task<ActionResult> RevokeTrustedDevice(int id)
@@ -308,8 +325,97 @@ namespace DreamCleaningBackend.Controllers
                 ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
             if (userId == 0) return Unauthorized();
 
-            await _twoFactorService.RevokeTrustedDeviceAsync(userId, id);
-            return NoContent();
+            var currentDeviceIds = await GetCurrentDeviceIdsAsync(userId);
+
+            if (!await _twoFactorService.RevokeTrustedDeviceAsync(userId, id))
+                return NotFound(new { message = "Device not found." });
+
+            if (currentDeviceIds.Contains(id))
+                return Ok(new { sessionsEnded = false });
+
+            var reissued = await EndOtherSessionsAsync(userId);
+            return Ok(ReissuedSessionBody(reissued));
+        }
+
+        // "Sign out all other devices". Needed alongside Remove because a device signed in
+        // WITHOUT ticking "trust this device" never appears in the trusted list, so there was
+        // nothing to remove and no way to end its session at all. Every other trusted device is
+        // untrusted too: somebody who still knows the password could otherwise sign straight back
+        // in from a trusted browser without a 2FA challenge.
+        [HttpPost("sign-out-other-sessions")]
+        [Authorize]
+        public async Task<ActionResult> SignOutOtherSessions()
+        {
+            var userId = int.Parse(User.FindFirst("UserId")?.Value
+                ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            if (userId == 0) return Unauthorized();
+
+            var currentDeviceIds = await GetCurrentDeviceIdsAsync(userId);
+            await _twoFactorService.RevokeAllTrustedDevicesExceptAsync(userId, currentDeviceIds);
+
+            var reissued = await EndOtherSessionsAsync(userId);
+            return Ok(ReissuedSessionBody(reissued));
+        }
+
+        /// <summary>
+        /// Ends every session this account holds, then re-issues one for the browser making the
+        /// request. Order matters: revoke + save, SyncCache AFTER the save (TokenVersionService's
+        /// rule), and only then mint the replacement - minted first, it would carry the OLD
+        /// version and be refused along with everyone else's.
+        /// </summary>
+        private async Task<AuthResponseDto> EndOtherSessionsAsync(int userId)
+        {
+            await EndAllSessionsAsync(userId, notify: false);
+
+            var reissued = await _authService.RefreshUserToken(userId);
+            if (_useCookieAuth)
+                SetAuthCookies(reissued.Token, reissued.RefreshToken);
+
+            await NotifySessionsEndedAsync(userId);
+            return reissued;
+        }
+
+        private async Task EndAllSessionsAsync(int userId, bool notify = true)
+        {
+            var user = await _dbContext.Users.FirstOrDefaultAsync(u => u.Id == userId);
+            if (user == null) return;
+
+            _tokenVersions.RevokeSessions(user);
+            await _dbContext.SaveChangesAsync();
+            _tokenVersions.SyncCache(user.Id, user.TokenVersion);
+
+            if (notify)
+                await NotifySessionsEndedAsync(userId);
+        }
+
+        // A browser with the site open is told straight away; one that is closed is refused on its
+        // next request by the token-version check. The notice is best-effort - the revoke above is
+        // what actually ends the session, so a SignalR failure must not fail the request.
+        private async Task NotifySessionsEndedAsync(int userId)
+        {
+            try
+            {
+                await _userManagementService.NotifySessionsEnded(userId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "SessionsEnded notice failed for user {UserId}", userId);
+            }
+        }
+
+        // Cookie auth already carries the new tokens in Set-Cookie; bearer auth has to store them.
+        private object ReissuedSessionBody(AuthResponseDto reissued) => _useCookieAuth
+            ? new { sessionsEnded = true, user = reissued.User }
+            : new { sessionsEnded = true, user = reissued.User, token = reissued.Token, refreshToken = reissued.RefreshToken };
+
+        private async Task<List<int>> GetCurrentDeviceIdsAsync(int userId)
+        {
+            var hashes = HashCurrentDeviceTokens();
+            if (hashes.Count == 0) return new List<int>();
+            return await _dbContext.TrustedDevices
+                .Where(d => d.UserId == userId && hashes.Contains(d.TokenHash) && d.RevokedAt == null)
+                .Select(d => d.Id)
+                .ToListAsync();
         }
 
         private List<string> HashCurrentDeviceTokens()
@@ -590,7 +696,14 @@ namespace DreamCleaningBackend.Controllers
                 // Forces re-authentication with 2FA on every device they were signed in on.
                 await _twoFactorService.RevokeAllTrustedDevicesAsync(userId);
 
-                return Ok(new { message = "Password changed successfully" });
+                // Untrusting the devices only stopped them skipping 2FA next time; anyone already
+                // signed in stayed signed in on the old password. Changing the password is what
+                // people do when they think somebody else is in the account, so it ends every other
+                // session and keeps this one.
+                var reissued = await EndOtherSessionsAsync(userId);
+                return Ok(_useCookieAuth
+                    ? new { message = "Password changed successfully", sessionsEnded = true, user = reissued.User }
+                    : (object)new { message = "Password changed successfully", sessionsEnded = true, user = reissued.User, token = reissued.Token, refreshToken = reissued.RefreshToken });
             }
             catch (Exception ex)
             {
@@ -779,7 +892,12 @@ namespace DreamCleaningBackend.Controllers
                 await _authService.ResetPassword(resetDto);
 
                 if (userId != 0)
+                {
                     await _twoFactorService.RevokeAllTrustedDevicesAsync(userId);
+                    // Whoever resets the password is not signed in here, so nothing is re-issued:
+                    // every session on the old password ends.
+                    await EndAllSessionsAsync(userId);
+                }
 
                 return Ok(new { message = "Password reset successfully" });
             }
