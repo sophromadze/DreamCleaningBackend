@@ -130,6 +130,28 @@ namespace DreamCleaningBackend.Models
         /// and deleting the row would hide the duplicate rather than record it.</summary>
         public bool AppliedToOrder { get; set; }
 
+        // ── Post-payment follow-up (2026-09) ──────────────────────────────────────────────────
+        // What a single payment does after it settles an order — loyalty consumption,
+        // subscription activation, the first-order flag, and the booking confirmation email/SMS —
+        // must happen for each order a combined payment settles too, and EXACTLY once however
+        // many times the webhook is delivered or settlement is retried. These columns are that
+        // guarantee (CombinedPaymentFollowUpService). Rows that existed before the columns are
+        // stamped done by the migration, so no historical order is re-mailed.
+
+        /// <summary>Lease: set when a worker claims this item's follow-up. A claim older than the
+        /// lease is taken over (the worker died); a fresh one is left alone.</summary>
+        public DateTime? FollowUpClaimedAt { get; set; }
+
+        /// <summary>How many times the follow-up was claimed. It stops being retried after a few.</summary>
+        public int FollowUpAttempts { get; set; }
+
+        /// <summary>Loyalty / subscription / first-order bookkeeping done, in ONE transaction with
+        /// this stamp — so it can never run twice.</summary>
+        public DateTime? BookkeepingAppliedAt { get; set; }
+
+        /// <summary>Confirmation email/SMS handled (sent, or deliberately skipped). Null = still owed.</summary>
+        public DateTime? ConfirmationSentAt { get; set; }
+
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }

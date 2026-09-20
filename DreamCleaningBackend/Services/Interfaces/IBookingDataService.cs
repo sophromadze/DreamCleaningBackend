@@ -25,6 +25,12 @@ namespace DreamCleaningBackend.Services
 
         public string? PaymentIntentId { get; set; }
         public string? PaymentClientSecret { get; set; }
+
+        /// <summary>The intent was created carrying the signed-in customer's Stripe Customer, so
+        /// the pre-payment "Save your card?" choice can be applied at confirmation. Stored with
+        /// the session so a REUSED intent reports the same answer as the one that created it.</summary>
+        public bool CanSaveCard { get; set; }
+
         public decimal Total { get; set; }
         public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 

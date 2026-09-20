@@ -251,7 +251,9 @@ namespace DreamCleaningBackend.Tests
 
             var service = (AuthService)Activator.CreateInstance(
                 typeof(AuthService),
-                null, configuration, null, null, null, null, null, null, null, null)!;
+                // One argument per constructor parameter (11 since IServiceScopeFactory was added);
+                // Activator matches on count, so a stale list fails before the assertion runs.
+                null, configuration, null, null, null, null, null, null, null, null, null)!;
 
             var method = typeof(AuthService).GetMethod("CreateToken", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(method);

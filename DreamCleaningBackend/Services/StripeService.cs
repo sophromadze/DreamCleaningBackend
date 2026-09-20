@@ -24,7 +24,9 @@ namespace DreamCleaningBackend.Services
             {
                 var options = new PaymentIntentCreateOptions
                 {
-                    Amount = (long)(amount * 100), // Convert to cents
+                    // Rounded, never truncated — identical for every 2dp amount, and a decimal that
+                    // lands a hair under a cent boundary can no longer undercharge by a penny.
+                    Amount = ToCents(amount),
                     Currency = "usd",
                     PaymentMethodTypes = new List<string> { "card" },
                     Metadata = metadata ?? new Dictionary<string, string>(),
@@ -220,7 +222,7 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        public async Task<SetupIntent> CreateSetupIntentAsync(string stripeCustomerId)
+        public async Task<SetupIntent> CreateSetupIntentAsync(string stripeCustomerId, Dictionary<string, string>? metadata = null)
         {
             try
             {
@@ -229,7 +231,8 @@ namespace DreamCleaningBackend.Services
                 {
                     Customer = stripeCustomerId,
                     PaymentMethodTypes = new List<string> { "card" },
-                    Usage = "off_session"
+                    Usage = "off_session",
+                    Metadata = metadata
                 });
             }
             catch (StripeException ex)
@@ -239,9 +242,20 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        public async Task<OffSessionChargeResult> CreateOffSessionPaymentIntentAsync(decimal amount, string customerId,
-            string paymentMethodId, Dictionary<string, string> metadata, string idempotencyKey,
-            string receiptEmail = null)
+        public async Task<SetupIntent> GetSetupIntentAsync(string setupIntentId)
+        {
+            try
+            {
+                return await new SetupIntentService().GetAsync(setupIntentId);
+            }
+            catch (StripeException ex)
+            {
+                _logger.LogError(ex, "Error retrieving setup intent {SetupIntentId}", setupIntentId);
+                throw new ApplicationException($"Payment method retrieval error: {ex.Message}");
+            }
+        }
+
+        public async Task<SavedCardChargeResult> ChargeSavedCardAsync(SavedCardChargeRequest request)
         {
             var service = new PaymentIntentService();
 
@@ -250,65 +264,181 @@ namespace DreamCleaningBackend.Services
                 var paymentIntent = await service.CreateAsync(
                     new PaymentIntentCreateOptions
                     {
-                        Amount = (long)(amount * 100),
+                        Amount = ToCents(request.Amount),
                         Currency = "usd",
-                        Customer = customerId,
-                        PaymentMethod = paymentMethodId,
-                        OffSession = true,
+                        Customer = request.CustomerId,
+                        PaymentMethod = request.PaymentMethodId,
+                        // Card-only. Without it the pinned API version (2025-06-30.basil) turns on
+                        // automatic payment methods, and confirming server-side then demands a
+                        // return_url for redirect-based methods — every off-session charge would
+                        // have failed with an invalid_request_error (audit finding, 2026-09).
+                        PaymentMethodTypes = new List<string> { "card" },
+                        OffSession = request.OffSession,
                         Confirm = true,
-                        Metadata = metadata ?? new Dictionary<string, string>(),
-                        ReceiptEmail = string.IsNullOrWhiteSpace(receiptEmail) ? null : receiptEmail.Trim()
+                        Metadata = request.Metadata ?? new Dictionary<string, string>(),
+                        Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description,
+                        ReceiptEmail = string.IsNullOrWhiteSpace(request.ReceiptEmail) ? null : request.ReceiptEmail.Trim()
                     },
-                    new RequestOptions { IdempotencyKey = idempotencyKey });
+                    new RequestOptions { IdempotencyKey = request.IdempotencyKey });
 
-                if (paymentIntent.Status == "succeeded")
+                return MapIntent(paymentIntent);
+            }
+            catch (StripeException ex)
+            {
+                return MapChargeException(ex, request);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or TimeoutException)
+            {
+                // The request may or may not have reached Stripe. NEVER a decline.
+                _logger.LogWarning(ex, "Saved-card charge {IdempotencyKey}: no answer from Stripe; outcome unknown.",
+                    request.IdempotencyKey);
+                return new SavedCardChargeResult
                 {
-                    return new OffSessionChargeResult { Success = true, PaymentIntentId = paymentIntent.Id };
-                }
+                    Outcome = SavedCardChargeOutcome.Unknown,
+                    FailureCode = "network_error",
+                    Message = "No response from the payment provider."
+                };
+            }
+        }
 
-                if (paymentIntent.Status == "requires_action")
-                {
-                    // SCA/3DS — cannot be completed with the customer absent.
-                    return new OffSessionChargeResult
-                    {
-                        RequiresAction = true,
-                        PaymentIntentId = paymentIntent.Id,
-                        FailureReason = "authentication_required: the bank asked for extra verification, which needs the customer present"
-                    };
-                }
+        /// <summary>Maps a PaymentIntent Stripe returned (no exception) to an outcome.</summary>
+        public static SavedCardChargeResult MapIntent(PaymentIntent intent)
+        {
+            var result = new SavedCardChargeResult { PaymentIntentId = intent.Id };
 
-                return new OffSessionChargeResult
+            switch (intent.Status)
+            {
+                case "succeeded":
+                    result.Outcome = SavedCardChargeOutcome.Succeeded;
+                    break;
+                case "processing":
+                    result.Outcome = SavedCardChargeOutcome.Processing;
+                    break;
+                case "requires_action":
+                    result.Outcome = SavedCardChargeOutcome.RequiresAction;
+                    result.ClientSecret = intent.ClientSecret;
+                    result.FailureCode = "authentication_required";
+                    break;
+                default:
+                    // requires_payment_method / canceled: the attempt definitively did not charge.
+                    result.Outcome = SavedCardChargeOutcome.Declined;
+                    result.FailureCode = intent.LastPaymentError?.Code ?? intent.Status;
+                    result.DeclineCode = intent.LastPaymentError?.DeclineCode;
+                    result.Message = intent.LastPaymentError?.Message;
+                    break;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Classifies a Stripe exception. Only an answer that PROVES no money moved is a decline:
+        /// a card_error, or an invalid_request_error (detached card, missing customer). Anything
+        /// that leaves the outcome open — no StripeError at all (transport), api_error / 5xx,
+        /// 429, an idempotency conflict — is Unknown, and the caller must reconcile it.
+        /// </summary>
+        public SavedCardChargeResult MapChargeException(StripeException ex, SavedCardChargeRequest request)
+        {
+            var error = ex.StripeError;
+            var status = (int)ex.HttpStatusCode;
+
+            if (error == null || status == 0 || status >= 500 || status == 429
+                || error.Type == "api_error" || error.Type == "idempotency_error")
+            {
+                _logger.LogWarning(ex, "Saved-card charge {IdempotencyKey}: outcome unknown (HTTP {Status}, {Type}).",
+                    request.IdempotencyKey, status, error?.Type);
+                return new SavedCardChargeResult
                 {
-                    PaymentIntentId = paymentIntent.Id,
-                    FailureReason = $"unexpected_status: {paymentIntent.Status}"
+                    Outcome = SavedCardChargeOutcome.Unknown,
+                    PaymentIntentId = error?.PaymentIntent?.Id,
+                    FailureCode = error?.Code ?? error?.Type ?? "unknown",
+                    Message = Truncate(error?.Message ?? ex.Message, 300)
+                };
+            }
+
+            if (error.Code == "authentication_required")
+            {
+                return new SavedCardChargeResult
+                {
+                    Outcome = SavedCardChargeOutcome.RequiresAction,
+                    PaymentIntentId = error.PaymentIntent?.Id,
+                    ClientSecret = error.PaymentIntent?.ClientSecret,
+                    FailureCode = "authentication_required",
+                    DeclineCode = error.DeclineCode,
+                    Message = Truncate(error.Message, 300)
+                };
+            }
+
+            _logger.LogInformation("Saved-card charge {IdempotencyKey} declined: {Code}/{DeclineCode}",
+                request.IdempotencyKey, error.Code, error.DeclineCode);
+
+            return new SavedCardChargeResult
+            {
+                Outcome = SavedCardChargeOutcome.Declined,
+                PaymentIntentId = error.PaymentIntent?.Id,
+                FailureCode = error.Code ?? error.Type,
+                DeclineCode = error.DeclineCode,
+                Message = Truncate(error.Message, 300)
+            };
+        }
+
+        public async Task<PaymentIntent?> FindPaymentIntentByMetadataAsync(string key, string value)
+        {
+            try
+            {
+                var result = await new PaymentIntentService().SearchAsync(new PaymentIntentSearchOptions
+                {
+                    Query = $"metadata['{key}']:'{value.Replace("'", "")}'",
+                    Limit = 5
+                });
+                return result.Data.FirstOrDefault();
+            }
+            catch (StripeException ex)
+            {
+                _logger.LogWarning(ex, "PaymentIntent search for {Key}={Value} failed.", key, value);
+                return null;
+            }
+        }
+
+        public async Task<CheckoutSessionState?> GetCheckoutSessionStateAsync(string sessionId)
+        {
+            try
+            {
+                var session = await new Stripe.Checkout.SessionService().GetAsync(sessionId);
+                return new CheckoutSessionState
+                {
+                    Status = session.Status,
+                    PaymentStatus = session.PaymentStatus,
+                    PaymentIntentId = session.PaymentIntentId
                 };
             }
             catch (StripeException ex)
             {
-                var error = ex.StripeError;
-
-                if (error?.Code == "authentication_required")
-                {
-                    return new OffSessionChargeResult
-                    {
-                        RequiresAction = true,
-                        PaymentIntentId = error.PaymentIntent?.Id,
-                        FailureReason = "authentication_required: the bank asked for extra verification, which needs the customer present"
-                    };
-                }
-
-                // Hard decline / expired card / detached payment method / missing customer, etc.
-                var code = error?.DeclineCode ?? error?.Code ?? "stripe_error";
-                var message = error?.Message ?? ex.Message;
-                _logger.LogWarning(ex, "Off-session charge declined ({Code}) for customer {CustomerId}", code, customerId);
-
-                return new OffSessionChargeResult
-                {
-                    PaymentIntentId = error?.PaymentIntent?.Id,
-                    FailureReason = $"{code}: {message}"
-                };
+                _logger.LogWarning(ex, "Could not read Checkout Session {SessionId}.", sessionId);
+                return null;
             }
         }
+
+        public async Task<bool> ExpireCheckoutSessionAsync(string sessionId)
+        {
+            try
+            {
+                await new Stripe.Checkout.SessionService().ExpireAsync(sessionId);
+                return true;
+            }
+            catch (StripeException ex)
+            {
+                _logger.LogInformation(ex, "Stripe refused to expire Checkout Session {SessionId}.", sessionId);
+                return false;
+            }
+        }
+
+        /// <summary>Dollars to integer cents, rounded — never truncated.</summary>
+        public static long ToCents(decimal amount) =>
+            (long)Math.Round(amount * 100m, MidpointRounding.AwayFromZero);
+
+        private static string? Truncate(string? value, int max) =>
+            string.IsNullOrEmpty(value) ? value : value.Length <= max ? value : value[..max];
 
         public async Task<Stripe.PaymentMethod> GetPaymentMethodAsync(string paymentMethodId)
         {
@@ -335,6 +465,69 @@ namespace DreamCleaningBackend.Services
             {
                 // Best-effort cleanup — an already-detached/missing card is not an error worth failing over.
                 _logger.LogWarning(ex, "Could not detach payment method {PaymentMethodId}", paymentMethodId);
+            }
+        }
+
+        public async Task<List<Stripe.PaymentMethod>> ListCustomerCardsAsync(string stripeCustomerId)
+        {
+            if (string.IsNullOrWhiteSpace(stripeCustomerId)) return new List<Stripe.PaymentMethod>();
+            try
+            {
+                var service = new PaymentMethodService();
+                var page = await service.ListAsync(new PaymentMethodListOptions
+                {
+                    Customer = stripeCustomerId,
+                    Type = "card",
+                    Limit = 100
+                });
+                return page.Data.ToList();
+            }
+            catch (StripeException ex)
+            {
+                _logger.LogWarning(ex, "Could not list cards for Stripe customer {CustomerId}", stripeCustomerId);
+                throw new ApplicationException($"Payment processing error: {ex.Message}");
+            }
+        }
+
+        /// <inheritdoc />
+        /// <remarks>
+        /// Both lookups are scoped to the CUSTOMER, so a payment method belonging to somebody else
+        /// can never produce evidence here. A SetupIntent is only ever created by this application
+        /// for a signed-in customer adding a card; setup_future_usage is only ever set by the
+        /// browser confirming a payment after the customer chose "Save Card &amp; Pay".
+        /// </remarks>
+        public async Task<string?> FindCardSaveConsentAsync(string stripeCustomerId, string paymentMethodId)
+        {
+            if (string.IsNullOrWhiteSpace(stripeCustomerId) || string.IsNullOrWhiteSpace(paymentMethodId)) return null;
+            try
+            {
+                var setupIntents = await new SetupIntentService().ListAsync(new SetupIntentListOptions
+                {
+                    Customer = stripeCustomerId,
+                    PaymentMethod = paymentMethodId,
+                    Limit = 10
+                });
+                if (setupIntents.Data.Any(s => s.Status == "succeeded")) return "setup_intent";
+
+                // PaymentIntents cannot be filtered by payment method, so the customer's recent
+                // ones are read and matched here.
+                var paymentIntents = await new PaymentIntentService().ListAsync(new PaymentIntentListOptions
+                {
+                    Customer = stripeCustomerId,
+                    Limit = 100
+                });
+                var saved = paymentIntents.Data.Any(i =>
+                    i.PaymentMethodId == paymentMethodId
+                    && string.Equals(i.SetupFutureUsage, "off_session", StringComparison.OrdinalIgnoreCase)
+                    && i.Status is "succeeded" or "processing");
+
+                return saved ? "payment_intent" : null;
+            }
+            catch (StripeException ex)
+            {
+                // "Don't know" is not "no consent": the caller leaves the card alone.
+                _logger.LogWarning(ex, "Could not check save consent for card {PaymentMethodId}", paymentMethodId);
+                throw new ApplicationException($"Payment processing error: {ex.Message}");
             }
         }
 

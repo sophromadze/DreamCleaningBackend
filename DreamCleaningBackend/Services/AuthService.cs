@@ -1519,23 +1519,48 @@ namespace DreamCleaningBackend.Services
             if (user.AuthProvider != "Local")
                 throw new Exception("Email change is only available for local accounts");
 
+            // A Local account can still have NO password — a guest checkout claims one, and a
+            // social sign-up that was later merged is another. VerifyPasswordHash below reaches
+            // Convert.FromBase64String(null) on those and throws "Value cannot be null", which the
+            // controller hands back as the failure message. Say what is actually wrong instead.
+            if (string.IsNullOrEmpty(user.PasswordHash) || string.IsNullOrEmpty(user.PasswordSalt))
+                throw new Exception("Set a password on your account before changing your email address.");
+
+            if (string.IsNullOrEmpty(dto.CurrentPassword))
+                throw new Exception("Enter your current password to confirm this change.");
+
             // Verify current password
             if (!VerifyPasswordHash(dto.CurrentPassword, user.PasswordHash, user.PasswordSalt))
                 throw new Exception("Current password is incorrect");
 
+            // Normalise BEFORE every comparison below.
+            // A pasted address routinely arrives with a
+            // trailing space or capitals, and comparing the raw value made "  Me@X.com " read as
+            // different from the address already on the account — so the duplicate and
+            // same-address guards both missed, and the space was stored in PendingEmail and then
+            // into Email, where nothing would ever match it at login.
+            var newEmail = (dto.NewEmail ?? string.Empty).Trim().ToLowerInvariant();
+
+            // Describe the mistake rather than leaving it to [EmailAddress] model validation,
+            // whose ValidationProblemDetails body carries no `message` for the UI to show.
+            // Mirrors utils/email.utils.ts — see Helpers/EmailAddressValidator.
+            var emailProblem = EmailAddressValidator.DescribeProblem(newEmail);
+            if (emailProblem != null)
+                throw new Exception(emailProblem);
+
             // Check if new email already exists
             var emailExists = await _context.Users
-                .AnyAsync(u => u.Email == dto.NewEmail.ToLower() && u.Id != userId);
+                .AnyAsync(u => u.Email == newEmail && u.Id != userId);
 
             if (emailExists)
                 throw new Exception("This email address is already in use");
 
             // Check if it's the same as current email
-            if (user.Email.ToLower() == dto.NewEmail.ToLower())
+            if (user.Email.ToLower() == newEmail)
                 throw new Exception("New email must be different from current email");
 
             // Generate email change token
-            user.PendingEmail = dto.NewEmail.ToLower();
+            user.PendingEmail = newEmail;
             user.EmailChangeToken = GenerateVerificationToken();
             user.EmailChangeTokenExpiry = DateTime.UtcNow.AddHours(1); // 1 hour expiry
             user.UpdatedAt = DateTime.UtcNow;
@@ -1548,11 +1573,11 @@ namespace DreamCleaningBackend.Services
 
             try
             {
-                await _emailService.SendEmailChangeVerificationAsync(dto.NewEmail, user.FirstName, verificationLink, user.Email);
+                await _emailService.SendEmailChangeVerificationAsync(newEmail, user.FirstName, verificationLink, user.Email);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send email change verification to {Email}", dto.NewEmail);
+                _logger.LogError(ex, "Failed to send email change verification to {Email}", newEmail);
 
                 // Clear the pending change if email fails
                 user.PendingEmail = null;

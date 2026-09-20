@@ -213,5 +213,8 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentIntentId { get; set; }
         public string? PaymentClientSecret { get; set; }
         public bool RequiresPayment { get; set; }
+
+        /// <summary>The customer may save the card they type — see BookingResponseDto.CanSaveCard.</summary>
+        public bool CanSaveCard { get; set; }
     }
 }

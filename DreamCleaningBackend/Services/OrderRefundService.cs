@@ -80,6 +80,21 @@ namespace DreamCleaningBackend.Services
             if (IsStripeIntent(order.PaymentIntentId))
                 intentIds.Add(order.PaymentIntentId!);
 
+            // "Pay all upcoming": ONE charge covering several orders, linked through the batch
+            // item — never through Order.PaymentIntentId (UNIQUE, so it cannot be shared). This
+            // order may only ever reach ITS OWN share of that charge; see the capped entry below.
+            var batchShares = await _context.OrderPaymentBatchItems.AsNoTracking()
+                .Where(i => i.OrderId == order.Id && i.AppliedToOrder
+                            && i.Batch!.Status == OrderPaymentBatchStatus.Paid && i.Batch.PaymentIntentId != null)
+                .Select(i => new { i.Amount, i.Batch!.PaymentIntentId, i.Batch.PaidAt })
+                .ToListAsync();
+            var shareByIntent = new Dictionary<string, decimal>(StringComparer.Ordinal);
+            foreach (var share in batchShares.Where(s => IsStripeIntent(s.PaymentIntentId)).OrderBy(s => s.PaidAt))
+            {
+                shareByIntent[share.PaymentIntentId!] = share.Amount;
+                intentIds.Add(share.PaymentIntentId!);
+            }
+
             foreach (var history in order.UpdateHistory
                          .Where(h => h.IsPaid && IsStripeIntent(h.PaymentIntentId))
                          .OrderBy(h => h.PaidAt ?? h.UpdatedAt))
@@ -96,6 +111,24 @@ namespace DreamCleaningBackend.Services
                 var state = await _stripeService.GetChargeRefundStateAsync(intentId);
                 if (!state.IsRefundable)
                     continue;
+
+                if (shareByIntent.TryGetValue(intentId, out var share))
+                {
+                    // A SHARED charge: Stripe's figures describe the whole batch, so this order's
+                    // view is its share, less what has been refunded against it for THIS order.
+                    // A Dashboard refund on the batch cannot be attributed to one order, so it is
+                    // never imported here (AmountRefunded is the recorded figure, not Stripe's).
+                    var recordedForOrder = await GetRecordedRefundTotalAsync(order.Id, intentId);
+                    charges.Add(new RefundableCharge
+                    {
+                        PaymentIntentId = intentId,
+                        AmountReceived = share,
+                        AmountRefunded = recordedForOrder,
+                        Remaining = Math.Max(0m, Math.Min(state.RemainingRefundable, share - recordedForOrder)),
+                        HasDispute = state.HasDispute
+                    });
+                    continue;
+                }
 
                 charges.Add(new RefundableCharge
                 {
@@ -398,7 +431,11 @@ namespace DreamCleaningBackend.Services
                     var refund = await _stripeService.CreateRefundAsync(
                         charge.PaymentIntentId,
                         slice,
-                        idempotencyKey: $"order-{order.Id}-refund-{row.Id}",
+                        // The intent is part of the key because row ids restart in every fresh
+                        // database (a reset dev DB, a test run) while the Stripe account remembers
+                        // keys for 24 hours; a reused key with a different intent is refused.
+                        // Still fixed for the life of this row, so a retry replays, never repeats.
+                        idempotencyKey: $"order-{order.Id}-refund-{row.Id}-{charge.PaymentIntentId}",
                         metadata: new Dictionary<string, string>
                         {
                             { "orderId", order.Id.ToString() },

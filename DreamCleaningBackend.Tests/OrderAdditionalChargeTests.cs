@@ -190,7 +190,10 @@ namespace DreamCleaningBackend.Tests
             };
 
             Assert.Equal(0m, OrderAdditionalCharge.Outstanding(order, history));
-            Assert.Equal(4487.30m, LegacyOutstanding(order, history));
+            // The legacy arithmetic asked for the settled negative row back: delta 0 − (−2,243.65).
+            // (It read 4,487.30 in this file, which is order #359's figure — that order was PAID at
+            // 500, so its snapshot is 500, not the 2,743.65 this order returned to.)
+            Assert.Equal(2243.65m, LegacyOutstanding(order, history));
         }
 
         // ── Real payments still count ─────────────────────────────────────────────────────────

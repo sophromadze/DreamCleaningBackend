@@ -224,10 +224,21 @@ namespace DreamCleaningBackend.Tests
         {
             // The guard against a FOURTH call site appearing without the rule. If this fails,
             // either gate the new site or add it here deliberately.
+            // Matched on the CALL, not on a receiver name: BookingController reaches the service
+            // through `services.GetRequiredService<IEmailService>()` inside BackgroundWork, which a
+            // receiver-name search stopped seeing — the guard went blind to the very file it
+            // listed. The declaration and the implementation are the only exclusions.
             var callSites = new[]
             {
                 Path.Combine("Controllers", "BookingController.cs"),
-                Path.Combine("Controllers", "Admin", "AdminOrdersController.cs")
+                Path.Combine("Controllers", "Admin", "AdminOrdersController.cs"),
+                // "Pay all upcoming" — one confirmation per cleaning a combined payment settled.
+                Path.Combine("Services", "CombinedPaymentFollowUpService.cs")
+            };
+            var definitions = new[]
+            {
+                Path.Combine("Services", "EmailService.cs"),
+                Path.Combine("Services", "Interfaces", "IEmailService.cs")
             };
 
             var root = BackendRoot();
@@ -235,8 +246,8 @@ namespace DreamCleaningBackend.Tests
                 .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
                 .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
                             && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
-                .Where(f => File.ReadAllText(f).Contains("_emailService.SendCustomerBookingConfirmationAsync")
-                            || File.ReadAllText(f).Contains("emailService.SendCustomerBookingConfirmationAsync"))
+                .Where(f => File.ReadAllText(f).Contains(".SendCustomerBookingConfirmationAsync("))
+                .Where(f => !definitions.Contains(f.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar)))
                 .Select(f => f.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar))
                 .OrderBy(f => f)
                 .ToList();

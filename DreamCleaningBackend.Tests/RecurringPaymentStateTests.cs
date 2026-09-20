@@ -118,17 +118,12 @@ public class RecurringPaymentStateTests
         await f.Start(); Assert.Equal(2, await f.Db.OrderPaymentBatches.CountAsync());
     }
 
-    [Fact]
-    public async Task SuccessBetweenPageLoadAndRetrySettlesExactlyOnceAndRejectsNewCharge()
-    {
-        using var f = new Fixture(); var batch = await f.Start(); f.Intents[batch.PaymentIntentId].Status = "succeeded";
-        await Assert.ThrowsAsync<CombinedPaymentException>(() => f.Start());
-        Assert.False(await f.Service.SettleBatchAsync(batch.PaymentIntentId));
-        await f.Service.MarkBatchFailedAsync(batch.PaymentIntentId, "Late failure event");
-        Assert.All(await f.Db.Orders.ToListAsync(), o => { Assert.True(o.IsPaid); Assert.Equal(OrderStatuses.Active, o.Status); Assert.Equal(batch.PaymentIntentId, o.PaymentIntentId); });
-        Assert.All(await f.Db.OrderPaymentBatchItems.ToListAsync(), i => Assert.True(i.AppliedToOrder));
-        Assert.Single(f.Intents); Assert.False((await f.Service.GetUpcomingAsync(1)).CanPayAll);
-    }
+    // "Success between page load and retry settles exactly once" MOVED to
+    // Billing/CombinedPaymentSettlementTests (2026-09). It lived here on the InMemory provider,
+    // which enforces no unique index — so it asserted every order carried the batch's intent,
+    // the very write that violates IX_Orders_PaymentIntentId on a real database and left paid
+    // customers with unpaid cleanings. Settlement now uses conditional UPDATEs, which only a
+    // relational provider runs, so the scenario is asserted on MariaDB instead.
 
     [Fact]
     public async Task ConfirmationRacingCancellationCannotIssueASecondIntent()

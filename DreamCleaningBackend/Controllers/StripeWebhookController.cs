@@ -172,6 +172,20 @@ namespace DreamCleaningBackend.Controllers
                             }
                             break;
 
+                        // ── Saved cards (2026-09) ─────────────────────────────────────────────
+                        // A card removed or updated OUTSIDE this app (Stripe dashboard, the card
+                        // network's account updater). Display data and roles only — never money.
+                        case "payment_method.detached":
+                            if (stripeEvent.Data.Object is Stripe.PaymentMethod detachedMethod)
+                                await HandleSavedCardEvent(detachedMethod.Id, detached: true);
+                            break;
+
+                        case "payment_method.updated":
+                        case "payment_method.automatically_updated":
+                            if (stripeEvent.Data.Object is Stripe.PaymentMethod updatedMethod)
+                                await HandleSavedCardEvent(updatedMethod.Id, detached: false);
+                            break;
+
                         // ── Commercial invoicing (2026-09) ──────────────────────────────────
                         // Three events the residential flow never needed, because a card charge is
                         // synchronous and ACH is not. An ACH debit is authorized on one day and
@@ -277,12 +291,21 @@ namespace DreamCleaningBackend.Controllers
 
                 var metadata = paymentIntent.Metadata;
 
+                // A saved-card charge (admin, AutoPay, customer) — its attempt row is settled by
+                // the billing service, idempotently. Commercial ones ALSO fall through to the
+                // commercial ledger below, which records the same intent at most once.
+                await HandleSavedCardAttemptEvent(paymentIntent, "payment_intent.succeeded");
+
                 if (metadata.TryGetValue("type", out var type))
                 {
                     switch (type)
                     {
                         case "booking":
                             await HandleBookingPayment(paymentIntent, cancellationToken);
+                            break;
+
+                        // Order charged by the billing service; settled entirely above.
+                        case Services.Billing.SavedCardChargeService.OrderMetadataType:
                             break;
 
                         case "order_update":
@@ -410,7 +433,11 @@ namespace DreamCleaningBackend.Controllers
                 {
                     order.IsPaid = true;
                     order.PaidAt = DateTime.UtcNow;
-                    order.Status = "Active";
+                    // A cleaning already Done (paid late) stays Done — the old unconditional
+                    // "Active" moved finished jobs back onto the active board (audit, 2026-09).
+                    // Every other status keeps its previous behaviour.
+                    if (!OrderStatuses.Is(order.Status, OrderStatuses.Done))
+                        order.Status = OrderStatuses.Active;
 
                     // Set initial values when order is first paid
                     if (order.InitialSubTotal == 0 && order.InitialTax == 0 && order.InitialTotal == 0)
@@ -519,9 +546,13 @@ namespace DreamCleaningBackend.Controllers
         /// to Active, in ONE transaction.
         ///
         /// Idempotent twice over — a settled batch returns immediately, and the unique index on
-        /// <c>OrderPaymentBatches.PaymentIntentId</c> is the guarantee behind that. Failures are
-        /// logged and swallowed rather than rethrown: a bookkeeping problem must never make Stripe
-        /// retry a charge that already succeeded.
+        /// <c>OrderPaymentBatches.PaymentIntentId</c> is the guarantee behind that.
+        ///
+        /// A settlement failure is RETHROWN (2026-09). Redelivering an event never charges anybody —
+        /// it only re-runs this idempotent settlement — whereas swallowing it acknowledged the event
+        /// and left a charged customer with unpaid cleanings and nothing retrying. The 500 keeps the
+        /// event unmarked in WebhookEvents, so Stripe redelivers it; the batch is meanwhile parked in
+        /// Processing (blocked from being paid again) and the AutoPayWorker reconciler retries too.
         /// </summary>
         private async Task HandleRecurringBatchPayment(PaymentIntent paymentIntent)
         {
@@ -541,7 +572,8 @@ namespace DreamCleaningBackend.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex,
-                    "Failed to settle combined recurring payment {PaymentIntentId}.", paymentIntent.Id);
+                    "Failed to settle combined recurring payment {PaymentIntentId}; Stripe will redeliver.", paymentIntent.Id);
+                throw;
             }
         }
 
@@ -747,6 +779,8 @@ namespace DreamCleaningBackend.Controllers
 
         private async Task HandlePaymentIntentFailed(PaymentIntent paymentIntent, CancellationToken cancellationToken = default)
         {
+            await HandleSavedCardAttemptEvent(paymentIntent, "payment_intent.payment_failed");
+
             // Commercial ACH failures need the attempt marked so the customer can retry; the
             // residential logging below is left exactly as it was.
             if (Services.Commercial.StripeCommercialInvoiceMetadata
@@ -821,6 +855,8 @@ namespace DreamCleaningBackend.Controllers
 
         private async Task HandlePaymentIntentCanceled(PaymentIntent paymentIntent, CancellationToken cancellationToken = default)
         {
+            await HandleSavedCardAttemptEvent(paymentIntent, "payment_intent.canceled");
+
             if (paymentIntent.Metadata?.GetValueOrDefault("type") == Services.RecurringCustomerPaymentService.StripeMetadataType) {
                 await HttpContext.RequestServices.GetRequiredService<Services.IRecurringCustomerPaymentService>().RefreshBatchStateAsync(paymentIntent.Id);
                 return;
@@ -828,6 +864,45 @@ namespace DreamCleaningBackend.Controllers
 
             _logger.LogWarning("Payment intent {PaymentIntentId} was canceled", paymentIntent?.Id);
             // Implement cancellation handling logic
+        }
+
+        /// <summary>
+        /// Routes a payment_intent.* event for a SAVED-CARD charge to the billing service, which
+        /// owns that attempt's lock and outcome. A no-op for every other intent. Swallows its own
+        /// failures: the attempt is also reconciled by the AutoPay worker, and throwing here would
+        /// make Stripe retry an event whose ordinary handling below already succeeded.
+        /// </summary>
+        private async Task HandleSavedCardAttemptEvent(PaymentIntent paymentIntent, string eventType)
+        {
+            if (paymentIntent?.Metadata == null
+                || !paymentIntent.Metadata.ContainsKey(Services.Billing.SavedCardChargeService.AttemptIdMetadataKey))
+                return;
+
+            try
+            {
+                await HttpContext.RequestServices.GetRequiredService<Services.Billing.ISavedCardChargeService>()
+                    .HandleStripeIntentEventAsync(paymentIntent, eventType);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Saved-card attempt handling failed for {PaymentIntentId} ({EventType}); the reconciler will retry.",
+                    paymentIntent.Id, eventType);
+            }
+        }
+
+        /// <summary>payment_method.detached / updated for a card saved in Billing.</summary>
+        private async Task HandleSavedCardEvent(string paymentMethodId, bool detached)
+        {
+            try
+            {
+                var cards = HttpContext.RequestServices.GetRequiredService<Services.Billing.IPaymentMethodService>();
+                if (detached) await cards.HandleDetachedAtStripeAsync(paymentMethodId);
+                else await cards.RefreshFromStripeAsync(paymentMethodId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Handling saved-card event for {PaymentMethodId} failed.", paymentMethodId);
+            }
         }
 
         // Helper method to check for duplicate events

@@ -120,6 +120,10 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentIntentId { get; set; }
         public string? PaymentClientSecret { get; set; }
 
+        /// <summary>The payer may save the card they type (owner + saved cards on + the intent
+        /// carries their Stripe Customer). See BookingResponseDto.CanSaveCard.</summary>
+        public bool CanSaveCard { get; set; }
+
         /// <summary>False only when the balance is already under Stripe's minimum, in which case
         /// confirming settles the order with no charge.</summary>
         public bool RequiresPayment { get; set; } = true;

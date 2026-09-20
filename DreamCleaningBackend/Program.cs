@@ -221,6 +221,7 @@ builder.Services.AddScoped<IBookingCreationService, BookingCreationService>();
 // BookingCreationService, so it is priced, discounted and displayed like any other booking.
 builder.Services.AddScoped<IRecurringOrderSeriesService, RecurringOrderSeriesService>();
 builder.Services.AddScoped<IRecurringCustomerPaymentService, RecurringCustomerPaymentService>();
+builder.Services.AddScoped<ICombinedPaymentFollowUpService, CombinedPaymentFollowUpService>();
 
 // Singleton AND hosted, resolving the same instance both ways — same arrangement as
 // InvoiceOverdueService: it runs its own daily pass, and the admin "run sweep" endpoint injects
@@ -259,8 +260,19 @@ builder.Services.AddScoped<IOrderRefundService, OrderRefundService>();
 // Admin-requested part-payments of an order's own total ("$1,000 now, the rest later"). The only
 // writer of Order.AmountPaid — see Helpers/OrderBalance.cs for the balance rule it enforces.
 builder.Services.AddScoped<IOrderPartialPaymentService, OrderPartialPaymentService>();
-// Card on file: one saved card per user, charged only by explicit customer/admin action.
-builder.Services.AddScoped<ICardOnFileService, CardOnFileService>();
+// Saved cards, AutoPay and billing notices (2026-09) — replaces the one-card "card on file".
+// Rollout is controlled server-side by Billing:SavedCardsEnabled / Billing:AutoPayEnabled (both
+// OFF when absent). SavedCardChargeService is the ONLY thing that charges a saved card.
+builder.Services.AddSingleton<DreamCleaningBackend.Services.Billing.BillingFeatures>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Billing.IBillingNotificationService, DreamCleaningBackend.Services.Billing.BillingNotificationService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Billing.IPaymentMethodService, DreamCleaningBackend.Services.Billing.PaymentMethodService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Billing.IPaymentAuthorizationService, DreamCleaningBackend.Services.Billing.PaymentAuthorizationService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Billing.ISavedCardChargeService, DreamCleaningBackend.Services.Billing.SavedCardChargeService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Billing.IBillingHistoryService, DreamCleaningBackend.Services.Billing.BillingHistoryService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Billing.CommercialAutoPaySweep>();
+// Delivers billing notices (with retries), reconciles unknown charge outcomes, and runs the
+// commercial due-date sweep. Recurring AutoPay runs inside RecurringOrderGenerationService.
+builder.Services.AddHostedService<DreamCleaningBackend.Services.Billing.AutoPayWorker>();
 builder.Services.AddScoped<IMaintenanceModeService, MaintenanceModeService>();
 builder.Services.AddHostedService<AuditLogCleanupService>();
 builder.Services.AddHostedService<SessionStatCleanupService>();

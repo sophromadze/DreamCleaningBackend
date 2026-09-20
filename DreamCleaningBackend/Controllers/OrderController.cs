@@ -426,6 +426,12 @@ namespace DreamCleaningBackend.Controllers
                 if (order.Status == "Cancelled" || order.Status == "Done")
                     return BadRequest(new { message = $"Cannot pay for a {order.Status.ToLower()} order" });
 
+                // A top-up is money owed on TOP of a SETTLED order (OrderAdditionalCharge). On an
+                // unpaid order the booking payment already charges the current total, so an
+                // "order_update" charge here would collect the price difference a second time.
+                if (!order.IsPaid)
+                    return BadRequest(new { message = "This order has not been paid yet. Please pay the order itself." });
+
                 // Same unpaid amount the panel and the emails display: (current total − tips) −
                 // (original total − tips) − what has already been collected against that rise.
                 // Resolved by the shared helper so the card is never charged a figure no other
@@ -455,7 +461,10 @@ namespace DreamCleaningBackend.Controllers
                     : order.ContactEmail;
 
                 // Owner-caller only: lets the frontend offer "Pay with your saved card" for the
-                // additional amount. Attachment alone never charges anything.
+                // additional amount, and — saved cards on — makes sure the owner HAS a Stripe
+                // Customer so a card typed now can be saved if they choose "Save Card & Pay" in
+                // the pre-payment modal (2026-09). Attachment alone never charges anything, and a
+                // payment-link payer never gets the owner's Customer. Best-effort.
                 string ownerStripeCustomerId = null;
                 if (callerIsOwner)
                 {
@@ -464,6 +473,21 @@ namespace DreamCleaningBackend.Controllers
                         .Where(u => u.Id == order.UserId)
                         .Select(u => u.StripeCustomerId)
                         .FirstOrDefaultAsync();
+
+                    if (string.IsNullOrEmpty(ownerStripeCustomerId) && SavedCardsEnabled)
+                    {
+                        try
+                        {
+                            var owner = await _context.Users.FirstAsync(u => u.Id == order.UserId);
+                            ownerStripeCustomerId = await _stripeService.CreateOrGetCustomerAsync(owner);
+                            await _context.SaveChangesAsync();
+                        }
+                        catch (Exception customerEx)
+                        {
+                            _logger.LogWarning(customerEx, "Could not create a Stripe customer for order {OrderId}'s owner; paying without card saving.", order.Id);
+                            ownerStripeCustomerId = null;
+                        }
+                    }
                 }
 
                 var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amountToCharge, metadata, receiptEmail,
@@ -482,7 +506,8 @@ namespace DreamCleaningBackend.Controllers
                     AdditionalAmount = amountToCharge,
                     UpdateHistoryId = unpaidHistories.FirstOrDefault()?.Id,
                     PaymentIntentId = paymentIntent.Id,
-                    PaymentClientSecret = paymentIntent.ClientSecret
+                    PaymentClientSecret = paymentIntent.ClientSecret,
+                    CanSaveCard = callerIsOwner && SavedCardsEnabled && !string.IsNullOrEmpty(ownerStripeCustomerId)
                 });
             }
             catch (Exception ex)
@@ -490,6 +515,10 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = ex.Message });
             }
         }
+
+        /// <summary>Billing:SavedCardsEnabled, resolved lazily (tests build this controller directly).</summary>
+        private bool SavedCardsEnabled =>
+            HttpContext?.RequestServices?.GetService<Services.Billing.BillingFeatures>()?.SavedCardsEnabled ?? false;
 
         /// <summary>
         /// Confirms a pending additional payment (created by prior order updates) and marks the related update-history rows as paid.

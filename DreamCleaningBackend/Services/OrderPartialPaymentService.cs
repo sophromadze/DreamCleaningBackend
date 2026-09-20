@@ -386,6 +386,52 @@ namespace DreamCleaningBackend.Services
                 OrderNowFullyPaid: fullyPaid);
         }
 
+        public async Task<bool> RecordCombinedPaymentSliceAsync(
+            int orderId, decimal amount, decimal expectedTotal, decimal expectedAmountPaid,
+            string paymentIntentId, int batchId, CancellationToken ct = default)
+        {
+            amount = OrderPricingCalculator.Round2(amount);
+            if (amount < OrderBalance.MinimumMeaningfulAmount) return true;
+            var now = DateTime.UtcNow;
+
+            // Conditional on the figures the share was computed against, and incremented in the
+            // database — same reasoning as SettleAsync.
+            var moved = await _context.Orders
+                .Where(o => o.Id == orderId && !o.IsPaid && o.InvoicePaidAt == null
+                            && o.Total == expectedTotal && o.AmountPaid == expectedAmountPaid)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(o => o.AmountPaid, o => o.AmountPaid + amount)
+                    .SetProperty(o => o.UpdatedAt, now), ct);
+            if (moved == 0) return false;
+
+            var row = new OrderPartialPayment
+            {
+                OrderId = orderId,
+                RequestedAmount = amount,
+                PaidAmount = amount,
+                Status = OrderPartialPaymentStatus.Paid,
+                PaidAt = now,
+                PaymentMethod = PaymentMethod.Normal,
+                PaymentReference = paymentIntentId,
+                Note = $"Share of combined payment #{batchId} (Pay all upcoming).",
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+            _context.OrderPartialPayments.Add(row);
+            await _context.SaveChangesAsync(ct);
+
+            await LogAsync(orderId, "PartialPaymentReceived", new
+            {
+                PartialPaymentId = row.Id,
+                PaidAmount = amount,
+                CombinedPaymentBatchId = batchId,
+                PaymentIntentId = paymentIntentId,
+                OrderTotal = expectedTotal,
+                AmountPaidTotal = expectedAmountPaid + amount
+            }, actingUserId: null);
+            return true;
+        }
+
         public OrderPartialPaymentDto ToDto(OrderPartialPayment row) => new()
         {
             Id = row.Id,

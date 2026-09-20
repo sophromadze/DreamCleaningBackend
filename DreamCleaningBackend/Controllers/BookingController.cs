@@ -40,7 +40,6 @@ namespace DreamCleaningBackend.Controllers
         private readonly ILoyaltyDiscountService _loyaltyDiscountService;
         private readonly IBookingCreationService _bookingCreationService;
         private readonly IAdminBonusService _adminBonusService;
-        private readonly ICardOnFileService _cardOnFileService;
         // Used ONLY by the admin create-for-user path: a customer booking their own cleaning is
         // not an admin action, so the customer flow deliberately writes no audit row.
         private readonly IAuditService _auditService;
@@ -71,7 +70,6 @@ namespace DreamCleaningBackend.Controllers
             ILoyaltyDiscountService loyaltyDiscountService,
             IBookingCreationService bookingCreationService,
             IAdminBonusService adminBonusService,
-            ICardOnFileService cardOnFileService,
             IAuditService auditService,
             IServiceScopeFactory scopeFactory)
         {
@@ -91,7 +89,6 @@ namespace DreamCleaningBackend.Controllers
             _loyaltyDiscountService = loyaltyDiscountService;
             _bookingCreationService = bookingCreationService;
             _adminBonusService = adminBonusService;
-            _cardOnFileService = cardOnFileService;
             _auditService = auditService;
             _scopeFactory = scopeFactory;
         }
@@ -263,9 +260,14 @@ namespace DreamCleaningBackend.Controllers
             // Check and update subscription status
             await _subscriptionService.CheckAndUpdateSubscriptionStatus(userId);
 
+            // The plan the customer picked on their profile. A PREFERENCE that only pre-selects
+            // the tier on the booking page — it grants no discount here or anywhere else. See
+            // Helpers/PlanSelectionPolicy.
+            var preferredSubscriptionId = user.PreferredSubscriptionId;
+
             if (user.SubscriptionId == null)
             {
-                return Ok(new { hasSubscription = false });
+                return Ok(new { hasSubscription = false, preferredSubscriptionId });
             }
 
             return Ok(new
@@ -275,6 +277,7 @@ namespace DreamCleaningBackend.Controllers
                 subscriptionName = user.Subscription.Name,
                 discountPercentage = user.Subscription.DiscountPercentage,
                 expiryDate = user.SubscriptionExpiryDate,
+                preferredSubscriptionId,
             });
         }
 
@@ -1247,6 +1250,8 @@ namespace DreamCleaningBackend.Controllers
                 string sessionId;
                 string paymentIntentId = null;
                 string paymentClientSecret = null;
+                // Whether the intent handed back can carry the pre-payment "save your card" choice.
+                var canSaveCard = false;
 
                 // Set when the intent this attempt already holds turns out to have been CHARGED
                 // (see ResolveAlreadyChargedPrepareAsync). Either the booking is already on file,
@@ -1268,6 +1273,7 @@ namespace DreamCleaningBackend.Controllers
                         sessionId = outstanding.SessionId;
                         paymentIntentId = outstanding.PaymentIntentId;
                         paymentClientSecret = outstanding.PaymentClientSecret;
+                        canSaveCard = outstanding.CanSaveCard;
                         _logger.LogInformation(
                             "Reusing outstanding prepare-payment session {SessionId} for user {UserId} (intent {PaymentIntentId})",
                             sessionId, userId, paymentIntentId ?? "none yet");
@@ -1322,12 +1328,18 @@ namespace DreamCleaningBackend.Controllers
 
                         // Card on file: attach the Stripe Customer whenever we can identify one, so
                         // the frontend MAY confirm this intent with an already-saved card ("Pay with
-                        // card ending ####"). When the customer also ticked "save this card",
-                        // setup_future_usage stores the card they type for later explicit charges —
-                        // nothing is ever charged without a person clicking Pay/Charge. Best-effort:
-                        // if the customer profile can't be set up, the booking proceeds normally.
+                        // card ending ####"), and so a card typed now CAN be saved.
+                        //
+                        // WHETHER it is saved is decided later, by the customer, in the pre-payment
+                        // "Save your card?" modal (2026-09) — and applied by the browser as
+                        // setup_future_usage=off_session when it CONFIRMS this same intent, before
+                        // any money moves. The intent is therefore never created with that flag: the
+                        // old booking-form checkbox (SaveCardForFutureUse) is no longer read, so one
+                        // payment can never carry two save decisions. Signed-in customers only — a
+                        // guest's account is being created by this very request. Best-effort: if the
+                        // customer profile can't be set up, the booking proceeds without saving.
                         string stripeCustomerId = null;
-                        var saveCard = dto.SaveCardForFutureUse;
+                        var saveCard = guestAuth == null && SavedCardsEnabled;
                         if (saveCard || !string.IsNullOrEmpty(user.StripeCustomerId))
                         {
                             try
@@ -1348,7 +1360,7 @@ namespace DreamCleaningBackend.Controllers
                         // the intent Stripe already created instead of a second chargeable one.
                         var paymentIntent = await _stripeService.CreatePaymentIntentAsync(total, metadata,
                             customerId: stripeCustomerId,
-                            saveCardForOffSession: saveCard && stripeCustomerId != null,
+                            saveCardForOffSession: false,
                             idempotencyKey: sessionId);
 
                         paymentIntentId = paymentIntent?.Id;
@@ -1356,6 +1368,9 @@ namespace DreamCleaningBackend.Controllers
 
                         session.PaymentIntentId = paymentIntentId;
                         session.PaymentClientSecret = paymentClientSecret;
+                        session.CanSaveCard = saveCard && stripeCustomerId != null
+                                              && paymentIntent?.CustomerId == stripeCustomerId;
+                        canSaveCard = session.CanSaveCard;
                         _bookingDataService.StorePreparedSession(session);
                     }
                 }
@@ -1383,6 +1398,7 @@ namespace DreamCleaningBackend.Controllers
                     PaymentIntentId = paymentIntentId,
                     PaymentClientSecret = paymentClientSecret,
                     AlreadyPaidPaymentIntentId = alreadyPaidPaymentIntentId,
+                    CanSaveCard = canSaveCard && SavedCardsEnabled && guestAuth == null,
                     SessionId = sessionId, // Return sessionId so frontend can use it in confirm-payment
                     // Guest booking: include auth token so frontend can authenticate before calling confirm-payment
                     GuestToken = guestAuth?.Token,
@@ -1503,8 +1519,18 @@ namespace DreamCleaningBackend.Controllers
                 var callerIsOwner = order.UserId == userId;
                 userId = order.UserId;
 
-                using var recurringPaymentTransaction = order.RecurringSeriesId.HasValue
-                    ? await RecurringPaymentAttemptGuard.LockAsync(_context, userId) : null;
+                // The customer's Users-row lock, for EVERY order now (it used to be recurring-only):
+                // a saved-card charge (admin, AutoPay) takes the same lock to claim the order, so
+                // the two can never both believe they are first. See SavedCardChargeService.
+                //
+                // A "Pay all upcoming" charge Stripe already took is recorded BEFORE the lock, in its
+                // own transaction: recorded inside the lock's, it would be rolled back by the
+                // "already paid" refusal below and the cleanings would read unpaid until the webhook.
+                if (order.RecurringSeriesId.HasValue)
+                    await HttpContext.RequestServices.GetRequiredService<IRecurringCustomerPaymentService>().SettleSucceededBatchesAsync(userId);
+                using var recurringPaymentTransaction = await RecurringPaymentAttemptGuard.LockAsync(_context, userId);
+                if (!order.RecurringSeriesId.HasValue && recurringPaymentTransaction != null)
+                    await _context.Entry(order).ReloadAsync();
                 if (order.RecurringSeriesId.HasValue)
                 {
                     await _context.Entry(order).ReloadAsync();
@@ -1536,6 +1562,16 @@ namespace DreamCleaningBackend.Controllers
                 // method (the IsPaid check above returns first).
                 if (PaymentConsentPolicy.RequiresConsent(order))
                     return BadRequest(new { message = PaymentConsentPolicy.ConsentRequiredMessage, requiresConsent = true });
+
+                // A saved-card charge (admin / AutoPay) holds this order right now. Issuing a
+                // client secret beside it is how one cleaning gets paid twice.
+                var savedCardLockKey = Models.Billing.BillingPaymentAttempt.OrderObligationKey(order.Id);
+                if (await _context.BillingPaymentAttempts.AnyAsync(a => a.ActiveLockKey == savedCardLockKey))
+                    return BadRequest(new
+                    {
+                        message = "A payment for this order is already being processed. Please wait a moment and refresh the page — do not pay again.",
+                        code = "payment_in_progress"
+                    });
 
                 // What is actually left to charge. Identical to order.Total on every ordinary
                 // order — AmountPaid is zero unless an admin has collected part of the total
@@ -1578,6 +1614,107 @@ namespace DreamCleaningBackend.Controllers
                         .Where(u => u.Id == order.UserId)
                         .Select(u => u.StripeCustomerId)
                         .FirstOrDefaultAsync();
+
+                    // Saved cards on: make sure the owner HAS a Stripe Customer, so the payment
+                    // page can offer "save this card" (setup_future_usage is set in the browser
+                    // only when they tick it). Best-effort — never blocks the payment.
+                    if (ownerStripeCustomerId == null && SavedCardsEnabled)
+                    {
+                        try
+                        {
+                            var owner = await _context.Users.FirstAsync(u => u.Id == order.UserId);
+                            ownerStripeCustomerId = await _stripeService.CreateOrGetCustomerAsync(owner);
+                            await _context.SaveChangesAsync();
+                        }
+                        catch (Exception customerEx)
+                        {
+                            _logger.LogWarning(customerEx, "Could not create a Stripe customer for order {OrderId}'s owner; paying without card saving.", order.Id);
+                            ownerStripeCustomerId = null;
+                        }
+                    }
+                }
+
+                // ── One open intent per order ──
+                // A second tab, a refresh or a double-click used to mint a SECOND live intent each
+                // time, and every one of them stayed payable — two tabs could each take the full
+                // amount. The intent already on the order is reused when it still matches exactly,
+                // replaced (cancelled at Stripe first) when it doesn't, and reported when it has
+                // already been paid, so the page confirms THAT payment instead of taking another.
+                if (!string.IsNullOrEmpty(order.PaymentIntentId) && order.PaymentIntentId.StartsWith("pi_"))
+                {
+                    Stripe.PaymentIntent? existingIntent = null;
+                    try
+                    {
+                        existingIntent = await _stripeService.GetPaymentIntentAsync(order.PaymentIntentId);
+                    }
+                    catch (ApplicationException lookupEx) when (lookupEx.Message.Contains("No such payment_intent", StringComparison.OrdinalIgnoreCase))
+                    {
+                        existingIntent = null; // an intent from another Stripe account/mode: nothing to reuse
+                    }
+                    catch (ApplicationException lookupEx)
+                    {
+                        _logger.LogWarning(lookupEx, "Could not verify the open payment intent on order {OrderId}.", order.Id);
+                        return BadRequest(new { message = "We couldn't verify an earlier payment attempt for this order. Please try again in a moment." });
+                    }
+
+                    if (existingIntent != null)
+                    {
+                        if (existingIntent.Status == "succeeded")
+                        {
+                            // Paid, but the confirmation never reached us. Confirm THIS payment.
+                            return Ok(new BookingResponseDto
+                            {
+                                OrderId = order.Id,
+                                Status = order.Status,
+                                Total = amountDue,
+                                RequiresPayment = false,
+                                AlreadyPaidPaymentIntentId = existingIntent.Id,
+                                PaymentIntentId = existingIntent.Id
+                            });
+                        }
+
+                        if (RecurringPaymentAttemptGuard.IsSubmitted(existingIntent.Status))
+                            return BadRequest(new
+                            {
+                                message = "Your payment for this order is already being processed. Please wait a moment and refresh — do not pay again.",
+                                code = "payment_in_progress"
+                            });
+
+                        var reusable = existingIntent.Status is "requires_payment_method" or "requires_confirmation" or "requires_action"
+                                       && existingIntent.Amount == Services.StripeService.ToCents(amountDue)
+                                       && string.Equals(existingIntent.Currency, "usd", StringComparison.OrdinalIgnoreCase)
+                                       && existingIntent.CustomerId == ownerStripeCustomerId
+                                       && existingIntent.Metadata != null
+                                       && existingIntent.Metadata.GetValueOrDefault("type") == "booking"
+                                       && existingIntent.Metadata.GetValueOrDefault("orderId") == order.Id.ToString();
+
+                        if (reusable)
+                        {
+                            if (recurringPaymentTransaction != null) await recurringPaymentTransaction.CommitAsync();
+                            return Ok(new BookingResponseDto
+                            {
+                                OrderId = order.Id,
+                                Status = order.Status,
+                                Total = amountDue,
+                                RequiresPayment = true,
+                                PaymentIntentId = existingIntent.Id,
+                                PaymentClientSecret = existingIntent.ClientSecret,
+                                CanSaveCard = callerIsOwner && SavedCardsEnabled && !string.IsNullOrEmpty(ownerStripeCustomerId)
+                            });
+                        }
+
+                        if (existingIntent.Status != "canceled")
+                        {
+                            try
+                            {
+                                await RecurringPaymentAttemptGuard.CancelOpenAsync(_stripeService, existingIntent.Id);
+                            }
+                            catch (CombinedPaymentException cancelEx)
+                            {
+                                return BadRequest(new { message = cancelEx.Message, code = "payment_in_progress" });
+                            }
+                        }
+                    }
                 }
 
                 var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amountDue, metadata,
@@ -1597,12 +1734,40 @@ namespace DreamCleaningBackend.Controllers
                     Total = amountDue,
                     RequiresPayment = true,
                     PaymentIntentId = paymentIntent.Id,
-                    PaymentClientSecret = paymentIntent.ClientSecret
+                    PaymentClientSecret = paymentIntent.ClientSecret,
+                    CanSaveCard = callerIsOwner && SavedCardsEnabled && !string.IsNullOrEmpty(ownerStripeCustomerId)
                 });
             }
             catch (Exception ex)
             {
                 return BadRequest(new { message = "Failed to create payment intent: " + ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// The order OWNER's Stripe Customer for a payment intent, created when saved cards are on
+        /// and they have none yet — so the pre-payment "Save your card?" choice can be honoured
+        /// on this intent. Null for anybody else (a payment-link payer must never save a card onto
+        /// the owner's account) and on any failure: attaching a Customer is best-effort and never
+        /// blocks the payment itself.
+        /// </summary>
+        private async Task<string?> ResolveOwnerStripeCustomerAsync(Order order, bool callerIsOwner)
+        {
+            if (!callerIsOwner) return null;
+            var existing = await _context.Users.AsNoTracking()
+                .Where(u => u.Id == order.UserId).Select(u => u.StripeCustomerId).FirstOrDefaultAsync();
+            if (!string.IsNullOrEmpty(existing) || !SavedCardsEnabled) return existing;
+            try
+            {
+                var owner = await _context.Users.FirstAsync(u => u.Id == order.UserId);
+                var created = await _stripeService.CreateOrGetCustomerAsync(owner);
+                await _context.SaveChangesAsync();
+                return created;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not create a Stripe customer for order {OrderId}'s owner; paying without card saving.", order.Id);
+                return null;
             }
         }
 
@@ -1788,7 +1953,40 @@ namespace DreamCleaningBackend.Controllers
                         return NotFound(new { message = "Order not found" });
 
                     if (order.IsPaid)
-                        return BadRequest(new { message = "Order is already paid" });
+                    {
+                        // Never answer a customer who has just paid with an error: "Order is already
+                        // paid" read as a failed payment and invited the second attempt this whole
+                        // codebase is built to prevent (2026-09).
+                        //  • Same intent → a replayed confirm (network retry, second tab): success.
+                        //  • A DIFFERENT intent that really took money → a duplicate collection. It is
+                        //    refunded automatically, once (idempotency key), and the customer is told.
+                        if (!string.IsNullOrWhiteSpace(effectivePaymentIntentId)
+                            && effectivePaymentIntentId != order.PaymentIntentId
+                            && effectivePaymentIntentId.StartsWith("pi_"))
+                        {
+                            var duplicateRefunded = await RefundDuplicateCollectionAsync(order.Id, effectivePaymentIntentId);
+                            return Ok(new
+                            {
+                                success = true,
+                                message = duplicateRefunded
+                                    ? "This order was already paid, so this second payment has been refunded automatically. You were not charged twice."
+                                    : "This order was already paid. If you see a second charge, contact us and we will refund it right away.",
+                                orderId = order.Id,
+                                status = order.Status,
+                                alreadyPaid = true,
+                                duplicateRefunded
+                            });
+                        }
+
+                        return Ok(new
+                        {
+                            success = true,
+                            message = "Payment completed successfully",
+                            orderId = order.Id,
+                            status = order.Status,
+                            alreadyPaid = true
+                        });
+                    }
 
                     var hasPaymentIntent = !string.IsNullOrWhiteSpace(effectivePaymentIntentId);
 
@@ -2185,6 +2383,15 @@ namespace DreamCleaningBackend.Controllers
                 if (order.PaymentMethod != PaymentMethod.Normal)
                     return BadRequest(new { message = "This order was paid outside the website and has no payment due." });
 
+                // A saved-card charge holds this order — see create-payment-intent.
+                var partialLockKey = Models.Billing.BillingPaymentAttempt.OrderObligationKey(order.Id);
+                if (await _context.BillingPaymentAttempts.AnyAsync(a => a.ActiveLockKey == partialLockKey))
+                    return BadRequest(new
+                    {
+                        message = "A payment for this order is already being processed. Please wait a moment and refresh the page — do not pay again.",
+                        code = "payment_in_progress"
+                    });
+
                 // Identical consent gate to the full-payment path, and enforced for the same
                 // reason: no PaymentIntent means no client secret, so an admin-created order
                 // physically cannot be charged before the customer accepts. A deposit is still a
@@ -2255,19 +2462,13 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 // Card on file is owner-only — a payment-link guest is often a relative paying on
-                // the owner's behalf and must never reach the owner's saved card.
-                string? ownerStripeCustomerId = null;
-                if (callerIsOwner)
-                {
-                    ownerStripeCustomerId = await _context.Users
-                        .AsNoTracking()
-                        .Where(u => u.Id == order.UserId)
-                        .Select(u => u.StripeCustomerId)
-                        .FirstOrDefaultAsync();
-                }
+                // the owner's behalf and must never reach the owner's saved card, nor save theirs
+                // onto the owner's account.
+                var ownerStripeCustomerId = await ResolveOwnerStripeCustomerAsync(order, callerIsOwner);
 
                 var paymentIntent = await _stripeService.CreatePaymentIntentAsync(amount, metadata,
                     receiptEmail: OrderReceiptEmail(order), customerId: ownerStripeCustomerId);
+                response.CanSaveCard = callerIsOwner && SavedCardsEnabled && !string.IsNullOrEmpty(ownerStripeCustomerId);
 
                 // Stamped before the customer can pay, so a webhook arriving ahead of the browser's
                 // confirm still finds the row this charge belongs to.
@@ -2594,15 +2795,25 @@ namespace DreamCleaningBackend.Controllers
 
             await _context.SaveChangesAsync();
 
-            // Card on file (opt-in checkbox at booking): the card that just paid THIS
-            // booking becomes the customer's saved card, only after the payment actually
-            // succeeded and only when a real charge was taken (a gift-card-fully-covered
-            // booking saved no card). TrySave never throws — a card-save problem must
-            // never break the paid booking.
-            if (bookingDataDto != null && bookingDataDto.SaveCardForFutureUse &&
-                chargedNewBookingPaymentIntentId != null)
+            // Saved cards: the card that just paid THIS booking is recorded to the customer's
+            // Billing tab — IF they chose "Save Card & Pay" in the pre-payment modal (2026-09).
+            // That choice is not read from our request at all: it is Stripe's own record on the
+            // intent (setup_future_usage=off_session, which only the browser's confirm sets), and
+            // SaveFromPaymentIntentAsync saves nothing without it — so "Pay Without Saving"
+            // saves nothing by construction. DETACHED, with its own DI scope (BackgroundWork): it
+            // talks to Stripe, and nothing about saving a card may slow, fail or otherwise touch
+            // the confirmation the customer is waiting for. Only a real charge qualifies. It never
+            // turns AutoPay on. A save lost here is recovered by the Billing tab's reconciliation
+            // with Stripe (PaymentMethodService.ReconcileWithStripeAsync).
+            if (chargedNewBookingPaymentIntentId != null && userId > 0 && SavedCardsEnabled)
             {
-                await _cardOnFileService.TrySaveCardFromPaymentIntentAsync(userId, chargedNewBookingPaymentIntentId);
+                var saveForUserId = userId;
+                var saveIntentId = chargedNewBookingPaymentIntentId;
+                BackgroundWork.Run(_scopeFactory, _logger, $"save card from {saveIntentId}", async services =>
+                {
+                    var cards = services.GetRequiredService<Services.Billing.IPaymentMethodService>();
+                    await cards.SaveFromPaymentIntentAsync(saveForUserId, saveIntentId);
+                });
             }
 
             // Bubble Rewards: safety net — welcome bonus is granted at registration; this covers legacy accounts created before that
@@ -2724,6 +2935,53 @@ namespace DreamCleaningBackend.Controllers
                 .Include(o => o.ServiceType)
                 .FirstOrDefaultAsync(o => o.Id == order.Id);
         }
+
+        /// <summary>
+        /// Billing:SavedCardsEnabled. Resolved lazily so the reflection-built controller in the
+        /// booking-guard tests (no billing services registered) simply reads it as off.
+        /// </summary>
+        /// <summary>
+        /// A payment arrived for an order that was already paid by a different charge. Refunds it
+        /// in full, exactly once (the idempotency key is the intent itself), only after Stripe
+        /// confirms it actually succeeded and belongs to this order. True when refunded.
+        /// </summary>
+        private async Task<bool> RefundDuplicateCollectionAsync(int orderId, string paymentIntentId)
+        {
+            try
+            {
+                var intent = await _stripeService.GetPaymentIntentAsync(paymentIntentId);
+                if (intent.Status != "succeeded") return false;
+                if (intent.Metadata == null || intent.Metadata.GetValueOrDefault("orderId") != orderId.ToString())
+                {
+                    _logger.LogWarning("Confirm for paid order {OrderId} named intent {PaymentIntentId}, which is not this order's; not refunding.",
+                        orderId, paymentIntentId);
+                    return false;
+                }
+
+                await _stripeService.CreateRefundAsync(paymentIntentId, null,
+                    idempotencyKey: $"dc-duplicate-order-payment-{paymentIntentId}",
+                    metadata: new Dictionary<string, string> { ["orderId"] = orderId.ToString(), ["reason"] = "duplicate_payment" });
+
+                _logger.LogWarning("Order {OrderId} was already paid; duplicate payment {PaymentIntentId} refunded automatically.",
+                    orderId, paymentIntentId);
+                try
+                {
+                    await _auditService.LogActionAsync(AuditEntityTypes.OrderPaymentAction, orderId, "DuplicatePaymentRefunded",
+                        null, new { PaymentIntentId = paymentIntentId, AmountCents = intent.AmountReceived });
+                }
+                catch (Exception auditEx) { _logger.LogError(auditEx, "Could not audit duplicate refund on order {OrderId}.", orderId); }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "DUPLICATE PAYMENT NOT REFUNDED: order {OrderId}, intent {PaymentIntentId} — refund it manually.",
+                    orderId, paymentIntentId);
+                return false;
+            }
+        }
+
+        private bool SavedCardsEnabled =>
+            HttpContext?.RequestServices?.GetService<Services.Billing.BillingFeatures>()?.SavedCardsEnabled ?? false;
 
         private int GetUserId()
         {

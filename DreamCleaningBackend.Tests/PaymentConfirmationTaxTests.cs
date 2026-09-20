@@ -78,7 +78,12 @@ public class PaymentConfirmationTaxTests
         Assert.Equal(expected, saved.Total); Assert.Equal(split.tax, saved.Tax);
         Assert.Equal(split.subTotal + discounts, saved.SubTotal); Assert.Equal(tips, saved.Tips);
         Assert.Equal(applyCredits ? 25m : 0m, saved.RewardBalanceUsed);
-        Assert.IsType<BadRequestObjectResult>(await controller.ConfirmPayment(1, new ConfirmPaymentDto { PaymentIntentId = "pi_test_paid" }));
+        // A replayed confirm of the SAME, already-recorded payment (network retry, second tab) is
+        // answered as the success it is — never "Order is already paid" as an error, which a customer
+        // who has just paid reads as a decline and answers by paying again (2026-09 billing change).
+        // What must NOT happen is unchanged: the order is not re-priced or re-settled.
+        var replay = Assert.IsType<OkObjectResult>(await controller.ConfirmPayment(1, new ConfirmPaymentDto { PaymentIntentId = "pi_test_paid" }));
+        Assert.Equal(true, replay.Value!.GetType().GetProperty("alreadyPaid")!.GetValue(replay.Value));
         Assert.Equal(expected, (await db.Orders.AsNoTracking().SingleAsync()).Total);
     }
 }

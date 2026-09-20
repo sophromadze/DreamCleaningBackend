@@ -119,11 +119,20 @@ namespace DreamCleaningBackend.Helpers
         }
 
         /// <inheritdoc cref="Outstanding(decimal, decimal, decimal)"/>
+        /// <remarks>
+        /// <b>No snapshot AND no history means nothing is owed (2026-09).</b> A top-up only exists
+        /// because an edit raised the price, and every edit writes an <see cref="OrderUpdateHistory"/>
+        /// row. With neither record the "original" price is unknown, and reading it as zero reported
+        /// the order's WHOLE total as an unpaid top-up — which the pending-update payment intent
+        /// would then have charged a second time on a legacy paid order.
+        /// </remarks>
         public static decimal Outstanding(Order order, decimal? firstHistoryOriginalWithoutTips, decimal collectedToDate) =>
-            Outstanding(
-                CurrentWithoutTips(order),
-                OriginalWithoutTips(order, firstHistoryOriginalWithoutTips),
-                collectedToDate);
+            !HasInitialSnapshot(order) && firstHistoryOriginalWithoutTips == null
+                ? 0m
+                : Outstanding(
+                    CurrentWithoutTips(order),
+                    OriginalWithoutTips(order, firstHistoryOriginalWithoutTips),
+                    collectedToDate);
 
         /// <summary>In-memory counterpart of <see cref="WasCollected"/>, for callers that already
         /// hold the rows.</summary>

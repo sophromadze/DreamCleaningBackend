@@ -277,6 +277,8 @@ namespace DreamCleaningBackend.DTOs
         public int? UpdateHistoryId { get; set; }
         public string PaymentIntentId { get; set; }
         public string PaymentClientSecret { get; set; }
+        /// <summary>The payer may save the card they type — see BookingResponseDto.CanSaveCard.</summary>
+        public bool CanSaveCard { get; set; }
     }
 
     public class ConfirmUpdatePaymentDto

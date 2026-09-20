@@ -129,16 +129,17 @@ namespace DreamCleaningBackend.Models
         [StringLength(255)]
         public string? AppleUserId { get; set; }
 
-        // ─── Card on file ───
-        // One saved card per user, used ONLY for explicit customer/admin-triggered charges —
-        // there is no automatic billing. Brand/last4 are display-only copies so the UI never
-        // needs a Stripe round-trip ("Visa ending 4242").
+        // ─── Saved cards (2026-09 billing upgrade) ───
+        // Cards live in CustomerPaymentMethods, any number per user. The four legacy columns below
+        // predate that table: they are kept as a MIRROR of the Primary card (written only by
+        // PaymentMethodService) so a rollback, or any report still reading them, stays truthful.
+        // Nothing new may read DefaultPaymentMethodId to decide what to charge.
 
         /// <summary>Stripe Customer id (cus_...), created lazily the first time this user saves a card.</summary>
         [StringLength(100)]
         public string? StripeCustomerId { get; set; }
 
-        /// <summary>The saved card (Stripe PaymentMethod id, pm_...). Null = no card on file.</summary>
+        /// <summary>LEGACY MIRROR of the Primary card's pm id. See PrimaryPaymentMethodId.</summary>
         [StringLength(100)]
         public string? DefaultPaymentMethodId { get; set; }
 
@@ -148,12 +149,39 @@ namespace DreamCleaningBackend.Models
         [StringLength(4)]
         public string? SavedCardLast4 { get; set; }
 
+        /// <summary>
+        /// The Primary card — the one automatic payments use. A pointer rather than a flag on the
+        /// card row, so there can only ever be one; a CHECK constraint keeps it different from the
+        /// Backup. Written only through PaymentMethodService.
+        /// </summary>
+        public int? PrimaryPaymentMethodId { get; set; }
+
+        /// <summary>The Backup card, tried only when an authorised automatic charge on the Primary fails.</summary>
+        public int? BackupPaymentMethodId { get; set; }
+
+        /// <summary>
+        /// The Billing tab's "Automatic Payments" master switch. Mirrors whether the General
+        /// PaymentAuthorization is active; OFF pauses every arrangement authorisation without
+        /// deleting it. Never switched on by saving a card.
+        /// </summary>
+        public bool AutoPayEnabled { get; set; }
+
+        public DateTime? AutoPayUpdatedAt { get; set; }
+
         // Subscription
         public int? SubscriptionId { get; set; }
         public virtual Subscription? Subscription { get; set; }
         public DateTime? SubscriptionStartDate { get; set; }
         public DateTime? SubscriptionExpiryDate { get; set; }
         public DateTime? LastOrderDate { get; set; }
+
+        // ── The plan the customer chose on their profile (2026-09) ──
+        // A PREFERENCE, never an activation: it pre-selects the tier on the booking page and is
+        // read by nothing else. SubscriptionId above stays the only thing that grants a discount,
+        // and it is still written only by ISubscriptionService when a cleaning is booked on the
+        // tier. See Helpers/PlanSelectionPolicy for why the two are separate columns.
+        public int? PreferredSubscriptionId { get; set; }
+        public DateTime? PreferredSubscriptionSelectedAt { get; set; }
 
         // First time order discount
         public bool FirstTimeOrder { get; set; } = true;

@@ -6,6 +6,7 @@ using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Data;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Services;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -234,6 +235,110 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+
+        // ══ The customer's plan (2026-09) ══════════════════════════════════════════════════
+        //
+        // Read Helpers/PlanSelectionPolicy before touching these. Choosing a plan here records a
+        // PREFERENCE: it pre-selects the tier on the booking page and does NOTHING else. It never
+        // writes User.SubscriptionId, never moves the expiry, never grants a discount and never
+        // charges. A plan becomes real by booking a cleaning on it, exactly as before.
+
+        [HttpGet("plan")]
+        public async Task<ActionResult<PlanOverviewDto>> GetPlan()
+        {
+            try
+            {
+                var userId = GetUserId();
+
+                // Clear a lapsed plan first, so the tab can never show an expired one as live.
+                await _subscriptionService.CheckAndUpdateSubscriptionStatus(userId);
+
+                var user = await _context.Users
+                    .Include(u => u.Subscription)
+                    .FirstOrDefaultAsync(u => u.Id == userId);
+
+                if (user == null) return NotFound(new { message = "User not found" });
+
+                var tiers = await _context.Subscriptions
+                    .AsNoTracking()
+                    .Where(s => s.IsActive && s.SubscriptionDays > 0)
+                    .OrderBy(s => s.DisplayOrder)
+                    .ToListAsync();
+
+                var now = DateTime.UtcNow;
+                var planIsLive = RecurringPlanRule.IsActiveUserSubscription(user, now);
+
+                var overview = new PlanOverviewDto
+                {
+                    PreferredSubscriptionId = user.PreferredSubscriptionId,
+                    ActiveSubscriptionId = planIsLive ? user.SubscriptionId : null,
+                    ActiveSubscriptionName = planIsLive ? user.Subscription?.Name : null,
+                    ActiveDiscountPercentage = planIsLive ? user.Subscription?.DiscountPercentage : null,
+                    ActiveExpiresAt = planIsLive ? user.SubscriptionExpiryDate : null,
+                    // "First" means no cleaning has ever been booked on the account, which is the
+                    // only case where the wording can promise the discount starts on the next one
+                    // but one. FirstTimeOrder is cleared when an order is paid for.
+                    NextCleaningIsFirstOnPlan = !planIsLive,
+                    Plans = tiers.Select(s => new PlanOptionDto
+                    {
+                        Id = s.Id,
+                        Name = s.Name,
+                        Description = s.Description,
+                        DiscountPercentage = s.DiscountPercentage,
+                        SubscriptionDays = s.SubscriptionDays,
+                        DisplayOrder = s.DisplayOrder,
+                        IsPreferred = user.PreferredSubscriptionId == s.Id,
+                        IsActive = PlanSelectionPolicy.NextCleaningWouldBeDiscounted(user, s.SubscriptionDays, now)
+                    }).ToList()
+                };
+
+                return Ok(overview);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPut("plan")]
+        public async Task<ActionResult<PlanOverviewDto>> SelectPlan(SelectPlanDto dto)
+        {
+            try
+            {
+                var userId = GetUserId();
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+                if (user == null) return NotFound(new { message = "User not found" });
+
+                if (dto.SubscriptionId.HasValue)
+                {
+                    var tier = await _context.Subscriptions
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(s => s.Id == dto.SubscriptionId.Value);
+
+                    // One Time is refused by IsSelectable: it is the absence of a plan, and the
+                    // way off a plan is "no plan" (a null SubscriptionId), not a one-off tier.
+                    if (!PlanSelectionPolicy.IsSelectable(tier))
+                        return BadRequest(new { message = "That plan isn't available." });
+
+                    user.PreferredSubscriptionId = tier!.Id;
+                    user.PreferredSubscriptionSelectedAt = DateTime.UtcNow;
+                }
+                else
+                {
+                    user.PreferredSubscriptionId = null;
+                    user.PreferredSubscriptionSelectedAt = null;
+                }
+
+                user.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                return await GetPlan();
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
         private int GetUserId()
         {
             // Try "UserId" first (what your JWT probably uses), then fallback to NameIdentifier

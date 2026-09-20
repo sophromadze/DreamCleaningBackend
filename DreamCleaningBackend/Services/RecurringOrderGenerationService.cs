@@ -136,13 +136,27 @@ namespace DreamCleaningBackend.Services
             // hours early, which is precisely the behaviour the rule exists to prevent.
             var nowNy = NyTimeHelper.NowNy;
 
-            var seriesIds = await context.RecurringOrderSeries
-                .Where(s => s.IsActive && s.StoppedAt == null && s.AutoRequestPayment)
-                .Select(s => s.Id)
+            // Series the machine may act on: those whose admin switched the automatic REQUEST on,
+            // and those whose customer authorised automatic PAYMENT (2026-09). The customer's own
+            // authorisation stands on its own — it is their decision, not the office's.
+            var autoPaySeriesIds = await context.PaymentAuthorizations
+                .Where(a => a.Scope == Models.Billing.PaymentAuthorizationScope.RecurringSeries
+                            && a.Status == Models.Billing.PaymentAuthorizationStatus.Active
+                            && a.RecurringSeriesId != null)
+                .Select(a => a.RecurringSeriesId!.Value)
                 .ToListAsync(ct);
 
-            foreach (var seriesId in seriesIds)
+            var seriesRows = await context.RecurringOrderSeries
+                .Where(s => s.IsActive && s.StoppedAt == null && (s.AutoRequestPayment || autoPaySeriesIds.Contains(s.Id)))
+                .Select(s => new { s.Id, s.AutoRequestPayment })
+                .ToListAsync(ct);
+
+            var charges = provider.GetService<Billing.ISavedCardChargeService>();
+            var authorizations = provider.GetService<Billing.IPaymentAuthorizationService>();
+
+            foreach (var seriesRow in seriesRows)
             {
+                var seriesId = seriesRow.Id;
                 ct.ThrowIfCancellationRequested();
 
                 var orders = await context.Orders
@@ -184,6 +198,58 @@ namespace DreamCleaningBackend.Services
                          && n.NotificationType == NotificationTypes.RecurringPaymentRequest, ct);
                 if (alreadyAsked) continue;
 
+                // ── AutoPay (2026-09): charge INSTEAD of asking, at exactly this moment ──
+                // Same head-of-queue occurrence, same 24-hour gate, same once-per-occurrence
+                // NotificationLog row — so a customer on AutoPay is never also sent a request for
+                // the cleaning being charged, and never charged for more than one visit at a time.
+                if (charges != null && authorizations != null
+                    && await authorizations.ResolveEffectiveAsync(order.UserId,
+                        Models.Billing.PaymentAuthorizationScope.RecurringSeries, seriesId: seriesId) != null)
+                {
+                    var obligationKey = Models.Billing.BillingPaymentAttempt.OrderObligationKey(order.Id);
+
+                    // One automatic run per cleaning. If one already reached Stripe, its outcome
+                    // has been (or is being) handled and notified — never try the card again.
+                    var alreadyCharged = await context.BillingPaymentAttempts.AnyAsync(a =>
+                        a.ObligationKey == obligationKey
+                        && a.Trigger == Models.Billing.BillingAttemptTrigger.AutoPayRecurring
+                        && a.Status != Models.Billing.BillingAttemptStatus.Canceled, ct);
+                    if (alreadyCharged) continue;
+
+                    var result = await charges.ChargeOrderAsync(order.Id, Models.Billing.BillingAttemptTrigger.AutoPayRecurring, null, ct);
+                    _logger.LogInformation("Recurring AutoPay for order {OrderId} (series {SeriesId}): {Result} — {Message}",
+                        order.Id, seriesId, result.Result, result.Message);
+
+                    switch (result.Result)
+                    {
+                        case "paid":
+                        case "paid_by_backup":
+                        case "failed":
+                        case "requires_action":
+                            // Settled, or the customer was told (email, SMS, in-app) with a pay
+                            // link. Either way the plain request must not follow.
+                            context.NotificationLogs.Add(new NotificationLog
+                            {
+                                OrderId = order.Id,
+                                CustomerId = order.UserId,
+                                NotificationType = NotificationTypes.RecurringPaymentRequest,
+                                SentAt = DateTime.UtcNow
+                            });
+                            await context.SaveChangesAsync(ct);
+                            continue;
+
+                        case "not_authorized":
+                            break; // fall through to the ordinary request below, if the series has it on
+
+                        default:
+                            // unknown / pending / blocked / nothing_due: something else is paying or
+                            // the outcome is being reconciled. Neither charge nor ask today.
+                            continue;
+                    }
+                }
+
+                if (!seriesRow.AutoRequestPayment) continue;
+
                 var recipient = NoEmailHelper.ResolveOrderNotificationEmail(order.ContactEmail, order.User);
                 var phone = !string.IsNullOrWhiteSpace(order.ContactPhone) ? order.ContactPhone : order.User?.Phone;
 
@@ -197,7 +263,7 @@ namespace DreamCleaningBackend.Services
                     {
                         // The EXISTING payment-reminder mail, not a new template. There is one
                         // "please pay for this cleaning" message in this system and this is it.
-                        await email.SendPaymentReminderEmailAsync(recipient!, name, order.Total, order.Id, link);
+                        await email.SendPaymentReminderEmailAsync(recipient!, name, OrderBalance.AmountDue(order), order.Id, link);
                         sent = true;
                     }
                     catch (Exception ex)
@@ -210,7 +276,7 @@ namespace DreamCleaningBackend.Services
                 {
                     try
                     {
-                        await sms.SendPaymentReminderSmsAsync(phone!, name, order.Total, order.Id, link);
+                        await sms.SendPaymentReminderSmsAsync(phone!, name, OrderBalance.AmountDue(order), order.Id, link);
                         sent = true;
                     }
                     catch (InvalidPhoneNumberException)

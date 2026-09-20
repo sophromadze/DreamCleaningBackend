@@ -740,6 +740,458 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("BeforeAfterPhotos");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.Billing.BillingNotification", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ActionLabel")
+                        .HasMaxLength(80)
+                        .HasColumnType("varchar(80)");
+
+                    b.Property<string>("ActionUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<int?>("CommercialInvoiceId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("DedupeKey")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)");
+
+                    b.Property<int>("EmailAttempts")
+                        .HasColumnType("int");
+
+                    b.Property<string>("EmailHtml")
+                        .HasColumnType("longtext");
+
+                    b.Property<string>("EmailLastError")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<int>("EmailStatus")
+                        .HasColumnType("int");
+
+                    b.Property<string>("EmailSubject")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("EmailTo")
+                        .HasMaxLength(254)
+                        .HasColumnType("varchar(254)");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("varchar(2000)");
+
+                    b.Property<DateTime?>("NextDeliveryAttemptAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("ObligationKey")
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
+                    b.Property<int?>("OrderId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PaymentAttemptId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ReadAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("Severity")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("ShowInApp")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int>("SmsAttempts")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SmsBody")
+                        .HasMaxLength(640)
+                        .HasColumnType("varchar(640)");
+
+                    b.Property<string>("SmsLastError")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<int>("SmsStatus")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SmsTo")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DedupeKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_BillingNotifications_DedupeKey");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("IX_BillingNotifications_User");
+
+                    b.HasIndex("EmailStatus", "SmsStatus", "NextDeliveryAttemptAt")
+                        .HasDatabaseName("IX_BillingNotifications_Delivery");
+
+                    b.ToTable("BillingNotifications");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Billing.BillingPaymentAttempt", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ActiveLockKey")
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(10,2)");
+
+                    b.Property<string>("CardBrand")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("CardLast4")
+                        .HasMaxLength(4)
+                        .HasColumnType("varchar(4)");
+
+                    b.Property<int>("CardRole")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CommercialInvoiceId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CommercialInvoicePaymentAttemptId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("CustomerPaymentMethodId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DeclineCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("varchar(80)");
+
+                    b.Property<int?>("InitiatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ObligationKey")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
+                    b.Property<int>("ObligationType")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("OrderId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PaymentAuthorizationId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ReconcileAttempts")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("RunFinalizedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("RunKey")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StripePaymentIntentId")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("StripePaymentMethodId")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<int>("Trigger")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActiveLockKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_BillingPaymentAttempts_ActiveLock");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_BillingPaymentAttempts_IdempotencyKey");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("IX_BillingPaymentAttempts_Status");
+
+                    b.HasIndex("StripePaymentIntentId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_BillingPaymentAttempts_PaymentIntent");
+
+                    b.HasIndex("ObligationKey", "CreatedAt")
+                        .HasDatabaseName("IX_BillingPaymentAttempts_Obligation");
+
+                    b.HasIndex("RunKey", "Sequence")
+                        .IsUnique()
+                        .HasDatabaseName("IX_BillingPaymentAttempts_Run_Sequence");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("IX_BillingPaymentAttempts_User");
+
+                    b.ToTable("BillingPaymentAttempts");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Billing.CustomerPaymentMethod", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Brand")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("ExpMonth")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ExpYear")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Funding")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("Last4")
+                        .HasMaxLength(4)
+                        .HasColumnType("varchar(4)");
+
+                    b.Property<DateTime?>("LastFailedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("LastFailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("RemovedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(30)
+                        .HasColumnType("varchar(30)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StatusReason")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("StripeCustomerId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("StripePaymentMethodId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Wallet")
+                        .HasMaxLength(30)
+                        .HasColumnType("varchar(30)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StripePaymentMethodId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_CustomerPaymentMethods_StripePaymentMethodId");
+
+                    b.HasIndex("UserId", "Status")
+                        .HasDatabaseName("IX_CustomerPaymentMethods_User_Status");
+
+                    b.ToTable("CustomerPaymentMethods");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Billing.PaymentAuthorization", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("AcceptedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("AcceptedIp")
+                        .HasMaxLength(45)
+                        .HasColumnType("varchar(45)");
+
+                    b.Property<string>("AcceptedUserAgent")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<string>("ActiveScopeKey")
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)");
+
+                    b.Property<bool>("AllowBackupFallback")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("CancellationFeeAccepted")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int?>("ContractClientId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("RecurringSeriesId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("RevokedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RevokedReason")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<int>("Scope")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ScopeKey")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)");
+
+                    b.Property<bool>("SmsConsentAccepted")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TermsHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<bool>("TermsOfServiceAccepted")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("TermsSnapshot")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.Property<string>("TermsVersion")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractClientId")
+                        .HasDatabaseName("IX_PaymentAuthorizations_ContractClient");
+
+                    b.HasIndex("RecurringSeriesId")
+                        .HasDatabaseName("IX_PaymentAuthorizations_RecurringSeries");
+
+                    b.HasIndex("Scope", "Status")
+                        .HasDatabaseName("IX_PaymentAuthorizations_Scope_Status");
+
+                    b.HasIndex("UserId", "ActiveScopeKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_PaymentAuthorizations_User_ActiveScope");
+
+                    b.ToTable("PaymentAuthorizations");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.BlockedTimeSlot", b =>
                 {
                     b.Property<int>("Id")
@@ -5232,7 +5684,19 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<bool>("AppliedToOrder")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<DateTime?>("BookkeepingAppliedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("ConfirmationSentAt")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("FollowUpAttempts")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("FollowUpClaimedAt")
                         .HasColumnType("datetime(6)");
 
                     b.Property<int>("OrderId")
@@ -7072,6 +7536,15 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<string>("AuthProvider")
                         .HasColumnType("longtext");
 
+                    b.Property<bool>("AutoPayEnabled")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("AutoPayUpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("BackupPaymentMethodId")
+                        .HasColumnType("int");
+
                     b.Property<decimal>("BubbleCredits")
                         .HasColumnType("decimal(10,2)");
 
@@ -7229,11 +7702,20 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("varchar(20)");
 
+                    b.Property<int?>("PreferredSubscriptionId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("PreferredSubscriptionSelectedAt")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<string>("PreviousRefreshToken")
                         .HasColumnType("longtext");
 
                     b.Property<DateTime?>("PreviousRefreshTokenExpiryTime")
                         .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("PrimaryPaymentMethodId")
+                        .HasColumnType("int");
 
                     b.Property<string>("ProfilePictureUrl")
                         .HasMaxLength(500)
@@ -7319,11 +7801,17 @@ namespace DreamCleaningBackend.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("BackupPaymentMethodId")
+                        .HasDatabaseName("IX_Users_BackupPaymentMethodId");
+
                     b.HasIndex("Email")
                         .IsUnique();
 
                     b.HasIndex("ManagerId")
                         .HasDatabaseName("IX_Users_ManagerId");
+
+                    b.HasIndex("PrimaryPaymentMethodId")
+                        .HasDatabaseName("IX_Users_PrimaryPaymentMethodId");
 
                     b.HasIndex("ReferralCode")
                         .IsUnique()
@@ -7334,7 +7822,12 @@ namespace DreamCleaningBackend.Migrations
 
                     b.HasIndex("SubscriptionId");
 
-                    b.ToTable("Users");
+                    b.ToTable("Users", t =>
+                        {
+                            t.HasCheckConstraint("CK_Users_BackupRequiresPrimary", "`BackupPaymentMethodId` IS NULL OR `PrimaryPaymentMethodId` IS NOT NULL");
+
+                            t.HasCheckConstraint("CK_Users_PrimaryBackupDistinct", "`PrimaryPaymentMethodId` IS NULL OR `BackupPaymentMethodId` IS NULL OR `PrimaryPaymentMethodId` <> `BackupPaymentMethodId`");
+                        });
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.UserCleaningPhoto", b =>
@@ -7659,6 +8152,28 @@ namespace DreamCleaningBackend.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("UploadedByAdmin");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Billing.CustomerPaymentMethod", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.Billing.PaymentAuthorization", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.BlockedTimeSlot", b =>

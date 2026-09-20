@@ -64,6 +64,19 @@ namespace DreamCleaningBackend.Services.Interfaces
             int orderId, int requestId, PaymentMethod method, string? paymentReference, string? paymentNotes,
             int adminUserId, CancellationToken ct = default);
 
+        /// <summary>
+        /// Credits ONE order's share of a "Pay all upcoming" charge that does not settle it (the
+        /// order's price rose between the customer authorising and Stripe capturing). The share is
+        /// recorded as a paid slice whose <c>PaymentReference</c> is the batch intent — never its
+        /// <c>PaymentIntentId</c>, which is UNIQUE and would collide the moment two orders of one
+        /// batch were each part-covered. Returns false, changing nothing, when the order no longer
+        /// holds the <paramref name="expectedTotal"/> / <paramref name="expectedAmountPaid"/> the
+        /// caller computed the share against; the caller must then re-read and retry.
+        /// </summary>
+        Task<bool> RecordCombinedPaymentSliceAsync(
+            int orderId, decimal amount, decimal expectedTotal, decimal expectedAmountPaid,
+            string paymentIntentId, int batchId, CancellationToken ct = default);
+
         OrderPartialPaymentDto ToDto(OrderPartialPayment row);
     }
 

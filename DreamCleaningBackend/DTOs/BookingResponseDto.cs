@@ -25,6 +25,15 @@ namespace DreamCleaningBackend.DTOs
         // paid for. The two outcomes look alike and mean opposite things.
         public string? AlreadyPaidPaymentIntentId { get; set; }
 
+        /// <summary>
+        /// True when the payer MAY save the card they are about to type (2026-09): saved cards
+        /// are on, the payer is the account owner, and this intent carries that owner's Stripe
+        /// Customer. The browser then applies the customer's choice from the pre-payment "Save
+        /// your card?" modal as setup_future_usage=off_session at CONFIRMATION — on this same
+        /// intent, before any money moves. False: nothing can be saved, so nothing is offered.
+        /// </summary>
+        public bool CanSaveCard { get; set; }
+
         public string SessionId { get; set; } // For new bookings created via prepare-payment
         // Guest booking: returned when user was auto-created so frontend can authenticate
         public string? GuestToken { get; set; }

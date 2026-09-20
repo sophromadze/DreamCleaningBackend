@@ -2016,5 +2016,44 @@ namespace DreamCleaningBackend.Controllers
             // BulkUpdateSettings might do).
             return await GetLoyaltyDiscountSettings();
         }
+
+        /// <summary>
+        /// Admin → Users → User Details → Billing (2026-09). VISIBILITY ONLY: masked cards and their
+        /// roles, AutoPay and each arrangement's authorisation, outstanding balances, saved-card
+        /// charge attempts, billing history and open payment issues. Nothing here changes a
+        /// customer's cards or consent — those are the customer's alone.
+        ///
+        /// Admin + SuperAdmin, not Moderator: Moderators hold Permission.View for the Users tab, and
+        /// payment details were never part of what that grant was meant to show. No pm id, no Stripe
+        /// Customer id and no card number ever leaves on this endpoint.
+        /// </summary>
+        [HttpGet("users/{userId}/billing")]
+        [RequirePermission(Permission.View)]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        public async Task<ActionResult<AdminUserBillingDto>> GetUserBilling(int userId)
+        {
+            var exists = await _context.Users.AnyAsync(u => u.Id == userId);
+            if (!exists) return NotFound(new { message = "User not found" });
+
+            var services = HttpContext.RequestServices;
+            var features = services.GetRequiredService<Services.Billing.BillingFeatures>();
+            var cards = services.GetRequiredService<Services.Billing.IPaymentMethodService>();
+            var authorizations = services.GetRequiredService<Services.Billing.IPaymentAuthorizationService>();
+            var history = services.GetRequiredService<Services.Billing.IBillingHistoryService>();
+            var notifications = services.GetRequiredService<Services.Billing.IBillingNotificationService>();
+
+            var notices = await notifications.ListForUserAsync(userId, 50);
+
+            return Ok(new AdminUserBillingDto
+            {
+                FeatureEnabled = features.SavedCardsEnabled,
+                Cards = await cards.ListAsync(userId, includePaymentMethodIds: false),
+                AutoPay = await authorizations.GetOverviewAsync(userId),
+                Outstanding = await history.GetOutstandingAsync(userId),
+                RecentAttempts = await history.GetRecentAttemptsAsync(userId, 25),
+                RecentHistory = (await history.GetHistoryAsync(userId, 1, 25)).Items,
+                OpenIssues = notices.Where(n => !n.IsResolved && (n.Severity == "critical" || n.Severity == "warning")).ToList()
+            });
+        }
     }
 }

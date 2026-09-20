@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Models.Contracts;
 using DreamCleaningBackend.Models.Commercial;
+using DreamCleaningBackend.Models.Billing;
 
 namespace DreamCleaningBackend.Data
 {
@@ -196,6 +197,13 @@ namespace DreamCleaningBackend.Data
         public DbSet<CommercialInvoicePaymentAttempt> CommercialInvoicePaymentAttempts { get; set; }
         public DbSet<CommercialRecurringInvoiceTemplate> CommercialRecurringInvoiceTemplates { get; set; }
         public DbSet<BillingSettings> BillingSettings { get; set; }
+
+        // Saved cards, AutoPay authorisations, saved-card charge attempts and billing notices
+        // (2026-09). See Models/Billing.
+        public DbSet<CustomerPaymentMethod> CustomerPaymentMethods { get; set; }
+        public DbSet<PaymentAuthorization> PaymentAuthorizations { get; set; }
+        public DbSet<BillingPaymentAttempt> BillingPaymentAttempts { get; set; }
+        public DbSet<BillingNotification> BillingNotifications { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1497,6 +1505,96 @@ namespace DreamCleaningBackend.Data
                 // MySQL/MariaDB unique index, so the many orders with no intent are unaffected.
                 entity.HasIndex(e => e.PaymentIntentId).IsUnique()
                     .HasDatabaseName("IX_Orders_PaymentIntentId");
+            });
+
+            // ── Saved cards, AutoPay and billing notices (2026-09) ──────────────────────────────
+            modelBuilder.Entity<CustomerPaymentMethod>(entity =>
+            {
+                // One row per Stripe PaymentMethod, ever. Re-saving a card the customer already
+                // holds finds this row instead of inserting a twin.
+                entity.HasIndex(e => e.StripePaymentMethodId).IsUnique()
+                    .HasDatabaseName("IX_CustomerPaymentMethods_StripePaymentMethodId");
+                entity.HasIndex(e => new { e.UserId, e.Status })
+                    .HasDatabaseName("IX_CustomerPaymentMethods_User_Status");
+
+                entity.HasOne(e => e.User).WithMany()
+                    .HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<User>(entity =>
+            {
+                // The two role pointers are plain indexed columns, NOT foreign keys: MariaDB refuses
+                // a CHECK constraint on a column that also carries a foreign-key referential action
+                // ("cannot be used in the CHECK clause"), and the CHECKs below are the invariant
+                // that matters. Card rows are never hard-deleted (they are soft-removed), and
+                // PaymentMethodService is the only writer of either column, verifying the card
+                // belongs to the same user.
+                entity.HasIndex(u => u.PrimaryPaymentMethodId).HasDatabaseName("IX_Users_PrimaryPaymentMethodId");
+                entity.HasIndex(u => u.BackupPaymentMethodId).HasDatabaseName("IX_Users_BackupPaymentMethodId");
+
+                // The invariants the Billing tab promises, enforced by the database so no code
+                // path (and no concurrent pair of requests) can break them: a card is never both
+                // Primary and Backup, and there is no Backup without a Primary.
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_Users_PrimaryBackupDistinct",
+                        "`PrimaryPaymentMethodId` IS NULL OR `BackupPaymentMethodId` IS NULL OR `PrimaryPaymentMethodId` <> `BackupPaymentMethodId`");
+                    t.HasCheckConstraint("CK_Users_BackupRequiresPrimary",
+                        "`BackupPaymentMethodId` IS NULL OR `PrimaryPaymentMethodId` IS NOT NULL");
+                });
+            });
+
+            modelBuilder.Entity<PaymentAuthorization>(entity =>
+            {
+                // At most one ACTIVE authorisation per scope per customer. Revoked rows carry a
+                // NULL ActiveScopeKey, which a MariaDB unique index does not constrain.
+                entity.HasIndex(e => new { e.UserId, e.ActiveScopeKey }).IsUnique()
+                    .HasDatabaseName("IX_PaymentAuthorizations_User_ActiveScope");
+                entity.HasIndex(e => new { e.Scope, e.Status })
+                    .HasDatabaseName("IX_PaymentAuthorizations_Scope_Status");
+                entity.HasIndex(e => e.RecurringSeriesId)
+                    .HasDatabaseName("IX_PaymentAuthorizations_RecurringSeries");
+                entity.HasIndex(e => e.ContractClientId)
+                    .HasDatabaseName("IX_PaymentAuthorizations_ContractClient");
+
+                entity.Property(e => e.TermsSnapshot).HasColumnType("longtext");
+
+                entity.HasOne(e => e.User).WithMany()
+                    .HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<BillingPaymentAttempt>(entity =>
+            {
+                // THE payment lock. See BillingPaymentAttempt: a second in-flight attempt for the
+                // same obligation fails here, before Stripe is ever called.
+                entity.HasIndex(e => e.ActiveLockKey).IsUnique()
+                    .HasDatabaseName("IX_BillingPaymentAttempts_ActiveLock");
+                entity.HasIndex(e => e.IdempotencyKey).IsUnique()
+                    .HasDatabaseName("IX_BillingPaymentAttempts_IdempotencyKey");
+                entity.HasIndex(e => e.StripePaymentIntentId).IsUnique()
+                    .HasDatabaseName("IX_BillingPaymentAttempts_PaymentIntent");
+                entity.HasIndex(e => new { e.ObligationKey, e.CreatedAt })
+                    .HasDatabaseName("IX_BillingPaymentAttempts_Obligation");
+                // One Primary and at most one Backup per run, even when the synchronous path and
+                // a webhook both try to continue the same run.
+                entity.HasIndex(e => new { e.RunKey, e.Sequence }).IsUnique()
+                    .HasDatabaseName("IX_BillingPaymentAttempts_Run_Sequence");
+                entity.HasIndex(e => new { e.UserId, e.CreatedAt })
+                    .HasDatabaseName("IX_BillingPaymentAttempts_User");
+                entity.HasIndex(e => e.Status)
+                    .HasDatabaseName("IX_BillingPaymentAttempts_Status");
+            });
+
+            modelBuilder.Entity<BillingNotification>(entity =>
+            {
+                entity.HasIndex(e => e.DedupeKey).IsUnique()
+                    .HasDatabaseName("IX_BillingNotifications_DedupeKey");
+                entity.HasIndex(e => new { e.UserId, e.CreatedAt })
+                    .HasDatabaseName("IX_BillingNotifications_User");
+                entity.HasIndex(e => new { e.EmailStatus, e.SmsStatus, e.NextDeliveryAttemptAt })
+                    .HasDatabaseName("IX_BillingNotifications_Delivery");
+
+                entity.Property(e => e.EmailHtml).HasColumnType("longtext");
             });
 
             // Seed Services for Residential Cleaning

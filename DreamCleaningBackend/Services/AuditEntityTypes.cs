@@ -74,6 +74,20 @@ namespace DreamCleaningBackend.Services
         /// </summary>
         public const string OrderPaymentBatchAction = "OrderPaymentBatchAction";
 
+        // --- Saved cards and AutoPay (2026-09) --------------------------------------------------
+        /// <summary>A saved card added, removed, or given/taken a Primary/Backup role. EntityId = user id.</summary>
+        public const string CustomerPaymentMethodAction = "CustomerPaymentMethodAction";
+
+        /// <summary>AutoPay switched on/off, or an arrangement authorised/revoked. EntityId = user id.</summary>
+        public const string PaymentAuthorizationAction = "PaymentAuthorizationAction";
+
+        /// <summary>
+        /// One saved-card charge attempt and its outcome — admin charge, AutoPay, Backup fallback,
+        /// duplicate refund. EntityId = the ORDER id, or the negative INVOICE id for a commercial
+        /// invoice, so an order's payment trail and an invoice's never share an id space.
+        /// </summary>
+        public const string SavedCardChargeAction = "SavedCardChargeAction";
+
         // --- Users, rewards, referrals -----------------------------------------------------
         /// <summary>Free-text admin note on a customer. EntityId = user id.</summary>
         public const string UserAdminNote = "UserAdminNote";
@@ -238,6 +252,9 @@ namespace DreamCleaningBackend.Services
                 ["OrderRefund"] = "The refund has already reached the customer. Deleting the record would only hide it.",
                 [OrderRefundAction] = "The refund has already reached the customer. Deleting the record would only hide it.",
                 [OrderPaymentAction] = "The charge has already been taken. Refund it on the order rather than reverting the record.",
+                [CustomerPaymentMethodAction] = "Saved cards are changed by the customer in their Billing tab; a record of it cannot be reverted.",
+                [PaymentAuthorizationAction] = "A customer's payment authorisation can only be given or withdrawn by the customer.",
+                [SavedCardChargeAction] = "The charge attempt has already happened at the card network. Refund it on the order or invoice instead.",
                 [CleanerPayrollOverride] = "Payroll figures feed reported labour cost. Set the rate or hours back by hand so the change is recorded.",
                 [OrderCleanerHourlyRate] = "Payroll figures feed reported labour cost. Set the rate back by hand so the change is recorded.",
                 [CleanerPayout] = "This records money handed to a cleaner. Use Undo payment on the Outgoing Payments page.",
