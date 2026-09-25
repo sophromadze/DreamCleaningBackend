@@ -127,7 +127,7 @@ namespace DreamCleaningBackend.Services
 
             await AutoCancelExpiredUnpaidOrdersIfNeeded(orders);
 
-            // Pending additional payment = difference (current total − tips) − (original total − tips), not sum of update amounts.
+            // Pending additional payment = current total − original total (tips INCLUDED — see OrderAdditionalCharge), less what was already collected.
             // Only show when order is paid and there are unpaid update history rows.
             var orderIds = orders.Where(o => o.IsPaid).Select(o => o.Id).ToList();
             var unpaidInfo = await _context.OrderUpdateHistories
@@ -148,10 +148,10 @@ namespace DreamCleaningBackend.Services
                 .Select(g => new
                 {
                     OrderId = g.Key,
-                    FirstOriginalWithoutTips = g.OrderBy(x => x.UpdatedAt).Select(x => x.OriginalTotal - x.OriginalTips - x.OriginalCompanyDevelopmentTips).FirstOrDefault()
+                    FirstOriginalTotal = g.OrderBy(x => x.UpdatedAt).Select(x => x.OriginalTotal).FirstOrDefault()
                 })
                 .ToListAsync();
-            var firstOriginalByOrderId = firstOriginalList.ToDictionary(x => x.OrderId, x => x.FirstOriginalWithoutTips);
+            var firstOriginalByOrderId = firstOriginalList.ToDictionary(x => x.OrderId, x => x.FirstOriginalTotal);
             // Amount already paid by customer (sum of paid update-history rows) so we only show
             // unpaid portion. POSITIVE rows only — a negative row is a price decrease, and
             // subtracting one adds to the bill (OrderAdditionalCharge). EF cannot translate the
@@ -242,7 +242,7 @@ namespace DreamCleaningBackend.Services
 
             var dto = MapOrderToDto(order);
 
-            // Pending additional payment = difference (current total − tips) − (original total − tips), not sum of update amounts.
+            // Pending additional payment = current total − original total (tips INCLUDED — see OrderAdditionalCharge), less what was already collected.
             if (order.IsPaid)
             {
                 var hasUnpaid = await _context.OrderUpdateHistories

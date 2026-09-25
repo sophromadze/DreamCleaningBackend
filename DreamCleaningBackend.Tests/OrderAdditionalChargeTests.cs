@@ -217,10 +217,10 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(LegacyOutstanding(order, history), OrderAdditionalCharge.Outstanding(order, history));
         }
 
-        /// <summary>Tips are collected with the booking and are never part of an edit's delta, so
-        /// they come off both sides of the comparison rather than inflating what is owed.</summary>
+        /// <summary>Tips the customer already paid at booking are on BOTH sides of the comparison,
+        /// so an unchanged tip neither inflates nor hides what is owed.</summary>
         [Fact]
-        public void TipsAreExcludedFromBothSidesOfTheComparison()
+        public void AnUnchangedTip_CancelsOut()
         {
             var order = OrderAt(currentTotal: 750.00m, initialTotal: 350.00m, tips: 50.00m, initialTips: 50.00m);
             var history = new[]
@@ -229,6 +229,41 @@ namespace DreamCleaningBackend.Tests
             };
 
             Assert.Equal(400.00m, OrderAdditionalCharge.Outstanding(order, history));
+        }
+
+        /// <summary>
+        /// Order #386, 2026-09. Booked and paid at $1,150.00, a $330.00 increase paid by card, then
+        /// an admin added a $270.00 tip. The history row said "Unpaid +$270.00" while every surface
+        /// computed $0.00 owed — the comparison subtracted tips from both sides, and the tip was the
+        /// only thing that moved — so there was no Send button and the payment page said "Nothing
+        /// to pay". A tip added after payment is collected like any other increase.
+        /// </summary>
+        [Fact]
+        public void Order386_ATipAddedAfterPayment_IsOwed()
+        {
+            var order = OrderAt(currentTotal: 1750.00m, initialTotal: 1150.00m, tips: 270.00m, initialTips: 0m);
+            var history = new[]
+            {
+                Row(originalTotal: 1150.00m, newTotal: 1480.00m, additionalAmount: 330.00m, isPaid: true, minute: 0),
+                Row(originalTotal: 1480.00m, newTotal: 1750.00m, additionalAmount: 270.00m, isPaid: false, minute: 10)
+            };
+
+            Assert.Equal(270.00m, OrderAdditionalCharge.Outstanding(order, history));
+        }
+
+        /// <summary>The other half of #386: once the tip is taken back off (undo), nothing is owed
+        /// even if the stale row were still there.</summary>
+        [Fact]
+        public void Order386_TipRemovedAgain_OwesNothing()
+        {
+            var order = OrderAt(currentTotal: 1480.00m, initialTotal: 1150.00m);
+            var history = new[]
+            {
+                Row(originalTotal: 1150.00m, newTotal: 1480.00m, additionalAmount: 330.00m, isPaid: true, minute: 0),
+                Row(originalTotal: 1480.00m, newTotal: 1750.00m, additionalAmount: 270.00m, isPaid: false, minute: 10)
+            };
+
+            Assert.Equal(0m, OrderAdditionalCharge.Outstanding(order, history));
         }
 
         // ── The InitialTotal = 0 fallback ─────────────────────────────────────────────────────
@@ -299,7 +334,7 @@ namespace DreamCleaningBackend.Tests
             var order = OrderAt(currentTotal: 650.00m, initialTotal: 0m);
 
             Assert.Equal(0m, OrderAdditionalCharge.Outstanding(order, Array.Empty<OrderUpdateHistory>()));
-            Assert.Equal(0m, OrderAdditionalCharge.OriginalWithoutTips(order, null));
+            Assert.Equal(0m, OrderAdditionalCharge.OriginalTotal(order, null));
         }
 
         // ── The collected-to-date sum itself ──────────────────────────────────────────────────

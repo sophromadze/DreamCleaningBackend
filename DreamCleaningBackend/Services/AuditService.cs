@@ -1,4 +1,5 @@
 ﻿using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Services.Interfaces;
@@ -644,6 +645,10 @@ namespace DreamCleaningBackend.Services
                     await DeleteByPrimaryKeyAsync(clrType, log.EntityId);
                     break;
                 case "Update":
+                    // Checked (and staged) BEFORE the order is reverted, so an edit whose top-up
+                    // was already paid is refused without touching anything.
+                    if (clrType == typeof(Order))
+                        await RemoveUpdateHistoryForUndoneOrderEditAsync(log);
                     await ApplyJsonValuesAsync(clrType, log.EntityId, log.OldValues, log.ChangedFields);
                     break;
                 case "Delete":
@@ -690,6 +695,8 @@ namespace DreamCleaningBackend.Services
                     break;
                 case "Update":
                     await ApplyJsonValuesAsync(clrType, log.EntityId, log.NewValues, log.ChangedFields);
+                    if (clrType == typeof(Order))
+                        await RestoreUpdateHistoryForRedoneOrderEditAsync(log);
                     break;
                 case "Delete":
                     await DeleteByPrimaryKeyAsync(clrType, log.EntityId);
@@ -700,6 +707,84 @@ namespace DreamCleaningBackend.Services
 
             log.UndoneAt = null;
             await SaveAuditChangesAsync();
+        }
+
+        // ─── Order edits and their Update History row ─────────────────────────────────────
+        //
+        // An admin order save writes an OrderUpdateHistory row alongside the Order audit row.
+        // Undoing the edit must take that row with it, or the Update History panel keeps showing
+        // (and offering to collect) a top-up for a price the order no longer has — order #386,
+        // 2026-09. The link between the two is OrderEditHistoryLink's fingerprint match.
+
+        private (Order Before, Order After)? ReadOrderEditSnapshots(AuditLog log)
+        {
+            if (string.IsNullOrWhiteSpace(log.OldValues) || string.IsNullOrWhiteSpace(log.NewValues))
+                return null;
+            var before = JsonConvert.DeserializeObject<Order>(AuditDataPolicy.SanitizeJson(log.OldValues)!, _jsonSettings);
+            var after = JsonConvert.DeserializeObject<Order>(AuditDataPolicy.SanitizeJson(log.NewValues)!, _jsonSettings);
+            if (before == null || after == null) return null;
+            after.Id = (int)log.EntityId;
+            return (before, after);
+        }
+
+        private async Task<List<OrderUpdateHistory>> LoadEditHistoryCandidatesAsync(AuditLog log)
+        {
+            var orderId = (int)log.EntityId;
+            var from = log.CreatedAt - OrderEditHistoryLink.WindowBefore;
+            var to = log.CreatedAt + OrderEditHistoryLink.WindowAfter;
+            return await _context.OrderUpdateHistories
+                .Where(h => h.OrderId == orderId && h.UpdatedAt >= from && h.UpdatedAt <= to)
+                .ToListAsync();
+        }
+
+        private async Task RemoveUpdateHistoryForUndoneOrderEditAsync(AuditLog log)
+        {
+            var snapshots = ReadOrderEditSnapshots(log);
+            if (snapshots == null) return;
+            var (before, after) = snapshots.Value;
+
+            // Price-neutral edits are left alone (same rule as redo): their row carries no money,
+            // and a status-only audit row minutes after a $0 edit would otherwise match that edit's
+            // row by fingerprint and delete somebody else's record.
+            if (before.Total == after.Total) return;
+
+            var orderId = (int)log.EntityId;
+            var row = OrderEditHistoryLink.Find(
+                await LoadEditHistoryCandidatesAsync(log), orderId, log.CreatedAt, before.Total, after.Total);
+            if (row == null) return;
+
+            if (OrderEditHistoryLink.HasCollectedMoney(row))
+                throw new InvalidOperationException(
+                    $"The additional ${row.AdditionalAmount:F2} from this edit has already been paid. " +
+                    "Refund that payment before undoing the edit.");
+
+            _context.OrderUpdateHistories.Remove(row);
+            _logger.LogInformation(
+                "Undo of audit row {AuditLogId} removed OrderUpdateHistory #{HistoryId} (order {OrderId}, ${Amount})",
+                log.Id, row.Id, orderId, row.AdditionalAmount);
+        }
+
+        private async Task RestoreUpdateHistoryForRedoneOrderEditAsync(AuditLog log)
+        {
+            var snapshots = ReadOrderEditSnapshots(log);
+            if (snapshots == null) return;
+            var (before, after) = snapshots.Value;
+
+            // Only a Total change is rebuilt — a price-neutral edit's row carries no money, and
+            // re-creating one from a snapshot that may never have had it would invent an entry.
+            if (before.Total == after.Total) return;
+
+            // Still there (e.g. undone before this link existed) — never duplicate it.
+            var orderId = (int)log.EntityId;
+            if (OrderEditHistoryLink.Find(
+                    await LoadEditHistoryCandidatesAsync(log), orderId, log.CreatedAt, before.Total, after.Total) != null)
+                return;
+
+            var updatedBy = log.UserId ?? GetCurrentUserId();
+            if (updatedBy == null) return;
+
+            _context.OrderUpdateHistories.Add(
+                OrderEditHistoryLink.Rebuild(before, after, updatedBy.Value, log.CreatedAt));
         }
 
         // Applies a UserLoyaltyDiscount audit row's snapshot to the underlying User entity.

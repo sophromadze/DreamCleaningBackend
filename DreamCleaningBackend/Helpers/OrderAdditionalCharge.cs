@@ -76,33 +76,40 @@ namespace DreamCleaningBackend.Helpers
         public static readonly Expression<Func<OrderUpdateHistory, bool>> WasCollected =
             h => h.IsPaid && h.AdditionalAmount > 0m;
 
-        /// <summary>Tips are collected with the booking and are never part of an edit's delta, so
-        /// every comparison here is made on tip-free totals. CompanyDevelopmentTips is retired, but
-        /// a legacy order still carries an amount that was charged, so it comes off as well.</summary>
-        public static decimal WithoutTips(decimal total, decimal tips, decimal companyDevelopmentTips) =>
-            total - tips - companyDevelopmentTips;
-
-        /// <summary>The order's price right now, tip-free.</summary>
-        public static decimal CurrentWithoutTips(Order order) =>
-            WithoutTips(order.Total, order.Tips, order.CompanyDevelopmentTips);
+        /// <summary>
+        /// <b>TIPS ARE PART OF THE COMPARISON (2026-09).</b> Every comparison here is made on the
+        /// full, tip-INCLUSIVE totals — the same figures the history rows' AdditionalAmount is
+        /// computed from (<c>order.Total − originalTotal</c> in both writers) and the same figures
+        /// the booking-time snapshot stamps (InitialTotal includes InitialTips).
+        ///
+        /// It used to subtract tips from both sides, on the theory that tips are only ever
+        /// collected with the booking. They are not: an admin adding a tip to a paid order (order
+        /// #386 — +$270.00 tips) wrote an unpaid +$270.00 history row, and then every surface that
+        /// reads THIS file — the payment page, the payment link, "send updated payment", the admin
+        /// panel's reminder row — computed $0.00 owed, because the only thing that moved was the
+        /// part being subtracted. The row said "Unpaid" and nothing could collect it. The reverse
+        /// was also wrong: a paid row's AdditionalAmount already includes any tip delta, so
+        /// subtracting a tip-inclusive "collected" from a tip-free delta under-charged later edits.
+        /// </summary>
+        public static decimal CurrentTotal(Order order) => order.Total;
 
         /// <summary>True when the order carries a booking-time snapshot of what was first charged.</summary>
         public static bool HasInitialSnapshot(Order order) =>
             order.InitialTotal != 0m || order.InitialTips != 0m || order.InitialCompanyDevelopmentTips != 0m;
 
         /// <summary>
-        /// What the customer originally paid, tip-free.
+        /// What the customer originally paid, tips included.
         ///
-        /// <paramref name="firstHistoryOriginalWithoutTips"/> is the FALLBACK for orders whose
+        /// <paramref name="firstHistoryOriginalTotal"/> is the FALLBACK for orders whose
         /// Initial* columns are all zero — orders placed before those columns were stamped, which
         /// is a large share of production. For those the earliest update row's OriginalTotal is
         /// the only surviving record of the booking price, so this fallback is load-bearing and
         /// must keep working; null (no history at all) reads as zero, exactly as before.
         /// </summary>
-        public static decimal OriginalWithoutTips(Order order, decimal? firstHistoryOriginalWithoutTips) =>
+        public static decimal OriginalTotal(Order order, decimal? firstHistoryOriginalTotal) =>
             HasInitialSnapshot(order)
-                ? WithoutTips(order.InitialTotal, order.InitialTips, order.InitialCompanyDevelopmentTips)
-                : (firstHistoryOriginalWithoutTips ?? 0m);
+                ? order.InitialTotal
+                : (firstHistoryOriginalTotal ?? 0m);
 
         /// <summary>
         /// The outstanding additional amount: how far the price has risen above the original
@@ -112,9 +119,9 @@ namespace DreamCleaningBackend.Helpers
         /// booking owes nothing rather than a negative a later increase could cancel against; the
         /// result is floored again, so over-collection is never reported as money owed backwards.
         /// </summary>
-        public static decimal Outstanding(decimal currentWithoutTips, decimal originalWithoutTips, decimal collectedToDate)
+        public static decimal Outstanding(decimal currentTotal, decimal originalTotal, decimal collectedToDate)
         {
-            var totalDelta = Math.Max(0m, currentWithoutTips - originalWithoutTips);
+            var totalDelta = Math.Max(0m, currentTotal - originalTotal);
             return OrderPricingCalculator.Round2(Math.Max(0m, totalDelta - collectedToDate));
         }
 
@@ -126,12 +133,12 @@ namespace DreamCleaningBackend.Helpers
         /// the order's WHOLE total as an unpaid top-up — which the pending-update payment intent
         /// would then have charged a second time on a legacy paid order.
         /// </remarks>
-        public static decimal Outstanding(Order order, decimal? firstHistoryOriginalWithoutTips, decimal collectedToDate) =>
-            !HasInitialSnapshot(order) && firstHistoryOriginalWithoutTips == null
+        public static decimal Outstanding(Order order, decimal? firstHistoryOriginalTotal, decimal collectedToDate) =>
+            !HasInitialSnapshot(order) && firstHistoryOriginalTotal == null
                 ? 0m
                 : Outstanding(
-                    CurrentWithoutTips(order),
-                    OriginalWithoutTips(order, firstHistoryOriginalWithoutTips),
+                    CurrentTotal(order),
+                    OriginalTotal(order, firstHistoryOriginalTotal),
                     collectedToDate);
 
         /// <summary>In-memory counterpart of <see cref="WasCollected"/>, for callers that already
@@ -143,11 +150,11 @@ namespace DreamCleaningBackend.Helpers
         public static decimal Outstanding(Order order, IEnumerable<OrderUpdateHistory> histories)
         {
             var rows = histories as IReadOnlyCollection<OrderUpdateHistory> ?? histories.ToList();
-            var firstOriginalWithoutTips = rows
+            var firstOriginalTotal = rows
                 .OrderBy(h => h.UpdatedAt)
-                .Select(h => (decimal?)WithoutTips(h.OriginalTotal, h.OriginalTips, h.OriginalCompanyDevelopmentTips))
+                .Select(h => (decimal?)h.OriginalTotal)
                 .FirstOrDefault();
-            return Outstanding(order, firstOriginalWithoutTips, CollectedToDate(rows));
+            return Outstanding(order, firstOriginalTotal, CollectedToDate(rows));
         }
 
         /// <summary>
@@ -158,13 +165,13 @@ namespace DreamCleaningBackend.Helpers
         public static async Task<decimal> OutstandingAsync(
             ApplicationDbContext context, Order order, CancellationToken cancellationToken = default)
         {
-            decimal? firstOriginalWithoutTips = null;
+            decimal? firstOriginalTotal = null;
             if (!HasInitialSnapshot(order))
             {
-                firstOriginalWithoutTips = await context.OrderUpdateHistories
+                firstOriginalTotal = await context.OrderUpdateHistories
                     .Where(h => h.OrderId == order.Id)
                     .OrderBy(h => h.UpdatedAt)
-                    .Select(h => (decimal?)(h.OriginalTotal - h.OriginalTips - h.OriginalCompanyDevelopmentTips))
+                    .Select(h => (decimal?)h.OriginalTotal)
                     .FirstOrDefaultAsync(cancellationToken);
             }
 
@@ -173,7 +180,7 @@ namespace DreamCleaningBackend.Helpers
                 .Where(WasCollected)
                 .SumAsync(h => (decimal?)h.AdditionalAmount, cancellationToken) ?? 0m;
 
-            return Outstanding(order, firstOriginalWithoutTips, collectedToDate);
+            return Outstanding(order, firstOriginalTotal, collectedToDate);
         }
     }
 }

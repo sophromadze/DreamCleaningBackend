@@ -432,8 +432,9 @@ namespace DreamCleaningBackend.Controllers
                 if (!order.IsPaid)
                     return BadRequest(new { message = "This order has not been paid yet. Please pay the order itself." });
 
-                // Same unpaid amount the panel and the emails display: (current total − tips) −
-                // (original total − tips) − what has already been collected against that rise.
+                // Same unpaid amount the panel and the emails display: current total − original
+                // total (tips included — an added tip is collected here like any other increase)
+                // − what has already been collected against that rise.
                 // Resolved by the shared helper so the card is never charged a figure no other
                 // surface shows — see OrderAdditionalCharge and the order #359 example in it.
                 var amountToCharge = await OrderAdditionalCharge.OutstandingAsync(_context, order);
