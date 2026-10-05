@@ -53,9 +53,10 @@
         public string? ContactPhone { get; set; }
         public string ServiceAddress { get; set; }
         public string? AptSuite { get; set; }
-        public string City { get; set; }
-        public string State { get; set; }
-        public string PostalCode { get; set; }
+        // Optional: the poll form collects a single address line only.
+        public string? City { get; set; }
+        public string? State { get; set; }
+        public string? PostalCode { get; set; }
         public List<CreatePollAnswerDto> Answers { get; set; } = new List<CreatePollAnswerDto>();
         public List<PhotoUploadDto> UploadedPhotos { get; set; } = new List<PhotoUploadDto>();
     }

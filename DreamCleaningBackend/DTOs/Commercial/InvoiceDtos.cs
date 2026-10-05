@@ -393,6 +393,12 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public decimal? CurrentContractUnitPrice { get; set; }
         public InvoiceTaxType? CurrentContractTaxType { get; set; }
         public decimal? CurrentContractTaxRate { get; set; }
+
+        /// <summary>
+        /// True when the linked contract charges a WEEKLY FLAT FEE, so "use the current contract
+        /// price" with linked cleanings bills one fee per service week rather than one per cleaning.
+        /// </summary>
+        public bool CurrentContractIsWeeklyFlatFee { get; set; }
         public List<InvoiceOrderAllocationDto> CleaningsCovered { get; set; } = new();
 
         /// <summary>The agreed group total an admin negotiated for the ORDERS this invoice covers,
@@ -959,6 +965,9 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public decimal? TaxRate { get; set; }
         public InvoiceTaxType? TaxType { get; set; }
         public string? PaymentTerms { get; set; }
+
+        /// <summary>"PerVisit" or "WeeklyFlatFee" — how linked cleanings are priced on the invoice.</summary>
+        public string PricingBasis { get; set; } = "PerVisit";
     }
 
     // ── The business customer's own invoices ──────────────────────────────────────────────────

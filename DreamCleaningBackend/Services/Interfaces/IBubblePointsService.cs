@@ -12,7 +12,11 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<BubbleRewardsSummaryDto> GetSummary(int userId);
         Task<HeaderSummaryDto> GetHeaderSummary(int userId);
         Task<RedemptionResultDto> RedeemPoints(int userId, int points, int orderId);
-        Task<PagedResult<BubblePointsHistoryDto>> GetHistory(int userId, int page, int pageSize);
+        /// <param name="adminView">
+        /// False (the customer's own history): refund/cancellation reversals read as a neutral
+        /// "Balance adjustment" with no order and no reason. True (admin): every detail.
+        /// </param>
+        Task<PagedResult<BubblePointsHistoryDto>> GetHistory(int userId, int page, int pageSize, bool adminView = false);
         Task AdminAdjustPoints(int userId, int points, string description);
         Task AdminGrantCredit(int userId, decimal amount, string description);
         Task AdminGrantReviewBonus(int userId);

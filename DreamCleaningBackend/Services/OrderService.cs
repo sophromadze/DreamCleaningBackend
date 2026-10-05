@@ -66,14 +66,19 @@ namespace DreamCleaningBackend.Services
                 .Distinct()
                 .ToListAsync());
 
+            var contractLabels = await ContractBilledOrders.LoadLabelsAsync(_context, orders);
+
             return orders.Select(o => new OrderListDto
             {
                 Id = o.Id,
+                BilledByContractLabel = contractLabels.GetValueOrDefault(o.Id),
                 UserId = o.UserId,
                 ContactEmail = o.ContactEmail,
                 ContactFirstName = o.ContactFirstName,
                 ContactLastName = o.ContactLastName,
+                ContactPhone = o.ContactPhone,
                 ServiceTypeName = o.GetDisplayServiceTypeName(),
+                ServiceTypeKey = o.GetRecognisableServiceTypeKey(),
                 IsCustomServiceType = o.ServiceType?.IsCustom ?? false,
                 CustomServiceDisplayName = o.CustomServiceDisplayName,
                 ServiceDate = o.ServiceDate,
@@ -175,14 +180,18 @@ namespace DreamCleaningBackend.Services
                 .Where(x => x.OrderId.HasValue)
                 .ToDictionary(x => x.OrderId!.Value, x => x.Points);
 
+            var contractLabels = await ContractBilledOrders.LoadLabelsAsync(_context, orders);
+
             return orders.Select(o => new OrderListDto
             {
                 Id = o.Id,
+                BilledByContractLabel = contractLabels.GetValueOrDefault(o.Id),
                 UserId = o.UserId,  
                 ContactEmail = o.ContactEmail,  
                 ContactFirstName = o.ContactFirstName,  
                 ContactLastName = o.ContactLastName,  
                 ServiceTypeName = o.GetDisplayServiceTypeName(),
+                ServiceTypeKey = o.GetRecognisableServiceTypeKey(),
                 IsCustomServiceType = o.ServiceType?.IsCustom ?? false,
                 CustomServiceDisplayName = o.CustomServiceDisplayName,
                 ServiceDate = o.ServiceDate,
@@ -241,6 +250,7 @@ namespace DreamCleaningBackend.Services
             await AutoCancelExpiredUnpaidOrderIfNeeded(order);
 
             var dto = MapOrderToDto(order);
+            dto.BilledByContractLabel = await ContractBilledOrders.LoadLabelAsync(_context, order);
 
             // Pending additional payment = current total − original total (tips INCLUDED — see OrderAdditionalCharge), less what was already collected.
             if (order.IsPaid)
@@ -467,26 +477,13 @@ namespace DreamCleaningBackend.Services
             CleanerPayrollCalculator.ApplyOrderTotalSalary(
                 order, quote.HasCleanerService, assignmentsForSalary);
 
-            // Recalculate totals. Edit flows rescale the ORIGINAL discounts server-side:
-            // promo/subscription by the subtotal ratio, loyalty from the locked percentage
-            // snapshot — the same math as the order-edit page preview (calculateNewTotal),
-            // so the client's discount dollar figures in the DTO are never trusted.
+            // Recalculate totals. The discounts are re-derived server-side exactly as booking
+            // derives them, from the rule recorded on the order (ResolveEditedDiscounts - the same
+            // function the order-edit page previews with), so the client's discount dollar figures
+            // in the DTO are never trusted. Must read the order BEFORE SubTotal is overwritten.
+            (order.DiscountAmount, order.SubscriptionDiscountAmount, order.LoyaltyDiscountAmount) =
+                OrderPricingCalculator.ResolveEditedDiscounts(order, quote.SubTotal);
             order.SubTotal = quote.SubTotal;
-            if (originalSubTotal > 0)
-            {
-                order.DiscountAmount = OrderPricingCalculator.Round2(
-                    quote.SubTotal * (order.DiscountAmount / originalSubTotal));
-                order.SubscriptionDiscountAmount = OrderPricingCalculator.Round2(
-                    quote.SubTotal * (order.SubscriptionDiscountAmount / originalSubTotal));
-            }
-            else
-            {
-                order.DiscountAmount = 0m;
-                order.SubscriptionDiscountAmount = 0m;
-            }
-            order.LoyaltyDiscountAmount = order.LoyaltyDiscountPercentage > 0
-                ? OrderPricingCalculator.Round2(quote.SubTotal * (order.LoyaltyDiscountPercentage / 100m))
-                : 0m;
 
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
             {
@@ -785,19 +782,11 @@ namespace DreamCleaningBackend.Services
                     updateOrderDto.TotalDuration, quote.TotalDuration);
             }
 
-            // Server-derived discounts, matching exactly what UpdateOrder will persist:
-            // promo/subscription rescaled by the subtotal ratio, loyalty re-derived from the
-            // locked percentage snapshot. The DTO's discount fields are intentionally ignored
-            // (client dollar figures are never trusted).
-            var discountAmount = order.SubTotal > 0
-                ? OrderPricingCalculator.Round2(quote.SubTotal * (order.DiscountAmount / order.SubTotal))
-                : 0m;
-            var subscriptionDiscountAmount = order.SubTotal > 0
-                ? OrderPricingCalculator.Round2(quote.SubTotal * (order.SubscriptionDiscountAmount / order.SubTotal))
-                : 0m;
-            var loyaltyDiscountAmount = order.LoyaltyDiscountPercentage > 0
-                ? OrderPricingCalculator.Round2(quote.SubTotal * (order.LoyaltyDiscountPercentage / 100m))
-                : 0m;
+            // Server-derived discounts, matching exactly what UpdateOrder will persist (the same
+            // shared rule). The DTO's discount fields are intentionally ignored (client dollar
+            // figures are never trusted).
+            var (discountAmount, subscriptionDiscountAmount, loyaltyDiscountAmount) =
+                OrderPricingCalculator.ResolveEditedDiscounts(order, quote.SubTotal);
 
             // Compute the pre-gift-card total, then re-resolve the gift card the SAME way
             // UpdateOrder will persist it (via the shared helpers). This is what makes the
@@ -862,14 +851,18 @@ namespace DreamCleaningBackend.Services
                 .OrderByDescending(o => o.OrderDate)
                 .ToListAsync();
 
+            var contractLabels = await ContractBilledOrders.LoadLabelsAsync(_context, orders);
+
             return orders.Select(o => new OrderListDto
             {
                 Id = o.Id,
+                BilledByContractLabel = contractLabels.GetValueOrDefault(o.Id),
                 UserId = o.UserId,
                 ContactEmail = o.ContactEmail,
                 ContactFirstName = o.ContactFirstName,
                 ContactLastName = o.ContactLastName,
                 ServiceTypeName = o.GetDisplayServiceTypeName(),
+                ServiceTypeKey = o.GetRecognisableServiceTypeKey(),
                 IsCustomServiceType = o.ServiceType?.IsCustom ?? false,
                 CustomServiceDisplayName = o.CustomServiceDisplayName,
                 ServiceDate = o.ServiceDate,
@@ -927,7 +920,9 @@ namespace DreamCleaningBackend.Services
                 throw new Exception("Order not found");
 
             // Single source of truth for the order-details shape (see OrderDtoMapper).
-            return OrderDtoMapper.ToOrderDto(order);
+            var dto = OrderDtoMapper.ToOrderDto(order);
+            dto.BilledByContractLabel = await ContractBilledOrders.LoadLabelAsync(_context, order);
+            return dto;
         }
 
         // Promo/special-offer/gift-card display helpers live in OrderDtoMapper.
@@ -944,6 +939,61 @@ namespace DreamCleaningBackend.Services
         /// <summary>Full order update without 48h or "can't reduce" checks. All changes must be audit-logged by the
         /// caller, which is also where the "may this admin apply an edit directly?" decision lives
         /// (Helpers/OrderEditApprovalPolicy) - this method performs no authorization of its own.</summary>
+        /// <summary>
+        /// Adds the priced LEVELS line an admin edit brought into being (2026-10).
+        ///
+        /// An order booked as an apartment has no levels row at all - booking only adds one when a
+        /// house's level chip is clicked. Switching it to a house in the admin editor used to fall
+        /// back to an unpriced "Levels (informational)" box, because this endpoint could only
+        /// update rows that already existed, so the level count never reached the price. The
+        /// editor now adds the row and prices it through the shared calculator exactly as booking
+        /// does; this persists it. The subtotal itself still arrives as dto.SubTotal, priced
+        /// client-side by that same calculator, like every other admin line edit.
+        ///
+        /// Deliberately narrow: only the levels service of THIS order's service type, only for a
+        /// house, only when the order has no levels row yet. Anything else is ignored, so a
+        /// crafted payload cannot attach arbitrary services to an order.
+        /// </summary>
+        private async Task AddAdminLevelsLineAsync(Order order, SuperAdminOrderServiceUpdateDto row, string? requestedPropertyType)
+        {
+            if (row.ServiceId is not int serviceId || serviceId <= 0) return;
+
+            // Null property type on this DTO means "no change", so fall back to what the order holds.
+            var effectivePropertyType = requestedPropertyType ?? order.PropertyType;
+            if (!PropertyDetailsHelper.IsHouse(effectivePropertyType)) return;
+
+            order.OrderServices ??= new List<Models.OrderService>();
+            if (order.OrderServices.Any(os => os.ServiceId == serviceId
+                    || (os.Service != null && os.Service.ServiceKey == PropertyDetailsHelper.LevelsServiceKey)))
+                return;
+
+            var service = await _context.Services.FirstOrDefaultAsync(sv => sv.Id == serviceId);
+            if (service == null
+                || service.ServiceTypeId != order.ServiceTypeId
+                || service.ServiceKey != PropertyDetailsHelper.LevelsServiceKey
+                || !service.IsActive)
+                return;
+
+            // Same range OrderPricingInputBuilder clamps a booked level count to.
+            var quantity = row.Quantity;
+            if (service.MinValue.HasValue) quantity = Math.Max(quantity, service.MinValue.Value);
+            if (service.MaxValue.HasValue) quantity = Math.Min(quantity, service.MaxValue.Value);
+
+            order.OrderServices.Add(new Models.OrderService
+            {
+                Order = order,
+                ServiceId = service.Id,
+                // Navigation set so PropertyDetailsHelper.ApplyFromOrderLines finds the row below
+                // and writes Order.LevelsQuantity from it.
+                Service = service,
+                Quantity = quantity,
+                Cost = row.Cost,
+                Duration = row.Duration ?? 0m,
+                PriceMultiplier = order.OrderServices.FirstOrDefault()?.PriceMultiplier ?? 1.0m,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
         public async Task SuperAdminFullUpdateOrder(int orderId, int updatedByUserId, SuperAdminUpdateOrderDto dto)
         {
             var order = await _orderRepository.GetByIdWithDetailsAsync(orderId);
@@ -956,6 +1006,24 @@ namespace DreamCleaningBackend.Services
             var originalTips = order.Tips;
             var originalCompanyDevelopmentTips = order.CompanyDevelopmentTips;
             var originalTotal = order.Total;
+
+            // What the order looked like BEFORE this edit, for the server re-price below: which
+            // lines were selected (so an edit that touches no line never re-prices a booked
+            // order at today's catalogue), and the discounts with the rules they were booked with.
+            var selectionsBefore = LineSelectionSignature(order);
+            var propertyTypeBefore = order.PropertyType;
+            var totalDurationBefore = order.TotalDuration;
+            var discountsBefore = new OrderPricingCalculator.EditDiscountInput
+            {
+                OriginalSubTotal = order.SubTotal,
+                DiscountAmount = order.DiscountAmount,
+                DiscountPercent = order.DiscountPercent,
+                DiscountFixedAmount = order.DiscountFixedAmount,
+                SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
+                SubscriptionDiscountPercent = order.SubscriptionDiscountPercent,
+                LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
+                LoyaltyDiscountAmount = order.LoyaltyDiscountAmount
+            };
 
             if (dto.ContactFirstName != null) order.ContactFirstName = dto.ContactFirstName;
             if (dto.ContactLastName != null) order.ContactLastName = dto.ContactLastName;
@@ -990,13 +1058,8 @@ namespace DreamCleaningBackend.Services
                 order.Status = dto.Status;
             }
             if (dto.CancellationReason != null) order.CancellationReason = dto.CancellationReason;
-            if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
-            if (dto.DiscountAmount.HasValue) order.DiscountAmount = dto.DiscountAmount.Value;
-            if (dto.SubscriptionDiscountAmount.HasValue) order.SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount.Value;
-            // Loyalty discount amount may shift with subtotal edits; the percentage snapshot
-            // is invariant (see Order.LoyaltyDiscountPercentage comment) so we never change it
-            // through this endpoint — only the recalculated $ amount.
-            if (dto.LoyaltyDiscountAmount.HasValue) order.LoyaltyDiscountAmount = dto.LoyaltyDiscountAmount.Value;
+            // SubTotal and the three discounts are resolved AFTER the line edits below, by
+            // ResolveAdminEditPricingAsync - the server prices the lines itself (2026-10).
             if (dto.CleanerHourlyRate.HasValue) order.CleanerHourlyRate = dto.CleanerHourlyRate.Value;
 
             // Who is actually on this job? Needed twice below, and loaded here because the very
@@ -1052,34 +1115,15 @@ namespace DreamCleaningBackend.Services
                 }
             }
 
-            // Auto-calculate tax/total through the shared calculator (so SuperAdmin only needs
-            // to edit SubTotal). Loyalty is included alongside subscription + promo. Gift card is
-            // applied via the shared re-resolution below (NOT baked in here) so an increased total
-            // draws additional funds from any leftover gift-card balance before the customer pays.
-            var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
-            {
-                SubTotal = order.SubTotal,
-                DiscountAmount = order.DiscountAmount,
-                SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
-                LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
-                Tips = order.Tips,
-                CompanyDevelopmentTips = order.CompanyDevelopmentTips,
-                // Present only when the admin typed a TOTAL instead of a subtotal. The base makes
-                // this a verification rather than a trust: if it does not match the subtotal this
-                // order's discounts actually leave behind, CalculateTotals ignores the override
-                // and prices the order the ordinary way.
-                TaxOverride = dto.TaxOverride,
-                TaxOverrideBase = dto.TaxOverrideBase
-                // gift card + points/rewards applied below to mirror the user edit path
-            });
-            order.Tax = totals.Tax;
-            var pointsAndRewardCredits = order.PointsRedeemedDiscount + order.RewardBalanceUsed;
-            await ApplyEditGiftCardAsync(order, totals.TotalBeforeGiftCard, pointsAndRewardCredits);
-
             if (dto.Services != null)
             {
                 foreach (var s in dto.Services)
                 {
+                    if (s.OrderServiceId == 0)
+                    {
+                        await AddAdminLevelsLineAsync(order, s, dto.PropertyType);
+                        continue;
+                    }
                     var os = order.OrderServices?.FirstOrDefault(x => x.Id == s.OrderServiceId);
                     if (os != null) { os.Quantity = s.Quantity; os.Cost = s.Cost; }
                 }
@@ -1127,6 +1171,35 @@ namespace DreamCleaningBackend.Services
             // carries the admin's new quantity. Running it earlier would store the pre-edit
             // count and hand the crew a stale number of levels.
             PropertyDetailsHelper.ApplyFromOrderLines(order, dto.PropertyType, dto.LevelsQuantity);
+
+            // Price the edited lines exactly like booking (server-authoritative), then the
+            // discounts from their booking rules. See ResolveAdminEditPricingAsync.
+            await ResolveAdminEditPricingAsync(order, dto, selectionsBefore, propertyTypeBefore,
+                totalDurationBefore, discountsBefore);
+
+            // Auto-calculate tax/total through the shared calculator (so SuperAdmin only needs
+            // to edit SubTotal). Loyalty is included alongside subscription + promo. Gift card is
+            // applied via the shared re-resolution below (NOT baked in here) so an increased total
+            // draws additional funds from any leftover gift-card balance before the customer pays.
+            var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
+            {
+                SubTotal = order.SubTotal,
+                DiscountAmount = order.DiscountAmount,
+                SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
+                LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
+                Tips = order.Tips,
+                CompanyDevelopmentTips = order.CompanyDevelopmentTips,
+                // Present only when the admin typed a TOTAL instead of a subtotal. The base makes
+                // this a verification rather than a trust: if it does not match the subtotal this
+                // order's discounts actually leave behind, CalculateTotals ignores the override
+                // and prices the order the ordinary way.
+                TaxOverride = dto.TaxOverride,
+                TaxOverrideBase = dto.TaxOverrideBase
+                // gift card + points/rewards applied below to mirror the user edit path
+            });
+            order.Tax = totals.Tax;
+            var pointsAndRewardCredits = order.PointsRedeemedDiscount + order.RewardBalanceUsed;
+            await ApplyEditGiftCardAsync(order, totals.TotalBeforeGiftCard, pointsAndRewardCredits);
 
             // Did this save actually change anything?
             //
@@ -1224,5 +1297,136 @@ namespace DreamCleaningBackend.Services
 
             await _context.SaveChangesAsync();
         }
+
+        /// <summary>
+        /// Server-side pricing for an admin order edit (owner's rules, 2026-10):
+        ///
+        /// SUBTOTAL - priced from the order's lines with the shared calculator, the same way
+        /// booking prices them, and the editor's figure is ignored (a warning is logged when they
+        /// differ by more than a cent). Three exceptions keep the editor's figure on purpose:
+        ///   - the admin TYPED the price in this edit (dto.PriceTypedByAdmin - SubTotal or Total);
+        ///   - a custom ("Pre-Arranged") order, whose agreed amount is the price;
+        ///   - lines the calculator cannot price (cleaner+hours with fractional hours).
+        /// An edit that changed no line (and no property type / cleaner hours) is never re-priced:
+        /// the order keeps the price it was booked at, rather than moving to today's catalogue
+        /// because somebody fixed a phone number.
+        ///
+        /// DISCOUNTS - the booking rules (OrderPricingCalculator.ResolveEditedDiscounts). A figure
+        /// that differs from what those rules give on the EDITOR'S OWN subtotal is a deliberate
+        /// manual discount - only a SuperAdmin can send one (the controller refuses anybody else) -
+        /// and is kept, with that slot's rule cleared so later edits re-scale it proportionally
+        /// instead of overwriting it. Loyalty is never typed (read-only in the editor).
+        /// </summary>
+        private async Task ResolveAdminEditPricingAsync(Order order, SuperAdminUpdateOrderDto dto,
+            string selectionsBefore, string? propertyTypeBefore, decimal totalDurationBefore,
+            OrderPricingCalculator.EditDiscountInput discountsBefore)
+        {
+            var isCustom = order.ServiceType?.IsCustom == true;
+            var priceTyped = dto.PriceTypedByAdmin == true;
+            var hasCleanerLine = order.OrderServices?.Any(os => os.Service?.ServiceRelationType == "cleaner") == true;
+            var selectionsChanged = LineSelectionSignature(order) != selectionsBefore
+                || !string.Equals(order.PropertyType, propertyTypeBefore, StringComparison.Ordinal)
+                || (hasCleanerLine && order.TotalDuration != totalDurationBefore);
+
+            if (isCustom || priceTyped)
+            {
+                if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
+                if (priceTyped && !isCustom)
+                    _logger.LogInformation("Order {OrderId}: the admin typed the price ({SubTotal:0.00}); kept as a manual price.",
+                        order.Id, order.SubTotal);
+            }
+            else if (selectionsChanged)
+            {
+                var input = await OrderPricingInputBuilder.FromOrderLinesAsync(_context, order, order.PropertyType);
+                if (input == null)
+                {
+                    if (dto.SubTotal.HasValue) order.SubTotal = dto.SubTotal.Value;
+                    _logger.LogWarning("Order {OrderId}: the lines cannot be priced by the shared calculator (fractional cleaner hours); kept the editor's subtotal {SubTotal:0.00}.",
+                        order.Id, order.SubTotal);
+                }
+                else
+                {
+                    var quote = OrderPricingCalculator.CalculateQuote(input);
+                    ApplyQuoteToExistingLines(order, quote);
+                    if (dto.SubTotal.HasValue && Math.Abs(dto.SubTotal.Value - quote.SubTotal) > 0.01m)
+                        _logger.LogWarning("Order {OrderId}: the admin editor sent subtotal {ClientSubTotal:0.00} but the shared calculator prices the lines at {ServerSubTotal:0.00}; using the server value.",
+                            order.Id, dto.SubTotal.Value, quote.SubTotal);
+                    order.SubTotal = quote.SubTotal;
+                }
+            }
+            else if (dto.SubTotal.HasValue && Math.Abs(dto.SubTotal.Value - order.SubTotal) > 0.01m)
+            {
+                _logger.LogWarning("Order {OrderId}: the admin editor sent subtotal {ClientSubTotal:0.00} with no line or price change; kept the stored {StoredSubTotal:0.00}.",
+                    order.Id, dto.SubTotal.Value, order.SubTotal);
+            }
+
+            // What the rules give on the editor's subtotal tells a typed discount from a derived one.
+            discountsBefore.NewSubTotal = dto.SubTotal ?? order.SubTotal;
+            var editorExpected = OrderPricingCalculator.ResolveEditedDiscounts(discountsBefore);
+            discountsBefore.NewSubTotal = order.SubTotal;
+            var (promo, subscription, loyalty) = OrderPricingCalculator.ResolveEditedDiscounts(discountsBefore);
+
+            if (dto.DiscountAmount.HasValue && Math.Abs(dto.DiscountAmount.Value - editorExpected.discount) > 0.01m)
+            {
+                order.DiscountAmount = dto.DiscountAmount.Value;
+                order.DiscountPercent = null;
+                order.DiscountFixedAmount = null;
+            }
+            else order.DiscountAmount = promo;
+
+            if (dto.SubscriptionDiscountAmount.HasValue &&
+                Math.Abs(dto.SubscriptionDiscountAmount.Value - editorExpected.subscription) > 0.01m)
+            {
+                order.SubscriptionDiscountAmount = dto.SubscriptionDiscountAmount.Value;
+                order.SubscriptionDiscountPercent = null;
+            }
+            else order.SubscriptionDiscountAmount = subscription;
+
+            order.LoyaltyDiscountAmount = loyalty;
+        }
+
+        /// <summary>
+        /// Writes the calculator's per-line cost, minutes and quantity back onto the order's EXISTING
+        /// rows (matched by service / extra id), in place - the admin path keeps row ids, unlike the
+        /// customer edit, which replaces its rows (AddOrderLinesFromQuote). The quantity is written
+        /// too because the shared floors (studio house -> 1 bedroom, sq.ft per bedrooms, levels range)
+        /// may have raised it, exactly as booking would.
+        /// </summary>
+        private static void ApplyQuoteToExistingLines(Order order, OrderPricingCalculator.QuoteResult quote)
+        {
+            var serviceRows = (order.OrderServices ?? new List<Models.OrderService>()).ToList();
+            var usedServices = new HashSet<Models.OrderService>();
+            foreach (var line in quote.ServiceLines)
+            {
+                if (!line.ShouldAddToOrder || line.ServiceId == 0) continue;
+                var row = serviceRows.FirstOrDefault(r => r.ServiceId == line.ServiceId && !usedServices.Contains(r));
+                if (row == null) continue;
+                usedServices.Add(row);
+                row.Quantity = line.Quantity;
+                row.Cost = line.Cost;
+                row.Duration = line.Duration;
+                row.PriceMultiplier = quote.PriceMultiplier;
+            }
+
+            var extraRows = (order.OrderExtraServices ?? new List<OrderExtraService>()).ToList();
+            var usedExtras = new HashSet<OrderExtraService>();
+            foreach (var line in quote.ExtraServiceLines)
+            {
+                var row = extraRows.FirstOrDefault(r => r.ExtraServiceId == line.ExtraServiceId && !usedExtras.Contains(r));
+                if (row == null) continue;
+                usedExtras.Add(row);
+                row.Cost = line.Cost;
+                row.Duration = line.Duration;
+            }
+        }
+
+        /// <summary>Which lines are selected, in what quantity - order-independent.</summary>
+        private static string LineSelectionSignature(Order order) =>
+            string.Join("|", (order.OrderServices ?? new List<Models.OrderService>())
+                .OrderBy(x => x.ServiceId).ThenBy(x => x.Quantity)
+                .Select(x => $"s{x.ServiceId}:{x.Quantity}"))
+            + "#" + string.Join("|", (order.OrderExtraServices ?? new List<OrderExtraService>())
+                .OrderBy(x => x.ExtraServiceId).ThenBy(x => x.Quantity).ThenBy(x => x.Hours)
+                .Select(x => $"e{x.ExtraServiceId}:{x.Quantity}:{x.Hours.ToString(System.Globalization.CultureInfo.InvariantCulture)}"));
     }
 }

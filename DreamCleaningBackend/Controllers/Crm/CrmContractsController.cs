@@ -171,6 +171,8 @@ namespace DreamCleaningBackend.Controllers.Crm
             var pricing = new PricingSnapshot
             {
                 PriceMode = dto.PriceMode,
+                PricingBasis = Enum.IsDefined(dto.PricingBasis) ? dto.PricingBasis : ContractPricingBasis.PerVisit,
+                ScheduledVisitsPerFeePeriod = Math.Max(1, dto.ScheduledVisitsPerWeek ?? 1),
                 PriceInput = dto.PriceInput,
                 SalesTaxRatePercent = dto.SalesTaxRatePercent,
                 CancellationPercent = dto.CancellationPercent,
@@ -181,6 +183,9 @@ namespace DreamCleaningBackend.Controllers.Crm
 
             return Ok(new ContractPricingPreviewDto
             {
+                PricingBasis = pricing.PricingBasis,
+                PerVisitAllocation = pricing.PerVisitAllocation,
+                ScheduledVisitsPerFeePeriod = pricing.ScheduledVisitsPerFeePeriod,
                 PreTaxPrice = pricing.PreTaxPrice,
                 SalesTaxAmount = pricing.SalesTaxAmount,
                 TotalPrice = pricing.TotalPrice,

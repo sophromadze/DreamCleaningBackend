@@ -100,14 +100,16 @@ namespace DreamCleaningBackend.Tests
                 PublicToken = "aaaabbbbccccddddeeeeffff0000111122223333",
                 ContractClientId = client.Id,
                 Status = InvoiceStatus.Sent,
-                InvoiceDate = new DateTime(2026, 9, 7),
-                DueDate = new DateTime(2026, 9, 22),
+                // Relative to TODAY, so the invoice is never past due: a hard-coded due date turned
+                // every part-paid fixture Overdue once the calendar passed it (2026-09-22).
+                InvoiceDate = DateTime.UtcNow.Date.AddDays(-7),
+                DueDate = DateTime.UtcNow.Date.AddDays(14),
                 SubTotal = total,
                 Total = total,
                 AmountPaid = alreadyPaid,
                 BalanceDue = total - alreadyPaid,
                 Currency = "USD",
-                FirstSentAt = new DateTime(2026, 9, 7),
+                FirstSentAt = DateTime.UtcNow.Date.AddDays(-7),
                 CreatedByUserId = 1
             };
             context.CommercialInvoices.Add(invoice);
@@ -265,7 +267,7 @@ namespace DreamCleaningBackend.Tests
             {
                 CommercialInvoiceId = invoice.Id,
                 Amount = 2000m,
-                PaymentDate = new DateTime(2026, 9, 8),
+                PaymentDate = DateTime.UtcNow.Date.AddDays(-6),
                 PaymentMethod = InvoicePaymentRecordMethod.Check,
                 Provider = InvoicePaymentProvider.Manual,
                 RecordedByUserId = 1,

@@ -644,6 +644,9 @@ namespace DreamCleaningBackend.Tests
             public Task<GiftCardValidationDto> ValidateGiftCard(string code) => throw new NotSupportedException();
             public Task<decimal> ApplyGiftCardToOrder(string code, decimal orderAmount, int orderId, int userId) => throw new NotSupportedException();
             public Task<List<GiftCardDto>> GetUserGiftCards(int userId) => throw new NotSupportedException();
+            public Task<List<MyGiftCardDto>> GetMyGiftCards(int userId) => throw new NotSupportedException();
+            public Task<GiftCardSendResult> SendMyGiftCard(int giftCardId, int userId, SendMyGiftCardDto dto) => throw new NotSupportedException();
+            public Task<GiftCardSendResult> ResendMyGiftCard(int giftCardId, int userId) => throw new NotSupportedException();
             public Task<List<GiftCardUsageDto>> GetGiftCardUsageHistory(string code, int userId) => throw new NotSupportedException();
             public Task<GiftCard> GetGiftCardByCode(string code) => throw new NotSupportedException();
             public Task<bool> MarkGiftCardAsPaid(int giftCardId, string paymentIntentId) => throw new NotSupportedException();

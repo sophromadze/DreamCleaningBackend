@@ -1,11 +1,13 @@
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.Processing;
@@ -30,12 +32,20 @@ namespace DreamCleaningBackend.Controllers
         private static readonly string[] AllowedImageExtensions = { ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp" };
 
         private readonly IAuditService _auditService;
+        private readonly IMemoryCache _cache;
 
-        public BeforeAfterPhotosController(ApplicationDbContext context, IConfiguration configuration, IAuditService auditService)
+        // Re-encode quality for originals and their resized variants.
+        private const int WebpQuality = 82;
+        // The public list reads image headers to build srcset; cache the result per URL. Upload and
+        // replace always produce NEW urls, so only the backfill has to evict.
+        private static readonly TimeSpan SrcsetCacheDuration = TimeSpan.FromHours(6);
+
+        public BeforeAfterPhotosController(ApplicationDbContext context, IConfiguration configuration, IAuditService auditService, IMemoryCache cache)
         {
             _context = context;
             _configuration = configuration;
             _auditService = auditService;
+            _cache = cache;
         }
 
         // ─────────────────────────────────────────────────────────
@@ -50,7 +60,15 @@ namespace DreamCleaningBackend.Controllers
                 .OrderBy(p => p.DisplayOrder).ThenByDescending(p => p.CreatedAt)
                 .ToListAsync();
 
-            return Ok(rows.Select(MapDto).ToList());
+            var dtos = new List<BeforeAfterPhotoDto>(rows.Count);
+            foreach (var row in rows)
+            {
+                var dto = MapDto(row);
+                dto.BeforeSrcset = await GetSrcsetAsync(row.BeforePhotoUrl);
+                dto.AfterSrcset = await GetSrcsetAsync(row.AfterPhotoUrl);
+                dtos.Add(dto);
+            }
+            return Ok(dtos);
         }
 
         // ─────────────────────────────────────────────────────────
@@ -66,6 +84,63 @@ namespace DreamCleaningBackend.Controllers
                 .ToListAsync();
 
             return Ok(rows.Select(MapDto).ToList());
+        }
+
+        /// <summary>
+        /// Backfill: writes the missing 400w/800w variants for every stored pair (active or not).
+        /// Idempotent — variants already on disk are skipped, so it can be run any number of times.
+        /// </summary>
+        [HttpPost("api/admin/before-after-photos/generate-variants")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> GenerateVariants()
+        {
+            if (string.IsNullOrWhiteSpace(_configuration["FileUpload:Path"]))
+                return BadRequest(new { message = "FileUpload:Path is not configured." });
+
+            var urls = (await _context.BeforeAfterPhotos
+                    .Select(p => new { p.BeforePhotoUrl, p.AfterPhotoUrl })
+                    .ToListAsync())
+                .SelectMany(p => new[] { p.BeforePhotoUrl, p.AfterPhotoUrl })
+                .Where(u => !string.IsNullOrWhiteSpace(u))
+                .Distinct()
+                .ToList();
+
+            int processed = 0, alreadyComplete = 0, variantsWritten = 0, originalsMissing = 0, failed = 0;
+            foreach (var url in urls)
+            {
+                var fullPath = ResolveFullPath(url);
+                if (fullPath == null || !System.IO.File.Exists(fullPath))
+                {
+                    originalsMissing++;
+                    continue;
+                }
+
+                try
+                {
+                    // Read the header first so a fully backfilled image is never decoded again.
+                    var info = await Image.IdentifyAsync(fullPath);
+                    var missing = ResponsiveImageVariants.WidthsFor(info.Width)
+                        .Any(w => !System.IO.File.Exists(ResponsiveImageVariants.VariantPath(fullPath, w)));
+                    if (!missing)
+                    {
+                        alreadyComplete++;
+                    }
+                    else
+                    {
+                        using var image = await Image.LoadAsync(fullPath);
+                        variantsWritten += await ResponsiveImageVariants.WriteMissingAsync(image, fullPath, WebpQuality);
+                        processed++;
+                    }
+                }
+                catch
+                {
+                    failed++;
+                }
+                _cache.Remove(SrcsetCacheKey(url));
+            }
+
+            return Ok(new { images = urls.Count, processed, alreadyComplete, variantsWritten, originalsMissing, failed });
         }
 
         [HttpPost("api/admin/before-after-photos")]
@@ -85,8 +160,8 @@ namespace DreamCleaningBackend.Controllers
 
             try
             {
-                var savedBefore = await SaveWebpImageAsync(beforeFile, "before-after", "before", 1800, 1800, 82);
-                var savedAfter = await SaveWebpImageAsync(afterFile, "before-after", "after", 1800, 1800, 82);
+                var savedBefore = await SaveWebpImageAsync(beforeFile, "before-after", "before", 1800, 1800, WebpQuality);
+                var savedAfter = await SaveWebpImageAsync(afterFile, "before-after", "after", 1800, 1800, WebpQuality);
 
                 if (savedBefore == null || savedAfter == null)
                     return BadRequest(new { message = "Could not process one of the images." });
@@ -176,7 +251,7 @@ namespace DreamCleaningBackend.Controllers
             {
                 var saved = await SaveWebpImageAsync(file, "before-after",
                     isBefore ? "before" : "after",
-                    1800, 1800, 82);
+                    1800, 1800, WebpQuality);
                 if (saved == null) return BadRequest(new { message = "Could not process the image." });
 
                 if (isBefore)
@@ -279,6 +354,9 @@ namespace DreamCleaningBackend.Controllers
                 };
 
                 await image.SaveAsync(fullPath, encoder);
+
+                // Resized copies for srcset (-400w.webp / -800w.webp), from the same decoded image.
+                await ResponsiveImageVariants.WriteMissingAsync(image, fullPath, quality);
             }
 
             var info = new FileInfo(fullPath);
@@ -291,11 +369,8 @@ namespace DreamCleaningBackend.Controllers
         {
             if (string.IsNullOrWhiteSpace(publicUrl)) return;
 
-            var basePath = _configuration["FileUpload:Path"];
-            if (string.IsNullOrWhiteSpace(basePath)) return;
-
-            var relative = publicUrl.TrimStart('/');
-            var fullPath = Path.Combine(basePath, relative);
+            var fullPath = ResolveFullPath(publicUrl);
+            if (fullPath == null) return;
 
             try
             {
@@ -305,6 +380,31 @@ namespace DreamCleaningBackend.Controllers
             {
                 // DB row is being removed regardless — ignore disk failures
             }
+            ResponsiveImageVariants.DeleteAll(fullPath);
+            _cache.Remove(SrcsetCacheKey(publicUrl));
+        }
+
+        /// <summary>Disk path of an uploaded file's public URL, under FileUpload:Path.</summary>
+        private string? ResolveFullPath(string publicUrl)
+        {
+            var basePath = _configuration["FileUpload:Path"];
+            if (string.IsNullOrWhiteSpace(basePath)) return null;
+            return Path.Combine(basePath, publicUrl.TrimStart('/'));
+        }
+
+        private static string SrcsetCacheKey(string publicUrl) => $"BeforeAfterSrcset:{publicUrl}";
+
+        private async Task<string?> GetSrcsetAsync(string publicUrl)
+        {
+            if (string.IsNullOrWhiteSpace(publicUrl)) return null;
+            var key = SrcsetCacheKey(publicUrl);
+            // Cached as "" when there is no srcset, so a missing one is not recomputed per request.
+            if (_cache.TryGetValue(key, out string? cached)) return string.IsNullOrEmpty(cached) ? null : cached;
+
+            var fullPath = ResolveFullPath(publicUrl);
+            var srcset = fullPath == null ? null : await ResponsiveImageVariants.BuildSrcsetAsync(publicUrl, fullPath);
+            _cache.Set(key, srcset ?? string.Empty, SrcsetCacheDuration);
+            return srcset;
         }
 
         private int GetUserId()
@@ -343,6 +443,9 @@ namespace DreamCleaningBackend.Controllers
         public string? Subtitle { get; set; }
         public string BeforePhotoUrl { get; set; } = string.Empty;
         public string AfterPhotoUrl { get; set; } = string.Empty;
+        /// <summary>Public list only: srcset over the resized variants that exist, else null.</summary>
+        public string? BeforeSrcset { get; set; }
+        public string? AfterSrcset { get; set; }
         public string? LinkUrl { get; set; }
         public int DisplayOrder { get; set; }
         public bool IsActive { get; set; }

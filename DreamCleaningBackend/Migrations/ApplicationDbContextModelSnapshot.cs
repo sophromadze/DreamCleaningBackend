@@ -4010,6 +4010,170 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("ScopeTemplates");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.CustomerInvoice", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("FirstSentAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("InvoiceNumber")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("LastSentAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("OrderPartialPaymentId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PublicToken")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<int>("SendCount")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("TopUpCollectedTarget")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("VoidReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<DateTime?>("VoidedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("VoidedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("InvoiceNumber")
+                        .IsUnique()
+                        .HasDatabaseName("IX_CustomerInvoices_InvoiceNumber");
+
+                    b.HasIndex("OrderId")
+                        .HasDatabaseName("IX_CustomerInvoices_Order");
+
+                    b.HasIndex("OrderPartialPaymentId");
+
+                    b.HasIndex("PublicToken")
+                        .IsUnique()
+                        .HasDatabaseName("IX_CustomerInvoices_PublicToken");
+
+                    b.ToTable("CustomerInvoices");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.CustomerInvoicePaymentAttempt", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("ClientIp")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("CustomerInvoiceId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("OrderPartialPaymentId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("ProcessingFee")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StripeCheckoutSessionId")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("StripePaymentIntentId")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<decimal>("TotalCharged")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StripeCheckoutSessionId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_CustomerInvoicePaymentAttempts_Session");
+
+                    b.HasIndex("StripePaymentIntentId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_CustomerInvoicePaymentAttempts_PaymentIntent");
+
+                    b.HasIndex("CustomerInvoiceId", "Status")
+                        .HasDatabaseName("IX_CustomerInvoicePaymentAttempts_Invoice_Status");
+
+                    b.HasIndex("OrderPartialPaymentId", "Status")
+                        .HasDatabaseName("IX_CustomerInvoicePaymentAttempts_Request_Status");
+
+                    b.ToTable("CustomerInvoicePaymentAttempts");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.CustomerTag", b =>
                 {
                     b.Property<int>("Id")
@@ -4239,6 +4403,10 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<decimal>("Duration")
                         .HasColumnType("decimal(65,30)");
 
+                    b.Property<string>("ExtraServiceKey")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
                     b.Property<bool>("HasHours")
                         .HasColumnType("tinyint(1)");
 
@@ -4283,7 +4451,7 @@ namespace DreamCleaningBackend.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ServiceTypeId");
+                    b.HasIndex("ServiceTypeId", "ExtraServiceKey");
 
                     b.ToTable("ExtraServices");
 
@@ -4483,11 +4651,20 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<decimal>("CurrentBalance")
                         .HasColumnType("decimal(10,2)");
 
+                    b.Property<bool>("EmailsSentOnPurchase")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("tinyint(1)");
 
                     b.Property<bool>("IsPaid")
                         .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("IsPendingSend")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("LastEmailSentAt")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<string>("Message")
                         .HasMaxLength(500)
@@ -4507,12 +4684,10 @@ namespace DreamCleaningBackend.Migrations
                         .HasColumnType("int");
 
                     b.Property<string>("RecipientEmail")
-                        .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("varchar(255)");
 
                     b.Property<string>("RecipientName")
-                        .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("varchar(100)");
 
@@ -4525,6 +4700,9 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("varchar(100)");
+
+                    b.Property<DateTime?>("SentAt")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime(6)");
@@ -4705,6 +4883,41 @@ namespace DreamCleaningBackend.Migrations
                     b.HasKey("ReviewId");
 
                     b.ToTable("GoogleReviews");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.GoogleReviewSyncState", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("AlertSentAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<double?>("AverageRating")
+                        .HasColumnType("double");
+
+                    b.Property<int>("ConsecutiveFailures")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("LastAttemptAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("varchar(2000)");
+
+                    b.Property<DateTime?>("LastErrorAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("LastSuccessAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("TotalReviewCount")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("GoogleReviewSyncStates");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.HandoverNote", b =>
@@ -5104,6 +5317,9 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<int?>("ContractClientId")
                         .HasColumnType("int");
 
+                    b.Property<int?>("ContractId")
+                        .HasColumnType("int");
+
                     b.Property<string>("ConvertingCampaign")
                         .HasMaxLength(200)
                         .HasColumnType("varchar(200)");
@@ -5129,6 +5345,12 @@ namespace DreamCleaningBackend.Migrations
 
                     b.Property<decimal>("DiscountAmount")
                         .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("DiscountFixedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("DiscountPercent")
+                        .HasColumnType("decimal(5,2)");
 
                     b.Property<string>("EntryMethod")
                         .HasMaxLength(500)
@@ -5283,6 +5505,9 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<int>("ServiceTypeId")
                         .HasColumnType("int");
 
+                    b.Property<bool>("ShowRoomCountsToCustomer")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<string>("SpecialInstructions")
                         .HasMaxLength(2000)
                         .HasColumnType("varchar(2000)");
@@ -5310,6 +5535,9 @@ namespace DreamCleaningBackend.Migrations
 
                     b.Property<decimal>("SubscriptionDiscountAmount")
                         .HasColumnType("decimal(65,30)");
+
+                    b.Property<decimal?>("SubscriptionDiscountPercent")
+                        .HasColumnType("decimal(5,2)");
 
                     b.Property<int?>("SubscriptionId")
                         .HasColumnType("int");
@@ -5360,6 +5588,8 @@ namespace DreamCleaningBackend.Migrations
                         .HasDatabaseName("IX_Orders_BookedByAdminUserId");
 
                     b.HasIndex("ContractClientId");
+
+                    b.HasIndex("ContractId");
 
                     b.HasIndex("HiddenByUserId");
 
@@ -6424,6 +6654,9 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<bool>("AutoRequestPayment")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<int?>("ContractId")
+                        .HasColumnType("int");
+
                     b.Property<bool>("CopyCleanerAssignments")
                         .HasColumnType("tinyint(1)");
 
@@ -6461,6 +6694,14 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<decimal?>("RecurringLoyaltyDiscountPercent")
                         .HasColumnType("decimal(65,30)");
 
+                    b.Property<string>("ServiceDaysOfMonth")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("ServiceDaysOfWeek")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
                     b.Property<TimeSpan>("ServiceTime")
                         .HasColumnType("time(6)");
 
@@ -6468,6 +6709,9 @@ namespace DreamCleaningBackend.Migrations
                         .HasColumnType("datetime(6)");
 
                     b.Property<int>("TemplateOrderId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("UpcomingOccurrenceTarget")
                         .HasColumnType("int");
 
                     b.Property<DateTime>("UpdatedAt")
@@ -6480,6 +6724,8 @@ namespace DreamCleaningBackend.Migrations
                         .HasColumnType("int");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ContractId");
 
                     b.HasIndex("CreatedByUserId");
 
@@ -7076,6 +7322,13 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<int>("DisplayOrder")
                         .HasColumnType("int");
 
+                    b.Property<decimal?>("DisplayPrice")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("DisplayPriceUnit")
+                        .HasMaxLength(30)
+                        .HasColumnType("varchar(30)");
+
                     b.Property<bool>("HasPoll")
                         .HasColumnType("tinyint(1)");
 
@@ -7093,6 +7346,10 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("varchar(100)");
 
+                    b.Property<string>("ServiceKey")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
                     b.Property<decimal>("TimeDuration")
                         .HasColumnType("decimal(18,2)");
 
@@ -7100,6 +7357,9 @@ namespace DreamCleaningBackend.Migrations
                         .HasColumnType("datetime(6)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ServiceKey")
+                        .IsUnique();
 
                     b.ToTable("ServiceTypes");
 
@@ -7231,6 +7491,10 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("varchar(100)");
 
+                    b.Property<string>("OfferKey")
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)");
+
                     b.Property<bool>("RequiresFirstTimeCustomer")
                         .HasColumnType("tinyint(1)");
 
@@ -7247,6 +7511,9 @@ namespace DreamCleaningBackend.Migrations
                         .HasColumnType("datetime(6)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("OfferKey")
+                        .IsUnique();
 
                     b.ToTable("SpecialOffers");
                 });
@@ -7275,6 +7542,9 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<bool>("IsMostPopular")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -7299,6 +7569,7 @@ namespace DreamCleaningBackend.Migrations
                             DiscountPercentage = 0m,
                             DisplayOrder = 1,
                             IsActive = true,
+                            IsMostPopular = false,
                             Name = "One Time",
                             SubscriptionDays = 0
                         },
@@ -7310,6 +7581,7 @@ namespace DreamCleaningBackend.Migrations
                             DiscountPercentage = 15m,
                             DisplayOrder = 2,
                             IsActive = true,
+                            IsMostPopular = false,
                             Name = "Weekly",
                             SubscriptionDays = 7
                         },
@@ -7321,6 +7593,7 @@ namespace DreamCleaningBackend.Migrations
                             DiscountPercentage = 10m,
                             DisplayOrder = 3,
                             IsActive = true,
+                            IsMostPopular = false,
                             Name = "Bi-Weekly",
                             SubscriptionDays = 14
                         },
@@ -7332,6 +7605,7 @@ namespace DreamCleaningBackend.Migrations
                             DiscountPercentage = 5m,
                             DisplayOrder = 4,
                             IsActive = true,
+                            IsMostPopular = false,
                             Name = "Monthly",
                             SubscriptionDays = 30
                         });
@@ -8674,6 +8948,42 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("GeneratedByAdmin");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.CustomerInvoice", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.User", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DreamCleaningBackend.Models.Order", "Order")
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.OrderPartialPayment", "OrderPartialPayment")
+                        .WithMany()
+                        .HasForeignKey("OrderPartialPaymentId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.Navigation("CreatedByUser");
+
+                    b.Navigation("Order");
+
+                    b.Navigation("OrderPartialPayment");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.CustomerInvoicePaymentAttempt", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.CustomerInvoice", "CustomerInvoice")
+                        .WithMany()
+                        .HasForeignKey("CustomerInvoiceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("CustomerInvoice");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.CustomerTag", b =>
                 {
                     b.HasOne("DreamCleaningBackend.Models.User", "User")
@@ -8852,6 +9162,11 @@ namespace DreamCleaningBackend.Migrations
                         .HasForeignKey("ContractClientId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.Contract", "Contract")
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("DreamCleaningBackend.Models.User", "HiddenByUser")
                         .WithMany()
                         .HasForeignKey("HiddenByUserId")
@@ -8888,6 +9203,8 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("BonusManager");
 
                     b.Navigation("BookedByAdmin");
+
+                    b.Navigation("Contract");
 
                     b.Navigation("ContractClient");
 
@@ -9275,6 +9592,11 @@ namespace DreamCleaningBackend.Migrations
 
             modelBuilder.Entity("DreamCleaningBackend.Models.RecurringOrderSeries", b =>
                 {
+                    b.HasOne("DreamCleaningBackend.Models.Contracts.Contract", "Contract")
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("DreamCleaningBackend.Models.User", "CreatedByUser")
                         .WithMany()
                         .HasForeignKey("CreatedByUserId")
@@ -9292,6 +9614,8 @@ namespace DreamCleaningBackend.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("Contract");
 
                     b.Navigation("CreatedByUser");
 

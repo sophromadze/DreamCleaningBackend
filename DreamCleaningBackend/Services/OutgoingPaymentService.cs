@@ -568,7 +568,7 @@ namespace DreamCleaningBackend.Services
         {
             var name = order.GetDisplayServiceTypeName();
             return OrderPricingCalculator.GetDefaultCleanerHourlyRate(
-                HasDeepCleaningExtra(order) ? 1m : 0m, name);
+                HasDeepCleaningExtra(order) ? 1m : 0m, name, order.GetRecognisableServiceTypeKey());
         }
 
         /// <summary>
@@ -578,9 +578,7 @@ namespace DreamCleaningBackend.Services
         /// "Super Deep" contains "deep cleaning" too and is meant to match.
         /// </summary>
         private static bool HasDeepCleaningExtra(Order order) =>
-            order.OrderExtraServices.Any(oes =>
-                oes.ExtraService != null &&
-                oes.ExtraService.Name.Contains("deep cleaning", StringComparison.OrdinalIgnoreCase));
+            order.OrderExtraServices.Any(oes => ExtraServiceKeys.IsDeepOrSuperDeep(oes.ExtraService));
 
         private static OutgoingPaymentOrderDto BuildOrderRow(Order order)
         {

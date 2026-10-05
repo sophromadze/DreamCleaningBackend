@@ -595,8 +595,9 @@ namespace DreamCleaningBackend.Controllers.Admin
             int contractClientId,
             [FromQuery] int? invoiceId = null,
             [FromQuery] DateTime? from = null,
-            [FromQuery] DateTime? to = null)
-            => Ok(await _orderLinks.GetEligibleOrdersAsync(contractClientId, invoiceId, from, to));
+            [FromQuery] DateTime? to = null,
+            [FromQuery] int? contractId = null)
+            => Ok(await _orderLinks.GetEligibleOrdersAsync(contractClientId, invoiceId, from, to, contractId));
 
         /// <summary>
         /// Sets which cleanings a DRAFT invoice covers, and optionally the agreed group total.
@@ -858,9 +859,13 @@ namespace DreamCleaningBackend.Controllers.Admin
                 // from it defaults to the same treatment - re-adding tax on top would overbill.
                 option.TaxType = InvoiceTaxType.Included;
                 option.PaymentTerms = snapshot.Pricing.PaymentMethod;
+                option.PricingBasis = snapshot.Pricing.PricingBasis.ToString();
                 option.ServiceDescription =
-                    $"Commercial cleaning services - {snapshot.Schedule.VisitsPerPeriod} visit(s) per "
-                    + $"{snapshot.Schedule.FrequencyUnit}";
+                    snapshot.Pricing.PricingBasis == Models.Contracts.ContractPricingBasis.WeeklyFlatFee
+                        ? $"Weekly commercial cleaning service fee - {snapshot.Schedule.VisitsPerPeriod} "
+                          + "scheduled visit(s) per week"
+                        : $"Commercial cleaning services - {snapshot.Schedule.VisitsPerPeriod} visit(s) per "
+                          + $"{snapshot.Schedule.FrequencyUnit}";
             }
             catch
             {

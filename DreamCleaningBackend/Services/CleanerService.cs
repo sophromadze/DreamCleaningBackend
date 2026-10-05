@@ -251,11 +251,10 @@ namespace DreamCleaningBackend.Services
         /// What Order.MaidsCount should be once <paramref name="assignedCount"/> cleaners are on
         /// the order. The whole rule, as a pure function, so it can be asserted without a database.
         ///
-        /// It only ever RISES. An order priced for 3 and staffed with 2 keeps its 3: the third
-        /// cleaner worked, they are simply not on file — that is exactly what
-        /// CleanerPayrollCalculator's unassigned slots exist to pay — and lowering the count would
-        /// silently cut the labour cost Statistics and Finances report. Unassigning a cleaner
-        /// therefore never lowers it either.
+        /// Assigning only ever RAISES it. An order priced for 3 and staffed with 2 keeps its 3: the
+        /// third cleaner worked, they are simply not on file — that is exactly what
+        /// CleanerPayrollCalculator's unassigned slots exist to pay. Removal is the other half,
+        /// <see cref="ResolveMaidsCountAfterRemoval"/>.
         /// </summary>
         public static int ResolveMaidsCountAfterAssignment(
             int currentMaidsCount, int assignedCount, bool hasExplicitCleanerCount)
@@ -264,6 +263,26 @@ namespace DreamCleaningBackend.Services
                 return currentMaidsCount;
 
             return assignedCount > currentMaidsCount ? assignedCount : currentMaidsCount;
+        }
+
+        /// <summary>
+        /// What Order.MaidsCount should be once a cleaner is REMOVED (owner's rule, 2026-09).
+        ///
+        /// Re-staffing used to inflate the count for good: 2 cleaners on the job, 2 replacements
+        /// assigned (count raised to 4), the original 2 removed — and the panel still said 4.
+        /// So the count now follows the roster down, but only while it IS the roster: when the
+        /// order was staffed up to (or past) its count before this removal, the count came from
+        /// the people on it and drops with them, never below who is left or below 1. A count set
+        /// ABOVE the roster (priced for 3, only 2 assigned) is the "third cleaner is not on file"
+        /// case and is left alone, exactly as before. Explicit-count orders never move.
+        /// </summary>
+        public static int ResolveMaidsCountAfterRemoval(
+            int currentMaidsCount, int assignedBeforeRemoval, int assignedAfterRemoval, bool hasExplicitCleanerCount)
+        {
+            if (hasExplicitCleanerCount || assignedBeforeRemoval < currentMaidsCount)
+                return currentMaidsCount;
+
+            return Math.Max(1, Math.Max(assignedAfterRemoval, currentMaidsCount - 1));
         }
 
         /// <summary>
@@ -619,7 +638,15 @@ namespace DreamCleaningBackend.Services
                 _logger.LogError(ex, "Audit logging failed for cleaner removal");
             }
 
+            var assignedBeforeRemoval = await _context.OrderCleaners.CountAsync(oc => oc.OrderId == orderId);
             _context.OrderCleaners.Remove(assignment);
+
+            // The cleaner count follows the roster down (ResolveMaidsCountAfterRemoval).
+            var order = assignment.Order;
+            var maidsBeforeRemoval = order.MaidsCount;
+            order.MaidsCount = ResolveMaidsCountAfterRemoval(
+                order.MaidsCount, assignedBeforeRemoval, assignedBeforeRemoval - 1,
+                await HasExplicitCleanerCountAsync(order));
 
             // Clean up NotificationLog entries for the removed cleaner on this order
             // so they won't receive any further reminders and can get fresh notifications if re-assigned
@@ -635,8 +662,27 @@ namespace DreamCleaningBackend.Services
 
             // Removing a cleaner changes what the job costs — the duration now splits across one
             // fewer person — so the order's labour cost is re-resolved from what is left.
-            await RecalculateOrderSalaryFromAssignmentsAsync(assignment.Order);
+            var salaryBeforeRemoval = order.CleanerTotalSalary;
+            await RecalculateOrderSalaryFromAssignmentsAsync(order);
             await _context.SaveChangesAsync();
+
+            if (maidsBeforeRemoval != order.MaidsCount)
+            {
+                try
+                {
+                    await _auditService.LogActionAsync(
+                        AuditEntityTypes.OrderCleanerHourlyRate,
+                        order.Id,
+                        "Update",
+                        new { CleanerTotalSalary = salaryBeforeRemoval, MaidsCount = maidsBeforeRemoval },
+                        new { CleanerTotalSalary = order.CleanerTotalSalary, MaidsCount = order.MaidsCount },
+                        actingUserId: removedBy);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Audit logging failed for removal-time cleaner count change");
+                }
+            }
 
             // Send removal notification in background (fire and forget) — but ONLY to a cleaner
             // who was actually told about this job. See ShouldNotifyOfRemoval: an unnotified

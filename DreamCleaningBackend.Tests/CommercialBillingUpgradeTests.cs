@@ -486,23 +486,25 @@ namespace DreamCleaningBackend.Tests
         // ══════════════════════════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// A NEW contract is committed for TEN months (2026-09-15, raised from six), then
-        /// month-to-month on sixty days notice, under New York law in Kings County.
+        /// A NEW contract has NO minimum commitment and ends on THIRTY days' written notice,
+        /// month-to-month under New York law in Kings County (owner's decision, 2026-09-30 - the
+        /// ten-month commitment and sixty-day notice were a company-wide rule the business does
+        /// not have).
         ///
         /// Defaults only — every generated version freezes its own copy, so changing these can
         /// never move a contract that already exists. The frontend's <c>defaultTerm()</c> carries
-        /// the same three numbers and is asserted in <c>contracts.component.spec.ts</c>; they
-        /// have to move together or a draft the server fills in disagrees with the form that
-        /// submitted it.
+        /// the same numbers and is asserted in <c>contracts.component.spec.ts</c>; they have to
+        /// move together or a draft the server fills in disagrees with the form that submitted it.
         /// </summary>
         [Fact]
-        public void NewContract_TermDefaults_AreTenSixtyAndMonthToMonth()
+        public void NewContract_TermDefaults_AreNoCommitmentAndThirtyDaysNotice()
         {
             var term = new TermSnapshot();
 
-            Assert.Equal(10, term.InitialTermMonths);
-            Assert.Equal(10, term.MinimumCommitmentMonths);
-            Assert.Equal(60, term.TerminationNoticeDays);
+            Assert.Equal(0, term.MinimumCommitmentMonths);
+            Assert.False(term.HasMinimumCommitment);
+            Assert.Equal(0, term.InitialTermMonths);
+            Assert.Equal(30, term.TerminationNoticeDays);
             Assert.Equal("month-to-month", term.RenewalType);
             Assert.Equal("New York", term.GoverningLawState);
             Assert.Equal("Kings County", term.VenueCounty);
@@ -592,7 +594,7 @@ namespace DreamCleaningBackend.Tests
         {
             var body = ContractTemplateSeed.BodyText;
 
-            Assert.Equal("2.6", ContractTemplateSeed.TemplateVersion);
+            Assert.Equal("3.3", ContractTemplateSeed.TemplateVersion);
 
             // Sections that only exist in the drafted version.
             Assert.Contains("## 18. PERSONNEL COORDINATION", body);
@@ -682,6 +684,11 @@ namespace DreamCleaningBackend.Tests
             // spread across Sections 4, 5, 14 and 15 with nothing consolidating them, and nothing
             // recorded which published policy version the agreement was signed against.
             Assert.Contains("2.5", ContractTemplateSeed.SupersededVersions);
+
+            // 2.6 hardcoded what the business decides per contract: a minimum commitment in every
+            // agreement, one supplies arrangement (Contractor's products, Client's consumables),
+            // a 48-hour guarantee window, and an express hand-soap exclusion.
+            Assert.Contains("2.6", ContractTemplateSeed.SupersededVersions);
 
             Assert.DoesNotContain(
                 ContractTemplateSeed.TemplateVersion, ContractTemplateSeed.SupersededVersions);

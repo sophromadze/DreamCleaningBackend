@@ -294,6 +294,17 @@ namespace DreamCleaningBackend.DTOs
         public decimal? BillableMinutes { get; set; }
     }
 
+    /// <summary>
+    /// Sets how many cleaners an order is staffed for (<c>Order.MaidsCount</c>) from the Orders
+    /// panel's Wages card. It moves the labour cost, never the customer's price, so — like the
+    /// hourly rate — it is a standalone write rather than part of an order-edit request.
+    /// </summary>
+    public class UpdateOrderMaidsCountDto
+    {
+        [Range(1, 50)]
+        public int MaidsCount { get; set; }
+    }
+
     /// <summary>Marks one cleaner paid for one order.</summary>
     public class MarkCleanerPaidDto
     {

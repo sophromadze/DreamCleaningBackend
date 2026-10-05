@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Models
 {
@@ -10,6 +11,22 @@ namespace DreamCleaningBackend.Models
         [Required]
         [StringLength(100)]
         public string Name { get; set; } // e.g., "Deep Cleaning", "Same Day Service", "Window Cleaning"
+
+        /// <summary>
+        /// Stable, admin-assigned identifier for code that must recognise a specific extra
+        /// ("extra-cleaners" changes the price, "cleaning-supplies" changes the checklist, the FAQ
+        /// reads the "cleaning-supplies" and "vacuum-cleaner" prices). Name is freely editable and
+        /// Id differs between databases, so neither may be used for that.
+        ///
+        /// Unlike ServiceType.ServiceKey it is NOT unique across the table: the catalogue keeps
+        /// per-service-type COPIES of the same extra (Residential and Move In/Out each own an
+        /// "Extra Cleaners" row), and the copies share the key. It is unique within what one
+        /// service type can see - its own rows plus the universal ones. Rules and messages live in
+        /// Helpers/ExtraServiceKeyPolicy.cs, the known keys in Helpers/ExtraServiceKeys.cs.
+        /// NULL = no key; code then falls back to the legacy name match (see ExtraServiceKeys).
+        /// </summary>
+        [StringLength(ExtraServiceKeyPolicy.MaxLength)]
+        public string? ExtraServiceKey { get; set; }
 
         [StringLength(500)]
         public string? Description { get; set; }

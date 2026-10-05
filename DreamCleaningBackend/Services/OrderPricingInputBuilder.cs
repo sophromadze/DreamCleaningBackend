@@ -171,6 +171,68 @@ namespace DreamCleaningBackend.Services
         }
 
         /// <summary>
+        /// Input for the ADMIN order editor's save (2026-10): the order's own lines AFTER the
+        /// admin's quantity / extras / levels changes were applied, priced exactly like booking.
+        /// Mirrors buildAdminEditQuoteInput (shared/pricing/admin-order-edit.pricing.ts), which the
+        /// editor previews with, so the server re-derives the subtotal the admin was shown.
+        ///
+        /// Returns null when the order cannot be priced from its lines, and the caller keeps the
+        /// editor's figure instead:
+        ///   - a custom ("Pre-Arranged") type - its agreed amount IS the price;
+        ///   - a cleaner+hours order whose hours are not whole. The calculator takes whole hours
+        ///     (booking cannot book 2.5h); only the admin editor can, and its preview prices it.
+        /// The caller logs which case applied.
+        /// </summary>
+        public static async Task<OrderPricingCalculator.QuoteInput?> FromOrderLinesAsync(
+            ApplicationDbContext context, Order order, string? propertyType)
+        {
+            var serviceType = order.ServiceType;
+            if (serviceType == null && order.ServiceTypeId > 0)
+                serviceType = await context.ServiceTypes.FindAsync(order.ServiceTypeId);
+            if (serviceType == null || serviceType.IsCustom) return null;
+
+            var input = new OrderPricingCalculator.QuoteInput
+            {
+                BasePrice = serviceType.BasePrice,
+                BaseDuration = serviceType.TimeDuration,
+                MinimumPrice = serviceType.MinimumPrice
+            };
+
+            await AddServiceLinesAsync(context, input,
+                (order.OrderServices ?? new List<Models.OrderService>())
+                    .Select(os => new BookingServiceDto { ServiceId = os.ServiceId, Quantity = os.Quantity }));
+            await AddExtraServiceLinesAsync(context, input,
+                (order.OrderExtraServices ?? new List<OrderExtraService>())
+                    .Select(e => new BookingExtraServiceDto { ExtraServiceId = e.ExtraServiceId, Quantity = e.Quantity, Hours = e.Hours }));
+
+            // Same order as the booking path - see the comment in FromBookingDtoAsync.
+            ClampLevelsToPropertyType(input, propertyType);
+            ClampBedroomsToPropertyType(input, propertyType);
+            ClampSquareFeetToBedrooms(input);
+
+            // An hours line is never persisted (it folds into the cleaner line), so a cleaner+hours
+            // order re-supplies its hours from TotalDuration - the editor's getEditFallbackHours.
+            var hasCleaner = input.Services.Any(s => s.ServiceRelationType == "cleaner");
+            var hasHours = input.Services.Any(s => s.ServiceRelationType == "hours");
+            if (hasCleaner && !hasHours)
+            {
+                var hours = order.TotalDuration / 60m;
+                if (hours != decimal.Truncate(hours)) return null;
+                if (hours > 0)
+                {
+                    input.Services.Add(new OrderPricingCalculator.ServiceLineInput
+                    {
+                        ServiceId = 0, // synthetic — never persisted
+                        ServiceRelationType = "hours",
+                        Quantity = (int)hours
+                    });
+                }
+            }
+
+            return input;
+        }
+
+        /// <summary>
         /// Default/minimum square-feet for a bedroom count — mirror of
         /// getSquareFeetForBedrooms in order-pricing.calculator.ts. The UI auto-raises
         /// the Sq.ft service to this when bedrooms change; enforcing it here closes the
@@ -372,6 +434,7 @@ namespace DreamCleaningBackend.Services
                     HasHours = extraService.HasHours,
                     HasQuantity = extraService.HasQuantity,
                     Name = extraService.Name,
+                    ExtraServiceKey = extraService.ExtraServiceKey,
                     Quantity = extraServiceDto.Quantity,
                     Hours = extraServiceDto.Hours
                 });

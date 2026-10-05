@@ -5,8 +5,9 @@ namespace DreamCleaningBackend.DTOs
     ///
     /// NOTHING IN THIS PAYLOAD IS KEYED BY ID. Production and local have diverged on surrogate
     /// keys — the same service type is Id 4 in production and Id 15 locally — so every reference
-    /// resolves by (ServiceType.Name, Service.ServiceKey), which name the same business concepts
-    /// in both environments. Adding an Id here, including ServiceTypeId, would reintroduce the
+    /// resolves by key or name: a service type by ServiceType.ServiceKey when both sides have one
+    /// (else by ServiceType.Name), a service by Service.ServiceKey. Those name the same business
+    /// concepts in both environments. Adding an Id here, including ServiceTypeId, would reintroduce the
     /// exact class of silent mis-targeting this format exists to avoid.
     /// </summary>
     public class PricingConfigurationDto
@@ -24,14 +25,41 @@ namespace DreamCleaningBackend.DTOs
 
     public class PricingConfigurationServiceTypeDto
     {
-        /// <summary>Resolution key. Must match exactly one ServiceType.Name in the target.</summary>
+        /// <summary>
+        /// Resolves the target when either side has no ServiceKey: must then match exactly one
+        /// ServiceType.Name. When both sides are keyed it is cross-checked against the key instead.
+        /// </summary>
         public string ServiceTypeName { get; set; } = string.Empty;
 
         public decimal BasePrice { get; set; }
         public decimal TimeDuration { get; set; }
         public decimal MinimumPrice { get; set; }
 
+        /// <summary>
+        /// The type's ServiceKey (see ServiceType.ServiceKey). Resolves the target when an existing
+        /// type holds the same key; a key and a name pointing at different types is an error, never
+        /// a guess. Null leaves the target's key untouched and resolves by name, which is also what
+        /// every export made before this field existed deserializes to; a value on a name-resolved
+        /// type sets its key, after the same format and uniqueness checks as the Booking Services form.
+        /// </summary>
+        public string? ServiceKey { get; set; }
+
+        /// <summary>
+        /// The type's marketing-only display price (see ServiceType.DisplayPrice). The OBJECT being
+        /// absent - every export made before this field existed - leaves the target's display price
+        /// untouched; an object whose Amount and Unit are both null clears it. Export always writes it.
+        /// </summary>
+        public PricingConfigurationDisplayPriceDto? DisplayPrice { get; set; }
+
         public List<PricingConfigurationServiceDto> Services { get; set; } = new();
+    }
+
+    public class PricingConfigurationDisplayPriceDto
+    {
+        public decimal? Amount { get; set; }
+
+        /// <summary>per-hour-per-cleaner, per-hour or from (ServiceTypeDisplayPricePolicy.Units).</summary>
+        public string? Unit { get; set; }
     }
 
     public class PricingConfigurationServiceDto

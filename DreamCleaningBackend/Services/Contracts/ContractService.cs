@@ -75,6 +75,12 @@ namespace DreamCleaningBackend.Services.Contracts
         /// </summary>
         public async Task<Contract> SaveDraftAsync(int? contractId, SaveContractDto dto, int adminId)
         {
+            // A weekly flat fee with a monthly schedule or monthly invoices would have to guess how
+            // many weeks or visits one fee covers. Refused here, with the reason, never guessed.
+            var incompatible = ContractPricingCalculator.IncompatibilityReason(
+                new PricingSnapshot { PricingBasis = dto.Pricing.PricingBasis }, dto.Schedule, dto.Billing);
+            if (incompatible != null) throw new ContractWorkflowException(incompatible);
+
             var template = await ResolveAgreementTemplateAsync(dto.ContractTemplateId);
 
             var contractorProfile = await _context.ContractorProfiles
@@ -174,10 +180,12 @@ namespace DreamCleaningBackend.Services.Contracts
             // Refreshing here keeps the two entry points agreeing. A stored VERSION is untouched:
             // it renders from its own frozen snapshot and never comes back through this method.
             await RefreshRetiredTemplateBodyAsync(snapshot);
+            // The row names the template the draft now renders from, as a save would have set it.
+            contract.ContractTemplateId = snapshot.ContractTemplateId;
 
             // Recompute rather than trust: the draft may have been written by an older client
             // build, and the derived figures are quoted verbatim in Sections 14 and 15.
-            ContractPricingCalculator.Recalculate(snapshot.Pricing);
+            ContractPricingCalculator.Recalculate(snapshot.Pricing, snapshot.Schedule);
 
             var previousVersion = await _context.ContractVersions
                 .Where(v => v.ContractId == contract.Id)
@@ -241,6 +249,8 @@ namespace DreamCleaningBackend.Services.Contracts
                 or ContractStatus.FullySigned or ContractStatus.PartiallySigned)
                 throw new ContractWorkflowException("This contract can no longer be sent for review.");
 
+            RequireNoMissingFields(snapshot);
+
             var email = snapshot.ClientSigner.Email ?? snapshot.Client.NoticeEmail;
             if (string.IsNullOrWhiteSpace(email))
                 throw new ContractWorkflowException(
@@ -286,6 +296,8 @@ namespace DreamCleaningBackend.Services.Contracts
 
             if (contract.Status is ContractStatus.AwaitingSignatures or ContractStatus.PartiallySigned)
                 throw new ContractWorkflowException("Signing is already in progress for this version.");
+
+            RequireNoMissingFields(snapshot);
 
             if (string.IsNullOrWhiteSpace(snapshot.ContractorSigner.Email))
                 throw new ContractWorkflowException("The contractor signer has no email address on file.");
@@ -334,6 +346,59 @@ namespace DreamCleaningBackend.Services.Contracts
                 $"Signing links sent to {contractorRow.InvitedName} and {clientRow.InvitedName}",
                 ContractActorType.System, "System", version.Id);
         }
+
+        /// <summary>
+        /// Refuses to put a document in front of a client while it still prints a value nobody
+        /// supplied (2026-09-30).
+        ///
+        /// The list is the renderer's own: a token is reported only when its line SURVIVES this
+        /// contract's configuration, so Exhibit A fields under a Simplified or Omitted scope, the
+        /// commitment dates under "no minimum commitment", an empty B5 and a blank optional contact
+        /// can never block - they are not in the document. What is left is genuinely required: an
+        /// unanswered supplies allocation, a missing on-call contact, no commencement date.
+        /// </summary>
+        private static void RequireNoMissingFields(ContractSnapshot snapshot)
+        {
+            var missing = DescribeMissingFields(ContractRenderer.Render(snapshot).UnresolvedTokens);
+            if (missing.Count == 0) return;
+
+            throw new ContractWorkflowException(
+                "This contract is missing required information: " + string.Join("; ", missing)
+                + ". Fill it in, generate a new preview, then send.");
+        }
+
+        /// <summary>
+        /// The visit count and the named service days disagree (2026-09-30), or null.
+        ///
+        /// DCC-2026-12918497 was drafted with six days ticked and "Visits per period" left at its
+        /// default of 1, and the agreement said "One (1) scheduled cleaning visit per calendar week".
+        /// Nothing overwrote the count - the form's own warning was switched off for flexible
+        /// schedules, so nobody was told. The count is AUTHORITATIVE (it is what the agreement
+        /// promises and what a weekly flat fee is divided by); the days are descriptive. So this
+        /// warns and never changes either value. Weekly schedules only - a day list says nothing
+        /// definite about "per calendar month".
+        /// </summary>
+        public static string? DescribeScheduleMismatch(ScheduleSnapshot? schedule)
+        {
+            if (schedule == null) return null;
+            if (!string.Equals(schedule.FrequencyUnit?.Trim(), "calendar week", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var days = schedule.ResolveServiceDays().Count;
+            var visits = Math.Max(1, schedule.VisitsPerPeriod);
+            if (days == 0 || days == visits) return null;
+
+            return $"The schedule promises {visits} visit{(visits == 1 ? "" : "s")} per calendar week but "
+                + $"names {days} regular service day{(days == 1 ? "" : "s")}. The agreement states the "
+                + "visit count, and nothing changes it automatically - check that it is right.";
+        }
+
+        /// <summary>Unresolved tokens as the admin reads them, duplicates collapsed.</summary>
+        public static List<string> DescribeMissingFields(IEnumerable<string> unresolvedTokens) =>
+            unresolvedTokens
+                .Select(ContractPlaceholders.DescribeToken)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
 
         /// <summary>
         /// Unlocks a contract that had already been sent for signature. Every outstanding signing
@@ -1114,7 +1179,7 @@ namespace DreamCleaningBackend.Services.Contracts
             await VoidSignersAsync(previous.Id);
 
             snapshot.VersionNumber = previous.VersionNumber + 1;
-            ContractPricingCalculator.Recalculate(snapshot.Pricing);
+            ContractPricingCalculator.Recalculate(snapshot.Pricing, snapshot.Schedule);
             var rendered = ContractRenderer.Render(snapshot);
 
             var version = new ContractVersion
@@ -1279,16 +1344,34 @@ namespace DreamCleaningBackend.Services.Contracts
         ///
         /// The body a document renders lives on the snapshot, not on the template row, which is
         /// what makes a stored version immutable — and what lets a draft keep rendering wording
-        /// the business has withdrawn. Only a draft is refreshed, and only when its template has
-        /// actually been retired: a snapshot whose template is still active is left exactly as
-        /// the admin saved it, edits to the master body included.
+        /// the business has withdrawn. Only a draft is refreshed: onto the current default when its
+        /// template has been retired, or onto its own template's current body when that body has
+        /// changed since the draft was saved - the same copy a save would make.
         /// </summary>
         private async Task RefreshRetiredTemplateBodyAsync(ContractSnapshot snapshot)
         {
             var current = await _context.ContractTemplates
                 .FirstOrDefaultAsync(t => t.Id == snapshot.ContractTemplateId);
 
-            if (current is { IsActive: true }) return;
+            if (current is { IsActive: true })
+            {
+                // SAME TEMPLATE, DIFFERENT BODY (2026-09-30). A draft copies the template body when
+                // it is saved; if the row's body has since changed - a SuperAdmin correcting the
+                // master, say - a draft that goes
+                // straight to Generate would render the words the row no longer holds. Saving the
+                // draft re-copies the body anyway, so doing the same here keeps Save and Generate
+                // agreeing. Drafts only: a stored version never comes back through this method.
+                if (!string.Equals(current.BodyText, snapshot.TemplateBodyText, StringComparison.Ordinal))
+                {
+                    _logger.LogInformation(
+                        "Draft snapshot re-copied the current body of agreement template v{Version} "
+                        + "before rendering.", current.Version);
+                    snapshot.TemplateBodyText = current.BodyText;
+                    snapshot.ContractTemplateVersion = current.Version;
+                    snapshot.ContractTemplateName = current.Name;
+                }
+                return;
+            }
 
             var replacement = await _context.ContractTemplates
                 .Where(t => t.IsActive)
@@ -1306,6 +1389,13 @@ namespace DreamCleaningBackend.Services.Contracts
             snapshot.ContractTemplateName = replacement.Name;
             snapshot.ContractTemplateVersion = replacement.Version;
             snapshot.TemplateBodyText = replacement.BodyText;
+
+            // The new body's Section 36(o) records the published policy version, so a draft moved
+            // onto it must record the CURRENT one too - otherwise a v2.7+ agreement would cite the
+            // policy version in force when the draft was first saved. Drafts only; a stored
+            // version never comes through here.
+            snapshot.PolicyVersion = Helpers.Commercial.CommercialPolicyDocument.Version;
+            snapshot.PolicyEffectiveDate = Helpers.Commercial.CommercialPolicyDocument.EffectiveDate;
         }
 
 
@@ -1549,6 +1639,60 @@ namespace DreamCleaningBackend.Services.Contracts
             return result;
         }
 
+        /// <summary>
+        /// Keeps the term self-consistent before it is frozen (2026-09-30).
+        ///
+        /// Zero months is "no minimum commitment" (see <see cref="TermSnapshot"/>), so a negative
+        /// count is clamped to it rather than printed. With no commitment there is no fixed
+        /// Initial Term either - the agreement runs month-to-month from commencement - so the
+        /// Initial Term is cleared rather than left carrying a number no clause will print. With a
+        /// commitment, the Initial Term is raised to at least the commitment: a fixed term that
+        /// ends before the earliest date the client may leave would contradict Section 3.
+        /// </summary>
+        public static TermSnapshot NormalizeTerm(TermSnapshot? term)
+        {
+            var result = term ?? new TermSnapshot();
+
+            result.MinimumCommitmentMonths = Math.Max(0, result.MinimumCommitmentMonths);
+            result.TerminationNoticeDays = Math.Max(0, result.TerminationNoticeDays);
+            result.InitialTermMonths = result.HasMinimumCommitment
+                ? Math.Max(result.InitialTermMonths, result.MinimumCommitmentMonths)
+                : 0;
+
+            return result;
+        }
+
+        /// <summary>
+        /// Tidies the supplies block before it is frozen: trims the free text, drops "other"
+        /// consumables with no name (an empty row on the form is not an agreed item), and refuses
+        /// Shared for a single consumable - one roll of paper towels is provided by one Party, and
+        /// the split between Parties is expressed across items, not inside one.
+        /// </summary>
+        public static SuppliesSnapshot NormalizeSupplies(SuppliesSnapshot? supplies)
+        {
+            var result = supplies ?? new SuppliesSnapshot();
+
+            static SupplyProvider? SingleParty(SupplyProvider? provider) =>
+                provider == SupplyProvider.Shared ? null : provider;
+
+            result.EquipmentArrangementNotes = string.IsNullOrWhiteSpace(result.EquipmentArrangementNotes)
+                ? null
+                : result.EquipmentArrangementNotes.Trim();
+            result.TrashLinersProvidedBy = SingleParty(result.TrashLinersProvidedBy);
+            result.PaperTowelsProvidedBy = SingleParty(result.PaperTowelsProvidedBy);
+            result.ToiletTissueProvidedBy = SingleParty(result.ToiletTissueProvidedBy);
+            result.OtherConsumables = (result.OtherConsumables ?? new List<ConsumableAllocation>())
+                .Where(c => c != null && !string.IsNullOrWhiteSpace(c.Item))
+                .Select(c => new ConsumableAllocation
+                {
+                    Item = c.Item.Trim(),
+                    ProvidedBy = SingleParty(c.ProvidedBy)
+                })
+                .ToList();
+
+            return result;
+        }
+
         private static ContractSnapshot BuildSnapshot(
             Contract contract, SaveContractDto dto, ContractTemplate template,
             ContractorProfile profile, ContractClient client, ContractServiceLocation location,
@@ -1558,6 +1702,9 @@ namespace DreamCleaningBackend.Services.Contracts
             {
                 PriceMode = dto.Pricing.PriceMode,
                 PriceInput = dto.Pricing.PriceInput,
+                PricingBasis = Enum.IsDefined(dto.Pricing.PricingBasis)
+                    ? dto.Pricing.PricingBasis
+                    : ContractPricingBasis.PerVisit,
                 SalesTaxRatePercent = dto.Pricing.SalesTaxRatePercent,
                 CancellationPercent = dto.Pricing.CancellationPercent,
                 InvoiceTiming = dto.Pricing.InvoiceTiming,
@@ -1568,8 +1715,10 @@ namespace DreamCleaningBackend.Services.Contracts
                 ReturnedPaymentFee = dto.Pricing.ReturnedPaymentFee
             };
             // Derived figures are computed here and nowhere else - anything the client posted for
-            // them was ignored by the DTO in the first place.
-            ContractPricingCalculator.Recalculate(pricing);
+            // them was ignored by the DTO in the first place. The schedule goes in because a weekly
+            // flat fee's per-visit allocation divides by the visits in a week.
+            var schedule = NormalizeSchedule(dto.Schedule);
+            ContractPricingCalculator.Recalculate(pricing, schedule);
 
             // A template copied onto a draft drops anything the admin has ARCHIVED on the master;
             // a scope the form already sent is taken as-is, because by then it is this contract's
@@ -1663,14 +1812,16 @@ namespace DreamCleaningBackend.Services.Contracts
                     Email = clientSigner.Email,
                     Phone = clientSigner.Phone
                 },
-                Schedule = NormalizeSchedule(dto.Schedule),
+                Schedule = schedule,
                 Billing = dto.Billing ?? new BillingCadenceSnapshot(),
-                Term = dto.Term ?? new TermSnapshot(),
+                Term = NormalizeTerm(dto.Term),
                 Pricing = pricing,
                 Advanced = dto.Advanced ?? new AdvancedTermsSnapshot(),
                 SiteDetails = dto.SiteDetails ?? new SiteDetailsSnapshot(),
                 Contacts = dto.Contacts ?? new OperationalContactsSnapshot(),
                 Insurance = dto.Insurance ?? new InsuranceEndorsementsSnapshot(),
+                Supplies = NormalizeSupplies(dto.Supplies),
+                ScopeDetail = Enum.IsDefined(dto.ScopeDetail) ? dto.ScopeDetail : ScopeDetailMode.Detailed,
                 Scope = scope
             };
         }

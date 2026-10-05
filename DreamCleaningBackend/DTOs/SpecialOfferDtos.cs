@@ -29,6 +29,10 @@ namespace DreamCleaningBackend.DTOs
         public string? BadgeColor { get; set; }
         public decimal? MinimumOrderAmount { get; set; }
         public bool RequiresFirstTimeCustomer { get; set; } = false;
+
+        /// <summary>See SpecialOffer.OfferKey. Blank or missing = no key. SuperAdmin only.</summary>
+        [StringLength(50)]
+        public string? OfferKey { get; set; }
     }
 
     // For updating a special offer
@@ -47,8 +51,42 @@ namespace DreamCleaningBackend.DTOs
         public DateTime? ValidTo { get; set; }
         public string? Icon { get; set; }
         public string? BadgeColor { get; set; }
-        public decimal? MinimumOrderAmount { get; set; }
+
+        private decimal? _minimumOrderAmount;
+
+        /// <summary>
+        /// ABSENT from the body keeps the stored minimum (the admin inline editor did not send it, and
+        /// a page cached from before this fix still won't); present-but-null clears it.
+        /// </summary>
+        public decimal? MinimumOrderAmount
+        {
+            get => _minimumOrderAmount;
+            set { _minimumOrderAmount = value; MinimumOrderAmountProvided = true; }
+        }
+
+        /// <summary>True when the request body carried <see cref="MinimumOrderAmount"/> at all.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool MinimumOrderAmountProvided { get; private set; }
+
         public bool IsActive { get; set; }
+
+        private string? _offerKey;
+
+        /// <summary>
+        /// See SpecialOffer.OfferKey. ABSENT from the body leaves the stored key alone - an admin
+        /// page loaded before the key existed must not wipe the key the AddOfferKeyAndMostPopular
+        /// migration filled in. Present-but-blank (or null) clears it. SuperAdmin only.
+        /// </summary>
+        [StringLength(50)]
+        public string? OfferKey
+        {
+            get => _offerKey;
+            set { _offerKey = value; OfferKeyProvided = true; }
+        }
+
+        /// <summary>True when the request body carried <see cref="OfferKey"/> at all.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool OfferKeyProvided { get; private set; }
     }
 
     // For displaying special offers in admin panel
@@ -70,6 +108,7 @@ namespace DreamCleaningBackend.DTOs
         public string? BadgeColor { get; set; }
         public decimal? MinimumOrderAmount { get; set; } 
         public bool RequiresFirstTimeCustomer { get; set; }
+        public string? OfferKey { get; set; }
     }
 
     // For displaying user's available offers
@@ -86,5 +125,7 @@ namespace DreamCleaningBackend.DTOs
         public string? Icon { get; set; }
         public string? BadgeColor { get; set; }
         public decimal? MinimumOrderAmount { get; set; }
+        /// <summary>See SpecialOffer.OfferKey - how the booking page recognises the first-time offer.</summary>
+        public string? OfferKey { get; set; }
     }
 }

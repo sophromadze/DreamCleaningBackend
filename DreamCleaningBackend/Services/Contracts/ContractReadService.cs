@@ -192,6 +192,10 @@ namespace DreamCleaningBackend.Services.Contracts
                 DocumentHtml = current?.RenderedDocumentHtml ?? string.Empty,
                 DocumentHash = current?.DocumentHashSha256 ?? string.Empty,
                 UnresolvedTokens = unresolved,
+                MissingFields = ContractService.DescribeMissingFields(unresolved),
+                ScheduleWarnings = ContractService.DescribeScheduleMismatch(currentSnapshot?.Schedule) is { } mismatch
+                    ? new List<string> { mismatch }
+                    : new List<string>(),
                 SignatureBlock = signatureBlock,
 
                 Draft = ContractSnapshot.Parse(contract.DraftSnapshotJson),

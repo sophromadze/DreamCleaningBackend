@@ -107,6 +107,31 @@ namespace DreamCleaningBackend.Models.Contracts
     }
 
     /// <summary>
+    /// WHAT the agreed price is a price OF (2026-09-30). <see cref="ContractPriceMode"/> says
+    /// whether the figure includes tax; this says whether it is charged per visit or per week.
+    ///
+    /// Persisted as an int inside FullSnapshotJson, so appending is safe and inserting is not. A
+    /// snapshot frozen before this existed has no value and reads as <see cref="PerVisit"/> - which
+    /// is exactly what every earlier agreement said, so nothing signed re-prices.
+    ///
+    /// There is deliberately no MONTHLY flat fee yet. The caps in Sections 14, 15 and 29 are per
+    /// visit, and a month holds four or five of any weekday, so "the monthly fee divided by the
+    /// month's visits" would give a different cap every month. That needs an agreed allocation
+    /// rule before it can be offered.
+    /// </summary>
+    public enum ContractPricingBasis
+    {
+        /// <summary>The fee is charged per completed scheduled visit (every agreement before this).</summary>
+        PerVisit = 0,
+
+        /// <summary>
+        /// One flat fee per calendar week covers that week's scheduled visits. The per-visit caps
+        /// use an ALLOCATION (weekly fee / visits per week) that is never the agreed price.
+        /// </summary>
+        WeeklyFlatFee = 1
+    }
+
+    /// <summary>
     /// How often a recurring commercial contract is INVOICED, which is a different question from
     /// how often the premises are CLEANED.
     ///

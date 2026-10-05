@@ -82,6 +82,9 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>Single-line service address, assembled the way the assignment email does.</summary>
         public string Address { get; set; } = string.Empty;
 
+        /// <summary>Service address without apt/suite, for the "Open in Maps" link.</summary>
+        public string MapsAddress { get; set; } = string.Empty;
+
         /// <summary>
         /// Whether the cleaner has to bring cleaning solutions/supplies. There is no dedicated
         /// column for this anywhere: the assignment email derives it from the customer having

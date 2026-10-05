@@ -96,6 +96,13 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceTypeDto>> CreateServiceType(CreateServiceTypeDto dto)
         {
+            var (serviceKey, serviceKeyError) = await ResolveServiceTypeKeyAsync(dto.ServiceKey, exceptServiceTypeId: null);
+            if (serviceKeyError != null) return BadRequest(new { message = serviceKeyError });
+
+            var (displayPrice, displayPriceUnit, displayPriceError) =
+                ServiceTypeDisplayPricePolicy.Resolve(dto.DisplayPrice, dto.DisplayPriceUnit);
+            if (displayPriceError != null) return BadRequest(new { message = displayPriceError });
+
             using (var transaction = await _context.Database.BeginTransactionAsync())
             {
                 try
@@ -133,6 +140,9 @@ namespace DreamCleaningBackend.Controllers
                         IsActive = true,
                         TimeDuration = dto.TimeDuration,
                         MinimumPrice = dto.MinimumPrice,
+                        ServiceKey = serviceKey,
+                        DisplayPrice = displayPrice,
+                        DisplayPriceUnit = displayPriceUnit,
                         CreatedAt = DateTime.UtcNow
                     };
                     _context.ServiceTypes.Add(serviceType);
@@ -160,6 +170,13 @@ namespace DreamCleaningBackend.Controllers
             var serviceType = await _context.ServiceTypes.FindAsync(id);
             if (serviceType == null)
                 return NotFound();
+
+            var (serviceKey, serviceKeyError) = await ResolveServiceTypeKeyAsync(dto.ServiceKey, exceptServiceTypeId: id);
+            if (serviceKeyError != null) return BadRequest(new { message = serviceKeyError });
+
+            var (displayPrice, displayPriceUnit, displayPriceError) =
+                ServiceTypeDisplayPricePolicy.Resolve(dto.DisplayPrice, dto.DisplayPriceUnit);
+            if (displayPriceError != null) return BadRequest(new { message = displayPriceError });
 
             // CREATE A COPY FOR AUDITING
             // FULL scalar snapshot: the "after" side is the live entity, so any field a
@@ -212,6 +229,9 @@ namespace DreamCleaningBackend.Controllers
                     serviceType.IsCustom = dto.IsCustom;
                     serviceType.TimeDuration = dto.TimeDuration;
                     serviceType.MinimumPrice = dto.MinimumPrice;
+                    serviceType.ServiceKey = serviceKey;
+                    serviceType.DisplayPrice = displayPrice;
+                    serviceType.DisplayPriceUnit = displayPriceUnit;
                     serviceType.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
@@ -228,6 +248,54 @@ namespace DreamCleaningBackend.Controllers
                     return StatusCode(500, new { message = "Error updating service type", error = ex.Message });
                 }
             }
+        }
+
+        /// <summary>
+        /// Normalizes and validates a requested ServiceType.ServiceKey (rules: ServiceTypeKeyPolicy).
+        /// Returns the value to store - null meaning "no key" - or a message for the admin. The
+        /// uniqueness check gives the clear message; the unique index is what actually guarantees it.
+        /// </summary>
+        private async Task<(string? Key, string? Error)> ResolveServiceTypeKeyAsync(string? raw, int? exceptServiceTypeId)
+        {
+            var key = ServiceTypeKeyPolicy.Normalize(raw);
+            if (key == null) return (null, null);
+
+            var problem = ServiceTypeKeyPolicy.DescribeProblem(key);
+            if (problem != null) return (null, problem);
+
+            var owner = await _context.ServiceTypes
+                .Where(st => st.ServiceKey == key && (exceptServiceTypeId == null || st.Id != exceptServiceTypeId))
+                .Select(st => st.Name)
+                .FirstOrDefaultAsync();
+
+            return owner != null
+                ? (null, ServiceTypeKeyPolicy.DescribeDuplicate(key, owner))
+                : (key, null);
+        }
+
+        /// <summary>
+        /// Normalizes and validates a requested ExtraService.ExtraServiceKey for a row placed at
+        /// (<paramref name="isAvailableForAll"/>, <paramref name="serviceTypeId"/>) - rules in
+        /// ExtraServiceKeyPolicy. Returns the value to store (null = no key) or a message for the admin.
+        /// </summary>
+        private async Task<(string? Key, string? Error)> ResolveExtraServiceKeyAsync(
+            string? raw, int? exceptExtraServiceId, bool isAvailableForAll, int? serviceTypeId)
+        {
+            var key = ExtraServiceKeyPolicy.Normalize(raw);
+            if (key == null) return (null, null);
+
+            var problem = ExtraServiceKeyPolicy.DescribeProblem(key);
+            if (problem != null) return (null, problem);
+
+            var holders = await _context.ExtraServices
+                .Where(es => es.ExtraServiceKey == key
+                    && (exceptExtraServiceId == null || es.Id != exceptExtraServiceId))
+                .ToListAsync();
+            var owner = holders.FirstOrDefault(es => ExtraServiceKeyPolicy.Conflicts(isAvailableForAll, serviceTypeId, es));
+
+            return owner != null
+                ? (null, ExtraServiceKeyPolicy.DescribeDuplicate(key, owner.Name))
+                : (key, null);
         }
 
         [HttpPut("service-types/{id}/deactivate")]
@@ -1119,6 +1187,7 @@ namespace DreamCleaningBackend.Controllers
                 {
                     Id = es.Id,
                     Name = es.Name,
+                    ExtraServiceKey = es.ExtraServiceKey,
                     Description = es.Description,
                     Price = es.Price,
                     Duration = es.Duration,
@@ -1143,6 +1212,10 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ExtraServiceDto>> CreateExtraService(CreateExtraServiceDto dto)
         {
+            var (extraServiceKey, extraServiceKeyError) = await ResolveExtraServiceKeyAsync(
+                dto.ExtraServiceKey, exceptExtraServiceId: null, dto.IsAvailableForAll, dto.ServiceTypeId);
+            if (extraServiceKeyError != null) return BadRequest(new { message = extraServiceKeyError });
+
             using (var transaction = await _context.Database.BeginTransactionAsync())
             {
                 try
@@ -1184,6 +1257,7 @@ namespace DreamCleaningBackend.Controllers
                     var extraService = new ExtraService
                     {
                         Name = dto.Name,
+                        ExtraServiceKey = extraServiceKey,
                         Description = dto.Description,
                         Price = dto.Price,
                         Duration = dto.Duration,
@@ -1210,6 +1284,7 @@ namespace DreamCleaningBackend.Controllers
                     {
                         Id = extraService.Id,
                         Name = extraService.Name,
+                        ExtraServiceKey = extraService.ExtraServiceKey,
                         Description = extraService.Description,
                         Price = extraService.Price,
                         Duration = extraService.Duration,
@@ -1242,9 +1317,22 @@ namespace DreamCleaningBackend.Controllers
             if (sourceExtraService == null)
                 return NotFound("Source extra service not found");
 
+            // The copy is the same extra, so it keeps the key - unless the target type can already
+            // see a row holding it (a universal one, or a copy it already has), in which case it is
+            // created unkeyed rather than refused: the admin asked for a copy, not a key.
+            string? copiedKey = null;
+            if (!string.IsNullOrWhiteSpace(sourceExtraService.ExtraServiceKey))
+            {
+                var (key, keyError) = await ResolveExtraServiceKeyAsync(
+                    sourceExtraService.ExtraServiceKey, exceptExtraServiceId: null,
+                    isAvailableForAll: false, serviceTypeId: dto.TargetServiceTypeId);
+                copiedKey = keyError == null ? key : null;
+            }
+
             var newExtraService = new ExtraService
             {
                 Name = sourceExtraService.Name,
+                ExtraServiceKey = copiedKey,
                 Description = sourceExtraService.Description,
                 Price = sourceExtraService.Price,
                 Duration = sourceExtraService.Duration,
@@ -1278,6 +1366,7 @@ namespace DreamCleaningBackend.Controllers
             {
                 Id = newExtraService.Id,
                 Name = newExtraService.Name,
+                ExtraServiceKey = newExtraService.ExtraServiceKey,
                 Description = newExtraService.Description,
                 Price = newExtraService.Price,
                 Duration = newExtraService.Duration,
@@ -1304,6 +1393,14 @@ namespace DreamCleaningBackend.Controllers
 
             // Full scalar snapshot - see AuditSnapshot.
             var originalExtraService = AuditSnapshot.Of(extraService);
+
+            // An absent key keeps the stored one (see UpdateExtraServiceDto), but it is still
+            // re-checked: moving the extra to another service type, or making it universal, can put
+            // it beside a row that already holds the same key.
+            var requestedKey = dto.ExtraServiceKeyProvided ? dto.ExtraServiceKey : extraService.ExtraServiceKey;
+            var (extraServiceKey, extraServiceKeyError) = await ResolveExtraServiceKeyAsync(
+                requestedKey, exceptExtraServiceId: id, dto.IsAvailableForAll, dto.ServiceTypeId);
+            if (extraServiceKeyError != null) return BadRequest(new { message = extraServiceKeyError });
 
             // Check if display order is changing
             bool isDisplayOrderChanging = extraService.DisplayOrder != dto.DisplayOrder;
@@ -1349,6 +1446,7 @@ namespace DreamCleaningBackend.Controllers
 
                     // Update fields
                     extraService.Name = dto.Name;
+                    extraService.ExtraServiceKey = extraServiceKey;
                     extraService.Description = dto.Description;
                     extraService.Price = dto.Price;
                     extraService.Duration = dto.Duration;
@@ -1374,6 +1472,7 @@ namespace DreamCleaningBackend.Controllers
                     {
                         Id = extraService.Id,
                         Name = extraService.Name,
+                        ExtraServiceKey = extraService.ExtraServiceKey,
                         Description = extraService.Description,
                         Price = extraService.Price,
                         Duration = extraService.Duration,
@@ -1586,6 +1685,7 @@ namespace DreamCleaningBackend.Controllers
                     Description = s.Description,
                     DiscountPercentage = s.DiscountPercentage,
                     SubscriptionDays = s.SubscriptionDays,
+                    IsMostPopular = s.IsMostPopular,
                     IsActive = s.IsActive,
                     DisplayOrder = s.DisplayOrder
                 })
@@ -1628,16 +1728,23 @@ namespace DreamCleaningBackend.Controllers
                         Description = dto.Description,
                         DiscountPercentage = dto.DiscountPercentage,
                         SubscriptionDays = dto.SubscriptionDays,
+                        IsMostPopular = dto.IsMostPopular,
                         DisplayOrder = dto.DisplayOrder,
                         IsActive = true,
                         CreatedAt = DateTime.UtcNow
                     };
+
+                    var badgeMoves = dto.IsMostPopular
+                        ? await ClearMostPopularOnOtherPlansAsync(exceptSubscriptionId: null)
+                        : new List<(Subscription Before, Subscription After)>();
 
                     _context.Subscriptions.Add(subscription);
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
 
                     await _auditService.LogCreateAsync(subscription);
+                    foreach (var (before, after) in badgeMoves)
+                        await _auditService.LogUpdateAsync(before, after);
 
                     return Ok(new SubscriptionDto
                     {
@@ -1646,6 +1753,7 @@ namespace DreamCleaningBackend.Controllers
                         Description = subscription.Description,
                         DiscountPercentage = subscription.DiscountPercentage,
                         SubscriptionDays = subscription.SubscriptionDays,
+                        IsMostPopular = subscription.IsMostPopular,
                         DisplayOrder = subscription.DisplayOrder,
                         IsActive = subscription.IsActive
                     });
@@ -1676,6 +1784,7 @@ namespace DreamCleaningBackend.Controllers
                 Description = subscription.Description,
                 DiscountPercentage = subscription.DiscountPercentage,
                 SubscriptionDays = subscription.SubscriptionDays,
+                IsMostPopular = subscription.IsMostPopular,
                 DisplayOrder = subscription.DisplayOrder,
                 IsActive = subscription.IsActive,
                 CreatedAt = subscription.CreatedAt,
@@ -1726,13 +1835,22 @@ namespace DreamCleaningBackend.Controllers
                     subscription.DiscountPercentage = dto.DiscountPercentage;
                     subscription.SubscriptionDays = dto.SubscriptionDays;
                     subscription.DisplayOrder = dto.DisplayOrder;
+                    // Absent keeps the stored badge (see UpdateSubscriptionDto.IsMostPopular).
+                    if (dto.IsMostPopular.HasValue)
+                        subscription.IsMostPopular = dto.IsMostPopular.Value;
                     subscription.UpdatedAt = DateTime.UtcNow;
+
+                    var badgeMoves = subscription.IsMostPopular
+                        ? await ClearMostPopularOnOtherPlansAsync(exceptSubscriptionId: subscription.Id)
+                        : new List<(Subscription Before, Subscription After)>();
 
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
 
                     // Log the update
                     await _auditService.LogUpdateAsync(originalSubscription, subscription);
+                    foreach (var (before, after) in badgeMoves)
+                        await _auditService.LogUpdateAsync(before, after);
 
                     return Ok(new SubscriptionDto
                     {
@@ -1741,6 +1859,7 @@ namespace DreamCleaningBackend.Controllers
                         Description = subscription.Description,
                         DiscountPercentage = subscription.DiscountPercentage,
                         SubscriptionDays = subscription.SubscriptionDays,
+                        IsMostPopular = subscription.IsMostPopular,
                         DisplayOrder = subscription.DisplayOrder,
                         IsActive = subscription.IsActive
                     });
@@ -1751,6 +1870,28 @@ namespace DreamCleaningBackend.Controllers
                     return StatusCode(500, new { message = "Error updating subscription", error = ex.Message });
                 }
             }
+        }
+
+        /// <summary>
+        /// At most ONE plan carries the "Most popular" badge: called whenever a create/update leaves a
+        /// plan holding it, this takes it off every other plan (tracked, saved by the caller's
+        /// SaveChanges). Returns before/after pairs so the caller can audit what moved.
+        /// </summary>
+        private async Task<List<(Subscription Before, Subscription After)>> ClearMostPopularOnOtherPlansAsync(int? exceptSubscriptionId)
+        {
+            var holders = await _context.Subscriptions
+                .Where(s => s.IsMostPopular && (exceptSubscriptionId == null || s.Id != exceptSubscriptionId))
+                .ToListAsync();
+
+            var moves = new List<(Subscription Before, Subscription After)>();
+            foreach (var other in holders)
+            {
+                var before = AuditSnapshot.Of(other);
+                other.IsMostPopular = false;
+                other.UpdatedAt = DateTime.UtcNow;
+                moves.Add((before, other));
+            }
+            return moves;
         }
 
         [HttpDelete("subscriptions/{id}")]
@@ -1800,6 +1941,7 @@ namespace DreamCleaningBackend.Controllers
                     Description = subscription.Description,
                     DiscountPercentage = subscription.DiscountPercentage,
                     SubscriptionDays = subscription.SubscriptionDays,
+                    IsMostPopular = subscription.IsMostPopular,
                     IsActive = subscription.IsActive,
                     DisplayOrder = subscription.DisplayOrder,
                     CreatedAt = subscription.CreatedAt,
@@ -1820,6 +1962,7 @@ namespace DreamCleaningBackend.Controllers
                     Description = subscription.Description,
                     DiscountPercentage = subscription.DiscountPercentage,
                     SubscriptionDays = subscription.SubscriptionDays,
+                    IsMostPopular = subscription.IsMostPopular,
                     IsActive = subscription.IsActive,
                     DisplayOrder = subscription.DisplayOrder,
                     CreatedAt = subscription.CreatedAt,
@@ -1864,6 +2007,7 @@ namespace DreamCleaningBackend.Controllers
                     Description = subscription.Description,
                     DiscountPercentage = subscription.DiscountPercentage,
                     SubscriptionDays = subscription.SubscriptionDays,
+                    IsMostPopular = subscription.IsMostPopular,
                     IsActive = subscription.IsActive,
                     DisplayOrder = subscription.DisplayOrder,
                     CreatedAt = subscription.CreatedAt,
@@ -1884,6 +2028,7 @@ namespace DreamCleaningBackend.Controllers
                     Description = subscription.Description,
                     DiscountPercentage = subscription.DiscountPercentage,
                     SubscriptionDays = subscription.SubscriptionDays,
+                    IsMostPopular = subscription.IsMostPopular,
                     IsActive = subscription.IsActive,
                     DisplayOrder = subscription.DisplayOrder,
                     CreatedAt = subscription.CreatedAt,

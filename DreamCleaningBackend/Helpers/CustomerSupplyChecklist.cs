@@ -1,3 +1,5 @@
+using DreamCleaningBackend.Models;
+
 namespace DreamCleaningBackend.Helpers
 {
     /// <summary>
@@ -52,9 +54,11 @@ namespace DreamCleaningBackend.Helpers
     /// </summary>
     public static class CustomerSupplyChecklist
     {
-        /// <summary>Name fragments the extras are matched on. Matched on NAME (contains,
-        /// case-insensitive) rather than on Id, because catalogue Ids differ between dev and
-        /// production and these rows are admin-created.</summary>
+        /// <summary>
+        /// LEGACY name fragments (contains, case-insensitive). The extras are recognised by their
+        /// ExtraServiceKey ("cleaning-supplies", "cleaning-essentials", "vacuum-cleaner", "oven" -
+        /// see ExtraServiceKeys); these fragments only decide for an UNKEYED row.
+        /// </summary>
         public const string CleaningSuppliesMatch = "cleaning supplies";
         public const string CleaningEssentialsMatch = "cleaning essentials";
         public const string VacuumMatch = "vacuum";
@@ -130,8 +134,51 @@ namespace DreamCleaningBackend.Helpers
         /// <summary>The line the Vacuum Cleaner extra buys the customer out of.</summary>
         private const string BroomOrVacuumItem = "Broom or vacuum cleaner";
 
+        /// <summary>Unkeyed stand-ins for callers (and specs) that only hold names: the legacy name rules.</summary>
+        private static IEnumerable<ExtraService> ByName(IEnumerable<string?> extraServiceNames) =>
+            extraServiceNames.Select(n => new ExtraService { Name = n ?? string.Empty });
+
+        public static bool IsCleaningSupplies(ExtraService? extra) =>
+            ExtraServiceKeys.Is(extra, ExtraServiceKeys.CleaningSupplies, ExtraServiceKeys.LegacyCleaningSupplies);
+
+        public static bool IsCleaningEssentials(ExtraService? extra) =>
+            ExtraServiceKeys.Is(extra, ExtraServiceKeys.CleaningEssentials, ExtraServiceKeys.LegacyCleaningEssentials);
+
+        public static bool IsVacuum(ExtraService? extra) =>
+            ExtraServiceKeys.Is(extra, ExtraServiceKeys.VacuumCleaner, ExtraServiceKeys.LegacyVacuum);
+
+        public static bool IsOven(ExtraService? extra) =>
+            ExtraServiceKeys.Is(extra, ExtraServiceKeys.Oven, ExtraServiceKeys.LegacyOven);
+
+        public static bool HasCleaningSuppliesExtra(IEnumerable<ExtraService?> extras) => extras.Any(IsCleaningSupplies);
+
+        public static bool HasCleaningEssentialsExtra(IEnumerable<ExtraService?> extras) => extras.Any(IsCleaningEssentials);
+
+        public static bool HasVacuumExtra(IEnumerable<ExtraService?> extras) => extras.Any(IsVacuum);
+
+        /// <summary>Deep / Super Deep (their flags) or the Oven extra - see the name overload below.</summary>
+        public static bool RequiresOvenCleaner(IEnumerable<ExtraService?> extras)
+        {
+            var list = extras.ToList();
+            return list.Any(ExtraServiceKeys.IsDeepOrSuperDeep) || list.Any(IsOven);
+        }
+
+        /// <summary>Reads every checklist-relevant fact off the order's extras in one pass.</summary>
+        public static SupplyChecklistFacts Resolve(IEnumerable<ExtraService?> extras, bool isCustomServiceType)
+        {
+            var list = extras.ToList();
+            return new SupplyChecklistFacts
+            {
+                HasCleaningSupplies = HasCleaningSuppliesExtra(list),
+                HasCleaningEssentials = HasCleaningEssentialsExtra(list),
+                WeBringVacuum = HasVacuumExtra(list),
+                RequiresOvenCleaner = RequiresOvenCleaner(list),
+                IsCustomServiceType = isCustomServiceType
+            };
+        }
+
         public static bool HasCleaningSuppliesExtra(IEnumerable<string?> extraServiceNames) =>
-            extraServiceNames.Any(n => Contains(n, CleaningSuppliesMatch));
+            HasCleaningSuppliesExtra(ByName(extraServiceNames));
 
         /// <summary>
         /// True when the customer bought the "Cleaning Essentials" extra. Note this does NOT
@@ -139,11 +186,11 @@ namespace DreamCleaningBackend.Helpers
         /// be held together, and each removes a different part of the checklist.
         /// </summary>
         public static bool HasCleaningEssentialsExtra(IEnumerable<string?> extraServiceNames) =>
-            extraServiceNames.Any(n => Contains(n, CleaningEssentialsMatch));
+            HasCleaningEssentialsExtra(ByName(extraServiceNames));
 
         /// <summary>True when we bring a vacuum, so the customer is not asked for one.</summary>
         public static bool HasVacuumExtra(IEnumerable<string?> extraServiceNames) =>
-            extraServiceNames.Any(n => Contains(n, VacuumMatch));
+            HasVacuumExtra(ByName(extraServiceNames));
 
         /// <summary>
         /// True when the cleaners need an oven-cleaning liquid on site: a Deep / Super Deep
@@ -151,33 +198,20 @@ namespace DreamCleaningBackend.Helpers
         /// missed here, so a customer who ordered oven cleaning without deep cleaning was never
         /// told to have Oven Cleaner ready.
         /// </summary>
-        public static bool RequiresOvenCleaner(IEnumerable<string?> extraServiceNames)
-        {
-            var names = extraServiceNames.ToList();
-            return names.Any(n => Contains(n, "deep cleaning")) || names.Any(n => Contains(n, "oven"));
-        }
+        public static bool RequiresOvenCleaner(IEnumerable<string?> extraServiceNames) =>
+            RequiresOvenCleaner(ByName(extraServiceNames));
 
-        /// <summary>Reads every checklist-relevant fact off the order's extra-service names in one pass.</summary>
-        public static SupplyChecklistFacts Resolve(IEnumerable<string?> extraServiceNames, bool isCustomServiceType)
-        {
-            var names = extraServiceNames.ToList();
-            return new SupplyChecklistFacts
-            {
-                HasCleaningSupplies = HasCleaningSuppliesExtra(names),
-                HasCleaningEssentials = HasCleaningEssentialsExtra(names),
-                WeBringVacuum = HasVacuumExtra(names),
-                RequiresOvenCleaner = RequiresOvenCleaner(names),
-                IsCustomServiceType = isCustomServiceType
-            };
-        }
+        /// <summary>Name-only form, for callers holding names: every name follows the legacy (unkeyed) rules.</summary>
+        public static SupplyChecklistFacts Resolve(IEnumerable<string?> extraServiceNames, bool isCustomServiceType) =>
+            Resolve(ByName(extraServiceNames), isCustomServiceType);
+
+        /// <summary>The order's catalogue extras, through each line's ExtraService link (must be loaded).</summary>
+        public static IEnumerable<ExtraService?> ExtrasOf(Order order) =>
+            (order.OrderExtraServices ?? new List<OrderExtraService>()).Select(oes => oes.ExtraService);
 
         /// <summary>Reads the facts straight off an order whose OrderExtraServices are loaded.</summary>
-        public static SupplyChecklistFacts Resolve(Models.Order order)
-        {
-            var names = (order.OrderExtraServices ?? new List<Models.OrderExtraService>())
-                .Select(oes => oes.ExtraService?.Name);
-            return Resolve(names, order.ServiceType?.IsCustom == true);
-        }
+        public static SupplyChecklistFacts Resolve(Order order) =>
+            Resolve(ExtrasOf(order), order.ServiceType?.IsCustom == true);
 
         /// <summary>
         /// The checklist itself - what the CUSTOMER has to have on site. The combinations read:
@@ -216,8 +250,5 @@ namespace DreamCleaningBackend.Helpers
 
             return items;
         }
-
-        private static bool Contains(string? name, string needle) =>
-            !string.IsNullOrWhiteSpace(name) && name.Contains(needle, StringComparison.OrdinalIgnoreCase);
     }
 }

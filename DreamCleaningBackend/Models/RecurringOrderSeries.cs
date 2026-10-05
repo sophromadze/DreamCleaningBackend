@@ -80,6 +80,48 @@ namespace DreamCleaningBackend.Models
         public TimeSpan ServiceTime { get; set; }
 
         /// <summary>
+        /// WEEKS only: the weekdays every applicable week is cleaned on, as a CSV of
+        /// <see cref="DayOfWeek"/> integers ("0,1,2,3,4,5" = Sunday through Friday).
+        ///
+        /// NULL IS THE PRE-2026-10 SHAPE and is never reinterpreted: such a plan keeps landing on
+        /// the anchor's own weekday every N weeks, exactly as it always has. Read through
+        /// <c>RecurrencePattern</c>, never split by hand.
+        /// </summary>
+        [StringLength(20)]
+        public string? ServiceDaysOfWeek { get; set; }
+
+        /// <summary>
+        /// MONTHS only: the calendar days every applicable month is cleaned on ("1,15,30"). A day
+        /// a month does not have (the 31st in April) is SKIPPED for that month, never moved.
+        /// NULL keeps the pre-2026-10 behaviour: the anchor's day, clamped to month end.
+        /// </summary>
+        [StringLength(100)]
+        public string? ServiceDaysOfMonth { get; set; }
+
+        /// <summary>
+        /// How many UPCOMING cleanings the plan keeps materialized — a count of orders, not a
+        /// number of days. The daily sweep tops the plan back up to it as visits pass.
+        ///
+        /// NULL is a plan saved before this setting existed; it keeps the rolling 30-day horizon
+        /// (<c>RecurrenceCalculator.HorizonDays</c>) so nothing about it changes until an admin
+        /// chooses a number.
+        /// </summary>
+        public int? UpcomingOccurrenceTarget { get; set; }
+
+        /// <summary>
+        /// The commercial contract the plan's cleanings are performed under, when there is one.
+        /// Copied onto every generated <see cref="Order.ContractId"/>.
+        ///
+        /// For a WEEKLY FLAT FEE contract the generated orders are operational records only: the
+        /// contract's weekly invoice is the customer charge, so the plan never sends per-visit
+        /// payment requests and its orders are billed through the Invoice method.
+        /// </summary>
+        public int? ContractId { get; set; }
+
+        [ForeignKey("ContractId")]
+        public virtual Contracts.Contract? Contract { get; set; }
+
+        /// <summary>
         /// Paused series generate nothing. Deactivating NEVER deletes orders already generated —
         /// those are real bookings a customer may already have been told about.
         /// </summary>

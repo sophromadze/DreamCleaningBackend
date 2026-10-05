@@ -79,6 +79,8 @@ namespace DreamCleaningBackend.Data
         // Admin-requested part-payments of an order's own total ("$1,000 now, the rest later").
         // Deliberately NOT OrderUpdateHistory, which is money owed on TOP of a settled order.
         public DbSet<OrderPartialPayment> OrderPartialPayments { get; set; }
+        public DbSet<CustomerInvoice> CustomerInvoices { get; set; }
+        public DbSet<CustomerInvoicePaymentAttempt> CustomerInvoicePaymentAttempts { get; set; }
         public DbSet<OrderUnassignedPayout> OrderUnassignedPayouts { get; set; }
         public DbSet<NotificationLog> NotificationLogs { get; set; }
         public DbSet<PollQuestion> PollQuestions { get; set; }
@@ -89,6 +91,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<MaintenanceMode> MaintenanceModes { get; set; }
         public DbSet<WebhookEvent> WebhookEvents { get; set; }
         public DbSet<GoogleReview> GoogleReviews { get; set; }
+        public DbSet<GoogleReviewSyncState> GoogleReviewSyncStates { get; set; }
         public DbSet<ScheduledMail> ScheduledMails { get; set; }
         public DbSet<SentMailLog> SentMailLogs { get; set; }
         public DbSet<ScheduledSms> ScheduledSms { get; set; }
@@ -835,6 +838,12 @@ namespace DreamCleaningBackend.Data
                 .HasIndex(u => new { u.UserId, u.SpecialOfferId })
                 .IsUnique();
 
+            // OfferKey ("first-time") is unique when set; NULL (an ordinary offer) any number of times.
+            // Rules: SpecialOfferKeyPolicy. Identity: FirstTimeOfferHelper.
+            modelBuilder.Entity<SpecialOffer>()
+                .HasIndex(o => o.OfferKey)
+                .IsUnique();
+
             modelBuilder.Entity<UserSpecialOffer>()
                 .HasOne(uso => uso.UsedOnOrder)
                 .WithMany()
@@ -865,7 +874,18 @@ namespace DreamCleaningBackend.Data
 
                 entity.HasOne(e => e.CreatedByUser).WithMany()
                     .HasForeignKey(e => e.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
+
+                // SetNull: a purged contract must not take a schedule (or block the purge).
+                entity.HasOne(e => e.Contract).WithMany()
+                    .HasForeignKey(e => e.ContractId).OnDelete(DeleteBehavior.SetNull);
             });
+
+            // Order ↔ Contract (2026-10): operational link from a contract-linked recurring plan.
+            modelBuilder.Entity<Order>()
+                .HasOne(o => o.Contract)
+                .WithMany()
+                .HasForeignKey(o => o.ContractId)
+                .OnDelete(DeleteBehavior.SetNull);
 
             modelBuilder.Entity<Order>()
                 .HasOne(o => o.RecurringSeries)
@@ -942,6 +962,53 @@ namespace DreamCleaningBackend.Data
 
                 entity.HasOne(e => e.RequestedByUser).WithMany()
                     .HasForeignKey(e => e.RequestedByUserId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // Regular customer invoices (2026-09). Unique number and token are the real guards —
+            // the existence check before insert is not atomic. Both FKs cascade from the order
+            // (deleting an order removes its bills), and a request is never hard-deleted on its
+            // own, so the second path only ever fires alongside the first.
+            modelBuilder.Entity<CustomerInvoice>(entity =>
+            {
+                entity.HasIndex(e => e.InvoiceNumber).IsUnique()
+                    .HasDatabaseName("IX_CustomerInvoices_InvoiceNumber");
+                entity.HasIndex(e => e.PublicToken).IsUnique()
+                    .HasDatabaseName("IX_CustomerInvoices_PublicToken");
+                entity.HasIndex(e => e.OrderId)
+                    .HasDatabaseName("IX_CustomerInvoices_Order");
+
+                entity.Property(e => e.Amount).HasPrecision(18, 2);
+                entity.Property(e => e.TopUpCollectedTarget).HasPrecision(18, 2);
+
+                entity.HasOne(e => e.Order).WithMany()
+                    .HasForeignKey(e => e.OrderId).OnDelete(DeleteBehavior.Cascade);
+                // Optional since Additional invoices (2026-09) bill the top-up, not a request.
+                entity.HasOne(e => e.OrderPartialPayment).WithMany()
+                    .HasForeignKey(e => e.OrderPartialPaymentId).IsRequired(false).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.CreatedByUser).WithMany()
+                    .HasForeignKey(e => e.CreatedByUserId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // Online bank (ACH) payments of regular invoices (2026-09). The UNIQUE session and
+            // PaymentIntent ids are the real idempotency guard — Stripe retries deliveries and the
+            // WebhookEvents check swallows its own failures — so a settlement cannot be claimed twice.
+            modelBuilder.Entity<CustomerInvoicePaymentAttempt>(entity =>
+            {
+                entity.HasIndex(e => e.StripeCheckoutSessionId).IsUnique()
+                    .HasDatabaseName("IX_CustomerInvoicePaymentAttempts_Session");
+                entity.HasIndex(e => e.StripePaymentIntentId).IsUnique()
+                    .HasDatabaseName("IX_CustomerInvoicePaymentAttempts_PaymentIntent");
+                entity.HasIndex(e => new { e.CustomerInvoiceId, e.Status })
+                    .HasDatabaseName("IX_CustomerInvoicePaymentAttempts_Invoice_Status");
+                entity.HasIndex(e => new { e.OrderPartialPaymentId, e.Status })
+                    .HasDatabaseName("IX_CustomerInvoicePaymentAttempts_Request_Status");
+
+                entity.Property(e => e.Amount).HasPrecision(18, 2);
+                entity.Property(e => e.ProcessingFee).HasPrecision(18, 2);
+                entity.Property(e => e.TotalCharged).HasPrecision(18, 2);
+
+                entity.HasOne(e => e.CustomerInvoice).WithMany()
+                    .HasForeignKey(e => e.CustomerInvoiceId).OnDelete(DeleteBehavior.Cascade);
             });
 
             // Order configuration
@@ -1201,6 +1268,13 @@ namespace DreamCleaningBackend.Data
                 .HasForeignKey(es => es.ServiceTypeId)
                 .OnDelete(DeleteBehavior.SetNull);
 
+            // Deliberately NOT unique: per-service-type copies of one extra share its key, and the
+            // universal rows (ServiceTypeId NULL) would slip past a unique index anyway. The real
+            // rule - no service type sees two rows with one key - is ExtraServiceKeyPolicy.Conflicts,
+            // checked by every admin writer.
+            modelBuilder.Entity<ExtraService>()
+                .HasIndex(es => new { es.ServiceTypeId, es.ExtraServiceKey });
+
             // OrderService configuration
             modelBuilder.Entity<OrderService>()
                 .HasOne(os => os.Order)
@@ -1329,6 +1403,12 @@ namespace DreamCleaningBackend.Data
                 .Property(st => st.CollectsPropertyType)
                 .HasDefaultValue(true);
 
+            // A key names ONE service type. NULL means "no key" and MariaDB lets any number of
+            // rows hold it, so unkeyed types are unaffected. See ServiceTypeKeyPolicy.
+            modelBuilder.Entity<ServiceType>()
+                .HasIndex(st => st.ServiceKey)
+                .IsUnique();
+
             // Seed Service Types
             modelBuilder.Entity<ServiceType>().HasData(
                 new ServiceType
@@ -1375,12 +1455,11 @@ namespace DreamCleaningBackend.Data
                     .HasColumnType("decimal(10,2)")
                     .IsRequired();
 
+                // Nullable: a "send later" card has no recipient until it is sent from the profile.
                 entity.Property(e => e.RecipientName)
-                    .IsRequired()
                     .HasMaxLength(100);
 
                 entity.Property(e => e.RecipientEmail)
-                    .IsRequired()
                     .HasMaxLength(255);
 
                 entity.Property(e => e.SenderName)

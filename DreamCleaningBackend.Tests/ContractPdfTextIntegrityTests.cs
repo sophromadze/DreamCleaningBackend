@@ -106,6 +106,104 @@ namespace DreamCleaningBackend.Tests
         private static string AlphanumericOnly(string value) =>
             new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 
+        /// <summary>
+        /// The PDF's body text, letters and digits only, with each page's running header
+        /// ("MASTER SERVICE AGREEMENT" + the contractor) and draft footer ("DRAFT — NOT EXECUTED n / N")
+        /// taken off before the pages are joined.
+        ///
+        /// Without this, a clause that crosses a page break reads "...back-of-house portion" + footer
+        /// + next page's header + "of the Premises." The sentence is whole on paper but not in the
+        /// extracted text, so a Contains check passed or failed on where the page happened to break —
+        /// which is why the same assertion held on one brand's agreement and failed on the other's,
+        /// whose longer wording moves the A2 paragraph across a page boundary.
+        /// </summary>
+        private static string PdfBodyText(PdfDocument pdf)
+        {
+            var header = AlphanumericOnly("MASTER SERVICE AGREEMENT" + Block().Contractor.EntityName);
+            var body = new StringBuilder();
+            foreach (var page in pdf.GetPages())
+            {
+                var text = AlphanumericOnly(page.Text);
+                if (text.StartsWith(header, StringComparison.Ordinal)) text = text.Substring(header.Length);
+                text = Regex.Replace(text, @"draftnotexecuted\d+$", string.Empty);
+                body.Append(text);
+            }
+            return body.ToString();
+        }
+
+        /// <summary>Preview text and PDF text for one snapshot, both reduced to letters and digits.</summary>
+        private static (string Preview, string Pdf) BothSurfaces(ContractSnapshot snapshot)
+        {
+            var rendered = ContractRenderer.Render(snapshot);
+            var bytes = new ContractPdfService()
+                .GenerateDocument(rendered, snapshot, Block(), certificate: null, draftWatermark: true);
+            using var pdf = PdfDocument.Open(bytes);
+            return (AlphanumericOnly(rendered.PlainText), PdfBodyText(pdf));
+        }
+
+        // ── template v2.7: scope detail and optional exhibits reach both surfaces alike ──
+
+        /// <summary>
+        /// A SECTION HIDDEN IN THE PREVIEW IS HIDDEN IN THE PDF, in every scope mode. The PDF is
+        /// drawn from the same rendered blocks, so this proves the @IF blocks and omitted lines are
+        /// resolved before either writer sees them.
+        /// </summary>
+        [Theory]
+        [InlineData(ScopeDetailMode.Detailed)]
+        [InlineData(ScopeDetailMode.Simplified)]
+        [InlineData(ScopeDetailMode.Omitted)]
+        public void EachScopeModeRendersTheSameExhibitAOnThePreviewAndThePdf(ScopeDetailMode mode)
+        {
+            var snapshot = Snapshot();
+            snapshot.ScopeDetail = mode;
+            var (preview, pdf) = BothSurfaces(snapshot);
+
+            var detailed = AlphanumericOnly("A1. INCLUDED AREAS AND TASKS");
+            var simplified = AlphanumericOnly("The Parties have agreed the service scope separately");
+
+            foreach (var surface in new[] { preview, pdf })
+            {
+                Assert.Equal(mode == ScopeDetailMode.Detailed, surface.Contains(detailed));
+                Assert.Equal(mode == ScopeDetailMode.Simplified, surface.Contains(simplified));
+            }
+
+            // Omitted means no Exhibit A heading at all - the PDF lays exhibits out from these
+            // same blocks, so a heading absent here cannot appear there.
+            Assert.Equal(mode != ScopeDetailMode.Omitted, ContractRenderer.Render(snapshot).Blocks
+                .Any(b => b.Kind == ContractBlockKind.Heading && b.Text == "EXHIBIT A"));
+        }
+
+        /// <summary>
+        /// No endorsement agreed → no B5 on either surface; one agreed → B5 with only that row.
+        /// A blank site detail is likewise absent from both.
+        /// </summary>
+        [Fact]
+        public void OptionalExhibitContentIsOmittedIdenticallyOnBothSurfaces()
+        {
+            var bare = Snapshot();
+            var (barePreview, barePdf) = BothSurfaces(bare);
+            foreach (var surface in new[] { barePreview, barePdf })
+            {
+                Assert.DoesNotContain(AlphanumericOnly("ADDITIONAL INSURANCE ENDORSEMENTS"), surface);
+                Assert.DoesNotContain(AlphanumericOnly("APPROXIMATE SERVICED SQUARE FOOTAGE"), surface);
+                Assert.DoesNotContain(AlphanumericOnly("Contractor approval email"), surface);
+                Assert.DoesNotContain(AlphanumericOnly("Not applicable"), surface);
+            }
+
+            var partial = Snapshot();
+            partial.Insurance.AgreedEndorsements = "Additional insured for the landlord";
+            partial.SiteDetails.ApproximateSquareFootage = "2,400 square feet";
+            var (partialPreview, partialPdf) = BothSurfaces(partial);
+            foreach (var surface in new[] { partialPreview, partialPdf })
+            {
+                Assert.Contains(AlphanumericOnly("B5. ADDITIONAL INSURANCE ENDORSEMENTS"), surface);
+                Assert.Contains(AlphanumericOnly("Additional insured for the landlord"), surface);
+                Assert.DoesNotContain(AlphanumericOnly("Agreed additional premium or price adjustment"), surface);
+                Assert.Contains(AlphanumericOnly("APPROXIMATE SERVICED SQUARE FOOTAGE: 2,400 square feet"), surface);
+                Assert.DoesNotContain(AlphanumericOnly("INTERIOR GLASS AND WINDOW LOCATIONS"), surface);
+            }
+        }
+
         // ── the regression that started this ───────────────────────────────────
 
         [Theory]
@@ -153,7 +251,9 @@ namespace DreamCleaningBackend.Tests
             var source = ContractRenderer.Render(snapshot);
             var pdfText = LettersOnly(ExtractedText());
 
-            var words = Regex.Matches(source.PlainText, @"[A-Za-z]{4,}")
+            // "[SIGNATURE BLOCK]" is the preview's placeholder for the signature boxes, not document
+            // text - the PDF draws the boxes themselves - so it is not a word the PDF must contain.
+            var words = Regex.Matches(source.PlainText.Replace("[SIGNATURE BLOCK]", string.Empty), @"[A-Za-z]{4,}")
                 .Select(m => m.Value.ToLowerInvariant())
                 .Distinct()
                 .ToList();
@@ -239,7 +339,7 @@ namespace DreamCleaningBackend.Tests
             using var pdf = PdfDocument.Open(bytes);
             // Letters AND digits here, because a ZIP is exactly what LettersOnly would throw away
             // and the ZIP is half of what makes the duplicate visible.
-            var pdfText = AlphanumericOnly(string.Join(" ", pdf.GetPages().Select(p => p.Text)));
+            var pdfText = PdfBodyText(pdf);
             var previewText = AlphanumericOnly(rendered.PlainText);
 
             // The address is written once, in both.
@@ -286,7 +386,7 @@ namespace DreamCleaningBackend.Tests
                 .GenerateDocument(rendered, snapshot, Block(), certificate: null, draftWatermark: true);
 
             using var pdf = PdfDocument.Open(bytes);
-            var pdfText = AlphanumericOnly(string.Join(" ", pdf.GetPages().Select(p => p.Text)));
+            var pdfText = PdfBodyText(pdf);
             var previewText = AlphanumericOnly(rendered.PlainText);
 
             var clause =
@@ -411,7 +511,7 @@ namespace DreamCleaningBackend.Tests
                 .GenerateDocument(rendered, snapshot, Block(), certificate: null, draftWatermark: true);
 
             using var pdf = PdfDocument.Open(bytes);
-            var pdfText = AlphanumericOnly(string.Join(" ", pdf.GetPages().Select(p => p.Text)));
+            var pdfText = PdfBodyText(pdf);
             var previewText = AlphanumericOnly(rendered.PlainText);
 
             // The retired A1 label and the retired A2 examples are absent from both.
@@ -453,7 +553,7 @@ namespace DreamCleaningBackend.Tests
                 .GenerateDocument(rendered, snapshot, Block(), certificate: null, draftWatermark: true);
 
             using var pdf = PdfDocument.Open(bytes);
-            var pdfText = AlphanumericOnly(string.Join(" ", pdf.GetPages().Select(p => p.Text)));
+            var pdfText = PdfBodyText(pdf);
 
             Assert.Contains(AlphanumericOnly("the office"), AlphanumericOnly(rendered.PlainText));
             Assert.Contains(AlphanumericOnly("the office"), pdfText);

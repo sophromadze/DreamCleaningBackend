@@ -243,6 +243,109 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        /// <summary>
+        /// The /services/commercial-cleaning quote form. Separate from <c>quote-request</c> so the
+        /// notification names every field for what it is — that endpoint's template is the
+        /// residential free-quote one ("First Name", "Home Address", "Cleaning Type"), and the
+        /// commercial form used to be squeezed into it.
+        ///
+        /// Every value is HTML-encoded: the body is HTML and each field is typed by the public.
+        /// </summary>
+        [HttpPost("commercial-quote-request")]
+        public async Task<IActionResult> SendCommercialQuoteRequest(CommercialQuoteRequestDto request)
+        {
+            try
+            {
+                if (!ModelState.IsValid)
+                {
+                    return BadRequest(new { message = "Please fill in all required fields correctly." });
+                }
+
+                var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
+                if (string.IsNullOrWhiteSpace(companyEmail))
+                {
+                    _logger.LogError("Company email is not configured. Cannot send commercial quote request notification email.");
+                    return StatusCode(500, new { message = "Email service is not configured. Please contact support." });
+                }
+
+                static string E(string? value) => System.Net.WebUtility.HtmlEncode(value?.Trim() ?? string.Empty);
+
+                var businessName = request.BusinessName.Trim();
+                var squareFootage = request.SquareFootage?.Trim();
+                var notes = request.Notes?.Trim();
+
+                const string labelCell = "padding: 10px; border: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; width: 30%;";
+                const string valueCell = "padding: 10px; border: 1px solid #ddd;";
+                string Row(string label, string htmlValue, bool topAligned = false) => $@"
+                        <tr>
+                            <td style='{labelCell}{(topAligned ? " vertical-align: top;" : "")}'>{label}:</td>
+                            <td style='{valueCell}{(topAligned ? " white-space: pre-wrap;" : "")}'>{htmlValue}</td>
+                        </tr>";
+
+                var rows = string.Concat(
+                    Row("Business Name", E(businessName)),
+                    Row("Contact Name", E(request.ContactName)),
+                    Row("Phone", $"<a href='tel:+1{E(request.Phone)}'>{E(FormatPhoneNumber(request.Phone))}</a>"),
+                    Row("Email", $"<a href='mailto:{E(request.Email)}'>{E(request.Email)}</a>"),
+                    Row("Business Address", E(request.BusinessAddress)),
+                    Row("Type of Space", E(request.FacilityType)),
+                    Row("Requested Frequency", E(request.Frequency)),
+                    string.IsNullOrWhiteSpace(squareFootage) ? "" : Row("Approx. Size", $"{E(squareFootage)} sq ft"),
+                    string.IsNullOrWhiteSpace(notes) ? "" : Row("Anything We Should Know", E(notes), topAligned: true));
+
+                var subject = $"New Commercial Quote Request from {businessName}";
+                var body = $@"
+                    <h2>New Commercial Quote Request</h2>
+                    <p>A business has requested a commercial cleaning quote:</p>
+
+                    <table style='width: 100%; border-collapse: collapse; margin: 20px 0;'>
+                        {rows}
+                    </table>
+
+                    <div style='background: #e8f5e9; padding: 15px; border-radius: 8px; margin: 20px 0;'>
+                        <p><strong>📞 Call Back Required</strong></p>
+                        <p>Please contact this business to arrange a walkthrough and send their quote.</p>
+                    </div>
+
+                    <p style='margin-top: 30px; color: #666; font-size: 14px;'>
+                        <strong>Submitted on:</strong> {DateTime.UtcNow:MMMM dd, yyyy at h:mm tt}
+                    </p>
+                ";
+
+                await _emailService.SendContactFormEmailAsync(companyEmail, subject, body);
+
+                _logger.LogInformation("Commercial quote request submitted by {BusinessName} (Phone: {Phone})",
+                    businessName, FormatPhoneNumber(request.Phone));
+
+                // CRM lead (best-effort, never blocks the request). The PERSON is the lead's name;
+                // the business and everything without a column of its own go in the message.
+                var (firstName, lastName) = SplitName(request.ContactName);
+                var leadMessage = new List<string>
+                {
+                    $"Business: {businessName}",
+                    $"Requested frequency: {request.Frequency.Trim()}"
+                };
+                if (!string.IsNullOrWhiteSpace(squareFootage)) leadMessage.Add($"Approx. size: {squareFootage} sq ft");
+                if (!string.IsNullOrWhiteSpace(notes)) leadMessage.Add($"Notes: {notes}");
+
+                await _leadCapture.CaptureAsync(
+                    LeadSource.QuoteRequest,
+                    firstName, lastName,
+                    request.Email, request.Phone,
+                    serviceAddress: request.BusinessAddress,
+                    cleaningType: $"Commercial - {request.FacilityType.Trim()}",
+                    message: string.Join("\n", leadMessage),
+                    leadType: LeadType.Commercial);
+
+                return Ok(new { message = "Your quote request has been received! We'll call you back soon." });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error sending commercial quote request");
+                return StatusCode(500, new { message = "An error occurred while sending your quote request. Please try again later." });
+            }
+        }
+
         private string FormatPhoneNumber(string phone)
         {
             if (string.IsNullOrEmpty(phone) || phone.Length != 10)

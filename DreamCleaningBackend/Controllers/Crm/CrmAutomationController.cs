@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
@@ -154,15 +155,23 @@ namespace DreamCleaningBackend.Controllers.Crm
                 var aggregates = await _context.Orders
                     .Where(o => userIds.Contains(o.UserId) && o.Status != "cancelled")
                     .GroupBy(o => o.UserId)
-                    .Select(g => new { UserId = g.Key, Sum = g.Sum(o => o.Total), MaxDate = g.Max(o => o.ServiceDate) })
+                    .Select(g => new { UserId = g.Key, MaxDate = g.Max(o => o.ServiceDate) })
                     .ToListAsync();
                 var aggMap = aggregates.ToDictionary(a => a.UserId);
+
+                // Lifetime value = REALIZED money only (2026-10): unpaid future bookings are not value.
+                var realizedByUser = await _context.Orders
+                    .Where(o => userIds.Contains(o.UserId))
+                    .WhereRealizedSpend()
+                    .GroupBy(o => o.UserId)
+                    .Select(g => new { UserId = g.Key, Sum = g.Sum(o => o.Total - o.TotalRefundedAmount) })
+                    .ToDictionaryAsync(g => g.UserId, g => g.Sum);
 
                 foreach (var dto in alerts)
                 {
                     if (aggMap.TryGetValue(dto.UserId, out var agg))
                     {
-                        dto.CustomerLifetimeValue = agg.Sum;
+                        dto.CustomerLifetimeValue = realizedByUser.GetValueOrDefault(dto.UserId);
                         dto.LastOrderDate = agg.MaxDate;
                     }
                 }
@@ -234,8 +243,12 @@ namespace DreamCleaningBackend.Controllers.Crm
             var agg = await _context.Orders
                 .Where(o => o.UserId == alert.UserId && o.Status != "cancelled")
                 .GroupBy(o => o.UserId)
-                .Select(g => new { Sum = g.Sum(o => o.Total), MaxDate = (DateTime?)g.Max(o => o.ServiceDate) })
+                .Select(g => new { MaxDate = (DateTime?)g.Max(o => o.ServiceDate) })
                 .FirstOrDefaultAsync();
+            var realizedValue = await _context.Orders
+                .Where(o => o.UserId == alert.UserId)
+                .WhereRealizedSpend()
+                .SumAsync(o => o.Total - o.TotalRefundedAmount);
 
             return Ok(new AutomationAlertDto
             {
@@ -245,7 +258,7 @@ namespace DreamCleaningBackend.Controllers.Crm
                 CustomerName = alert.CustomerName,
                 CustomerEmail = alert.User?.Email,
                 CustomerPhone = alert.User?.Phone,
-                CustomerLifetimeValue = agg?.Sum ?? 0,
+                CustomerLifetimeValue = realizedValue,
                 LastOrderDate = agg?.MaxDate,
                 Reason = alert.Reason,
                 Status = alert.Status,
@@ -294,8 +307,12 @@ namespace DreamCleaningBackend.Controllers.Crm
             var agg = await _context.Orders
                 .Where(o => o.UserId == alert.UserId && o.Status != "cancelled")
                 .GroupBy(o => o.UserId)
-                .Select(g => new { Sum = g.Sum(o => o.Total), MaxDate = (DateTime?)g.Max(o => o.ServiceDate) })
+                .Select(g => new { MaxDate = (DateTime?)g.Max(o => o.ServiceDate) })
                 .FirstOrDefaultAsync();
+            var realizedValue = await _context.Orders
+                .Where(o => o.UserId == alert.UserId)
+                .WhereRealizedSpend()
+                .SumAsync(o => o.Total - o.TotalRefundedAmount);
 
             return Ok(new AutomationAlertDto
             {
@@ -305,7 +322,7 @@ namespace DreamCleaningBackend.Controllers.Crm
                 CustomerName = alert.CustomerName,
                 CustomerEmail = alert.User?.Email,
                 CustomerPhone = alert.User?.Phone,
-                CustomerLifetimeValue = agg?.Sum ?? 0,
+                CustomerLifetimeValue = realizedValue,
                 LastOrderDate = agg?.MaxDate,
                 Reason = alert.Reason,
                 Status = alert.Status,

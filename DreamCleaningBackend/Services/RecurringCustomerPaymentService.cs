@@ -141,6 +141,7 @@ namespace DreamCleaningBackend.Services
 
             var result = new UpcomingRecurringOrdersDto();
             var payable = RecurringPaymentPolicy.ResolveCombinedPaymentSet(occurrences);
+            var contractLabels = await ContractBilledOrders.LoadLabelsAsync(_context, orders);
 
             foreach (var order in orders)
             {
@@ -152,6 +153,7 @@ namespace DreamCleaningBackend.Services
                     OrderId = order.Id,
                     IncludedInPayAll = payable.Contains(order.Id),
                     PaymentMethod = order.PaymentMethod.ToString(),
+                    BilledByContractLabel = contractLabels.GetValueOrDefault(order.Id),
                     ServiceDate = order.ServiceDate,
                     ServiceTime = order.ServiceTime,
                     ServiceTypeName = order.GetDisplayServiceTypeName(),

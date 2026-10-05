@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers.Contracts;
 using DreamCleaningBackend.Models.Contracts;
@@ -120,7 +121,7 @@ namespace DreamCleaningBackend.Services.Contracts
                 }
             });
 
-            return document.GeneratePdf();
+            return document.GeneratePdfExclusive();
         }
 
         /// <summary>The certificate on its own, stored alongside the executed document.</summary>
@@ -133,7 +134,7 @@ namespace DreamCleaningBackend.Services.Contracts
                     ConfigurePage(page, snapshot, false);
                     page.Content().PaddingVertical(6).Column(column => ComposeCertificate(column, certificate));
                 });
-            }).GeneratePdf();
+            }).GeneratePdfExclusive();
         }
 
         // ── page chrome ────────────────────────────────────────────────────────

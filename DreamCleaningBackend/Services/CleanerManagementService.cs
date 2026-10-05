@@ -15,6 +15,7 @@ namespace DreamCleaningBackend.Services
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly Interfaces.IAuditService _audit;
+        private readonly ILogger<CleanerManagementService>? _logger;
 
         private const long MaxUploadSizeBytes = 10 * 1024 * 1024;
         private static readonly string[] AllowedImageExtensions = { ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp" };
@@ -22,11 +23,13 @@ namespace DreamCleaningBackend.Services
         public CleanerManagementService(
             ApplicationDbContext context,
             IConfiguration configuration,
-            Interfaces.IAuditService audit)
+            Interfaces.IAuditService audit,
+            ILogger<CleanerManagementService>? logger = null)
         {
             _context = context;
             _configuration = configuration;
             _audit = audit;
+            _logger = logger;
         }
 
         public async Task<List<CleanerListItemDto>> GetAllAsync(bool includeInactive = false, string? search = null)
@@ -72,7 +75,7 @@ namespace DreamCleaningBackend.Services
                 AlreadyWorkedWithUs = c.AlreadyWorkedWithUs,
                 Nationality = c.Nationality,
                 Ranking = c.Ranking,
-                PhotoUrl = c.PhotoUrl,
+                PhotoUrl = PrivateFileUrls.CleanerPhoto(c.Id, c.PhotoUrl, _logger),
                 IsActive = c.IsActive,
                 CreatedAt = c.CreatedAt,
                 MainNote = c.MainNote,
@@ -459,7 +462,7 @@ namespace DreamCleaningBackend.Services
             if (cleaner == null)
                 return null;
 
-            var result = await SaveWebpImageAsync(file, "cleaners/photos", $"cleaner-{cleanerId}", maxWidth: 800, maxHeight: 800, quality: 82);
+            var result = await SaveWebpImageAsync(file, PrivateFileUrls.CleanerPhotosFolder, maxWidth: 800, maxHeight: 800, quality: 82);
             if (result == null)
                 return null;
 
@@ -475,7 +478,8 @@ namespace DreamCleaningBackend.Services
             await _audit.LogActionAsync(AuditEntityTypes.CleanerDocument, cleanerId, "PhotoUploaded",
                 new { PhotoUrl = replacedPhoto }, new { PhotoUrl = result.Url });
 
-            return result;
+            // The stored path stays internal; the caller gets the access-checked endpoint.
+            return new CleanerImageUploadResultDto { Url = PrivateFileUrls.CleanerPhoto(cleanerId, result.Url)!, SizeBytes = result.SizeBytes };
         }
 
         public async Task<CleanerImageUploadResultDto?> UploadDocumentAsync(int cleanerId, IFormFile file)
@@ -484,7 +488,7 @@ namespace DreamCleaningBackend.Services
             if (cleaner == null)
                 return null;
 
-            var result = await SaveWebpImageAsync(file, "cleaners/documents", $"cleaner-{cleanerId}-doc", maxWidth: 2000, maxHeight: 2000, quality: 88);
+            var result = await SaveWebpImageAsync(file, PrivateFileUrls.CleanerDocumentsFolder, maxWidth: 2000, maxHeight: 2000, quality: 88);
             if (result == null)
                 return null;
 
@@ -497,10 +501,10 @@ namespace DreamCleaningBackend.Services
             await _audit.LogActionAsync(AuditEntityTypes.CleanerDocument, cleanerId, "DocumentUploaded",
                 new { DocumentUrl = replacedDocument }, new { DocumentUrl = result.Url });
 
-            return result;
+            return new CleanerImageUploadResultDto { Url = PrivateFileUrls.CleanerDocument(cleanerId, result.Url)!, SizeBytes = result.SizeBytes };
         }
 
-        private async Task<CleanerImageUploadResultDto?> SaveWebpImageAsync(IFormFile file, string subfolder, string baseFileName, int maxWidth, int maxHeight, int quality)
+        private async Task<CleanerImageUploadResultDto?> SaveWebpImageAsync(IFormFile file, string subfolder, int maxWidth, int maxHeight, int quality)
         {
             if (file == null || file.Length == 0)
                 throw new InvalidOperationException("No file uploaded.");
@@ -519,7 +523,9 @@ namespace DreamCleaningBackend.Services
             var uploadDir = Path.Combine(basePath, subfolder);
             Directory.CreateDirectory(uploadDir);
 
-            var fileName = $"{baseFileName}-{DateTime.UtcNow:yyyyMMddHHmmssfff}.webp";
+            // Random name (2026-10): these are private files, so the name must not be guessable
+            // from the cleaner id and upload time. Files saved before keep their old names.
+            var fileName = PrivateFileUrls.NewFileName(".webp");
             var fullPath = Path.Combine(uploadDir, fileName);
 
             using (var inputStream = file.OpenReadStream())
@@ -555,7 +561,8 @@ namespace DreamCleaningBackend.Services
 
         private void DeleteFileIfExists(string? publicUrl)
         {
-            if (string.IsNullOrWhiteSpace(publicUrl))
+            // Only our own uploads live on disk; an external (e.g. Google profile) picture has no file.
+            if (PrivateFileUrls.Classify(publicUrl) != PrivateFileUrls.StoredFileKind.Local)
                 return;
 
             var basePath = _configuration["FileUpload:Path"];
@@ -587,7 +594,7 @@ namespace DreamCleaningBackend.Services
                 ? null
                 : await _context.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == cleaner.UserId.Value);
 
-        private static CleanerDetailDto MapToDetail(
+        private CleanerDetailDto MapToDetail(
             Cleaner cleaner, List<CleanerAssignedOrderDto> assignedOrders, User? linkedAccount)
         {
             var accountEmail = linkedAccount == null ? null : NoEmailHelper.ResolveRealEmail(linkedAccount);
@@ -610,13 +617,13 @@ namespace DreamCleaningBackend.Services
                 AlreadyWorkedWithUs = cleaner.AlreadyWorkedWithUs,
                 Nationality = cleaner.Nationality,
                 Ranking = cleaner.Ranking,
-                PhotoUrl = cleaner.PhotoUrl,
+                PhotoUrl = PrivateFileUrls.CleanerPhoto(cleaner.Id, cleaner.PhotoUrl, _logger),
                 IsActive = cleaner.IsActive,
                 RestrictedReason = cleaner.RestrictedReason,
                 Allergies = cleaner.Allergies,
                 Restrictions = cleaner.Restrictions,
                 MainNote = cleaner.MainNote,
-                DocumentUrl = cleaner.DocumentUrl,
+                DocumentUrl = PrivateFileUrls.CleanerDocument(cleaner.Id, cleaner.DocumentUrl, _logger),
                 DocumentType = cleaner.DocumentType,
                 PaymentMethod = cleaner.PaymentMethod,
                 PaymentDetails = cleaner.PaymentDetails,

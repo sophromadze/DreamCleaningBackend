@@ -236,11 +236,12 @@ namespace DreamCleaningBackend.Services
                 ExtraServices = (order.OrderExtraServices ?? new List<OrderExtraService>())
                     .OrderBy(oes => oes.ExtraService?.DisplayOrder ?? 0)
                     .ThenBy(oes => oes.Id)
-                    .Where(oes => !CleanerJobView.IsExtraHiddenFromCleaners(oes.ExtraService?.Name))
+                    .Where(oes => !CleanerJobView.IsExtraHiddenFromCleaners(oes.ExtraService))
                     .Select(oes => FormatExtra(oes))
                     .ToList(),
                 CustomerName = CleanerJobView.ResolveCustomerDisplayName(order),
                 Address = CleanerJobView.BuildFullAddress(order),
+                MapsAddress = CleanerJobView.BuildMapsAddress(order),
                 BringCleaningSupplies = CleanerJobView.RequiresCleanerToBringSupplies(order),
                 BringCleaningEssentials = CleanerJobView.RequiresCleanerToBringEssentials(order),
                 // The items behind those two flags, resolved by the same helper the assignment

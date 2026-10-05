@@ -86,7 +86,10 @@ namespace DreamCleaningBackend.Services
             CollectsPropertyType = serviceType.CollectsPropertyType,
             IsCustom = serviceType.IsCustom,
             TimeDuration = serviceType.TimeDuration,
-            MinimumPrice = serviceType.MinimumPrice
+            MinimumPrice = serviceType.MinimumPrice,
+            ServiceKey = serviceType.ServiceKey,
+            DisplayPrice = serviceType.DisplayPrice,
+            DisplayPriceUnit = serviceType.DisplayPriceUnit
         };
 
         /// <summary>Service type with its services attached, ordered by display order.</summary>
@@ -104,6 +107,7 @@ namespace DreamCleaningBackend.Services
         {
             Id = extraService.Id,
             Name = extraService.Name,
+            ExtraServiceKey = extraService.ExtraServiceKey,
             Description = extraService.Description,
             Price = extraService.Price,
             Duration = extraService.Duration,
@@ -162,7 +166,7 @@ namespace DreamCleaningBackend.Services
         ///
         /// The catalogue stores per-service-type COPIES of the same extra (the admin "copy to
         /// service type" action clones a row with IsAvailableForAll = false), so the custom list is
-        /// DE-DUPLICATED by name; without it the grid would show "Oven Cleaning" once per service
+        /// DE-DUPLICATED by key (by name for an unkeyed row); without it the grid would show "Oven Cleaning" once per service
         /// type that owns a copy. The universal row wins the tie, then the lowest Id, so the id
         /// persisted on the order is the stable one.
         /// </summary>
@@ -172,8 +176,12 @@ namespace DreamCleaningBackend.Services
             if (!serviceType.IsCustom)
                 return ResolveConfiguredExtraServices(serviceType, allExtraServices);
 
+            // Copies share a key, so a keyed extra de-duplicates on its KEY (a renamed copy is still
+            // the same extra); an unkeyed one on its name, as before keys existed.
             return allExtraServices
-                .GroupBy(es => (es.Name ?? string.Empty).Trim().ToLowerInvariant())
+                .GroupBy(es => string.IsNullOrWhiteSpace(es.ExtraServiceKey)
+                    ? "name:" + (es.Name ?? string.Empty).Trim().ToLowerInvariant()
+                    : "key:" + es.ExtraServiceKey.Trim())
                 .Select(group => group
                     .OrderByDescending(es => es.IsAvailableForAll && es.ServiceTypeId == null)
                     .ThenBy(es => es.Id)

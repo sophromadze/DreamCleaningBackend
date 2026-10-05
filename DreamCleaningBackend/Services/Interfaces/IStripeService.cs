@@ -96,6 +96,20 @@ namespace DreamCleaningBackend.Services.Interfaces
         public bool HasDispute { get; set; }
     }
 
+    /// <summary>Outcome of asking Stripe to email its own receipt for one charge.</summary>
+    public class ChargeReceiptSendResult
+    {
+        public bool Sent { get; set; }
+        /// <summary>Why nothing was sent. Admin-facing, so it never names the provider.</summary>
+        public string? FailureReason { get; set; }
+        public string? ChargeId { get; set; }
+        /// <summary>What the receipt shows as paid, in dollars.</summary>
+        public decimal Amount { get; set; }
+        /// <summary>False for a test-mode charge: Stripe does not email receipts triggered through
+        /// the API in test mode, so the panel must not claim that one was delivered.</summary>
+        public bool LiveMode { get; set; }
+    }
+
     public interface IStripeService
     {
         /// <param name="customerId">Stripe Customer to attach the intent to. Required when
@@ -124,6 +138,14 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// Never throws — a lookup failure comes back as IsRefundable=false with a reason, so a
         /// Stripe outage disables the refund button instead of breaking the order panel.</summary>
         Task<ChargeRefundState> GetChargeRefundStateAsync(string paymentIntentId);
+
+        /// <summary>
+        /// Has the payment provider email its OWN receipt for this payment's charge to
+        /// <paramref name="email"/>. Never throws — every failure comes back as Sent=false with an
+        /// admin-facing reason that never names the provider. See the implementation for why the
+        /// receipt address is cleared before it is set.
+        /// </summary>
+        Task<ChargeReceiptSendResult> SendChargeReceiptAsync(string paymentIntentId, string email);
 
         /// <summary>Returns the user's Stripe Customer id, creating the Customer (and setting
         /// user.StripeCustomerId on the tracked entity — the CALLER SaveChanges) if missing or

@@ -25,5 +25,15 @@ namespace DreamCleaningBackend.Helpers
 
             return string.IsNullOrWhiteSpace(order.ServiceType.Name) ? fallback : order.ServiceType.Name;
         }
+
+        /// <summary>
+        /// The order's ServiceType.ServiceKey for code that recognises a type - null for a custom
+        /// ("Pre-Arranged") order, whose per-order label is what identifies it, and for an unkeyed
+        /// type. Pair it with <see cref="GetDisplayServiceTypeName"/>, which stays the fallback.
+        /// </summary>
+        public static string? GetRecognisableServiceTypeKey(this Order order) =>
+            order?.ServiceType is { IsCustom: false } type && !string.IsNullOrWhiteSpace(type.ServiceKey)
+                ? type.ServiceKey.Trim()
+                : null;
     }
 }

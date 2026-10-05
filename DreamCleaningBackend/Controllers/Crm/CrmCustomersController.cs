@@ -150,8 +150,10 @@ namespace DreamCleaningBackend.Controllers.Crm
                 .Where(o => !OrderStatuses.IsCancelled(o.Status) && !OrderStatuses.IsRefunded(o.Status))
                 .ToList();
             var orderCount = nonCancelled.Count;
+            // Lifetime value is REALIZED money (2026-10): unpaid future bookings — a plan's generated
+            // visits included — are not value yet. Counts and dates below still use every booking.
             var ltv = nonCancelled.Count > 0
-                ? nonCancelled.Sum(o => o.Total - o.TotalRefundedAmount)
+                ? nonCancelled.Where(OrderPaymentFilter.IsRealizedSpendInMemory).Sum(OrderPaymentFilter.RealizedAmount)
                 : user.TotalSpentAmount;
             var lastOrder = nonCancelled.Count > 0 ? nonCancelled.Max(o => (DateTime?)o.ServiceDate) : user.LastOrderDate;
             var firstOrder = nonCancelled.Count > 0 ? nonCancelled.Min(o => (DateTime?)o.ServiceDate) : null;
@@ -311,11 +313,19 @@ namespace DreamCleaningBackend.Controllers.Crm
                 {
                     UserId = g.Key,
                     Count = g.Count(),
-                    Sum = g.Sum(o => o.Total - o.TotalRefundedAmount),
                     MaxDate = g.Max(o => o.ServiceDate)
                 })
                 .ToListAsync();
             var aggMap = aggregates.ToDictionary(a => a.UserId);
+
+            // Lifetime value is REALIZED money (2026-10), a separate query so the counts and dates
+            // above keep including every booking while the value counts only what was paid.
+            var realizedByUser = await _context.Orders
+                .Where(o => ids.Contains(o.UserId))
+                .WhereRealizedSpend()
+                .GroupBy(o => o.UserId)
+                .Select(g => new { UserId = g.Key, Sum = g.Sum(o => o.Total - o.TotalRefundedAmount) })
+                .ToDictionaryAsync(g => g.UserId, g => g.Sum);
 
             var tagMap = await GetTagsForUsers(ids);
             var now = DateTime.UtcNow;
@@ -328,7 +338,7 @@ namespace DreamCleaningBackend.Controllers.Crm
                 // Source of truth is the Orders table. The denormalized User.TotalSpentAmount /
                 // LastOrderDate fields can be stale or partial, so they're only a fallback for
                 // customers who have no (non-cancelled) orders to aggregate.
-                var ltv = agg != null ? agg.Sum : u.TotalSpentAmount;
+                var ltv = agg != null ? realizedByUser.GetValueOrDefault(u.Id) : u.TotalSpentAmount;
                 var lastOrder = agg?.MaxDate ?? u.LastOrderDate;
                 // Same rule as IsSubscribed above, off the flattened projection rather than the
                 // entity — RecurringPlanRule keeps the two from drifting.

@@ -43,5 +43,30 @@ namespace DreamCleaningBackend.Helpers
             order.IsPaid
             || (order.PaymentMethod != PaymentMethod.Normal
                 && (order.PaymentMethod != PaymentMethod.Invoice || order.InvoicePaidAt != null));
+
+        // ── What a customer has actually SPENT (2026-10) ──────────────────────────────────────
+        //
+        // "Total spent" (admin user panel + export) and CRM lifetime value used to sum every
+        // non-cancelled order's Total — so a run of future, unpaid bookings (twelve generated
+        // weekly-flat-fee visits, say) read as money the customer had already paid. Spend is now
+        // REALIZED money only: a settled order (the definition above), not cancelled or refunded,
+        // net of any part refund.
+        //
+        // NOT DOUBLE-COUNTED WITH INVOICES. A commercial invoice's money reaches its cleanings as
+        // their allocated Totals when it is sent, and they count only once InvoicePaidAt is stamped
+        // by the invoice reaching a zero balance — so the invoice is counted exactly once, through
+        // its orders. Nothing adds invoice amounts on top.
+
+        /// <summary>Orders whose money counts as the customer's realized spend. EF-translatable.</summary>
+        public static IQueryable<Order> WhereRealizedSpend(this IQueryable<Order> orders) =>
+            orders.Where(o => o.Status != OrderStatuses.Cancelled && o.Status != OrderStatuses.Refunded)
+                  .Where(IsSettled);
+
+        public static bool IsRealizedSpendInMemory(Order order) =>
+            !OrderStatuses.IsCancelled(order.Status) && !OrderStatuses.IsRefunded(order.Status)
+            && IsSettledInMemory(order);
+
+        /// <summary>What one realized order contributes: its total less anything refunded.</summary>
+        public static decimal RealizedAmount(Order order) => order.Total - order.TotalRefundedAmount;
     }
 }

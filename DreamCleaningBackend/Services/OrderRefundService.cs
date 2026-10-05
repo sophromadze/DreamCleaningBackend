@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -244,7 +245,15 @@ namespace DreamCleaningBackend.Services
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
         }
 
-        public async Task<RefundSyncResultDto> SyncRefundsFromStripeAsync(int orderId)
+        public Task<RefundSyncResultDto> SyncRefundsFromStripeAsync(int orderId) =>
+            SyncRefundsFromStripeAsync(orderId, reversePoints: true);
+
+        /// <param name="reversePoints">
+        /// False only for the bulk backfill sweep: it re-reads OLD orders, and Bubble points on
+        /// refunds recorded before 2026-10 are corrected by the one-time admin correction (dry run
+        /// first), never silently by a sweep. A single-order sync is a refund just discovered.
+        /// </param>
+        private async Task<RefundSyncResultDto> SyncRefundsFromStripeAsync(int orderId, bool reversePoints)
         {
             var order = await _context.Orders
                 .Include(o => o.UpdateHistory)
@@ -321,6 +330,12 @@ namespace DreamCleaningBackend.Services
             // spend is actually counted — see ApplyLoyaltySpendAdjustmentAsync. Re-running the sync
             // imports nothing, so it cannot subtract twice.
             await ApplyLoyaltySpendAdjustmentAsync(order, imported);
+
+            // Bubble points follow newly discovered refund money (cumulative, so idempotent too).
+            if (reversePoints && imported > 0m)
+                await RefundPointsReversal.ApplyForRefundAsync(_context, _logger, order,
+                    charges.Sum(c => c.AmountReceived), charges.Sum(c => c.AmountRefunded),
+                    "the Stripe refund sync (refund issued outside the panel)");
 
             await _context.SaveChangesAsync();
 
@@ -489,7 +504,7 @@ namespace DreamCleaningBackend.Services
                 return Fail(firstFailure ?? "The refund could not be completed.", await BuildSummaryAsync(order));
             }
 
-            await ApplyRefundToReportingAsync(order, actuallyRefunded, charges);
+            await ApplyRefundToReportingAsync(order, actuallyRefunded, charges, adminUserId);
             await LogAuditAsync(order, actuallyRefunded, reason, adminUserId);
 
             var emailSent = false;
@@ -536,13 +551,18 @@ namespace DreamCleaningBackend.Services
         /// dropping refunded orders from the queries — which is also why a fully-refunded order
         /// keeps its cleaner salary as a real cost.
         /// </summary>
-        private async Task ApplyRefundToReportingAsync(Order order, decimal refundedNow, List<RefundableCharge> chargesBefore)
+        private async Task ApplyRefundToReportingAsync(Order order, decimal refundedNow, List<RefundableCharge> chargesBefore, int adminUserId)
         {
             var totalCharged = chargesBefore.Sum(c => c.AmountReceived);
             var refundedTotal = chargesBefore.Sum(c => c.AmountRefunded) + refundedNow;
 
             ApplyRefundTotals(order, totalCharged, refundedTotal);
             await ApplyLoyaltySpendAdjustmentAsync(order, refundedNow);
+
+            // Bubble points come back with the money (owner's rule, 2026-10) - full refund: all the
+            // order earned; partial: in proportion. Saved below with the refund itself.
+            await RefundPointsReversal.ApplyForRefundAsync(_context, _logger, order, totalCharged, refundedTotal,
+                $"the refund issued from the admin panel by user #{adminUserId}");
 
             await _context.SaveChangesAsync();
         }
@@ -641,7 +661,7 @@ namespace DreamCleaningBackend.Services
             {
                 try
                 {
-                    var sync = await SyncRefundsFromStripeAsync(id);
+                    var sync = await SyncRefundsFromStripeAsync(id, reversePoints: false);
                     result.OrdersScanned++;
 
                     if (!sync.Success) { result.Failures++; continue; }

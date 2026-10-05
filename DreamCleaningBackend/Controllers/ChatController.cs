@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
@@ -163,8 +164,10 @@ namespace DreamCleaningBackend.Controllers
 
         /// <summary>
         /// Temporary chat-photo upload (jpg/png/webp, max 5 MB — validated by magic
-        /// bytes, not the client's file name). Stored under {FileUpload:Path}/chat-photos
-        /// and served from /chat-photos/{name} via the existing uploads static mapping.
+        /// bytes, not the client's file name). Stored under {FileUpload:Path}/chat-photos.
+        /// The returned ImagePath is an opaque reference the widget hands back with its
+        /// message; it is NOT a viewable URL (the folder is private since 2026-10) — the
+        /// widget previews its own local copy, and history serves it via GetSessionImage.
         /// Auto-purged 30 days after being attached to a message.
         /// </summary>
         [HttpPost("upload-image")]
@@ -274,13 +277,37 @@ namespace DreamCleaningBackend.Controllers
                         _ => "user"
                     },
                     Content = m.Content,
-                    ImagePath = m.ImagePath,
+                    ImagePath = PrivateFileUrls.ChatImageForSession(session.Id, m.ImagePath),
                     AgentName = m.SenderTelegramUserId != null
                         ? agentNames.GetValueOrDefault(m.SenderTelegramUserId.Value)
                         : null,
                     CreatedAt = m.CreatedAt
                 }).ToList()
             });
+        }
+
+        /// <summary>
+        /// A photo from this chat, for the visitor's widget. Same trust model as the history
+        /// endpoint above (knowing the session GUID is what makes you a participant), plus the
+        /// file must belong to a message IN that session — so a file name alone, or a session
+        /// id paired with another session's file, gets nothing. Every refusal is a 404.
+        /// </summary>
+        [HttpGet("session/{sessionId:guid}/images/{fileName}")]
+        public async Task<IActionResult> GetSessionImage(Guid sessionId, string fileName)
+        {
+            if (!PrivateFileUrls.IsChatFileName(fileName) || !await IsChatAccessibleAsync())
+                return NotFound();
+
+            var stored = PrivateFileUrls.StoredChatPath(fileName);
+            var belongs = await _context.ChatAgentMessages
+                .AsNoTracking()
+                .AnyAsync(m => m.ChatSessionId == sessionId && m.ImagePath == stored);
+            if (!belongs) return NotFound();
+
+            var full = PrivateFileStore.Resolve(_configuration["FileUpload:Path"], stored, PrivateFileUrls.ChatPhotosFolder);
+            return full == null
+                ? NotFound()
+                : PrivateFileResponse.Serve(this, full, "chat-photo", PrivateFileResponse.NoStore);
         }
 
         /// <summary>

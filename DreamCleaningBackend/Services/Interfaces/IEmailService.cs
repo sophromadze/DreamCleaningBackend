@@ -12,9 +12,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendWelcomeEmailAsync(string email, string firstName, string? authProvider = null);
         Task SendGiftCardNotificationAsync(string recipientEmail, string recipientName,
             string senderName, string giftCardCode, decimal amount, string message, string senderEmail);
+        // sendLater: "buy for myself - send later" purchase receipt - no recipient yet, the card waits in the profile.
         Task SendGiftCardSenderConfirmationAsync(string senderEmail, string senderName,
-            string recipientName, string recipientEmail, string giftCardCode,
-            decimal amount, string message);
+            string? recipientName, string? recipientEmail, string giftCardCode,
+            decimal amount, string? message, bool sendLater = false);
         Task SendContactFormEmailAsync(string to, string subject, string html);
         Task SendCleanerAssignmentNotificationAsync(string email, string cleanerName, int orderId, bool sendCopyToAdmin = false);
         /// <summary>Build a compact SMS body containing the same assignment details as the email
@@ -64,6 +65,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task SendPollSubmissionEmailWithPhotosAsync(string toEmail, string subject, string htmlBody, List<PhotoUploadDto> uploadedPhotos = null);
         Task SendOrderUpdateNotificationAsync(int orderId, string customerEmail, decimal additionalAmount);
         Task SendCompanyAdditionalPaymentReceivedAsync(int orderId, string customerEmail, string customerName, decimal amountPaid);
+        /// <summary>Company notice that a REGULAR invoice was paid online (e.g. from the customer's
+        /// bank by ACH) — the invoice counterpart of the card payment-received notices.</summary>
+        Task SendCompanyInvoicePaymentReceivedAsync(int orderId, string invoiceNumber, string? customerEmail,
+            string customerName, decimal amountPaid, string paymentMethodLabel, bool orderFullyPaid);
         Task SendPaymentReminderEmailAsync(string email, string customerName, decimal amount, int orderId, string orderLink);
 
         /// <summary>Customer-facing refund confirmation, sent from our own SMTP (Stripe's built-in
@@ -81,6 +86,11 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// an amount smaller than the quoted total, sent on its own, reads as a price change.</summary>
         Task SendPartialPaymentRequestEmailAsync(string email, string customerName, decimal amount,
             decimal orderTotal, decimal amountAlreadyPaid, decimal remainingAfter, int orderId, string paymentLink);
+        /// <summary>A regular customer invoice (Admin → Invoices) with its public pay link and, when
+        /// rendered, the invoice PDF attached. <paramref name="kind"/> is Full / Split / Additional.</summary>
+        Task SendCustomerInvoiceEmailAsync(string email, string customerName, string invoiceNumber,
+            decimal amountDue, decimal orderTotal, string kind, int orderId, DateTime serviceDate, string invoiceUrl,
+            byte[]? pdf = null, string? pdfFileName = null);
         /// <summary>Notify the company about an order cancellation with reason, fee info, and user details.</summary>
         Task SendCancellationNotificationToCompanyAsync(int orderId, string userEmail, int userId, string reason, bool isLateCancellation, DateTime serviceDate, string serviceTime);
         /// <summary>Notify an assigned cleaner that their order has been cancelled.</summary>

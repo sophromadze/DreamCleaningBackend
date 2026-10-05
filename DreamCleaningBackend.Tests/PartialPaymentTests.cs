@@ -288,6 +288,29 @@ public class PartialPaymentTests
         Assert.Equal(0m, balance.OverpaidAmount);
     }
 
+    /// <summary>
+    /// Paid $141.54, then an admin added $100: the card used to say "Paid $141.54 — this order is
+    /// already paid in full" beside an order total of $241.54. The extra is still owed.
+    /// </summary>
+    [Fact]
+    public async Task AnAmountAddedAfterPayment_IsReportedAsStillOwed()
+    {
+        var order = Order(total: 241.54m, isPaid: true, status: OrderStatuses.Active);
+        order.InitialTotal = 141.54m;
+        var (db, service, _) = await ServiceWith(order);
+        db.OrderUpdateHistories.Add(new OrderUpdateHistory
+        {
+            OrderId = 1, UpdatedByUserId = 5, UpdatedAt = DateTime.UtcNow,
+            OriginalTotal = 141.54m, NewTotal = 241.54m, AdditionalAmount = 100m, IsPaid = false
+        });
+        await db.SaveChangesAsync();
+
+        var balance = await service.GetBalanceAsync(1);
+        Assert.Equal(100m, balance.AdditionalAmountDue);
+        Assert.Equal(141.54m, balance.AmountPaid);
+        Assert.Null(balance.CannotRequestReason);
+    }
+
     // ── Wiring that would fail silently ───────────────────────────────────────────────────
 
     [Fact]
@@ -342,7 +365,7 @@ public class PartialPaymentTests
     /// <summary>Resolves a path inside the API project from the test assembly's location.</summary>
     private static string SourceFile(string relativePath)
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        var dir = new DirectoryInfo(SourceTree.TestsProjectDir);
         while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "DreamCleaningBackend")))
             dir = dir.Parent;
 

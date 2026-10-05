@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Models
 {
@@ -50,6 +51,33 @@ namespace DreamCleaningBackend.Models
         /// hourly type can be switched off without a deploy.
         /// </summary>
         public bool CollectsPropertyType { get; set; } = true;
+
+        /// <summary>
+        /// Stable, admin-assigned identifier for code that must find a specific service type
+        /// (e.g. the generated /llms.txt reads "residential" and "move-in-out" for its prices).
+        ///
+        /// Exists for the same reason as CollectsPropertyType: Id and Name both diverge between
+        /// the local and production databases (and Name is freely editable), so neither may be
+        /// used to recognise a type. Lowercase words joined by hyphens, unique when set, NULL
+        /// for a type nothing needs to find. Rules live in Helpers/ServiceTypeKeyPolicy.cs.
+        /// Set by hand in the Booking Services tab on each database - never seeded.
+        /// </summary>
+        [StringLength(ServiceTypeKeyPolicy.MaxLength)]
+        public string? ServiceKey { get; set; }
+
+        /// <summary>
+        /// Marketing-only price for a type the booking calculator cannot price (today Filthy
+        /// Cleaning: inspected first, priced by hand). Shown on the public pages and /llms.txt
+        /// together with <see cref="DisplayPriceUnit"/>; NEVER read by any quote. NULL = no
+        /// stated price, and the site says "priced after assessment". Rules live in
+        /// Helpers/ServiceTypeDisplayPricePolicy.cs.
+        /// </summary>
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal? DisplayPrice { get; set; }
+
+        /// <summary>How <see cref="DisplayPrice"/> is worded: per-hour-per-cleaner, per-hour or from. NULL with it.</summary>
+        [StringLength(ServiceTypeDisplayPricePolicy.UnitMaxLength)]
+        public string? DisplayPriceUnit { get; set; }
 
         // Navigation properties
         public virtual ICollection<Service> Services { get; set; } = new List<Service>();

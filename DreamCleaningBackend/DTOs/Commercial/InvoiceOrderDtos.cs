@@ -22,6 +22,18 @@ namespace DreamCleaningBackend.DTOs.Commercial
         /// <summary>The customer's own name on the order, for a client with several sites.</summary>
         public string ContactName { get; set; } = string.Empty;
 
+        /// <summary>The scheduled occurrence a recurring cleaning fills (null for a one-off).
+        /// A weekly flat fee is assigned to the service week of THIS date, so a moved visit
+        /// still settles the week it was scheduled in.</summary>
+        public DateTime? OccurrenceDate { get; set; }
+
+        /// <summary>The contract the cleaning is performed under, when a recurring plan linked one.</summary>
+        public int? ContractId { get; set; }
+        public string? ContractNumber { get; set; }
+
+        /// <summary>Assigned cleaners' names, comma-separated; empty when nobody is assigned yet.</summary>
+        public string AssignedCleaners { get; set; } = string.Empty;
+
         /// <summary>True when this order is on THIS invoice already.</summary>
         public bool IsOnThisInvoice { get; set; }
 
@@ -106,6 +118,15 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public List<InvoiceOrderAllocationDto> Allocations { get; set; } = new();
 
         public List<string> Warnings { get; set; } = new();
+
+        /// <summary>
+        /// True when the lines were priced as the contract's WEEKLY FLAT FEE — one fee per
+        /// distinct service week the selected cleanings fall in, never one per cleaning.
+        /// </summary>
+        public bool PricedAsWeeklyFlatFee { get; set; }
+
+        /// <summary>Distinct contract service weeks the selection covers (weekly flat fee only).</summary>
+        public int ServiceWeekCount { get; set; }
     }
 
     /// <summary>

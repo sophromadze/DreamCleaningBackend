@@ -198,6 +198,9 @@ namespace DreamCleaningBackend.Controllers
                             if (processingIntent != null)
                             {
                                 await HandleCommercialProcessing(processingIntent);
+                                if (Services.CustomerInvoiceAchService.IsCustomerInvoiceAch(processingIntent.Metadata))
+                                    await RunCustomerInvoiceAch("processing", processingIntent.Id,
+                                        ach => ach.HandleAuthorizedAsync(null, processingIntent.Id, processingIntent.Metadata));
                                 if (processingIntent.Metadata?.GetValueOrDefault("type") == Services.RecurringCustomerPaymentService.StripeMetadataType)
                                     await HttpContext.RequestServices.GetRequiredService<Services.IRecurringCustomerPaymentService>().RefreshBatchStateAsync(processingIntent.Id);
                             }
@@ -208,6 +211,9 @@ namespace DreamCleaningBackend.Controllers
                             if (completedSession != null)
                             {
                                 await HandleCommercialCheckoutCompleted(completedSession);
+                                if (Services.CustomerInvoiceAchService.IsCustomerInvoiceAch(completedSession.Metadata))
+                                    await RunCustomerInvoiceAch("checkout completed", completedSession.Id,
+                                        ach => ach.HandleAuthorizedAsync(completedSession.Id, completedSession.PaymentIntentId, completedSession.Metadata));
                             }
                             break;
 
@@ -216,6 +222,9 @@ namespace DreamCleaningBackend.Controllers
                             if (expiredSession != null)
                             {
                                 await HandleCommercialCheckoutExpired(expiredSession);
+                                if (Services.CustomerInvoiceAchService.IsCustomerInvoiceAch(expiredSession.Metadata))
+                                    await RunCustomerInvoiceAch("checkout expired", expiredSession.Id,
+                                        ach => ach.HandleExpiredAsync(expiredSession.Id, expiredSession.Metadata));
                             }
                             break;
 
@@ -232,6 +241,9 @@ namespace DreamCleaningBackend.Controllers
                             if (settledSession != null)
                             {
                                 await HandleCommercialAsyncPaymentSucceeded(settledSession);
+                                if (Services.CustomerInvoiceAchService.IsCustomerInvoiceAch(settledSession.Metadata)
+                                    && !string.IsNullOrWhiteSpace(settledSession.PaymentIntentId))
+                                    await HandleCustomerInvoiceAchSucceeded(settledSession.PaymentIntentId, settledSession.Metadata, cts.Token);
                             }
                             break;
 
@@ -240,6 +252,10 @@ namespace DreamCleaningBackend.Controllers
                             if (failedSession != null)
                             {
                                 await HandleCommercialAsyncPaymentFailed(failedSession);
+                                if (Services.CustomerInvoiceAchService.IsCustomerInvoiceAch(failedSession.Metadata))
+                                    await RunCustomerInvoiceAch("async payment failed", failedSession.Id,
+                                        ach => ach.HandleFailedAsync(failedSession.Id, failedSession.PaymentIntentId, null,
+                                            "The bank payment did not go through.", failedSession.Metadata));
                             }
                             break;
 
@@ -341,6 +357,13 @@ namespace DreamCleaningBackend.Controllers
                             await HandleCommercialInvoicePayment(paymentIntent);
                             break;
 
+                        // Online BANK payment of a REGULAR invoice (DCR-…, 2026-09). Its own
+                        // discriminator: the part-payment handler above would credit the gross
+                        // debit, and this one must credit the bill without the ACH fee.
+                        case Services.CustomerInvoiceAchService.StripeMetadataType:
+                            await HandleCustomerInvoiceAchSucceeded(paymentIntent.Id, paymentIntent.Metadata, cancellationToken);
+                            break;
+
                         default:
                             _logger.LogWarning("Unknown payment type: {PaymentType}", type);
                             break;
@@ -396,6 +419,16 @@ namespace DreamCleaningBackend.Controllers
                 return;
             }
 
+            await MarkOrderPaidByPartialPaymentsAsync(orderId, paymentIntent.Id, cancellationToken);
+        }
+
+        /// <summary>
+        /// The last slice cleared the balance: mark the order paid exactly as the full-payment
+        /// webhook does. Shared by the card part-payment backstop and the regular-invoice ACH
+        /// settlement, so an order finished either way ends in the same state.
+        /// </summary>
+        private async Task MarkOrderPaidByPartialPaymentsAsync(int orderId, string paymentIntentId, CancellationToken cancellationToken)
+        {
             var order = await _context.Orders.FindAsync(new object[] { orderId }, cancellationToken);
             if (order == null || order.IsPaid)
                 return;
@@ -403,7 +436,7 @@ namespace DreamCleaningBackend.Controllers
             order.IsPaid = true;
             order.PaidAt = DateTime.UtcNow;
             order.Status = OrderStatuses.Active;
-            order.PaymentIntentId ??= paymentIntent.Id;
+            order.PaymentIntentId ??= paymentIntentId;
 
             // Same initial-pricing snapshot the full-payment webhook takes: the order-edit top-up
             // flow measures its delta against these, so an order that was never snapshotted would
@@ -419,6 +452,41 @@ namespace DreamCleaningBackend.Controllers
 
             await _context.SaveChangesAsync(cancellationToken);
             _logger.LogInformation("Order {OrderId} fully paid by part-payments; marked paid from the webhook.", orderId);
+        }
+
+        /// <summary>
+        /// A regular-invoice bank (ACH) debit SETTLED — credited through the invoice's part-payment
+        /// request, and the order marked paid when that cleared the balance. Idempotent: Stripe
+        /// sends both payment_intent.succeeded and checkout.session.async_payment_succeeded.
+        /// </summary>
+        private async Task HandleCustomerInvoiceAchSucceeded(
+            string paymentIntentId, IDictionary<string, string>? metadata, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var ach = HttpContext.RequestServices.GetRequiredService<Services.CustomerInvoiceAchService>();
+                // Marks the order paid itself when this cleared the balance (shared with the page sync).
+                await ach.RecordSucceededAsync(paymentIntentId, metadata, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Rethrown: this is money. A 500 makes Stripe retry, and the settlement is idempotent.
+                _logger.LogError(ex, "Failed to record regular-invoice ACH payment {PaymentIntentId}.", paymentIntentId);
+                throw;
+            }
+        }
+
+        /// <summary>Runs a non-money ACH bookkeeping step; failures are logged, never rethrown.</summary>
+        private async Task RunCustomerInvoiceAch(string step, string? stripeId, Func<Services.CustomerInvoiceAchService, Task> action)
+        {
+            try
+            {
+                await action(HttpContext.RequestServices.GetRequiredService<Services.CustomerInvoiceAchService>());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Regular-invoice ACH {Step} handling failed for {StripeId}.", step, stripeId);
+            }
         }
 
         private async Task HandleBookingPayment(PaymentIntent paymentIntent, CancellationToken cancellationToken = default)
@@ -803,6 +871,15 @@ namespace DreamCleaningBackend.Controllers
                         "Failed to mark commercial payment {PaymentIntentId} as failed.", paymentIntent?.Id);
                 }
 
+                return;
+            }
+
+            // A failed regular-invoice bank payment: the invoice becomes payable again.
+            if (Services.CustomerInvoiceAchService.IsCustomerInvoiceAch(paymentIntent?.Metadata))
+            {
+                await RunCustomerInvoiceAch("payment failed", paymentIntent!.Id,
+                    ach => ach.HandleFailedAsync(null, paymentIntent.Id, paymentIntent.LastPaymentError?.Code,
+                        paymentIntent.LastPaymentError?.Message, paymentIntent.Metadata));
                 return;
             }
 

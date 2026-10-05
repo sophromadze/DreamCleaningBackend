@@ -74,7 +74,8 @@ namespace DreamCleaningBackend.Services
                     .Concat(activeExtras.Where(es => es.IsAvailableForAll && es.ServiceTypeId == null))
                     // Extra Cleaners is hidden from customers (admin-only) — cleaner
                     // count is the team's decision now, so chat must not offer it.
-                    .Where(es => es.Name != OrderPricingCalculator.ExtraCleanersName)
+                    .Where(es => !ExtraServiceKeys.Is(es, ExtraServiceKeys.ExtraCleaners,
+                        n => n == OrderPricingCalculator.ExtraCleanersName))
                     .Select(es => new ChatExtraServiceDto
                     {
                         Id = es.Id,

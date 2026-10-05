@@ -29,6 +29,54 @@ namespace DreamCleaningBackend.Controllers
             _auditService = auditService;
         }
 
+        /// <summary>
+        /// Every audited change made to ONE order after it was created — the order panel's Changes
+        /// tab. Unlike <see cref="GetEntityHistory"/> (one entity type), this gathers all the
+        /// order-scoped types (edits, cleaners, wages, payments, invoices, refunds, notes…), each of
+        /// which records the order id as its EntityId. Same row shape as the entity history, so the
+        /// shared audit display helpers render it. Notifications are left out: they are not changes.
+        /// </summary>
+        [HttpGet("orders/{orderId:int}/changes")]
+        [RequirePermission(Permission.View)]
+        public async Task<IActionResult> GetOrderChanges(int orderId)
+        {
+            var types = new[]
+            {
+                "Order", AuditEntityTypes.OrderServicesUpdate, AuditEntityTypes.CleanerAssignment,
+                AuditEntityTypes.OrderCleanerHourlyRate, AuditEntityTypes.OrderCleanerCount,
+                AuditEntityTypes.CleanerPayrollOverride, AuditEntityTypes.OrderRefundAction,
+                AuditEntityTypes.OrderAdminNote, AuditEntityTypes.OrderTransferAction,
+                AuditEntityTypes.OrderEditRequest, AuditEntityTypes.OrderPaymentAction,
+                AuditEntityTypes.OrderAssignedAdmin, AuditEntityTypes.CustomerInvoiceAction,
+                AuditEntityTypes.OrderInvoiceAllocation, AuditEntityTypes.OrderVisibility
+            };
+
+            var history = await _context.AuditLogs
+                .Where(a => a.EntityId == orderId && a.EntityType != null && types.Contains(a.EntityType))
+                .OrderByDescending(a => a.CreatedAt)
+                .Include(a => a.User)
+                .Take(300)
+                .ToListAsync();
+            var display = await AuditDisplayProjection.BuildAsync(_context, history);
+
+            return Ok(history.Select(log => new
+            {
+                log.Id,
+                log.Action,
+                log.CreatedAt,
+                ChangedBy = log.User == null ? null : (log.User.FirstName + " " + log.User.LastName).Trim(),
+                log.EntityType,
+                log.EntityId,
+                // Raw JSON STRINGS, parsed by the browser — exactly what the Audits tab feed sends.
+                // A Newtonsoft JObject here is serialized by System.Text.Json as nested empty
+                // arrays, so every row reached the Changes tab with no values in it.
+                OldValues = display[log.Id].OldValues,
+                NewValues = display[log.Id].NewValues,
+                ChangedFields = string.IsNullOrEmpty(log.ChangedFields) ? null : JsonConvert.DeserializeObject<List<string>>(log.ChangedFields),
+                UndoneAt = log.UndoneAt
+            }));
+        }
+
         [HttpGet("audit-logs/{entityType}/{entityId}")]
         [RequirePermission(Permission.View)]
         public async Task<IActionResult> GetEntityHistory(string entityType, long entityId)

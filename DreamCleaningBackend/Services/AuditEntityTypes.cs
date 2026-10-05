@@ -38,6 +38,8 @@ namespace DreamCleaningBackend.Services
         public const string CleanerPayrollOverride = "CleanerPayrollOverride";
         /// <summary>The ORDER's cleaner hourly rate. EntityId = order id.</summary>
         public const string OrderCleanerHourlyRate = "OrderCleanerHourlyRate";
+        /// <summary>The ORDER's cleaner count (MaidsCount), set from the Wages card. EntityId = order id.</summary>
+        public const string OrderCleanerCount = "OrderCleanerCount";
         /// <summary>A payout marked paid or un-paid (named cleaner or unassigned slot). EntityId = order id.</summary>
         public const string CleanerPayout = "CleanerPayout";
 
@@ -56,6 +58,8 @@ namespace DreamCleaningBackend.Services
         public const string OrderPaymentAction = "OrderPaymentAction";
         /// <summary>Assigned admin set or cleared on an order. EntityId = order id.</summary>
         public const string OrderAssignedAdmin = "OrderAssignedAdmin";
+        /// <summary>A regular customer invoice created, sent or voided (Admin → Invoices). EntityId = order id.</summary>
+        public const string CustomerInvoiceAction = "CustomerInvoiceAction";
 
         /// <summary>
         /// A recurring series created, edited, paused, resumed — or a pass of its generator.
@@ -257,6 +261,7 @@ namespace DreamCleaningBackend.Services
                 [SavedCardChargeAction] = "The charge attempt has already happened at the card network. Refund it on the order or invoice instead.",
                 [CleanerPayrollOverride] = "Payroll figures feed reported labour cost. Set the rate or hours back by hand so the change is recorded.",
                 [OrderCleanerHourlyRate] = "Payroll figures feed reported labour cost. Set the rate back by hand so the change is recorded.",
+                [OrderCleanerCount] = "Payroll figures feed reported labour cost. Set the cleaner count back from the Wages card so the change is recorded.",
                 [CleanerPayout] = "This records money handed to a cleaner. Use Undo payment on the Outgoing Payments page.",
 
                 // notification + scheduling logs
@@ -274,6 +279,7 @@ namespace DreamCleaningBackend.Services
                 [OrderVisibility] = "Show or hide the order again from the orders panel.",
                 [OrderEditRequest] = "Change requests are a decision record. Submit a new request instead.",
                 [OrderAssignedAdmin] = "Reassign the order from the orders panel instead.",
+                [CustomerInvoiceAction] = "An invoice that was sent cannot be unsent. Void it from the Invoices tab instead.",
                 [RecurringOrderSeriesAction] = "Orders have already been generated from this schedule. Edit or pause the series instead.",
                 [OrderPaymentBatchAction] = "The charge has already been taken. Refund the covered orders rather than reverting the record.",
                 [OrderInvoiceAllocation] = "The allocated price is printed on an invoice the client already has. Issue a corrected invoice instead.",

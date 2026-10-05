@@ -29,7 +29,7 @@ public class BackgroundWorkScopeTests
 {
     private static string BackendRoot()
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        var dir = new DirectoryInfo(SourceTree.TestsProjectDir);
         while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "DreamCleaningBackend")))
             dir = dir.Parent;
 

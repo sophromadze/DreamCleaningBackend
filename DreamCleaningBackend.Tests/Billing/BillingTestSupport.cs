@@ -406,6 +406,9 @@ public sealed class FakeStripe : IStripeService
     // ── Not used by the billing paths ──
     public Task<PaymentIntent> ConfirmPaymentIntentAsync(string paymentIntentId) => throw new NotSupportedException();
     public Task UpdatePaymentIntentMetadataAsync(string paymentIntentId, Dictionary<string, string> metadata) => Task.CompletedTask;
+
+    public Task<ChargeReceiptSendResult> SendChargeReceiptAsync(string paymentIntentId, string email) =>
+        Task.FromResult(new ChargeReceiptSendResult { FailureReason = "Not supported by the fake." });
 }
 
 /// <summary>Records every email/SMS; can be told to fail.</summary>

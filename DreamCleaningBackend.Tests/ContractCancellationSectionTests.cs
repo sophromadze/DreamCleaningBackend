@@ -42,19 +42,19 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains("## 36. CANCELLATION, RESCHEDULING AND CONTRACT TERMINATION", body);
 
             // Every subject the section is required to cover, each as its own lettered paragraph.
-            Assert.Contains("(b) Cancelling or rescheduling an individual scheduled visit.", body);
+            Assert.Contains("(b) Rescheduling a visit.", body);
             Assert.Contains("(c) Late cancellation.", body);
-            Assert.Contains("(d) Failed access to the Premises.", body);
+            Assert.Contains("(d) Failed access.", body);
             Assert.Contains("(e) Cancellation by Contractor.", body);
-            Assert.Contains("(f) Emergency exceptions.", body);
+            Assert.Contains("(f) Emergencies.", body);
             Assert.Contains("(g) Repeated missed visits.", body);
-            Assert.Contains("(h) Minimum contractual commitment.", body);
-            Assert.Contains("(i) Termination for convenience and required notice.", body);
-            Assert.Contains("(j) Early termination for cause, nonpayment and safety.", body);
+            Assert.Contains("(h) Minimum commitment.", body);
+            Assert.Contains("(i) Termination for convenience.", body);
+            Assert.Contains("(j) Early termination.", body);
             Assert.Contains("(k) No early-termination charge.", body);
-            Assert.Contains("(l) Prepaid Services and refunds.", body);
-            Assert.Contains("(m) Outstanding payment obligations.", body);
-            Assert.Contains("(n) Written cancellation and termination notices.", body);
+            Assert.Contains("(l) Refunds.", body);
+            Assert.Contains("(m) Outstanding payments.", body);
+            Assert.Contains("(n) Notices.", body);
             Assert.Contains("(o) Published policies.", body);
         }
 
@@ -65,8 +65,10 @@ namespace DreamCleaningBackend.Tests
         [Fact]
         public void TheSignatureBlockNamesTheSectionItIsSigningFor()
         {
-            Assert.Contains("including Sections 1 through 36, Exhibit A and Exhibit B",
+            Assert.Contains("including Sections 1 through 36, {{EXHIBITS_SIGNED}}",
                 ContractTemplateSeed.BodyText);
+            Assert.Contains("including Sections 1 through 36, Exhibit A and Exhibit B",
+                ContractRenderer.Render(Snapshot()).PlainText);
             Assert.DoesNotContain("Sections 1 through 35", ContractTemplateSeed.BodyText);
         }
 
@@ -79,10 +81,39 @@ namespace DreamCleaningBackend.Tests
         [Fact]
         public void TheSectionArrivedWithAVersionBump()
         {
-            Assert.Equal("2.6", ContractTemplateSeed.TemplateVersion);
+            Assert.Equal("3.3", ContractTemplateSeed.TemplateVersion);
             Assert.Contains("2.5", ContractTemplateSeed.SupersededVersions);
+            Assert.Contains("2.6", ContractTemplateSeed.SupersededVersions);
+            Assert.Contains("2.7", ContractTemplateSeed.SupersededVersions);
+            Assert.Contains("2.8", ContractTemplateSeed.SupersededVersions);
+            Assert.Contains("3.0", ContractTemplateSeed.SupersededVersions);
+            Assert.Contains("3.1", ContractTemplateSeed.SupersededVersions);
             Assert.DoesNotContain(
                 ContractTemplateSeed.TemplateVersion, ContractTemplateSeed.SupersededVersions);
+        }
+
+        /// <summary>
+        /// A CONTRACT WITH NO MINIMUM COMMITMENT - the default since 2026-09-30 - keeps Section 36
+        /// as a dedicated cancellation, rescheduling and termination section, says no commitment
+        /// applies, and quotes thirty days' notice. It must not describe a commitment it lacks.
+        /// </summary>
+        [Fact]
+        public void WithoutACommitmentSectionThirtySixSaysNoneAppliesAndQuotesThirtyDays()
+        {
+            var section = SectionThirtySix(Snapshot());
+
+            Assert.Contains("(h) Minimum commitment. No minimum service commitment applies.", section);
+            Assert.Contains("(i) Termination for convenience. Either Party may terminate ongoing "
+                + "Services with at least thirty (30) calendar days' written notice", section);
+            Assert.DoesNotContain("Minimum Commitment Period", section);
+            Assert.DoesNotContain("Minimum Commitment End Date", section);
+            Assert.DoesNotContain("Initial Term", section);
+            Assert.DoesNotContain("zero (0)", section);
+            Assert.DoesNotContain("sixty (60) calendar days' written notice", section);
+
+            // Cause, nonpayment, safety and force-majeure termination are all still summarised.
+            Assert.Contains("(j) Early termination.", section);
+            Assert.Contains("(k) No early-termination charge.", section);
         }
 
         // ══════════════════════════════════════════════════════════════════════════════════════
@@ -174,10 +205,10 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains("reasonable, documented net loss after avoided costs and net "
                 + "replacement earnings", section);
             Assert.Contains("The cap is a ceiling on proven loss and not an automatic charge", section);
-            Assert.Contains("No Client cancellation charge applies where Contractor cannot offer a "
+            Assert.Contains("no Client cancellation charge applies where Contractor cannot offer a "
                 + "reasonable makeup opportunity", section);
-            Assert.Contains("This Agreement provides no early-termination fee, exit charge or "
-                + "liquidated sum payable on termination", section);
+            Assert.Contains("No early-termination fee, exit charge or liquidated sum applies", section);
+            Assert.Contains("limited to proven direct damages", section);
             Assert.Contains("no remaining fees are automatically accelerated", section);
         }
 

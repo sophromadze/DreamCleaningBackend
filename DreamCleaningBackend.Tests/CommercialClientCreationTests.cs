@@ -270,7 +270,9 @@ namespace DreamCleaningBackend.Tests
         {
             ContractClientId = clientId,
             ContractId = null,          // ← the case under test
-            InvoiceDate = new DateTime(2026, 9, 7),
+            // Today, so Net 15 lands in the future. A fixed date made the invoice Overdue the
+            // moment it was sent once the calendar passed its due date (2026-09-22).
+            InvoiceDate = DateTime.UtcNow.Date,
             DueTerms = InvoiceDueTerms.Net15,
             TaxType = InvoiceTaxType.Exempt,
             PaymentMethod = InvoicePaymentMethod.AchBankTransfer,

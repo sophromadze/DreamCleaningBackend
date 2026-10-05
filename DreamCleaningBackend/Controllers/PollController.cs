@@ -80,9 +80,10 @@ namespace DreamCleaningBackend.Controllers
                     ContactPhone = dto.ContactPhone,
                     ServiceAddress = dto.ServiceAddress,
                     AptSuite = dto.AptSuite,
-                    City = dto.City,
-                    State = dto.State,
-                    PostalCode = dto.PostalCode,
+                    // Non-null columns; the poll form no longer collects these.
+                    City = dto.City ?? "",
+                    State = dto.State ?? "",
+                    PostalCode = dto.PostalCode ?? "",
                     Status = "Pending",
                     CreatedAt = DateTime.UtcNow
                 };
@@ -167,8 +168,11 @@ namespace DreamCleaningBackend.Controllers
                 var contactEmail = !string.IsNullOrWhiteSpace(fullSubmission.ContactEmail) 
                     ? $"<a href='mailto:{fullSubmission.ContactEmail}'>{fullSubmission.ContactEmail}</a>" 
                     : "Not provided";
+                // Only the address line the customer typed on the poll form. The form asks for no
+                // city/state/zip, so appending those columns printed the customer's SAVED address
+                // underneath as a second one.
                 var serviceAddressDisplay = !string.IsNullOrWhiteSpace(fullSubmission.ServiceAddress)
-                    ? $"{fullSubmission.ServiceAddress}{(!string.IsNullOrEmpty(fullSubmission.AptSuite) ? $", {fullSubmission.AptSuite}" : "")}<br>{fullSubmission.City}, {fullSubmission.State} {fullSubmission.PostalCode}"
+                    ? fullSubmission.ServiceAddress.Trim()
                     : "Not provided";
 
                 var body = $@"

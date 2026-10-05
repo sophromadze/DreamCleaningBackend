@@ -42,6 +42,9 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// because "pay $1,000" on a $2,743.65 order reads as a price change otherwise.</summary>
         Task SendPartialPaymentRequestSmsAsync(string phoneNumber, string customerName, decimal amount,
             decimal orderTotal, decimal remainingAfter, int orderId, string paymentLink);
+        /// <summary>A regular customer invoice (Admin → Invoices) with its public pay link.</summary>
+        Task SendCustomerInvoiceSmsAsync(string phoneNumber, string customerName, string invoiceNumber,
+            decimal amountDue, int orderId, string invoiceUrl);
         /// <summary>Gentle reminder that the customer has an unpaid additional amount.</summary>
         Task SendAdditionalPaymentReminderSmsAsync(string phoneNumber, string customerName, decimal additionalAmount, int orderId, string paymentLink);
         /// <summary>Send a review request SMS to the customer after order completion.</summary>

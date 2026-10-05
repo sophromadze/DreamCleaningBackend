@@ -80,7 +80,10 @@ namespace DreamCleaningBackend.Services
         public const decimal HeavyDutyCleanerHourlyRate = 25m;
         public const decimal FilthyCleanerHourlyRate = 28m;
 
-        /// <summary>The extra service that adds cleaners is identified by name, like the booking page does.</summary>
+        /// <summary>
+        /// The extra that adds cleaners is identified by its key (ExtraServiceKeys.ExtraCleaners);
+        /// this name is only the fallback for an UNKEYED row (see ExtraServiceKeys.Is).
+        /// </summary>
         public const string ExtraCleanersName = "Extra Cleaners";
 
         /// <summary>
@@ -178,10 +181,14 @@ namespace DreamCleaningBackend.Services
             public bool HasHours { get; set; }
             public bool HasQuantity { get; set; }
             public string? Name { get; set; }
+
+            /// <summary>ExtraService.ExtraServiceKey - decides <see cref="IsExtraCleaners"/> when set.</summary>
+            public string? ExtraServiceKey { get; set; }
             public int Quantity { get; set; }
             public decimal Hours { get; set; }
 
-            public bool IsExtraCleaners => HasQuantity && Name == ExtraCleanersName;
+            public bool IsExtraCleaners => HasQuantity && ExtraServiceKeys.Is(
+                ExtraServiceKey, Name, ExtraServiceKeys.ExtraCleaners, n => n == ExtraCleanersName);
         }
 
         public class QuoteInput
@@ -743,6 +750,91 @@ namespace DreamCleaningBackend.Services
             return (loyalty, loyaltyPct, subscriptionAmount, promoAmount);
         }
 
+        // ===== Step 3b: discounts on an EDITED order (2026-10) =====
+
+        /// <summary>A percentage discount exactly as booking computes it: Round2(subTotal × % / 100).</summary>
+        public static decimal PercentOf(decimal subTotal, decimal percent) =>
+            subTotal <= 0m || percent <= 0m ? 0m : Round2(subTotal * percent / 100m);
+
+        /// <summary>
+        /// A fixed-amount promo / special offer: its face value, capped so the discounted subtotal
+        /// never goes below zero once the other surviving discounts are off. Booking and every edit
+        /// path apply the same cap, so the stored figure is what actually came off.
+        /// </summary>
+        public static decimal CapFixedDiscount(decimal faceValue, decimal subTotal, decimal otherDiscounts) =>
+            Math.Max(0m, Math.Min(faceValue, Round2(subTotal - otherDiscounts)));
+
+        public class EditDiscountInput
+        {
+            /// <summary>The order's subtotal BEFORE this edit (what the stored amounts were derived from).</summary>
+            public decimal OriginalSubTotal { get; set; }
+            public decimal NewSubTotal { get; set; }
+            public decimal DiscountAmount { get; set; }
+            public decimal? DiscountPercent { get; set; }
+            public decimal? DiscountFixedAmount { get; set; }
+            public decimal SubscriptionDiscountAmount { get; set; }
+            public decimal? SubscriptionDiscountPercent { get; set; }
+            public decimal LoyaltyDiscountPercentage { get; set; }
+            /// <summary>Only read when no percentage is locked (pre-snapshot orders).</summary>
+            public decimal LoyaltyDiscountAmount { get; set; }
+        }
+
+        /// <summary>
+        /// The promo, subscription and loyalty discounts of an EDITED order — the same numbers
+        /// booking would produce for the new subtotal. Shared by the customer order edit, its
+        /// additional-amount preview and the admin editor (mirrored as resolveEditedDiscounts in
+        /// order-pricing.calculator.ts, which both editors use for their previews).
+        ///
+        /// Which slots are non-zero was decided ONCE, by the stacking gate at booking; an edit
+        /// re-prices the survivors and never revives a slot stacking dropped (a rule is recorded
+        /// only for a slot that survived). Per slot:
+        ///   - a recorded percentage  -> PercentOf(new subtotal, %)
+        ///   - a recorded fixed amount -> the face value, capped (see CapFixedDiscount)
+        ///   - no rule (legacy order, or a SuperAdmin-typed figure) -> the old proportional
+        ///     re-scale Round2(new × stored / original), so nothing changes for those orders
+        /// Loyalty keeps its locked percentage, as before (an amount with no percentage re-scales).
+        /// </summary>
+        public static (decimal discount, decimal subscription, decimal loyalty) ResolveEditedDiscounts(EditDiscountInput input)
+        {
+            var newSub = input.NewSubTotal;
+
+            decimal Rescale(decimal amount) =>
+                input.OriginalSubTotal > 0m ? Round2(newSub * (amount / input.OriginalSubTotal)) : 0m;
+
+            var subscription = input.SubscriptionDiscountPercent is decimal subPct && subPct > 0m
+                ? PercentOf(newSub, subPct)
+                : input.SubscriptionDiscountAmount > 0m ? Rescale(input.SubscriptionDiscountAmount) : 0m;
+
+            var loyalty = input.LoyaltyDiscountPercentage > 0m
+                ? PercentOf(newSub, input.LoyaltyDiscountPercentage)
+                : input.LoyaltyDiscountAmount > 0m ? Rescale(input.LoyaltyDiscountAmount) : 0m;
+
+            decimal discount;
+            if (input.DiscountPercent is decimal pct && pct > 0m)
+                discount = PercentOf(newSub, pct);
+            else if (input.DiscountFixedAmount is decimal face && face > 0m)
+                discount = CapFixedDiscount(face, newSub, subscription + loyalty);
+            else
+                discount = input.DiscountAmount > 0m ? Rescale(input.DiscountAmount) : 0m;
+
+            return (discount, subscription, loyalty);
+        }
+
+        /// <summary>Convenience overload reading the stored order (call BEFORE overwriting SubTotal).</summary>
+        public static (decimal discount, decimal subscription, decimal loyalty) ResolveEditedDiscounts(Order order, decimal newSubTotal) =>
+            ResolveEditedDiscounts(new EditDiscountInput
+            {
+                OriginalSubTotal = order.SubTotal,
+                NewSubTotal = newSubTotal,
+                DiscountAmount = order.DiscountAmount,
+                DiscountPercent = order.DiscountPercent,
+                DiscountFixedAmount = order.DiscountFixedAmount,
+                SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
+                SubscriptionDiscountPercent = order.SubscriptionDiscountPercent,
+                LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
+                LoyaltyDiscountAmount = order.LoyaltyDiscountAmount
+            });
+
         // ===== Step 4: tax + total =====
 
         public class TotalsInput
@@ -867,8 +959,26 @@ namespace DreamCleaningBackend.Services
         /// returns, which is how a mis-set rate gets caught before anybody is paid.
         /// Mirrored by getDefaultCleanerHourlyRate in order-pricing.calculator.ts.
         /// </summary>
-        public static decimal GetDefaultCleanerHourlyRate(decimal deepCleaningFee, string? serviceTypeName = null)
+        public static decimal GetDefaultCleanerHourlyRate(
+            decimal deepCleaningFee, string? serviceTypeName = null, string? serviceTypeKey = null)
         {
+            // A keyed (non-custom) service type is recognised by its ServiceType.ServiceKey, so a
+            // rename in admin cannot move a cleaner onto another rate. Callers pass the key only for
+            // a NON-custom type: a custom ("Pre-Arranged") order's per-order label is the truth for
+            // it and stays matched by name below, as does any type nobody has keyed.
+            switch (serviceTypeKey?.Trim())
+            {
+                case "filthy":
+                    return FilthyCleanerHourlyRate;
+                case "heavy-condition":
+                case "post-construction":
+                    return HeavyDutyCleanerHourlyRate;
+                case "move-in-out":
+                    return DeepCleaningCleanerHourlyRate;
+                case { Length: > 0 }:
+                    return deepCleaningFee > 0m ? DeepCleaningCleanerHourlyRate : RegularCleanerHourlyRate;
+            }
+
             var name = NormalizeServiceTypeName(serviceTypeName);
 
             if (name.Contains("filthy"))

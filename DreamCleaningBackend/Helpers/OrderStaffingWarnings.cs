@@ -34,6 +34,9 @@ namespace DreamCleaningBackend.Helpers
             /// <summary>Display name — a custom order's own label, already resolved.</summary>
             public string ServiceTypeName { get; set; } = "Cleaning";
 
+            /// <summary>ServiceType.ServiceKey of a NON-custom type (null otherwise) - see GetDefaultCleanerHourlyRate.</summary>
+            public string? ServiceTypeKey { get; set; }
+
             /// <summary>Any OrderService whose Service.ServiceRelationType is "cleaner".</summary>
             /// <remarks>
             /// Read from the RELATION TYPE, never the service key — same rule as
@@ -76,7 +79,7 @@ namespace DreamCleaningBackend.Helpers
                 facts.Assignments);
 
             var expectedRate = OrderPricingCalculator.GetDefaultCleanerHourlyRate(
-                facts.HasDeepCleaningExtra ? 1m : 0m, facts.ServiceTypeName);
+                facts.HasDeepCleaningExtra ? 1m : 0m, facts.ServiceTypeName, facts.ServiceTypeKey);
 
             var unassignedTipEach = payroll.UnassignedCount == 0
                 ? 0m

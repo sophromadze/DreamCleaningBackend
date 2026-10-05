@@ -52,6 +52,13 @@ namespace DreamCleaningBackend.DTOs
         public decimal Total { get; set; }
         public decimal AmountPaid { get; set; }
         public decimal AmountDue { get; set; }
+
+        /// <summary>
+        /// Owed ON TOP of a paid order because an edit raised its price afterwards
+        /// (<c>OrderAdditionalCharge</c>). Separate from <see cref="AmountDue"/>, which is the
+        /// balance of the order's own total; the Payments card shows both as "still owed".
+        /// </summary>
+        public decimal AdditionalAmountDue { get; set; }
         public bool IsPartiallyPaid { get; set; }
 
         /// <summary>Money taken beyond the total — only reachable when an admin lowered the price
@@ -91,6 +98,13 @@ namespace DreamCleaningBackend.DTOs
         public string PaymentMethod { get; set; } = string.Empty;
         public string? PaymentReference { get; set; }
         public string? PaymentNotes { get; set; }
+    }
+
+    /// <summary>Admin "Send Receipt" on one card payment row. Email is optional — blank means the
+    /// order's own notification address.</summary>
+    public class SendPaymentReceiptDto
+    {
+        public string? Email { get; set; }
     }
 
     /// <summary>What the payment page needs to charge one slice.</summary>

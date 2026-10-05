@@ -18,6 +18,13 @@ namespace DreamCleaningBackend.Services
         private readonly ILogger<EmailService> _logger;
         private readonly ApplicationDbContext _context;
 
+        /// <summary>
+        /// The company's main colour (the site's <c>--primary-color</c>). Every email that asks a
+        /// customer to PAY — booking payment link, part-payment request, invoice, additional
+        /// payment and its reminder — is painted with it; they used to be green or material blue.
+        /// </summary>
+        public const string BrandColor = "#2563eb";
+
         public EmailService(IConfiguration configuration, ILogger<EmailService> logger, ApplicationDbContext context)
         {
             _configuration = configuration;
@@ -370,6 +377,11 @@ namespace DreamCleaningBackend.Services
             // Keep the subject line - don't remove it!
             var subject = $"You've received a Dream Cleaning gift card from {senderName}!";
 
+            // Customer-typed text goes into HTML below - encode it (the subject above stays plain text).
+            recipientName = System.Net.WebUtility.HtmlEncode(recipientName ?? string.Empty);
+            senderName = System.Net.WebUtility.HtmlEncode(senderName ?? string.Empty);
+            message = System.Net.WebUtility.HtmlEncode(message ?? string.Empty);
+
             _logger.LogInformation($"[GIFT CARD EMAIL] Starting email send to {recipientEmail} for gift card {giftCardCode}");
 
             // Get gift card configuration
@@ -382,67 +394,11 @@ namespace DreamCleaningBackend.Services
             string backgroundImageDataUri = "";
             try
             {
-                string imagePath = null;
-                if (!string.IsNullOrEmpty(backgroundPath))
-                {
-                    // Try to load the configured background image
-                    var fileUploadPath = _configuration["FileUpload:Path"];
-                    if (!string.IsNullOrEmpty(fileUploadPath))
-                    {
-                        // Normalize the path: remove leading slash
-                        var normalizedPath = backgroundPath.TrimStart('/', '\\');
-                        
-                        // Split the path by both forward and back slashes to handle any format
-                        var pathParts = normalizedPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
-                        
-                        // Combine the file upload path with all path parts
-                        var fullImagePath = Path.Combine(new[] { fileUploadPath }.Concat(pathParts).ToArray());
-                        
-                        _logger.LogInformation($"[GIFT CARD EMAIL] Attempting to load gift card background image. DB Path: {backgroundPath}, FileUploadPath: {fileUploadPath}, FullPath: {fullImagePath}");
-                        
-                        if (File.Exists(fullImagePath))
-                        {
-                            imagePath = fullImagePath;
-                            _logger.LogInformation($"[GIFT CARD EMAIL] Successfully found gift card background image at: {fullImagePath}");
-                        }
-                        else
-                        {
-                            _logger.LogWarning($"[GIFT CARD EMAIL] Gift card background image not found at: {fullImagePath}");
-                            // Try alternative path constructions
-                            var altPath1 = Path.Combine(fileUploadPath, backgroundPath.TrimStart('/'));
-                            var altPath2 = Path.Combine(fileUploadPath, "images", Path.GetFileName(backgroundPath));
-                            _logger.LogWarning($"[GIFT CARD EMAIL] Alternative paths checked - Alt1: {altPath1} (exists: {File.Exists(altPath1)}), Alt2: {altPath2} (exists: {File.Exists(altPath2)})");
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogWarning($"[GIFT CARD EMAIL] FileUpload:Path configuration is empty, cannot load gift card background image");
-                    }
-                }
-                else
-                {
-                    _logger.LogInformation("[GIFT CARD EMAIL] Background path from database is empty, will use default image");
-                }
-                
-                // Fallback to default image if configured image not found
-                if (string.IsNullOrEmpty(imagePath))
-                {
-                    var fileUploadPath = _configuration["FileUpload:Path"];
-                    if (!string.IsNullOrEmpty(fileUploadPath))
-                    {
-                        var defaultImagePath = Path.Combine(fileUploadPath, "images", "mainImage.webp");
-                        _logger.LogInformation($"[GIFT CARD EMAIL] Attempting to load default gift card background image from: {defaultImagePath}");
-                        if (File.Exists(defaultImagePath))
-                        {
-                            imagePath = defaultImagePath;
-                            _logger.LogInformation($"[GIFT CARD EMAIL] Using default gift card background image from: {defaultImagePath}");
-                        }
-                        else
-                        {
-                            _logger.LogWarning($"[GIFT CARD EMAIL] Default gift card background image not found at: {defaultImagePath}");
-                        }
-                    }
-                }
+                // The uploaded background if its file exists, else the default bundled in Assets/ —
+                // the email no longer depends on anything in the uploads images folder.
+                string? imagePath = GiftCardBackground.EmailImagePath(_configuration["FileUpload:Path"], backgroundPath);
+                if (imagePath == null)
+                    _logger.LogWarning("[GIFT CARD EMAIL] No background image available (configured: {Path}); sending without one", backgroundPath ?? "none");
 
                 // Convert image to base64 data URI
                 if (!string.IsNullOrEmpty(imagePath) && File.Exists(imagePath))
@@ -852,10 +808,40 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task SendGiftCardSenderConfirmationAsync(string senderEmail, string senderName,
-            string recipientName, string recipientEmail, string giftCardCode,
-            decimal amount, string message)
+            string? recipientName, string? recipientEmail, string giftCardCode,
+            decimal amount, string? message, bool sendLater = false)
         {
             var subject = $"Gift Card Purchase Confirmation - Dream Cleaning";
+
+            // Customer-typed text goes into HTML below - encode it.
+            senderName = System.Net.WebUtility.HtmlEncode(senderName ?? string.Empty);
+            recipientName = System.Net.WebUtility.HtmlEncode(recipientName ?? string.Empty);
+            recipientEmail = System.Net.WebUtility.HtmlEncode(recipientEmail ?? string.Empty);
+            message = System.Net.WebUtility.HtmlEncode(message ?? string.Empty);
+
+            // Once a recipient has the card, the buyer's copy shows only the last 4 characters
+            // (callers already pass it masked; MaskCode is idempotent). A send-later receipt keeps
+            // the full code - the card is still the buyer's.
+            if (!sendLater) giftCardCode = GiftCardService.MaskCode(giftCardCode);
+
+            // "Buy for myself - send later": same receipt, but nothing has been sent to anyone yet.
+            var introHtml = sendLater
+                ? "<p>Thank you for purchasing a Dream Cleaning gift card! Your payment has been successfully processed and the gift card is saved in your profile.</p>"
+                : $"<p>Thank you for purchasing a Dream Cleaning gift card! Your thoughtful gift has been successfully processed and sent to <strong>{recipientName}</strong>.</p>";
+            var recipientHtml = sendLater
+                ? ""
+                : $"<p><strong>Recipient:</strong> {recipientName} ({recipientEmail})</p>";
+            var nextStepsHtml = sendLater
+                ? $@"<li>The gift card is waiting in your profile under <strong>Gift Cards</strong> - nothing has been sent to anyone yet</li>
+                    <li>When you are ready, open <a href='{_configuration["Frontend:Url"]}/profile?tab=gift-cards'>your profile</a> and press <strong>Send to someone</strong> to email it to the recipient</li>
+                    <li>You can also use the code <strong>{giftCardCode}</strong> yourself when booking any Dream Cleaning service</li>
+                    <li>The gift card never expires and can be used for multiple bookings until the balance is depleted</li>"
+                : $@"<li>{recipientName} has received an email with the gift card details</li>
+                    <li>They can use the code from their email when booking any Dream Cleaning service</li>
+                    <li>The gift card never expires and can be used for multiple bookings until the balance is depleted</li>";
+            var closingHtml = sendLater
+                ? "<p>Please save this email for your records.</p>"
+                : "<p>Please save this email for your records. For the recipient's security only the last 4 characters of the gift card code are shown. If they haven't received their email, you can resend it from Gift Cards in your profile, or contact us.</p>";
 
             var body = $@"
     <!DOCTYPE html>
@@ -924,25 +910,23 @@ namespace DreamCleaningBackend.Services
             <div class='content'>
                 <p>Dear {senderName},</p>
                 
-                <p>Thank you for purchasing a Dream Cleaning gift card! Your thoughtful gift has been successfully processed and sent to <strong>{recipientName}</strong>.</p>
-                
+                {introHtml}
+
                 <div class='gift-card-details'>
                     <h3 style='margin-top: 0;'>Gift Card Details:</h3>
                     <p><strong>Amount:</strong> ${amount:F2}</p>
-                    <p><strong>Recipient:</strong> {recipientName} ({recipientEmail})</p>
+                    {recipientHtml}
                     <p><strong>Gift Card Code:</strong></p>
                     <div class='code-display'>{giftCardCode}</div>
                     {(!string.IsNullOrEmpty(message) ? $@"<p><strong>Your Message:</strong><br/><em>""{message}""</em></p>" : "")}
                 </div>
-                
+
                 <p><strong>What happens next?</strong></p>
                 <ul>
-                    <li>{recipientName} has received an email with the gift card details</li>
-                    <li>They can use the code <strong>{giftCardCode}</strong> when booking any Dream Cleaning service</li>
-                    <li>The gift card never expires and can be used for multiple bookings until the balance is depleted</li>
+                    {nextStepsHtml}
                 </ul>
-                
-                <p>Please save this email for your records. The gift card code above can be shared with the recipient if they haven't received their email.</p>
+
+                {closingHtml}
                 
                 <div class='footer'>
                     <p>If you have any questions about your gift card purchase, please contact us at<br/>
@@ -1246,7 +1230,7 @@ namespace DreamCleaningBackend.Services
                          .ThenBy(oes => oes.Id))
             {
                 var name = orderExtra.ExtraService?.Name?.Trim();
-                if (CleanerJobView.IsExtraHiddenFromCleaners(name))
+                if (CleanerJobView.IsExtraHiddenFromCleaners(orderExtra.ExtraService))
                     continue;
 
                 var extraService = orderExtra.ExtraService!;
@@ -2367,6 +2351,40 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        public async Task SendCompanyInvoicePaymentReceivedAsync(int orderId, string invoiceNumber, string? customerEmail,
+            string customerName, decimal amountPaid, string paymentMethodLabel, bool orderFullyPaid)
+        {
+            try
+            {
+                var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
+                if (string.IsNullOrWhiteSpace(companyEmail))
+                    return;
+
+                string enc(string? s) => System.Net.WebUtility.HtmlEncode(s ?? string.Empty);
+                var subject = $"Invoice Payment Received - {invoiceNumber} - Order #{orderId}";
+                var body = $@"
+            <html>
+            <body style='font-family: Arial, sans-serif;'>
+                <h3>Invoice Payment Received</h3>
+                <p>The customer has paid invoice <strong>{enc(invoiceNumber)}</strong> for Order #{orderId}.</p>
+                <p><strong>Customer:</strong> {enc(customerName)}</p>
+                <p><strong>Customer Email:</strong> {enc(customerEmail ?? "—")}</p>
+                <p><strong>Amount Paid:</strong> {amountPaid:C}</p>
+                <p><strong>Paid by:</strong> {enc(paymentMethodLabel)}</p>
+                <p><strong>Order status:</strong> {(orderFullyPaid ? "Paid in full — the order is now Active." : "Part-paid — a balance is still owed.")}</p>
+                <p><strong>Paid at:</strong> {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC</p>
+            </body>
+            </html>";
+
+                await SendEmailAsync(companyEmail, subject, body);
+                _logger.LogInformation("Company invoice-payment-received notification sent for {InvoiceNumber} (Order #{OrderId})", invoiceNumber, orderId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send company invoice payment notification for {InvoiceNumber} (Order #{OrderId})", invoiceNumber, orderId);
+            }
+        }
+
         public async Task SendRefundConfirmationEmailAsync(string email, string firstName, int orderId,
             decimal refundAmount, bool isFullRefund, DateTime serviceDate, string serviceAddress)
         {
@@ -2448,11 +2466,11 @@ namespace DreamCleaningBackend.Services
                 <style>
                     body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
                     .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .header {{ background-color: {BrandColor}; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
                     .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
-                    .amount-box {{ background-color: #fff; border: 2px solid #4CAF50; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
-                    .amount {{ font-size: 32px; font-weight: bold; color: #4CAF50; }}
-                    .button {{ background-color: #4CAF50; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid {BrandColor}; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: {BrandColor}; }}
+                    .button {{ background-color: {BrandColor}; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
                     .button a {{ color: white !important; }}
                     .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
                 </style>
@@ -2476,7 +2494,7 @@ namespace DreamCleaningBackend.Services
                         </p>
 
                         <p style='font-size: 14px; color: #666;'>Or copy and paste this link into your browser:</p>
-                        <p style='font-size: 12px; word-break: break-all; color: #007bff;'>{orderLink}</p>
+                        <p style='font-size: 12px; word-break: break-all; color: {BrandColor};'>{orderLink}</p>
 
                         <p style='margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;'>
                             <strong>Order Details:</strong><br/>
@@ -2531,7 +2549,7 @@ namespace DreamCleaningBackend.Services
                 var alreadyPaidRow = amountAlreadyPaid >= 0.01m
                     ? $@"<tr>
                             <td style='padding: 6px 0; color: #666;'>Already paid</td>
-                            <td style='padding: 6px 0; text-align: right; color: #4CAF50;'>-{paidFormatted}</td>
+                            <td style='padding: 6px 0; text-align: right; color: {BrandColor};'>-{paidFormatted}</td>
                          </tr>"
                     : "";
 
@@ -2555,11 +2573,11 @@ namespace DreamCleaningBackend.Services
                 <style>
                     body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
                     .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .header {{ background-color: {BrandColor}; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
                     .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
-                    .amount-box {{ background-color: #fff; border: 2px solid #4CAF50; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
-                    .amount {{ font-size: 32px; font-weight: bold; color: #4CAF50; }}
-                    .button {{ background-color: #4CAF50; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid {BrandColor}; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: {BrandColor}; }}
+                    .button {{ background-color: {BrandColor}; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
                     .breakdown {{ background-color: #fff; border-radius: 5px; padding: 20px; margin: 20px 0; }}
                     .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
                 </style>
@@ -2583,7 +2601,7 @@ namespace DreamCleaningBackend.Services
                         </p>
 
                         <p style='font-size: 14px; color: #666;'>Or copy and paste this link into your browser:</p>
-                        <p style='font-size: 12px; word-break: break-all; color: #007bff;'>{paymentLink}</p>
+                        <p style='font-size: 12px; word-break: break-all; color: {BrandColor};'>{paymentLink}</p>
 
                         <div class='breakdown'>
                             <strong style='display: block; margin-bottom: 10px;'>Your order total</strong>
@@ -2623,6 +2641,94 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        /// <summary>
+        /// A regular customer invoice (Admin → Invoices). The link opens the public invoice page,
+        /// which works without logging in and offers card or bank transfer — so the email carries
+        /// no bank details of its own, the same rule the commercial invoice email follows.
+        /// </summary>
+        public async Task SendCustomerInvoiceEmailAsync(string email, string customerName, string invoiceNumber,
+            decimal amountDue, decimal orderTotal, string kind, int orderId, DateTime serviceDate, string invoiceUrl,
+            byte[]? pdf = null, string? pdfFileName = null)
+        {
+            try
+            {
+                var enc = (string? v) => System.Net.WebUtility.HtmlEncode(v ?? string.Empty);
+                var amountFormatted = amountDue.ToString("C");
+                var subject = $"Invoice {invoiceNumber} from Dream Cleaning - {amountFormatted} due";
+                var splitNote = kind switch
+                {
+                    "Split" => $"<p style='font-size: 14px; color: #666;'>As agreed, your {orderTotal:C} order is being paid in parts — this invoice covers {amountFormatted} of it.</p>",
+                    "Additional" => $"<p style='font-size: 14px; color: #666;'>Your order was updated after it was paid, bringing its total to {orderTotal:C}. This invoice covers the additional {amountFormatted}.</p>",
+                    _ => ""
+                };
+                var attachmentNote = pdf != null
+                    ? "<p style='font-size: 14px; color: #666;'>A PDF copy of your invoice is attached to this email.</p>"
+                    : "";
+
+                var body = $@"
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                    .header {{ background-color: {BrandColor}; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid {BrandColor}; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: {BrandColor}; }}
+                    .button {{ background-color: {BrandColor}; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
+                    .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
+                </style>
+            </head>
+            <body>
+                <div class='container'>
+                    <div class='header'>
+                        <h1 style='margin: 0;'>Invoice {enc(invoiceNumber)}</h1>
+                    </div>
+                    <div class='content'>
+                        <h2>Hi {enc(customerName)}!</h2>
+                        <p>Here is your invoice for order #{orderId} — your cleaning on {serviceDate:MMMM d, yyyy}.</p>
+
+                        <div class='amount-box'>
+                            <div style='color: #666; font-size: 14px; margin-bottom: 5px;'>Amount due</div>
+                            <div class='amount'>{amountFormatted}</div>
+                        </div>
+                        {splitNote}
+
+                        <p style='text-align: center;'>
+                            <a href='{invoiceUrl}' class='button' style='color: white !important; text-decoration: none;'>View &amp; Pay Invoice</a>
+                        </p>
+                        {attachmentNote}
+
+                        <p style='font-size: 14px; color: #666;'>You can pay by card or directly from your bank online on the invoice page, or see our bank transfer details there. For a transfer, please use the invoice number <strong>{enc(invoiceNumber)}</strong> as the payment reference.</p>
+                        <p style='font-size: 14px; color: #666;'>Or copy and paste this link into your browser:</p>
+                        <p style='font-size: 12px; word-break: break-all; color: {BrandColor};'>{invoiceUrl}</p>
+
+                        <p style='color: #666; font-size: 14px; margin-top: 30px;'>
+                            If anything here doesn't look right, just reply to this email and we'll sort it out.
+                        </p>
+                    </div>
+                    <div class='footer'>
+                        <p>Thank you for choosing Dream Cleaning!</p>
+                        <p>&copy; {DateTime.UtcNow.Year} Dream Cleaning. All rights reserved.</p>
+                    </div>
+                </div>
+            </body>
+            </html>";
+
+                if (pdf != null)
+                    await SendEmailWithAttachmentAsync(email, subject, body, pdf,
+                        pdfFileName ?? $"Invoice-{invoiceNumber}.pdf", "application/pdf");
+                else
+                    await SendEmailAsync(email, subject, body);
+                _logger.LogInformation("Customer invoice {InvoiceNumber} emailed to {Email} for order {OrderId}", invoiceNumber, email, orderId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to email customer invoice {InvoiceNumber} for order {OrderId}", invoiceNumber, orderId);
+                throw;
+            }
+        }
+
         public async Task SendAdditionalPaymentRequiredEmailAsync(string email, string customerName, decimal additionalAmount, int orderId, string paymentLink)
         {
             try
@@ -2636,11 +2742,11 @@ namespace DreamCleaningBackend.Services
                 <style>
                     body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
                     .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background-color: #2196F3; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .header {{ background-color: {BrandColor}; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
                     .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
-                    .amount-box {{ background-color: #fff; border: 2px solid #2196F3; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
-                    .amount {{ font-size: 32px; font-weight: bold; color: #2196F3; }}
-                    .button {{ background-color: #2196F3; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid {BrandColor}; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: {BrandColor}; }}
+                    .button {{ background-color: {BrandColor}; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
                     .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
                 </style>
             </head>
@@ -2663,7 +2769,7 @@ namespace DreamCleaningBackend.Services
                         </p>
 
                         <p style='font-size: 14px; color: #666;'>Or copy and paste this link into your browser:</p>
-                        <p style='font-size: 12px; word-break: break-all; color: #007bff;'>{paymentLink}</p>
+                        <p style='font-size: 12px; word-break: break-all; color: {BrandColor};'>{paymentLink}</p>
 
                         <p style='margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;'>
                             <strong>Order:</strong> #{orderId}<br/>
@@ -2704,11 +2810,11 @@ namespace DreamCleaningBackend.Services
                 <style>
                     body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
                     .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background-color: #2196F3; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
+                    .header {{ background-color: {BrandColor}; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
                     .content {{ background-color: #f9f9f9; padding: 30px; border-radius: 0 0 5px 5px; }}
-                    .amount-box {{ background-color: #fff; border: 2px solid #2196F3; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
-                    .amount {{ font-size: 32px; font-weight: bold; color: #2196F3; }}
-                    .button {{ background-color: #2196F3; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
+                    .amount-box {{ background-color: #fff; border: 2px solid {BrandColor}; border-radius: 5px; padding: 20px; text-align: center; margin: 20px 0; }}
+                    .amount {{ font-size: 32px; font-weight: bold; color: {BrandColor}; }}
+                    .button {{ background-color: {BrandColor}; color: white !important; padding: 14px 30px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 20px 0; font-size: 16px; font-weight: bold; }}
                     .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; margin-top: 20px; }}
                 </style>
             </head>
@@ -2731,7 +2837,7 @@ namespace DreamCleaningBackend.Services
                         </p>
 
                         <p style='font-size: 14px; color: #666;'>Or copy and paste this link into your browser:</p>
-                        <p style='font-size: 12px; word-break: break-all; color: #007bff;'>{paymentLink}</p>
+                        <p style='font-size: 12px; word-break: break-all; color: {BrandColor};'>{paymentLink}</p>
 
                         <p style='margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;'>
                             <strong>Order:</strong> #{orderId}<br/>

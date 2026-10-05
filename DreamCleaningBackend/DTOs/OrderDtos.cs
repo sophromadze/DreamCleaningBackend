@@ -13,6 +13,9 @@ namespace DreamCleaningBackend.DTOs
         public string ServiceTypeName { get; set; }
         // True when this order uses the custom ("Pre-Arranged") service type.
         public bool IsCustomServiceType { get; set; }
+        // ServiceType.ServiceKey of a NON-custom type (null for custom / unkeyed) - lets a client
+        // recognise the type without matching ServiceTypeName. See GetRecognisableServiceTypeKey.
+        public string? ServiceTypeKey { get; set; }
         // Bare admin-chosen label for custom orders (no "Cleaning" suffix), e.g. "Deep". Null otherwise.
         public string? CustomServiceDisplayName { get; set; }
         public DateTime OrderDate { get; set; }
@@ -30,6 +33,11 @@ namespace DreamCleaningBackend.DTOs
         // Stored so the breakdown survives changes to the user's current loyalty percentage.
         public decimal LoyaltyDiscountAmount { get; set; }
         public decimal LoyaltyDiscountPercentage { get; set; }
+        // The booking rule behind each discount (see Order.DiscountPercent), so both order editors
+        // preview an edit with the same numbers the server will store. Null = no rule recorded.
+        public decimal? DiscountPercent { get; set; }
+        public decimal? DiscountFixedAmount { get; set; }
+        public decimal? SubscriptionDiscountPercent { get; set; }
         public string? PromoCode { get; set; }
         public string? SpecialOfferName { get; set; }
         public int? UserSpecialOfferId { get; set; }
@@ -78,6 +86,9 @@ namespace DreamCleaningBackend.DTOs
         public int MaidsCount { get; set; }
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
+        /// <summary>Custom orders: the admin chose to show the bedroom/bathroom counts to the
+        /// customer. The customer order page hides them (and the empty Services list) otherwise.</summary>
+        public bool ShowRoomCountsToCustomer { get; set; }
 
         /// <summary>"Apartment" or "House". Null for legacy orders, for service types with no
         /// levels service, and for custom pricing - every consumer must treat null as "do not
@@ -104,6 +115,12 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>The commercial client an Invoice-method order is billed to. Null otherwise.</summary>
         public int? ContractClientId { get; set; }
+
+        /// <summary>
+        /// Set for an operational cleaning under a WEEKLY FLAT FEE contract — "Billed weekly by
+        /// contract DCC-…". Price surfaces show this instead of the order's $0 total.
+        /// </summary>
+        public string? BilledByContractLabel { get; set; }
 
         /// <summary>
         /// Set when a fully-paid commercial invoice settled this order. Only ever non-null on an
@@ -207,6 +224,15 @@ namespace DreamCleaningBackend.DTOs
         public int Id { get; set; }
         public int ExtraServiceId { get; set; }
         public string ExtraServiceName { get; set; }
+
+        /// <summary>
+        /// The catalogue row's key (ExtraService.ExtraServiceKey) and Deep / Super Deep flags, read
+        /// through the order line's existing ExtraService link, so the order pages recognise
+        /// "Cleaning Supplies" or "Deep Cleaning" without matching the editable name.
+        /// </summary>
+        public string? ExtraServiceKey { get; set; }
+        public bool IsDeepCleaning { get; set; }
+        public bool IsSuperDeepCleaning { get; set; }
         public int Quantity { get; set; }
         public decimal Hours { get; set; }
         public decimal Cost { get; set; }
@@ -330,7 +356,11 @@ namespace DreamCleaningBackend.DTOs
         public string ContactEmail { get; set; }  
         public string ContactFirstName { get; set; }  
         public string ContactLastName { get; set; }  
+        public string? ContactPhone { get; set; }
         public string ServiceTypeName { get; set; }
+        // ServiceType.ServiceKey of a NON-custom type (null for custom / unkeyed) - how the admin
+        // orders table recognises the type without matching ServiceTypeName. See GetRecognisableServiceTypeKey.
+        public string? ServiceTypeKey { get; set; }
         public bool IsCustomServiceType { get; set; }
         // Bare admin-chosen label for custom orders (no "Cleaning" suffix), e.g. "Deep". Null otherwise.
         // The admin orders table shows this directly; legacy custom orders (null) fall back to "Arranged".
@@ -403,6 +433,12 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>The commercial client an Invoice-method order is billed to. Null otherwise.</summary>
         public int? ContractClientId { get; set; }
+
+        /// <summary>
+        /// Set for an operational cleaning under a WEEKLY FLAT FEE contract — "Billed weekly by
+        /// contract DCC-…". Price surfaces show this instead of the order's $0 total.
+        /// </summary>
+        public string? BilledByContractLabel { get; set; }
 
         // ── Recurring series ──────────────────────────────────────────────────────────────
         // Null on every ordinary one-off booking, which is every order that existed before this

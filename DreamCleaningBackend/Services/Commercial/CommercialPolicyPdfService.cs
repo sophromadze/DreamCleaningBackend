@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Helpers.Commercial;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
@@ -106,7 +107,7 @@ namespace DreamCleaningBackend.Services.Commercial
                         ComposeClosing(column, document);
                     });
                 });
-            }).GeneratePdf();
+            }).GeneratePdfExclusive();
         }
 
         // ── page chrome ────────────────────────────────────────────────────────

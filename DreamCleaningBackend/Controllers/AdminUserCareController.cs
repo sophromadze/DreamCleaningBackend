@@ -27,8 +27,11 @@ namespace DreamCleaningBackend.Controllers
         private readonly IUserCleaningPhotoService _photoService;
         private readonly IAuditService _auditService;
 
-        public AdminUserCareController(ApplicationDbContext context, IConfiguration configuration, IUserCleaningPhotoService photoService, IAuditService auditService)
+        private readonly ILogger<AdminUserCareController>? _logger;
+
+        public AdminUserCareController(ApplicationDbContext context, IConfiguration configuration, IUserCleaningPhotoService photoService, IAuditService auditService, ILogger<AdminUserCareController>? logger = null)
         {
+            _logger = logger;
             _context = context;
             _configuration = configuration;
             _photoService = photoService;
@@ -292,50 +295,24 @@ namespace DreamCleaningBackend.Controllers
         }
 
         /// <summary>
-        /// Streams the photo file by id. Anonymous so it can be used as an &lt;img src=&gt;
-        /// without complicated credential handling — the photo URLs are non-guessable
-        /// (random id) and gated behind the admin SPA. Goes through /api so it works
-        /// uniformly in dev (proxy) and prod (same origin) without server-side aliases.
+        /// LEGACY route, kept so admin tabs still open from before the 2026-10 deploy keep showing
+        /// photos; the panels now use api/files/cleaning-photos/{id} (PrivateFilesController). Same
+        /// gate as the two list endpoints that hand out these sequential ids — never anonymous.
+        /// Safe to delete once no browser can still hold the old bundle.
         /// </summary>
         [HttpGet("cleaning-photos/{photoId}/raw")]
-        [AllowAnonymous]
+        [RequirePermission(Permission.View)]
         public async Task<IActionResult> GetCleaningPhotoFile(int photoId)
         {
-            var photo = await _context.UserCleaningPhotos
+            var storedPath = await _context.UserCleaningPhotos
                 .Where(p => p.Id == photoId)
-                .Select(p => new { p.PhotoUrl })
+                .Select(p => p.PhotoUrl)
                 .FirstOrDefaultAsync();
 
-            if (photo == null || string.IsNullOrWhiteSpace(photo.PhotoUrl))
-                return NotFound();
-
-            var basePath = _configuration["FileUpload:Path"];
-            if (string.IsNullOrWhiteSpace(basePath)) return NotFound();
-
-            var relative = photo.PhotoUrl.TrimStart('/');
-            var fullPath = Path.Combine(basePath, relative);
-
-            // Defense-in-depth: ensure the resolved path stays inside the upload root
-            var fullBase = Path.GetFullPath(basePath);
-            var resolved = Path.GetFullPath(fullPath);
-            if (!resolved.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase)) return Forbid();
-
-            if (!System.IO.File.Exists(resolved)) return NotFound();
-
-            var ext = Path.GetExtension(resolved).ToLowerInvariant();
-            var contentType = ext switch
-            {
-                ".webp" => "image/webp",
-                ".jpg" or ".jpeg" => "image/jpeg",
-                ".png" => "image/png",
-                ".gif" => "image/gif",
-                ".bmp" => "image/bmp",
-                _ => "application/octet-stream"
-            };
-
-            // Cache for an hour — files are immutable per id (uploads create new ids)
-            Response.Headers["Cache-Control"] = "private, max-age=3600";
-            return PhysicalFile(resolved, contentType);
+            var full = PrivateFileStore.Resolve(_configuration["FileUpload:Path"], storedPath, PrivateFileUrls.CleaningPhotosFolder);
+            return full == null
+                ? NotFound()
+                : PrivateFileResponse.Serve(this, full, $"cleaning-photo-{photoId}", PrivateFileResponse.NoStore);
         }
 
         // ─────────────────────────────────────────────────────────
@@ -541,12 +518,12 @@ namespace DreamCleaningBackend.Controllers
             UpdatedAt = n.UpdatedAt
         };
 
-        private static UserCleaningPhotoDto MapPhoto(UserCleaningPhoto p) => new()
+        private UserCleaningPhotoDto MapPhoto(UserCleaningPhoto p) => new()
         {
             Id = p.Id,
             UserId = p.UserId,
             OrderId = p.OrderId,
-            PhotoUrl = p.PhotoUrl,
+            PhotoUrl = PrivateFileUrls.CleaningPhoto(p.Id, p.PhotoUrl, _logger) ?? string.Empty,
             SizeBytes = p.SizeBytes,
             UploadedByAdminName = p.UploadedByAdminName,
             Caption = p.Caption,

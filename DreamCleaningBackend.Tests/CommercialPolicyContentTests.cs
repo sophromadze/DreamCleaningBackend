@@ -85,18 +85,17 @@ namespace DreamCleaningBackend.Tests
         // ══════════════════════════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// THE WHOLE REASON THE STANDALONE DOCUMENT IS SAFE TO PUBLISH. Its three substantive
-        /// sections are built by the same three methods that build sections 4, 5 and 7 of the
-        /// complete policies, so the notice window, the makeup window and the cancellation cap
-        /// cannot say one thing in one download and something else in the other.
+        /// THE WHOLE REASON THE STANDALONE DOCUMENT IS SAFE TO PUBLISH. Its two substantive
+        /// sections are built by the same two methods that build sections 3 and 4 of the complete
+        /// policies, so the notice window, the makeup window and the cancellation cap cannot say
+        /// one thing in one download and something else in the other.
         ///
         /// If this ever fails, the fix is to restore the shared builder - NOT to copy the text
         /// across, which is the arrangement it exists to prevent.
         /// </summary>
         [Theory]
-        [InlineData(3, 0, "cancellation and rescheduling")]
-        [InlineData(4, 1, "contract duration and termination")]
-        [InlineData(6, 2, "prepaid services and refunds")]
+        [InlineData(2, 0, "cancellation and rescheduling")]
+        [InlineData(3, 1, "contract term and termination")]
         public void TheStandaloneDocumentReusesTheCompleteDocumentsClauses(
             int completeIndex, int standaloneIndex, string subject)
         {
@@ -163,63 +162,147 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains($"{advanced.MissedVisitThreshold} client-attributable missed visits", text);
             Assert.Contains($"rolling {advanced.MissedVisitWindowWeeks}-week period", text);
             Assert.Contains($"within {advanced.ServicePlanDays} calendar days", text);
+            Assert.Contains($"within {advanced.RefundBusinessDays} business days", text);
 
             // Term and termination
-            Assert.Contains($"standard is {term.InitialTermMonths} months", text);
-            Assert.Contains($"at least {term.TerminationNoticeDays} calendar days' written notice", text);
+            Assert.Contains($"at least {term.TerminationNoticeDays} days' written notice", text);
             Assert.Contains($"cure within {advanced.CurePeriodDays} calendar days", text);
             Assert.Contains($"unpaid for {advanced.PastDueDays} calendar days", text);
             Assert.Contains($"{advanced.ForceMajeureDays} consecutive calendar days", text);
+            Assert.Contains($"within {advanced.CreditReturnDays} calendar days", text);
 
             // Money
             Assert.Contains($"at least {advanced.InvoiceLeadDays} calendar days before each scheduled visit", text);
             Assert.Contains($"due {pricing.PaymentDeadlineHours} hours before the agreed arrival window", text);
-            Assert.Contains($"fewer than {advanced.LateInvoiceThresholdDays} calendar days before that deadline", text);
-            Assert.Contains($"at least {advanced.LateInvoiceGraceBusinessDays} business days after", text);
             Assert.Contains($"more than {advanced.InterestGraceDays} calendar days", text);
             Assert.Contains($"{pricing.LateChargePercent:0}% per month", text);
             Assert.Contains("12% per year", text);   // the derived annual rate, Section 11(f)
             Assert.Contains($"within {advanced.BillingDisputeDays} business days of receiving it", text);
-            Assert.Contains($"within {advanced.CreditReturnDays} calendar days", text);
-            Assert.Contains($"within {advanced.RefundBusinessDays} business days", text);
-            Assert.Contains($"at least {advanced.PriceReviewNoticeDays} calendar days' written notice", text);
 
-            // Quality, damage, access, confidentiality
-            Assert.Contains($"within {advanced.QualityComplaintHours} hours of the", text);
+            // Quality, damage, access
+            Assert.Contains($"within {advanced.QualityComplaintHours} hours after the service is completed", text);
+            Assert.Contains($"no later than {advanced.QualityLatentDeficiencyLimitHours} hours after the service was completed", text);
             Assert.Contains($"within {advanced.QualityCorrectionBusinessDays} business days", text);
             Assert.Contains($"within {advanced.DamageNoticeBusinessDays} business days", text);
             Assert.Contains($"within {advanced.KeyReturnBusinessDays} business days", text);
-            Assert.Contains($"continue for {advanced.ConfidentialityYears} years after termination", text);
 
-            // Insurance and liability
+            // Insurance
             Assert.Contains($"${advanced.InsurancePerOccurrence:N0} each occurrence", text);
             Assert.Contains($"${advanced.InsuranceAggregate:N0} general aggregate", text);
-            Assert.Contains($"capped at {pricing.LiabilityCapMultiple} times the recurring pre-tax per-visit fee", text);
 
-            // Disputes
-            Assert.Contains($"within {advanced.DisputeDiscussionDays} calendar days", text);
-            Assert.Contains($"after {advanced.MediationRequestDays} calendar days", text);
-            Assert.Contains($"{advanced.SuitAfterDays} calendar days after the original", text);
-            Assert.Contains($"{advanced.CollectionDemandBusinessDays} business days to pay", text);
+            // Governing law and venue
             Assert.Contains(term.GoverningLawState + " law governs", text);
             Assert.Contains(term.VenueCounty, text);
         }
 
         /// <summary>
-        /// The liability carve-out names the statute the MSA names. GOL 5-323 voids an agreement
-        /// exempting a maintenance contractor from liability for its own negligence in connection
-        /// with a building, so a published liability cap that did not carry the same exception
-        /// would be advertising a limit the law does not permit.
+        /// The simplified policy (v2.0) no longer publishes the liability cap - that is legal
+        /// mechanics, and it lives in the agreement with its statutory carve-outs attached. A cap
+        /// published without them would advertise a limit the law may not permit, so the page
+        /// must defer to the agreement rather than quote a figure on its own.
         /// </summary>
         [Fact]
-        public void ThePublishedLiabilityCapCarriesTheSameCarveOutsAsTheAgreement()
+        public void TheLiabilityCapIsLeftToTheAgreementRatherThanPublishedWithoutItsCarveOuts()
+        {
+            var text = AllText(CommercialPolicyDocument.BuildComplete());
+            var pricing = new PricingSnapshot();
+
+            Assert.DoesNotContain($"{pricing.LiabilityCapMultiple} times the recurring", text);
+            Assert.Contains("the limits of each party's liability, are set out in the Service Agreement", text);
+        }
+
+        // ══════════════════════════════════════════════════════════════════════════════════════
+        //  3a. The owner's business rules (2026-09-30)
+        // ══════════════════════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// THERE IS NO STANDARD MINIMUM COMMITMENT. Version 1.0 published a ten-month standard
+        /// term and commitment; the business has no such rule. Neither document may state or
+        /// imply one, and both must say a commitment exists only where specifically agreed.
+        /// </summary>
+        [Fact]
+        public void NoPublishedDocumentStatesAStandardMinimumCommitment()
+        {
+            foreach (var document in BothDocuments())
+            {
+                var text = AllText(document);
+
+                Assert.DoesNotContain("10-month", text, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("ten-month", text, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("10 months", text, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("standard term", text, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("60 calendar days", text);
+                Assert.DoesNotContain("60 days", text);
+
+                Assert.Contains("no standard or company-wide minimum commitment", text);
+                Assert.Contains("specifically agreed", text);
+            }
+        }
+
+        /// <summary>
+        /// THE POLICY AND THE AGREEMENT STATE ONE TERMINATION RULE. The policy's notice period is
+        /// the agreement's default, and a contract drafted on the defaults says the same number.
+        /// </summary>
+        [Fact]
+        public void ThePolicyAndTheAgreementUseTheSameTerminationNotice()
+        {
+            var term = new TermSnapshot();
+            Assert.Equal(30, term.TerminationNoticeDays);
+
+            foreach (var document in BothDocuments())
+            {
+                Assert.Contains(
+                    $"Either party may terminate ongoing commercial cleaning services with at least "
+                    + $"{term.TerminationNoticeDays} days' written notice, subject to any minimum "
+                    + "service commitment specifically agreed in the applicable Service Agreement",
+                    AllText(document));
+            }
+
+            var contract = ContractRenderer.Render(new ContractSnapshot
+            {
+                TemplateBodyText = ContractTemplateSeed.BodyText,
+                Term = new TermSnapshot()
+            }).PlainText;
+            Assert.Contains(
+                $"{DreamCleaningBackend.Helpers.Contracts.ContractTextFormat.WordsWithDigits(term.TerminationNoticeDays)} "
+                + "calendar days' written notice", contract);
+            Assert.DoesNotContain("Minimum Commitment Period", contract);
+        }
+
+        /// <summary>
+        /// Supplies, equipment and consumables are published as allocated per agreement - either
+        /// party, or both - with the standard consumables named, and NOT as a Client duty.
+        /// </summary>
+        [Fact]
+        public void SuppliesAndConsumablesArePublishedAsAllocatedPerAgreement()
         {
             var text = AllText(CommercialPolicyDocument.BuildComplete());
 
-            Assert.Contains("General Obligations Law section 5-323", text);
-            Assert.Contains("bodily injury, death or damage to tangible property", text);
-            Assert.Contains("fraud, gross negligence or willful misconduct", text);
-            Assert.Contains("cannot lawfully be excluded or limited", text);
+            Assert.Contains("There is no single rule that applies to every client", text);
+            Assert.Contains("may be provided by Dream Cleaning NYC, by the client, or divided between us", text);
+            Assert.Contains("either Dream Cleaning NYC or the client may provide any of them", text);
+            Assert.Contains("trash bags and liners", text);
+            Assert.Contains("paper towels", text);
+            Assert.Contains("toilet tissue", text);
+            Assert.Contains("A mixed arrangement is common", text);
+
+            Assert.DoesNotContain("The client supplies, at its own cost, toilet tissue", text);
+        }
+
+        /// <summary>
+        /// HAND SOAP IS NOT DISCUSSED AT ALL - not in either document, and not in the generated
+        /// frontend copy the page renders from. Not a promise and not a disclaimer.
+        /// </summary>
+        [Fact]
+        public void NoPublishedSurfaceMentionsHandSoap()
+        {
+            foreach (var document in BothDocuments())
+            {
+                Assert.DoesNotContain("soap", AllText(document), StringComparison.OrdinalIgnoreCase);
+            }
+
+            var generated = ReadFrontendFile("shared", "commercial-policies", "commercial-policy.content.ts");
+            Assert.DoesNotContain("soap", generated, StringComparison.OrdinalIgnoreCase);
         }
 
         // ══════════════════════════════════════════════════════════════════════════════════════
@@ -260,20 +343,33 @@ namespace DreamCleaningBackend.Tests
         }
 
         /// <summary>
-        /// The guarantee is published as what the agreement gives - re-performance, then a credit
-        /// or refund for the deficient portion - and never as an unconditional refund or a free
-        /// re-clean of the whole premises, neither of which Section 22 promises.
+        /// The guarantee is published as what the agreement gives - a 24-hour report, a NARROW
+        /// exception to 72 hours for what could not be found sooner, and correction of the
+        /// affected in-scope area, then a credit or refund for the deficient portion - and never
+        /// as an automatic full refund or a free re-clean of the whole premises, neither of which
+        /// Section 22 promises.
         /// </summary>
         [Fact]
         public void TheGuaranteeIsPublishedAsCorrectionAndNotAsAnUnconditionalRefund()
         {
             var text = AllText(CommercialPolicyDocument.BuildComplete());
+            var advanced = new AdvancedTermsSnapshot();
 
-            Assert.Contains("re-perform the deficient task at no charge", text);
-            Assert.Contains("reasonable credit or refund attributable to the deficient portion", text);
-            Assert.Contains("It is not an unconditional full refund and not a free re-clean", text);
+            Assert.Equal(24, advanced.QualityComplaintHours);
+            Assert.Equal(72, advanced.QualityLatentDeficiencyLimitHours);
+
+            Assert.Contains("Report a cleaning-quality issue within 24 hours after the service is completed", text);
+            Assert.Contains("no later than 72 hours after the service was completed", text);
+            Assert.Contains("This is a narrow exception for issues that could not reasonably have "
+                + "been discovered sooner, not a general 72-hour reporting period", text);
+            Assert.Contains("correct the affected area at no additional charge", text);
+            Assert.Contains("reasonable credit or refund for the deficient portion", text);
+            Assert.Contains("It is not an automatic full refund and not a free re-cleaning of the entire premises", text);
+            Assert.Contains("does not cover additional work or items outside the agreed scope", text);
+            Assert.Contains("conditions caused after we completed the service", text);
             Assert.DoesNotContain("100% money-back", text);
             Assert.DoesNotContain("money-back guarantee", text);
+            Assert.DoesNotContain("48 hours of the", text);
         }
 
         /// <summary>
@@ -307,10 +403,11 @@ namespace DreamCleaningBackend.Tests
         {
             var text = AllText(CommercialPolicyDocument.BuildComplete());
 
-            Assert.Contains("A minimum commitment is a contract-specific term, not a company-wide rule",
-                text);
-            Assert.Contains("stated in the client's own agreement", text);
-            Assert.Contains("There is no separate early-termination penalty", text);
+            Assert.Contains("A minimum service commitment is a contract-specific term, not a "
+                + "company-wide rule", text);
+            Assert.Contains("stated in that client's own Service Agreement", text);
+            Assert.Contains("Contract-specific terms control", text);
+            Assert.Contains("There is no early-termination fee", text);
         }
 
         // ══════════════════════════════════════════════════════════════════════════════════════
@@ -480,7 +577,7 @@ namespace DreamCleaningBackend.Tests
 
                 Assert.Contains(LettersOnly(document.Title), haystack);
                 Assert.Contains(LettersOnly(CommercialPolicyDocument.LegalIdentity), haystack);
-                Assert.Contains(LettersOnly("September 16, 2026"), haystack);
+                Assert.Contains(LettersOnly("September 30, 2026"), haystack);
                 Assert.Contains(LettersOnly(CommercialPolicyDocument.ContactEmail), haystack);
                 Assert.Contains(LettersOnly("CONTENTS"), haystack);
             }
@@ -637,7 +734,7 @@ namespace DreamCleaningBackend.Tests
         /// <summary>The folder holding both projects.</summary>
         private static string SolutionRoot()
         {
-            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            var dir = new DirectoryInfo(SourceTree.TestsProjectDir);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "DreamCleaningNG")))
                 dir = dir.Parent;
 

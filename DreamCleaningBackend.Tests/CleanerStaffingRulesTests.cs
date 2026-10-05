@@ -46,6 +46,46 @@ namespace DreamCleaningBackend.Tests
         }
 
         /// <summary>
+        /// Removal follows the roster DOWN while the count came from the roster (owner's rule,
+        /// 2026-09): 2 on the job, 2 replacements assigned (count 4), the original 2 removed → 2.
+        /// </summary>
+        [Fact]
+        public void ReplacingTheWholeCrew_BringsTheCountBackDown()
+        {
+            var count = CleanerService.ResolveMaidsCountAfterAssignment(2, 4, hasExplicitCleanerCount: false);
+            Assert.Equal(4, count);
+
+            count = CleanerService.ResolveMaidsCountAfterRemoval(count, 4, 3, hasExplicitCleanerCount: false);
+            Assert.Equal(3, count);
+            count = CleanerService.ResolveMaidsCountAfterRemoval(count, 3, 2, hasExplicitCleanerCount: false);
+            Assert.Equal(2, count);
+        }
+
+        [Theory]
+        [InlineData(3, 2)] // priced for 3, only 2 on file: the third is still real
+        [InlineData(4, 1)]
+        public void RemovingFromAnOrderStaffedBelowItsCount_LeavesTheCountAlone(int current, int assignedBefore)
+        {
+            Assert.Equal(current, CleanerService.ResolveMaidsCountAfterRemoval(
+                current, assignedBefore, assignedBefore - 1, hasExplicitCleanerCount: false));
+        }
+
+        [Theory]
+        [InlineData(1, 1, 1)] // never below 1
+        [InlineData(2, 3, 2)] // over-assigned: never below who is left
+        public void RemovalNeverDropsBelowTheRemainingRosterOrOne(int current, int assignedBefore, int expected)
+        {
+            Assert.Equal(expected, CleanerService.ResolveMaidsCountAfterRemoval(
+                current, assignedBefore, assignedBefore - 1, hasExplicitCleanerCount: false));
+        }
+
+        [Fact]
+        public void AnExplicitlyPricedCleanerCount_IsNeverMovedByARemoval()
+        {
+            Assert.Equal(3, CleanerService.ResolveMaidsCountAfterRemoval(3, 3, 2, hasExplicitCleanerCount: true));
+        }
+
+        /// <summary>
         /// Cleaner+hours service types and Custom ("Pre-Arranged") orders are opted out: their
         /// TotalDuration was DERIVED from the cleaner count, so moving the count on its own would
         /// leave the order's own duration unexplainable. Over-assigning one of those is reported

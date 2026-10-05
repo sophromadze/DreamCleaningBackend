@@ -56,11 +56,30 @@ namespace DreamCleaningBackend.Services
                 refusal = "There is already a payment request waiting for this order. Cancel it first.";
             }
 
+            // A PAID order an edit has since made dearer still owes the difference (the order-edit
+            // top-up, OrderAdditionalCharge). It used to read "Paid in full" with an Order total
+            // of $241.54 beside Paid $141.54 — the $100 added after payment was invisible here.
+            var additionalDue = order.IsPaid
+                ? await OrderAdditionalCharge.OutstandingAsync(_context, order, ct)
+                : 0m;
+            // No refusal text in that case: the card already states the amount as "still owed", and
+            // repeating it as a sentence underneath was the duplicate admins read twice.
+            if (additionalDue >= OrderAdditionalCharge.MinimumCollectableAmount && !canRequest && order.IsPaid)
+                refusal = null;
+
             return new OrderPaymentBalanceDto
             {
                 Total = order.Total,
-                AmountPaid = order.AmountPaid,
-                AmountDue = OrderBalance.AmountDue(order),
+                // A fully paid order settles through IsPaid and never touches AmountPaid, so the
+                // money actually received is the total less anything added after payment.
+                AmountPaid = order.IsPaid
+                    ? OrderPricingCalculator.Round2(Math.Max(0m, order.Total - additionalDue))
+                    : order.AmountPaid,
+                // Cash / Zelle / Check / Other were paid in person when recorded — IsPaid stays
+                // false for them (it means "paid through Stripe"), so the plain subtraction would
+                // report the whole total as owed on an order that owes nothing.
+                AmountDue = PaymentMethodRules.IsSettledOnRecord(order.PaymentMethod) ? 0m : OrderBalance.AmountDue(order),
+                AdditionalAmountDue = additionalDue,
                 IsPartiallyPaid = OrderBalance.IsPartiallyPaid(order),
                 OverpaidAmount = OrderBalance.OverpaidAmount(order),
                 CanRequestPartialPayment = canRequest,
@@ -76,8 +95,18 @@ namespace DreamCleaningBackend.Services
                 .OrderByDescending(p => p.CreatedAt).ThenByDescending(p => p.Id)
                 .FirstOrDefaultAsync(ct);
 
-        public async Task<OrderPartialPayment> CreateRequestAsync(
-            int orderId, decimal amount, string? note, int adminUserId, CancellationToken ct = default)
+        public Task<OrderPartialPayment> CreateRequestAsync(
+            int orderId, decimal amount, string? note, int adminUserId, CancellationToken ct = default) =>
+            CreateRequestCoreAsync(orderId, amount, note, adminUserId, allowAlongsideOpenRequests: false, ct);
+
+        public Task<OrderPartialPayment> CreateInvoiceRequestAsync(
+            int orderId, decimal amount, string? note, int adminUserId, bool allowAlongsideOpenRequests,
+            CancellationToken ct = default) =>
+            CreateRequestCoreAsync(orderId, amount, note, adminUserId, allowAlongsideOpenRequests, ct);
+
+        private async Task<OrderPartialPayment> CreateRequestCoreAsync(
+            int orderId, decimal amount, string? note, int adminUserId, bool allowAlongsideOpenRequests,
+            CancellationToken ct)
         {
             var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId, ct)
                 ?? throw new PartialPaymentException("Order not found.");
@@ -85,18 +114,32 @@ namespace DreamCleaningBackend.Services
             if (!OrderBalance.CanRequestPartialPayment(order, out var refusal))
                 throw new PartialPaymentException(refusal!);
 
-            var existing = await GetPendingRequestAsync(orderId, ct);
-            if (existing != null)
-                throw new PartialPaymentException(
-                    $"There is already a payment request for ${existing.RequestedAmount:F2} waiting on this order. Cancel it before asking for a different amount.");
+            // Money already spoken for by other open requests. Only split invoices may sit beside
+            // one another; everything else keeps the one-live-request rule.
+            var openElsewhere = 0m;
+            if (allowAlongsideOpenRequests)
+            {
+                openElsewhere = await _context.OrderPartialPayments
+                    .Where(p => p.OrderId == orderId && p.Status == OrderPartialPaymentStatus.Pending)
+                    .SumAsync(p => (decimal?)p.RequestedAmount, ct) ?? 0m;
+            }
+            else
+            {
+                var existing = await GetPendingRequestAsync(orderId, ct);
+                if (existing != null)
+                    throw new PartialPaymentException(
+                        $"There is already a payment request for ${existing.RequestedAmount:F2} waiting on this order. Cancel it before asking for a different amount.");
+            }
 
             amount = OrderPricingCalculator.Round2(amount);
             if (amount < OrderBalance.StripeMinimumChargeAmount)
                 throw new PartialPaymentException($"The amount must be at least ${OrderBalance.StripeMinimumChargeAmount:F2}.");
 
-            var due = OrderBalance.AmountDue(order);
+            var due = OrderPricingCalculator.Round2(OrderBalance.AmountDue(order) - openElsewhere);
             if (amount > due)
-                throw new PartialPaymentException($"That is more than the ${due:F2} still owed on this order.");
+                throw new PartialPaymentException(openElsewhere > 0m
+                    ? $"That is more than the ${due:F2} not already on another invoice for this order."
+                    : $"That is more than the ${due:F2} still owed on this order.");
 
             // A slice that would leave an uncollectable stub behind (less than Stripe's minimum) is
             // refused rather than silently rounded up: the admin agreed a figure with the customer,
@@ -302,7 +345,7 @@ namespace DreamCleaningBackend.Services
             int adminUserId, CancellationToken ct = default)
         {
             if (method == PaymentMethod.Normal)
-                throw new PartialPaymentException("Choose the method this slice was actually paid with — Cash, Zelle, Check, Other or Invoice.");
+                throw new PartialPaymentException("Choose the method this slice was actually paid with — Cash, Zelle, Check, Bank transfer, Other or Invoice.");
 
             var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId, ct)
                 ?? throw new PartialPaymentException("Order not found.");
@@ -459,6 +502,36 @@ namespace DreamCleaningBackend.Services
             if (!string.IsNullOrEmpty(first) && !string.IsNullOrEmpty(last))
                 return $"{char.ToUpper(first[0])}. {last}";
             return !string.IsNullOrEmpty(first) ? first : last;
+        }
+
+        public async Task EditManualPaymentDetailsAsync(
+            int orderId, int requestId, PaymentMethod method, string? paymentReference, string? paymentNotes,
+            int adminUserId, CancellationToken ct = default)
+        {
+            if (method == PaymentMethod.Normal || method == PaymentMethod.Invoice)
+                throw new PartialPaymentException("Choose Cash, Zelle, Check, Bank transfer or Other.");
+
+            var row = await _context.OrderPartialPayments
+                .FirstOrDefaultAsync(p => p.Id == requestId && p.OrderId == orderId, ct)
+                ?? throw new PartialPaymentException("Payment not found for this order.");
+            if (row.Status != OrderPartialPaymentStatus.Paid || row.ManualPaymentRecordedAt == null)
+                throw new PartialPaymentException("Only a manually recorded payment can be edited.");
+
+            var before = new { PaymentMethod = row.PaymentMethod.ToString(), row.PaymentReference, row.PaymentNotes };
+            row.PaymentMethod = method;
+            row.PaymentReference = string.IsNullOrWhiteSpace(paymentReference) ? null : paymentReference.Trim();
+            row.PaymentNotes = string.IsNullOrWhiteSpace(paymentNotes) ? null : paymentNotes.Trim();
+            await _context.SaveChangesAsync(ct);
+
+            await LogAsync(orderId, "PartialPaymentManualEdited", new
+            {
+                PartialPaymentId = row.Id,
+                row.PaidAmount,
+                Before = before,
+                PaymentMethod = method.ToString(),
+                row.PaymentReference,
+                row.PaymentNotes
+            }, adminUserId);
         }
 
         private async Task LogAsync(int orderId, string action, object payload, int? actingUserId)

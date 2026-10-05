@@ -39,19 +39,22 @@ namespace DreamCleaningBackend.Helpers
         /// email - and matching them here is why the portal's list is the same list the cleaner
         /// was sent.
         /// </summary>
-        public static bool IsExtraHiddenFromCleaners(string? extraServiceName)
+        public static bool IsExtraHiddenFromCleaners(ExtraService? extra)
         {
-            var name = extraServiceName?.Trim();
-            if (string.IsNullOrWhiteSpace(name)) return true;
-            if (name.Contains(CustomerSupplyChecklist.CleaningSuppliesMatch, StringComparison.OrdinalIgnoreCase)) return true;
-            if (name.Contains(CustomerSupplyChecklist.CleaningEssentialsMatch, StringComparison.OrdinalIgnoreCase)) return true;
-            if (string.Equals(name, OrderPricingCalculator.ExtraCleanersName, StringComparison.OrdinalIgnoreCase)) return true;
+            if (extra == null || string.IsNullOrWhiteSpace(extra.Name)) return true;
+            if (CustomerSupplyChecklist.IsCleaningSupplies(extra)) return true;
+            if (CustomerSupplyChecklist.IsCleaningEssentials(extra)) return true;
+            if (ExtraServiceKeys.Is(extra, ExtraServiceKeys.ExtraCleaners, ExtraServiceKeys.LegacyExtraCleaners)) return true;
             // Deep / Super Deep is the CLEANING TYPE (see ResolveCleaningTypeName), the same rule
             // the booking page follows - it is never an extras card there either. Leaving it in the
             // task list as well would have the same job named twice on one screen.
-            if (name.Contains("deep cleaning", StringComparison.OrdinalIgnoreCase)) return true;
+            if (ExtraServiceKeys.IsDeepOrSuperDeep(extra)) return true;
             return false;
         }
+
+        /// <summary>Name-only form: an unkeyed extra of that name (the legacy name rules).</summary>
+        public static bool IsExtraHiddenFromCleaners(string? extraServiceName) =>
+            IsExtraHiddenFromCleaners(new ExtraService { Name = extraServiceName?.Trim() ?? string.Empty });
 
         /// <summary>
         /// Priced service lines that are never listed as their own row for a cleaner, because
@@ -93,12 +96,8 @@ namespace DreamCleaningBackend.Helpers
         /// <see cref="CustomerSupplyChecklist.HasCleaningSuppliesExtra"/> the checklist and the
         /// email read, so the three cannot disagree about what to put in the car.
         /// </summary>
-        public static bool RequiresCleanerToBringSupplies(Order order)
-        {
-            var names = (order.OrderExtraServices ?? new List<OrderExtraService>())
-                .Select(oes => oes.ExtraService?.Name);
-            return CustomerSupplyChecklist.HasCleaningSuppliesExtra(names);
-        }
+        public static bool RequiresCleanerToBringSupplies(Order order) =>
+            CustomerSupplyChecklist.HasCleaningSuppliesExtra(CustomerSupplyChecklist.ExtrasOf(order));
 
         /// <summary>
         /// True when the CLEANER has to bring the essentials - paper towels, garbage bags, a
@@ -116,12 +115,8 @@ namespace DreamCleaningBackend.Helpers
         /// customer's own checklist stops asking for "a broom or vacuum cleaner" the moment this
         /// extra is bought. A VACUUM is still the separate Vacuum Cleaner extra.
         /// </summary>
-        public static bool RequiresCleanerToBringEssentials(Order order)
-        {
-            var names = (order.OrderExtraServices ?? new List<OrderExtraService>())
-                .Select(oes => oes.ExtraService?.Name);
-            return CustomerSupplyChecklist.HasCleaningEssentialsExtra(names);
-        }
+        public static bool RequiresCleanerToBringEssentials(Order order) =>
+            CustomerSupplyChecklist.HasCleaningEssentialsExtra(CustomerSupplyChecklist.ExtrasOf(order));
 
         /// <summary>
         /// WHICH PRODUCTS THE SUPPLIES LINE IS ABOUT, as translation keys.
@@ -176,16 +171,14 @@ namespace DreamCleaningBackend.Helpers
         /// </summary>
         public static string ResolveCleaningTypeName(Order order, string fallback = "")
         {
-            var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
-                .Select(oes => oes.ExtraService?.Name)
-                .Where(n => !string.IsNullOrWhiteSpace(n))
-                .Select(n => n!.Trim())
-                .ToList();
+            // The Deep / Super Deep FLAGS decide; an unkeyed row with neither flag still counts by
+            // its name, as before (see ExtraServiceKeys.IsDeepOrSuperDeep).
+            var extras = CustomerSupplyChecklist.ExtrasOf(order).Where(e => e != null).ToList();
 
-            if (extraNames.Any(n => n.Contains("super deep", StringComparison.OrdinalIgnoreCase)))
+            if (extras.Any(ExtraServiceKeys.IsSuperDeep))
                 return "Super Deep Cleaning";
 
-            if (extraNames.Any(n => n.Contains("deep cleaning", StringComparison.OrdinalIgnoreCase)))
+            if (extras.Any(ExtraServiceKeys.IsDeepOrSuperDeep))
                 return "Deep Cleaning";
 
             var typeName = order.GetDisplayServiceTypeName(fallback);
@@ -193,7 +186,20 @@ namespace DreamCleaningBackend.Helpers
             // Only the residential type is ambiguous between deep and regular, and only it gets
             // renamed. Widening this would rewrite "Office Cleaning" into "Regular Cleaning" and
             // lose the one word that told the crew what building they are walking into.
-            return IsResidentialTypeName(typeName) ? "Regular Cleaning" : typeName;
+            return IsResidentialType(order, typeName) ? "Regular Cleaning" : typeName;
+        }
+
+        /// <summary>
+        /// The residential type: by ServiceType.ServiceKey ("residential") when the order's
+        /// (non-custom) type has one; otherwise by the name rule below. A custom order is always
+        /// judged by its own label.
+        /// </summary>
+        private static bool IsResidentialType(Order order, string? displayTypeName)
+        {
+            var key = order.ServiceType is { IsCustom: false } type ? type.ServiceKey?.Trim() : null;
+            return !string.IsNullOrEmpty(key)
+                ? key == "residential"
+                : IsResidentialTypeName(displayTypeName);
         }
 
         /// <summary>
@@ -220,6 +226,20 @@ namespace DreamCleaningBackend.Helpers
             var parts = new List<string>();
             if (!string.IsNullOrWhiteSpace(order.ServiceAddress)) parts.Add(order.ServiceAddress);
             if (!string.IsNullOrWhiteSpace(order.AptSuite)) parts.Add(order.AptSuite);
+            if (!string.IsNullOrWhiteSpace(order.City)) parts.Add(order.City);
+            if (!string.IsNullOrWhiteSpace(order.State)) parts.Add(order.State);
+            if (!string.IsNullOrWhiteSpace(order.ZipCode)) parts.Add(order.ZipCode);
+            return parts.Count > 0 ? string.Join(", ", parts) : (order.ApartmentName ?? string.Empty);
+        }
+
+        /// <summary>
+        /// The service address for a map search: the same as <see cref="BuildFullAddress"/> but
+        /// without apt/suite, which map geocoders misread (e.g. "Apt 3B" sends the pin elsewhere).
+        /// </summary>
+        public static string BuildMapsAddress(Order order)
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(order.ServiceAddress)) parts.Add(order.ServiceAddress);
             if (!string.IsNullOrWhiteSpace(order.City)) parts.Add(order.City);
             if (!string.IsNullOrWhiteSpace(order.State)) parts.Add(order.State);
             if (!string.IsNullOrWhiteSpace(order.ZipCode)) parts.Add(order.ZipCode);

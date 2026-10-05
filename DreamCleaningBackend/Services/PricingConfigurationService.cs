@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,8 +10,9 @@ namespace DreamCleaningBackend.Services
     /// Export / diff / import of pricing configuration, so a setup validated locally can be
     /// applied to production without retyping it and without any Id coupling.
     ///
-    /// Everything resolves by (ServiceType.Name, Service.ServiceKey). Ids are never read from the
-    /// payload — production and local have already diverged on them.
+    /// Service types resolve by ServiceType.ServiceKey when both the file and the database have one,
+    /// and by name otherwise (ResolveServiceType); services resolve by Service.ServiceKey. Ids are
+    /// never read from the payload — production and local have already diverged on them.
     ///
     /// Import is a THREE-step flow and the middle step is not optional: build a diff, show it to
     /// the admin, apply only what the diff described. BuildDiffAsync is also called again inside
@@ -57,6 +59,12 @@ namespace DreamCleaningBackend.Services
                     BasePrice = st.BasePrice,
                     TimeDuration = st.TimeDuration,
                     MinimumPrice = st.MinimumPrice,
+                    ServiceKey = st.ServiceKey,
+                    DisplayPrice = new PricingConfigurationDisplayPriceDto
+                    {
+                        Amount = st.DisplayPrice,
+                        Unit = st.DisplayPriceUnit
+                    },
                     Services = st.Services
                         .OrderBy(s => s.DisplayOrder)
                         .Select(s => new PricingConfigurationServiceDto
@@ -123,7 +131,18 @@ namespace DreamCleaningBackend.Services
                 .AsNoTracking()
                 .ToListAsync();
 
+            // Two types in one file claiming the same key could never both be saved (unique index).
+            var duplicateKeys = payload.ServiceTypes
+                .Select(st => ServiceTypeKeyPolicy.Normalize(st.ServiceKey))
+                .Where(k => k != null)
+                .GroupBy(k => k)
+                .Where(g => g.Count() > 1)
+                .Select(g => g.Key);
+            foreach (var duplicateKey in duplicateKeys)
+                diff.Errors.Add($"Service key \"{duplicateKey}\" appears on more than one service type in this file.");
+
             var anyChange = false;
+            var resolvedTargetIds = new HashSet<int>();
 
             foreach (var incomingType in payload.ServiceTypes)
             {
@@ -133,31 +152,66 @@ namespace DreamCleaningBackend.Services
                 };
                 diff.ServiceTypes.Add(typeDiff);
 
-                // --- Resolve the service type by name ---
-                var matches = targets
-                    .Where(t => string.Equals(t.Name, incomingType.ServiceTypeName, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-                if (matches.Count == 0)
+                // --- Resolve the service type: by key when both sides have one, else by name ---
+                var target = ResolveServiceType(incomingType, targets, out var resolveError);
+                if (target == null)
                 {
-                    diff.Errors.Add($"No service type named '{incomingType.ServiceTypeName}' exists here.");
+                    diff.Errors.Add(resolveError!);
                     continue;
                 }
 
-                if (matches.Count > 1)
+                // Two entries landing on one type would apply twice, the second silently winning.
+                if (!resolvedTargetIds.Add(target.Id))
                 {
                     diff.Errors.Add(
-                        $"'{incomingType.ServiceTypeName}' matches {matches.Count} service types here. " +
-                        "Rename them so the target is unambiguous, then re-import.");
+                        $"'{incomingType.ServiceTypeName}' resolves to \"{target.Name}\", which another entry in this " +
+                        "file already resolves to. Each service type may appear once.");
                     continue;
                 }
 
-                var target = matches[0];
                 typeDiff.ResolvedServiceTypeId = target.Id;
 
                 AddChange(typeDiff.Changes, "Base Price", target.BasePrice, incomingType.BasePrice, "C2");
                 AddChange(typeDiff.Changes, "Duration (min)", target.TimeDuration, incomingType.TimeDuration);
                 AddChange(typeDiff.Changes, "Minimum Price", target.MinimumPrice, incomingType.MinimumPrice, "C2");
+
+                // Service key: only a file that carries one can change it (null = leave as is).
+                var incomingKey = ServiceTypeKeyPolicy.Normalize(incomingType.ServiceKey);
+                if (incomingKey != null)
+                {
+                    var keyProblem = ServiceTypeKeyPolicy.DescribeProblem(incomingKey);
+                    if (keyProblem != null)
+                    {
+                        diff.Errors.Add($"'{incomingType.ServiceTypeName}': {keyProblem}");
+                    }
+                    else
+                    {
+                        var keyOwner = targets.FirstOrDefault(t =>
+                            t.Id != target.Id && string.Equals(t.ServiceKey, incomingKey, StringComparison.OrdinalIgnoreCase));
+                        if (keyOwner != null)
+                            diff.Errors.Add(
+                                $"'{incomingType.ServiceTypeName}': {ServiceTypeKeyPolicy.DescribeDuplicate(incomingKey, keyOwner.Name)} " +
+                                "Clear it there first, then re-import.");
+
+                        AddChange(typeDiff.Changes, "Service Key", target.ServiceKey, incomingKey);
+                    }
+                }
+
+                // Display price: only a file that carries the object can change it (absent = leave as is).
+                if (incomingType.DisplayPrice != null)
+                {
+                    var (amount, unit, displayPriceError) = ServiceTypeDisplayPricePolicy.Resolve(
+                        incomingType.DisplayPrice.Amount, incomingType.DisplayPrice.Unit);
+                    if (displayPriceError != null)
+                    {
+                        diff.Errors.Add($"'{incomingType.ServiceTypeName}': {displayPriceError}");
+                    }
+                    else
+                    {
+                        AddChange(typeDiff.Changes, "Display Price", target.DisplayPrice, amount, "C2");
+                        AddChange(typeDiff.Changes, "Display Price Unit", target.DisplayPriceUnit, unit);
+                    }
+                }
 
                 foreach (var incomingService in incomingType.Services)
                 {
@@ -210,6 +264,86 @@ namespace DreamCleaningBackend.Services
             diff.CanApply = diff.Errors.Count == 0;
             diff.IsNoOp = diff.CanApply && !anyChange;
             return diff;
+        }
+
+        /// <summary>
+        /// Finds the existing service type a file entry describes, or returns null with a message.
+        ///
+        /// By ServiceKey when BOTH the entry and an existing type have one; by name only when either
+        /// side has no key (older exports, or types nobody has keyed yet). Id diverges between
+        /// databases and names are editable, so a key present on both sides is the stronger identity
+        /// - but when the key and the name point at DIFFERENT types, or both sides are keyed and the
+        /// keys differ, that is reported for a person to resolve, never guessed between.
+        /// </summary>
+        private static ServiceType? ResolveServiceType(
+            PricingConfigurationServiceTypeDto incoming, IReadOnlyList<ServiceType> targets, out string? error)
+        {
+            error = null;
+            var label = incoming.ServiceTypeName;
+            var incomingKey = ServiceTypeKeyPolicy.Normalize(incoming.ServiceKey);
+
+            var nameMatches = targets
+                .Where(t => string.Equals(t.Name, incoming.ServiceTypeName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (incomingKey != null)
+            {
+                var keyMatches = targets
+                    .Where(t => string.Equals(t.ServiceKey, incomingKey, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                // The unique index makes this impossible; if it ever happens, refuse rather than pick.
+                if (keyMatches.Count > 1)
+                {
+                    error = $"'{label}': service key \"{incomingKey}\" is held by {keyMatches.Count} service types here.";
+                    return null;
+                }
+
+                if (keyMatches.Count == 1)
+                {
+                    var byKey = keyMatches[0];
+
+                    // A name that matches only OTHER types means the two identities disagree. A name
+                    // that matches nothing is just a rename, and the key decides.
+                    if (nameMatches.Count > 0 && !nameMatches.Any(t => t.Id == byKey.Id))
+                    {
+                        var others = string.Join(", ", nameMatches.Select(t => $"\"{t.Name}\""));
+                        error = $"'{label}': service key \"{incomingKey}\" points to \"{byKey.Name}\" here, " +
+                                $"but the name points to {others}. Fix the key or the name so they agree, then re-import.";
+                        return null;
+                    }
+
+                    return byKey;
+                }
+
+                // No existing type holds this key: fall back to the name below - but only onto a type
+                // without a key of its own, since a different key there is a conflict, not a match.
+            }
+
+            if (nameMatches.Count == 0)
+            {
+                error = $"No service type named '{label}' exists here." +
+                        (incomingKey != null ? $" No service type has the key \"{incomingKey}\" either." : string.Empty);
+                return null;
+            }
+
+            if (nameMatches.Count > 1)
+            {
+                error = $"'{label}' matches {nameMatches.Count} service types here. " +
+                        "Rename them, or give each a service key, so the target is unambiguous, then re-import.";
+                return null;
+            }
+
+            var byName = nameMatches[0];
+            var existingKey = ServiceTypeKeyPolicy.Normalize(byName.ServiceKey);
+            if (incomingKey != null && existingKey != null)
+            {
+                error = $"'{label}': the name matches \"{byName.Name}\" here, but its service key is \"{existingKey}\" " +
+                        $"while the file says \"{incomingKey}\". Fix the key or the name so they agree, then re-import.";
+                return null;
+            }
+
+            return byName;
         }
 
         private static bool HasAnyChange(PricingConfigurationServiceTypeDiffDto typeDiff)
@@ -407,12 +541,27 @@ namespace DreamCleaningBackend.Services
 
                 foreach (var incomingType in payload.ServiceTypes)
                 {
-                    var target = targets.Single(t =>
-                        string.Equals(t.Name, incomingType.ServiceTypeName, StringComparison.OrdinalIgnoreCase));
+                    // Same resolver as the diff, which has already accepted every entry.
+                    var target = ResolveServiceType(incomingType, targets, out var resolveError)
+                        ?? throw new InvalidOperationException(resolveError);
 
                     target.BasePrice = incomingType.BasePrice;
                     target.TimeDuration = incomingType.TimeDuration;
                     target.MinimumPrice = incomingType.MinimumPrice;
+
+                    // Already validated by BuildDiffAsync. Null leaves the key alone - see the DTO.
+                    var incomingKey = ServiceTypeKeyPolicy.Normalize(incomingType.ServiceKey);
+                    if (incomingKey != null)
+                        target.ServiceKey = incomingKey;
+
+                    // Already validated by BuildDiffAsync. An absent object leaves it alone - see the DTO.
+                    if (incomingType.DisplayPrice != null)
+                    {
+                        var (amount, unit, _) = ServiceTypeDisplayPricePolicy.Resolve(
+                            incomingType.DisplayPrice.Amount, incomingType.DisplayPrice.Unit);
+                        target.DisplayPrice = amount;
+                        target.DisplayPriceUnit = unit;
+                    }
                     target.UpdatedAt = now;
                     result.ServiceTypesUpdated++;
 

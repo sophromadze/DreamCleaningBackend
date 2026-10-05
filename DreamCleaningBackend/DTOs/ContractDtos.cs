@@ -302,6 +302,15 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>Exhibit B3 - endorsements agreed beyond the Section 20 baseline.</summary>
         public InsuranceEndorsementsSnapshot Insurance { get; set; } = new();
 
+        /// <summary>
+        /// Section 6(b) / Exhibit B, B3 - who provides supplies, equipment and each consumable.
+        /// Absent from an older client's payload, where every answer deserialises unset.
+        /// </summary>
+        public SuppliesSnapshot Supplies { get; set; } = new();
+
+        /// <summary>Exhibit A detail: Detailed, Simplified or Omitted. Absent from an older payload = Detailed.</summary>
+        public ScopeDetailMode ScopeDetail { get; set; } = ScopeDetailMode.Detailed;
+
         /// <summary>The toggled scope checklist. Sent whole; unchecked items simply arrive false.</summary>
         public ScopeStructure Scope { get; set; } = new();
     }
@@ -315,6 +324,18 @@ namespace DreamCleaningBackend.DTOs
     {
         public ContractPriceMode PriceMode { get; set; } = ContractPriceMode.PreTax;
         public decimal PriceInput { get; set; }
+
+        /// <summary>
+        /// Per visit (default - what every earlier contract is) or one flat fee per calendar week.
+        /// In weekly mode <see cref="PriceInput"/> is the WEEKLY amount.
+        /// </summary>
+        public ContractPricingBasis PricingBasis { get; set; } = ContractPricingBasis.PerVisit;
+
+        /// <summary>
+        /// Pricing preview only: the visits per week a weekly flat fee covers, so the live echo can
+        /// show the caps built on the per-visit allocation. Ignored on save (the schedule wins).
+        /// </summary>
+        public int? ScheduledVisitsPerWeek { get; set; }
         public decimal SalesTaxRatePercent { get; set; } = 8.875m;
         public decimal CancellationPercent { get; set; } = 50m;
 
@@ -357,6 +378,16 @@ namespace DreamCleaningBackend.DTOs
         public decimal PreTaxPrice { get; set; }
         public decimal SalesTaxAmount { get; set; }
         public decimal TotalPrice { get; set; }
+
+        /// <summary>Echo of the basis the figures above are for (per visit, or per week).</summary>
+        public ContractPricingBasis PricingBasis { get; set; }
+
+        /// <summary>
+        /// One visit's pre-tax value at full precision - the fee itself per visit, the weekly fee /
+        /// visits in weekly mode. ADMIN-ONLY: an allocation for the caps, never the agreed price.
+        /// </summary>
+        public decimal PerVisitAllocation { get; set; }
+        public int ScheduledVisitsPerFeePeriod { get; set; }
 
         /// <summary>
         /// Cap on a short-notice cancellation charge. A percentage of the PRE-TAX fee, not of the
@@ -480,6 +511,20 @@ namespace DreamCleaningBackend.DTOs
         public string DocumentHtml { get; set; } = string.Empty;
         public string DocumentHash { get; set; } = string.Empty;
         public List<string> UnresolvedTokens { get; set; } = new();
+
+        /// <summary>
+        /// <see cref="UnresolvedTokens"/> as the admin reads them ("Supplies: who provides paper
+        /// towels"). Only values the document actually prints are listed - a field hidden by the
+        /// scope mode, the commitment choice or an empty optional row never is - and a non-empty
+        /// list blocks sending for review or signature.
+        /// </summary>
+        public List<string> MissingFields { get; set; } = new();
+
+        /// <summary>
+        /// Non-blocking consistency warnings about the current version (e.g. six service days
+        /// named but one visit per week promised). Shown on the detail page; never block sending.
+        /// </summary>
+        public List<string> ScheduleWarnings { get; set; } = new();
 
         /// <summary>
         /// The signature block for the current version, composed server-side and carrying the

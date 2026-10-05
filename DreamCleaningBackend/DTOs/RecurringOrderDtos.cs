@@ -48,6 +48,28 @@ namespace DreamCleaningBackend.DTOs
 
         public TimeSpan? ServiceTime { get; set; }
 
+        /// <summary>
+        /// WEEKS only: the weekdays to clean on, as <see cref="DayOfWeek"/> integers (0 = Sunday).
+        /// Null keeps the original single-date behaviour (the anchor's weekday every N weeks).
+        /// </summary>
+        public List<int>? ServiceDaysOfWeek { get; set; }
+
+        /// <summary>MONTHS only: the calendar days to clean on (1–31). A day a month lacks is
+        /// skipped that month. Null keeps the original anchor-day behaviour.</summary>
+        public List<int>? ServiceDaysOfMonth { get; set; }
+
+        /// <summary>
+        /// How many upcoming cleanings to keep generated (a count of orders, not days). Null keeps
+        /// the legacy 30-day window — only accepted for a plan that has no target yet.
+        /// </summary>
+        public int? UpcomingOccurrenceTarget { get; set; }
+
+        /// <summary>
+        /// The commercial contract the cleanings are performed under. Must belong to the source
+        /// order's commercial client. Null = none.
+        /// </summary>
+        public int? ContractId { get; set; }
+
         /// <summary>Required on schedule changes with generated future orders: Keep or Regenerate.</summary>
         public string? FutureOrdersAction { get; set; }
 
@@ -71,6 +93,7 @@ namespace DreamCleaningBackend.DTOs
         public bool IsTemplate { get; set; }
         public bool WasGenerated { get; set; }
         public string PaymentMethod { get; set; } = "Normal";
+        public int? ContractId { get; set; }
 
         /// <summary>Cleaners on this occurrence that the series auto-assigned and NOBODY has
         /// notified yet. What the admin badge is rendered from.</summary>
@@ -92,6 +115,28 @@ namespace DreamCleaningBackend.DTOs
         public int IntervalValue { get; set; }
         public RecurrenceIntervalUnit IntervalUnit { get; set; }
         public string IntervalLabel { get; set; } = "";
+
+        /// <summary>Selected weekdays (0 = Sunday). Empty = the original single-date schedule.</summary>
+        public List<int> ServiceDaysOfWeek { get; set; } = new();
+
+        /// <summary>Selected days of the month. Empty = the original anchor-day schedule.</summary>
+        public List<int> ServiceDaysOfMonth { get; set; } = new();
+
+        /// <summary>Upcoming cleanings kept generated. Null = the legacy rolling 30-day window.</summary>
+        public int? UpcomingOccurrenceTarget { get; set; }
+
+        /// <summary>Upcoming (today or later), non-cancelled cleanings the plan holds right now.</summary>
+        public int UpcomingCount { get; set; }
+
+        /// <summary>The linked commercial contract and how it bills, or null.</summary>
+        public RecurringContractOptionDto? Contract { get; set; }
+
+        /// <summary>
+        /// True when customer billing belongs to the linked contract's weekly invoice: the plan's
+        /// cleanings are operational records and no per-visit payment request is ever sent.
+        /// </summary>
+        public bool BillingControlledByContract { get; set; }
+
         public DateTime AnchorDate { get; set; }
         public TimeSpan ServiceTime { get; set; }
         public DateTime? EndDate { get; set; }
@@ -109,6 +154,37 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>Dates inside the horizon that do not exist as orders yet. Empty right after a
         /// sweep; non-empty only between an edit and the next generation.</summary>
         public List<DateTime> PendingDates { get; set; } = new();
+    }
+
+    /// <summary>A commercial contract a recurring plan may be linked to, as the panel shows it.</summary>
+    public class RecurringContractOptionDto
+    {
+        public int Id { get; set; }
+        public string ContractNumber { get; set; } = "";
+        public string Status { get; set; } = "";
+        public int ContractClientId { get; set; }
+        public string? ServiceAddress { get; set; }
+
+        /// <summary>"PerVisit" or "WeeklyFlatFee".</summary>
+        public string PricingBasis { get; set; } = "PerVisit";
+        public bool IsWeeklyFlatFee { get; set; }
+        public int VisitsPerWeek { get; set; }
+        public decimal PreTaxPrice { get; set; }
+        public decimal SalesTaxAmount { get; set; }
+        public decimal TotalPrice { get; set; }
+
+        /// <summary>The contract's own service-week wording, e.g. "Monday through Sunday".</summary>
+        public string WeekDefinition { get; set; } = "";
+    }
+
+    /// <summary>The contracts the source order's commercial client holds, and which one fits.</summary>
+    public class RecurringContractOptionsDto
+    {
+        public int? ContractClientId { get; set; }
+        public List<RecurringContractOptionDto> Contracts { get; set; } = new();
+
+        /// <summary>Preselected when the client has exactly one executed contract.</summary>
+        public int? SuggestedContractId { get; set; }
     }
 
     public class RecurringPricePreviewDto
@@ -153,6 +229,12 @@ namespace DreamCleaningBackend.DTOs
     {
         public bool IncludedInPayAll { get; set; }
         public string PaymentMethod { get; set; } = "Normal";
+
+        /// <summary>
+        /// Set for an operational cleaning under a WEEKLY FLAT FEE contract — "Billed weekly by
+        /// contract DCC-…". Price surfaces show this instead of the order's $0 total.
+        /// </summary>
+        public string? BilledByContractLabel { get; set; }
         public int OrderId { get; set; }
         public DateTime ServiceDate { get; set; }
         public TimeSpan ServiceTime { get; set; }

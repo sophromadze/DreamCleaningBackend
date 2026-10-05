@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using DreamCleaningBackend.Controllers;
 using DreamCleaningBackend.Data;
@@ -177,6 +178,31 @@ namespace DreamCleaningBackend.Tests
             // Carol is Returning but NOT Retained — she was absent from the previous window. If
             // the two definitions were ever merged, this is the assertion that catches it.
             Assert.NotEqual(stats.ReturningCustomers, stats.RetainedCustomers);
+        }
+
+        [Fact]
+        public async Task Spend_IsPaidMinusRefunded_AnUnpaidBookingCountsAsAnOrderButAddsNoSpend()
+        {
+            // Owner's rule (2026-10): spend is realized money only, the same as everywhere else.
+            // An invoiced cleaning that is not paid yet is still a real booking (it counts), but
+            // nothing has been spent; a part refund comes off what was paid.
+            _context.Orders.Add(new Order
+            {
+                Id = 900, UserId = Bob, ServiceTypeId = 1, ServiceDate = new DateTime(2026, 8, 20),
+                OrderDate = new DateTime(2026, 8, 20), CreatedAt = new DateTime(2026, 8, 20),
+                Status = OrderStatuses.Active, IsPaid = false, PaymentMethod = PaymentMethod.Invoice,
+                Total = 500m, SubTotal = 500m, ContactFirstName = "Test", ContactLastName = "Customer",
+                ContactEmail = "user2@example.com", ServiceAddress = "1 Test St", City = "Brooklyn", State = "New York", ZipCode = "11201"
+            });
+            var carols = await _context.Orders.Where(o => o.UserId == Carol && o.ServiceDate >= WindowFrom).ToListAsync();
+            carols.Single().TotalRefundedAmount = 10m;
+            await _context.SaveChangesAsync();
+
+            var stats = await Load();
+
+            Assert.Equal(6, stats.TotalOrders);       // the unpaid booking counts...
+            Assert.Equal(920m, stats.TotalSpend);     // ...but adds nothing; Carol's $10 refund comes off
+            Assert.Equal(400m, stats.NewCustomerSpend);
         }
 
         [Fact]

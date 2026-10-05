@@ -904,6 +904,8 @@ namespace DreamCleaningBackend.Services.Commercial
                     : currentContract.Pricing.PriceMode == Models.Contracts.ContractPriceMode.TaxInclusive
                         ? InvoiceTaxType.Included : InvoiceTaxType.Added,
                 CurrentContractTaxRate = currentContract?.Pricing.SalesTaxRatePercent,
+                CurrentContractIsWeeklyFlatFee = currentContract?.Pricing.PricingBasis
+                    == Models.Contracts.ContractPricingBasis.WeeklyFlatFee,
                 CleaningsCovered = await _context.CommercialInvoiceOrders
                     .Where(l => l.CommercialInvoiceId == invoiceId)
                     .OrderBy(l => l.Order!.ServiceDate).ThenBy(l => l.OrderId)

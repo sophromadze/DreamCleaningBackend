@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
@@ -142,7 +143,7 @@ namespace DreamCleaningBackend.Controllers
 
         /// <summary>Full ordered transcript for one session. Unlike the public endpoint,
         /// System audit rows (e.g. escalation reasons) ARE included — admins reviewing a
-        /// session want them. ImagePath is the same site-relative URL the widget uses.</summary>
+        /// session want them. ImagePath is the staff image route (api/files/chat/{name}).</summary>
         [HttpGet("sessions/{sessionId:guid}/messages")]
         public async Task<ActionResult<ChatAdminTranscriptDto>> GetSessionTranscript(Guid sessionId)
         {
@@ -201,7 +202,7 @@ namespace DreamCleaningBackend.Controllers
                         _ => "user"
                     },
                     Content = m.Content,
-                    ImagePath = m.ImagePath,
+                    ImagePath = PrivateFileUrls.ChatImageForStaff(m.ImagePath),
                     AgentName = m.SenderTelegramUserId != null
                         ? agentNames.GetValueOrDefault(m.SenderTelegramUserId.Value)
                         : null,

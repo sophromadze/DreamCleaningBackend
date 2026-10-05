@@ -9,6 +9,9 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<GiftCardValidationDto> ValidateGiftCard(string code);
         Task<decimal> ApplyGiftCardToOrder(string code, decimal orderAmount, int orderId, int userId); // ADD userId parameter
         Task<List<GiftCardDto>> GetUserGiftCards(int userId);
+        Task<List<MyGiftCardDto>> GetMyGiftCards(int userId);
+        Task<GiftCardSendResult> SendMyGiftCard(int giftCardId, int userId, SendMyGiftCardDto dto);
+        Task<GiftCardSendResult> ResendMyGiftCard(int giftCardId, int userId);
         Task<List<GiftCardUsageDto>> GetGiftCardUsageHistory(string code, int userId);
         Task<GiftCard> GetGiftCardByCode(string code);
         Task<bool> MarkGiftCardAsPaid(int giftCardId, string paymentIntentId);

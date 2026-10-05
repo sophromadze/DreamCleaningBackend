@@ -251,6 +251,38 @@ namespace DreamCleaningBackend.Tests
         }
 
         [Fact]
+        public async Task SettingTheCleanerCount_WritesTheOrder_AndLogsOneRow()
+        {
+            // The Wages card's Cleaners Count (moved out of the order edit form, 2026-09).
+            var order = await SeedAsync(totalDuration: 720, maidsCount: 2, assignedCleaners: 1);
+
+            await _service.SetOrderMaidsCountAsync(order, 3);
+
+            Assert.Equal(3, order.MaidsCount);
+            // 12h split three ways is 4h each — the automatic split follows the new count.
+            var payroll = CleanerPayrollCalculator.Build(order, false, order.OrderCleaners);
+            Assert.Equal(240m, payroll.AutomaticBillableMinutes);
+
+            var log = Assert.Single(await _context.AuditLogs
+                .Where(a => a.EntityType == AuditEntityTypes.OrderCleanerCount)
+                .ToListAsync());
+            Assert.Equal(2, Values(log.OldValues)["MaidsCount"]!.Value<int>());
+            Assert.Equal(3, Values(log.NewValues)["MaidsCount"]!.Value<int>());
+        }
+
+        [Fact]
+        public async Task SettingTheSameCleanerCount_LogsNothing()
+        {
+            var order = await SeedAsync(totalDuration: 720, maidsCount: 2, assignedCleaners: 1);
+
+            await _service.SetOrderMaidsCountAsync(order, 2);
+
+            Assert.Empty(await _context.AuditLogs
+                .Where(a => a.EntityType == AuditEntityTypes.OrderCleanerCount)
+                .ToListAsync());
+        }
+
+        [Fact]
         public async Task AnEditToOneLine_RecordsWhatItWasBEINGPAID_NotTheEmptyOverride()
         {
             // The bug this pins: the row logged the raw override columns, so a cleaner moved off

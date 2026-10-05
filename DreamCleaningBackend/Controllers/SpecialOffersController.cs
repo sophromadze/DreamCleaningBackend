@@ -44,7 +44,8 @@ namespace DreamCleaningBackend.Controllers
                         Icon = o.Icon ?? string.Empty,
                         BadgeColor = o.BadgeColor ?? "#28a745",
                         MinimumOrderAmount = o.MinimumOrderAmount,
-                        RequiresFirstTimeCustomer = o.RequiresFirstTimeCustomer
+                        RequiresFirstTimeCustomer = o.RequiresFirstTimeCustomer,
+                        OfferKey = o.OfferKey
                     })
                     .ToListAsync();
 
@@ -69,5 +70,7 @@ namespace DreamCleaningBackend.Controllers
         public string BadgeColor { get; set; }
         public decimal? MinimumOrderAmount { get; set; }
         public bool RequiresFirstTimeCustomer { get; set; }
+        /// <summary>See SpecialOffer.OfferKey ("first-time" marks the first-time offer).</summary>
+        public string? OfferKey { get; set; }
     }
 } 

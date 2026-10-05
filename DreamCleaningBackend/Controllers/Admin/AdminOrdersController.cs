@@ -307,6 +307,8 @@ namespace DreamCleaningBackend.Controllers
                     ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
                         ? o.CustomServiceDisplayName + " Cleaning"
                         : (o.ServiceType != null ? o.ServiceType.Name : ""),
+                    // GetRecognisableServiceTypeKey, written out for SQL (null for custom / unkeyed).
+                    ServiceTypeKey = o.ServiceType != null && !o.ServiceType.IsCustom ? o.ServiceType.ServiceKey : null,
                     o.ServiceAddress,
                     o.AptSuite,
                     o.City,
@@ -362,7 +364,11 @@ namespace DreamCleaningBackend.Controllers
             {
                 var st = (o.ServiceTypeName ?? "").Trim();
                 string serviceTypeLabel;
-                if (st.ToLowerInvariant().Contains("residential"))
+                // Residential by ServiceKey; only an unkeyed (or custom) type by its name.
+                var isResidential = !string.IsNullOrWhiteSpace(o.ServiceTypeKey)
+                    ? o.ServiceTypeKey.Trim() == "residential"
+                    : st.ToLowerInvariant().Contains("residential");
+                if (isResidential)
                 {
                     serviceTypeLabel = deepOrderIdSet.Contains(o.Id) ? "Deep" : "Regular";
                 }
@@ -712,7 +718,9 @@ namespace DreamCleaningBackend.Controllers
                     return NotFound();
 
                 // Single source of truth for the order-details shape (see OrderDtoMapper).
-                return OrderDtoMapper.ToOrderDto(order);
+                var dto = OrderDtoMapper.ToOrderDto(order);
+                dto.BilledByContractLabel = await ContractBilledOrders.LoadLabelAsync(_context, order);
+                return dto;
             }
             catch (Exception ex)
             {
@@ -769,9 +777,14 @@ namespace DreamCleaningBackend.Controllers
                                       && o.CustomServiceDisplayName != ""
                         ? o.CustomServiceDisplayName + " Cleaning"
                         : (o.ServiceType != null && o.ServiceType.Name != "" ? o.ServiceType.Name : "Cleaning"),
+                    ServiceTypeKey = o.ServiceType != null && !o.ServiceType.IsCustom ? o.ServiceType.ServiceKey : null,
                     HasCleanerHoursService = o.OrderServices.Any(os => os.Service.ServiceRelationType == "cleaner"),
+                    // ExtraServiceKeys.IsDeepOrSuperDeep, written out for SQL: the flags decide, and
+                    // an unkeyed row with neither flag still counts by its name.
                     HasDeepCleaningExtra = o.OrderExtraServices.Any(oes =>
-                        oes.ExtraService.Name.ToLower().Contains("deep cleaning")),
+                        oes.ExtraService.IsDeepCleaning || oes.ExtraService.IsSuperDeepCleaning
+                        || (oes.ExtraService.ExtraServiceKey == null
+                            && oes.ExtraService.Name.ToLower().Contains("deep cleaning"))),
                     o.TotalDuration,
                     o.MaidsCount,
                     o.CleanerHourlyRate,
@@ -798,6 +811,7 @@ namespace DreamCleaningBackend.Controllers
                 var warnings = OrderStaffingWarnings.BuildFromFacts(new OrderStaffingWarnings.OrderFacts
                 {
                     ServiceTypeName = row.ServiceTypeName,
+                    ServiceTypeKey = string.IsNullOrWhiteSpace(row.ServiceTypeKey) ? null : row.ServiceTypeKey,
                     HasCleanerHoursService = row.HasCleanerHoursService,
                     HasDeepCleaningExtra = row.HasDeepCleaningExtra,
                     TotalDuration = row.TotalDuration,
@@ -965,6 +979,35 @@ namespace DreamCleaningBackend.Controllers
         }
 
         /// <summary>
+        /// Sets how many cleaners the order is staffed for (<c>Order.MaidsCount</c>) from the
+        /// Wages card, beside the hourly rate. It used to be a box in the order edit form, which
+        /// sent a pure staffing/wages figure through the price-change approval queue.
+        ///
+        /// Refused on a cleaner+hours service type: there the count is a PRICED line the customer
+        /// chose (cleaners × hours), it is edited through that service row in the order editor,
+        /// and the next order save would overwrite a value set here anyway.
+        /// </summary>
+        [HttpPut("orders/{orderId}/cleaner-payroll/maids-count")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<OrderCleanerPayrollDto>> UpdateOrderMaidsCount(
+            int orderId, [FromBody] UpdateOrderMaidsCountDto dto)
+        {
+            if (dto == null || dto.MaidsCount < 1)
+                return BadRequest(new { message = "An order needs at least one cleaner." });
+
+            var order = await LoadOrderForPayrollAsync(orderId, tracked: true);
+            if (order == null)
+                return NotFound(new { message = "That order was not found." });
+
+            if (CleanerPayrollCalculator.HasCleanerHoursService(order))
+                return BadRequest(new { message = "This order is priced by cleaners × hours. Change the Cleaners line in Edit Order instead." });
+
+            await _payrollEditService.SetOrderMaidsCountAsync(order, dto.MaidsCount);
+
+            return Ok(BuildOrderCleanerPayrollDto(order));
+        }
+
+        /// <summary>
         /// The order with everything the payroll calculator needs. Tracked for the writes, not for
         /// the read. OrderServices -> Service is what HasCleanerHoursService reads; without it
         /// every cleaner-hours order would have its duration divided a second time.
@@ -1001,6 +1044,7 @@ namespace DreamCleaningBackend.Controllers
                 TotalSalary = payroll.TotalSalary,
                 StoredTotalSalary = order.CleanerTotalSalary,
                 SplitCount = payroll.SplitCount,
+                MaidsCount = order.MaidsCount,
                 AssignedCount = payroll.AssignedCount,
                 AutomaticMinutesPerCleaner = payroll.AutomaticBillableMinutes,
                 OrderHourlyRate = order.CleanerHourlyRate,
@@ -1399,7 +1443,7 @@ namespace DreamCleaningBackend.Controllers
             try
             {
                 if (!Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm))
-                    return BadRequest(new { message = "PaymentMethod must be one of: Normal, Cash, Zelle, Check, Other, Invoice." });
+                    return BadRequest(new { message = "PaymentMethod must be one of: Normal, Cash, Zelle, Check, BankTransfer, Other, Invoice." });
 
                 var order = await _context.Orders.FindAsync(orderId);
                 if (order == null)
@@ -1755,6 +1799,11 @@ namespace DreamCleaningBackend.Controllers
             if (orderBefore == null)
                 return NotFound();
 
+            // A granted Admin saves directly, but discounts stay SuperAdmin-only.
+            if (!OrderDiscountEditPolicy.MayEditDiscounts(GetCurrentUserRole()) &&
+                !OrderDiscountEditPolicy.KeepsDiscounts(orderBefore, dto))
+                return BadRequest(new { message = OrderDiscountEditPolicy.RefusalMessage });
+
             try
             {
                 await _orderService.SuperAdminFullUpdateOrder(orderId, editorId, dto);
@@ -1898,6 +1947,11 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "No proposed changes were supplied." });
 
             var dto = submission.Changes!;
+
+            // Discounts are SuperAdmin-only; refused at submission so the request never reaches
+            // the queue carrying a change its author was not allowed to make.
+            if (!OrderDiscountEditPolicy.KeepsDiscounts(order, dto))
+                return BadRequest(new { message = OrderDiscountEditPolicy.RefusalMessage });
 
             var currentUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
             var proposedJson = JsonConvert.SerializeObject(dto);
@@ -2110,6 +2164,13 @@ namespace DreamCleaningBackend.Controllers
                 .FirstOrDefaultAsync(o => o.Id == pending.OrderId);
             if (orderBefore == null)
                 return NotFound(new { message = "Order not found" });
+
+            // A granted Admin reviewing a colleague's request is still not allowed to be the one
+            // who applies a discount change (requests queued before this rule existed can carry
+            // one). A SuperAdmin approving it is making that decision themselves.
+            if (!OrderDiscountEditPolicy.MayEditDiscounts(GetCurrentUserRole()) &&
+                !OrderDiscountEditPolicy.KeepsDiscounts(orderBefore, dto))
+                return BadRequest(new { message = OrderDiscountEditPolicy.RefusalMessage + " Ask a SuperAdmin to review this request." });
 
             await _orderService.SuperAdminFullUpdateOrder(pending.OrderId, currentUserId, dto);
 
@@ -2439,7 +2500,7 @@ namespace DreamCleaningBackend.Controllers
             if (!Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm) ||
                 pm == PaymentMethod.Normal)
             {
-                return BadRequest(new { message = "PaymentMethod must be one of: Cash, Zelle, Check, Other." });
+                return BadRequest(new { message = "PaymentMethod must be one of: Cash, Zelle, Check, BankTransfer, Other." });
             }
 
             var history = await _context.OrderUpdateHistories
@@ -2490,6 +2551,97 @@ namespace DreamCleaningBackend.Controllers
                 paymentMethod = pm.ToString(),
                 paidAt = history.PaidAt,
                 statusReactivated,
+                status = order?.Status
+            });
+        }
+
+        /// <summary>
+        /// Corrects a MANUALLY recorded top-up payment — the admin picked Zelle but it was Cash,
+        /// or mistyped the reference (owner's request, 2026-09: a stray Confirm click had no way
+        /// back). Only rows an admin recorded; a card payment is Stripe's record, not ours.
+        /// </summary>
+        [HttpPut("orders/{orderId}/update-history/{historyId}/manual-payment")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> EditManualAdditionalPayment(
+            int orderId, int historyId, [FromBody] RecordManualAdditionalPaymentDto dto)
+        {
+            if (!Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm) ||
+                pm == PaymentMethod.Normal || pm == PaymentMethod.Invoice)
+            {
+                return BadRequest(new { message = "PaymentMethod must be one of: Cash, Zelle, Check, BankTransfer, Other." });
+            }
+
+            var history = await _context.OrderUpdateHistories
+                .FirstOrDefaultAsync(h => h.Id == historyId && h.OrderId == orderId);
+            if (history == null)
+                return NotFound(new { message = "Update-history record not found for this order." });
+            if (!history.IsPaid || history.ManualPaymentRecordedAt == null)
+                return BadRequest(new { message = "Only a manually recorded payment can be edited." });
+
+            var before = new { PaymentMethod = history.PaymentMethod.ToString(), history.PaymentReference, history.PaymentNotes };
+            history.PaymentMethod = pm;
+            history.PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim();
+            history.PaymentNotes = string.IsNullOrWhiteSpace(dto.PaymentNotes) ? null : dto.PaymentNotes.Trim();
+            await _context.SaveChangesAsync();
+
+            await LogOrderPaymentActionAsync(orderId, "ManualPaymentEdited", new
+            {
+                UpdateHistoryId = history.Id,
+                history.AdditionalAmount,
+                Before = before,
+                PaymentMethod = pm.ToString(),
+                history.PaymentReference,
+                history.PaymentNotes
+            });
+
+            return Ok(new { message = $"Payment updated: {pm} ${history.AdditionalAmount:F2}." });
+        }
+
+        /// <summary>
+        /// Takes back a manually recorded top-up payment that was confirmed by mistake: the amount
+        /// is owed again. Mirrors what recording it did — an order that was reactivated because
+        /// the top-up was collected (Pending → Active) goes back to Pending; Done is never touched.
+        /// </summary>
+        [HttpDelete("orders/{orderId}/update-history/{historyId}/manual-payment")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> RevertManualAdditionalPayment(int orderId, int historyId)
+        {
+            var history = await _context.OrderUpdateHistories
+                .FirstOrDefaultAsync(h => h.Id == historyId && h.OrderId == orderId);
+            if (history == null)
+                return NotFound(new { message = "Update-history record not found for this order." });
+            if (!history.IsPaid || history.ManualPaymentRecordedAt == null)
+                return BadRequest(new { message = "Only a manually recorded payment can be marked unpaid." });
+
+            var was = new { PaymentMethod = history.PaymentMethod.ToString(), history.PaymentReference, history.PaidAt };
+            history.IsPaid = false;
+            history.PaidAt = null;
+            history.PaymentMethod = PaymentMethod.Normal;
+            history.PaymentReference = null;
+            history.PaymentNotes = null;
+            history.ManualPaymentRecordedAt = null;
+            history.ManualPaymentRecordedByUserId = null;
+
+            var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+            var statusBack = false;
+            if (order != null && order.IsPaid && string.Equals(order.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                order.Status = "Pending";
+                statusBack = true;
+            }
+            await _context.SaveChangesAsync();
+
+            await LogOrderPaymentActionAsync(orderId, "ManualPaymentReverted", new
+            {
+                UpdateHistoryId = history.Id,
+                history.AdditionalAmount,
+                Was = was,
+                StatusReturnedToPending = statusBack
+            });
+
+            return Ok(new
+            {
+                message = $"${history.AdditionalAmount:F2} is marked unpaid again.",
                 status = order?.Status
             });
         }
@@ -2640,12 +2792,8 @@ namespace DreamCleaningBackend.Controllers
                 return result;
             }
 
-            var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
-                .Select(x => x.ExtraService?.Name ?? "")
-                .Where(n => !string.IsNullOrWhiteSpace(n))
-                .ToList();
             var isCustom = order.ServiceType?.IsCustom == true;
-            var supplyChecklist = CustomerSupplyChecklist.Resolve(extraNames, isCustom);
+            var supplyChecklist = CustomerSupplyChecklist.Resolve(CustomerSupplyChecklist.ExtrasOf(order), isCustom);
             var customerName = string.IsNullOrWhiteSpace(order.ContactFirstName)
                 ? "there"
                 : char.ToUpperInvariant(order.ContactFirstName.Trim()[0]) + order.ContactFirstName.Trim()[1..];
@@ -2719,6 +2867,125 @@ namespace DreamCleaningBackend.Controllers
             }
 
             return result;
+        }
+
+        // ── Send Receipt (2026-09) ──
+        // Emails the customer the payment provider's OWN receipt for one card payment on the
+        // Payments tab — what the office used to do by hand from the provider's dashboard. Rows
+        // are addressed by the panel's timeline keys: "booking", "p{partialPaymentId}",
+        // "u{updateHistoryId}". Only a row paid online qualifies, and the method label is NOT the
+        // test: an update row gets the intent id stamped when its payment link is created, and a
+        // pending part payment can keep an abandoned card intent's id, so a row later recorded as
+        // Zelle can still carry one. A row counts only when it is paid, its method is Normal, and
+        // it holds a real intent id — and the POST then re-checks the charge live.
+        // "Pay all upcoming" payments are excluded: one charge covers several cleanings, so its
+        // receipt would not match any single row.
+
+        /// <summary>The Payments-tab rows that can carry "Send Receipt", plus the address the
+        /// confirm step pre-fills. Database only — the live check happens on send.</summary>
+        [HttpGet("orders/{orderId}/receipt-payments")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult> GetReceiptEligiblePayments(int orderId)
+        {
+            var order = await _context.Orders.Include(o => o.User).FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            var rows = await GetReceiptEligibleRowsAsync(order);
+            return Ok(new
+            {
+                paymentKeys = rows.Keys.ToList(),
+                defaultEmail = NoEmailHelper.ResolveOrderNotificationEmail(order.ContactEmail, order.User)
+            });
+        }
+
+        [HttpPost("orders/{orderId}/payments/{paymentKey}/send-receipt")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> SendPaymentReceipt(int orderId, string paymentKey, [FromBody] SendPaymentReceiptDto? dto)
+        {
+            var order = await _context.Orders.Include(o => o.User).FirstOrDefaultAsync(o => o.Id == orderId);
+            if (order == null)
+                return NotFound(new { message = "Order not found" });
+
+            var rows = await GetReceiptEligibleRowsAsync(order);
+            if (!rows.TryGetValue(paymentKey ?? "", out var paymentIntentId))
+                return BadRequest(new { message = "A receipt can only be sent for a card payment made on the website for this order." });
+
+            var email = string.IsNullOrWhiteSpace(dto?.Email)
+                ? NoEmailHelper.ResolveOrderNotificationEmail(order.ContactEmail, order.User)
+                : dto!.Email!.Trim();
+            if (string.IsNullOrWhiteSpace(email) || NoEmailHelper.IsPlaceholder(email))
+                return BadRequest(new { message = "This customer has no email address. Enter one to send the receipt to." });
+            var emailProblem = EmailAddressValidator.DescribeProblem(email);
+            if (emailProblem != null)
+                return BadRequest(new { message = emailProblem });
+
+            var result = await _stripeService.SendChargeReceiptAsync(paymentIntentId, email);
+            if (!result.Sent)
+                return BadRequest(new { message = result.FailureReason ?? "The receipt could not be sent." });
+
+            await LogOrderPaymentActionAsync(orderId, "ReceiptSent", new
+            {
+                PaymentRow = DescribeReceiptRow(paymentKey!),
+                ChargeAmount = result.Amount,
+                SentTo = email,
+                ChargeId = result.ChargeId
+            });
+
+            return Ok(new
+            {
+                message = result.LiveMode
+                    ? $"Receipt sent to {email}."
+                    : $"Receipt requested for {email} (test mode — no email is delivered).",
+                sentTo = email
+            });
+        }
+
+        private static string DescribeReceiptRow(string key) =>
+            key == "booking" ? "Booking payment"
+            : key.StartsWith("p") ? $"Part payment #{key[1..]}"
+            : key.StartsWith("u") ? $"Added by an edit #{key[1..]}"
+            : key;
+
+        /// <summary>Timeline key → intent id, for every row paid online and not part of a
+        /// combined "Pay all upcoming" charge. See the section comment above.</summary>
+        private async Task<Dictionary<string, string>> GetReceiptEligibleRowsAsync(Order order)
+        {
+            var rows = new Dictionary<string, string>();
+            static bool IsIntent(string? id) => !string.IsNullOrWhiteSpace(id) && id.StartsWith("pi_");
+
+            var batchIntents = (await _context.OrderPaymentBatches
+                    .Where(b => b.PaymentIntentId != null && b.Items.Any(i => i.OrderId == order.Id))
+                    .Select(b => b.PaymentIntentId!)
+                    .ToListAsync())
+                .ToHashSet();
+            var paidByBatch = await _context.OrderPaymentBatchItems
+                .AnyAsync(i => i.OrderId == order.Id && i.Batch!.Status == OrderPaymentBatchStatus.Paid);
+
+            // Invoice-method orders are included: a regular invoice paid online settles through
+            // the same intent machinery. A manual method (Cash, Zelle, BankTransfer…) never is.
+            if (order.IsPaid && IsIntent(order.PaymentIntentId) && !paidByBatch
+                && (order.PaymentMethod == PaymentMethod.Normal || order.PaymentMethod == PaymentMethod.Invoice)
+                && !batchIntents.Contains(order.PaymentIntentId!))
+                rows["booking"] = order.PaymentIntentId!;
+
+            var slices = await _context.OrderPartialPayments
+                .Where(p => p.OrderId == order.Id && p.Status == OrderPartialPaymentStatus.Paid
+                            && p.PaymentMethod == PaymentMethod.Normal && p.PaymentIntentId != null)
+                .Select(p => new { p.Id, p.PaymentIntentId })
+                .ToListAsync();
+            foreach (var p in slices.Where(p => IsIntent(p.PaymentIntentId) && !batchIntents.Contains(p.PaymentIntentId!)))
+                rows[$"p{p.Id}"] = p.PaymentIntentId!;
+
+            var updates = await _context.OrderUpdateHistories
+                .Where(h => h.OrderId == order.Id && h.IsPaid && h.PaymentMethod == PaymentMethod.Normal
+                            && h.ManualPaymentRecordedAt == null && h.PaymentIntentId != null)
+                .Select(h => new { h.Id, h.PaymentIntentId })
+                .ToListAsync();
+            foreach (var h in updates.Where(h => IsIntent(h.PaymentIntentId) && !batchIntents.Contains(h.PaymentIntentId!)))
+                rows[$"u{h.Id}"] = h.PaymentIntentId!;
+
+            return rows;
         }
 
         /// <summary>Re-send the booking confirmation (email + SMS) with the order's CURRENT details.
@@ -2875,6 +3142,12 @@ namespace DreamCleaningBackend.Controllers
                 .FirstOrDefaultAsync(o => o.Id == orderId);
             if (order == null)
                 return NotFound(new { message = "Order not found" });
+
+            // Cash / Zelle / Check / Other mean the money has ALREADY arrived — a payment link
+            // would ask the customer to pay twice. Switching the method to card or invoice first
+            // is the way back, and that is what the refusal says.
+            if (PaymentMethodRules.IsSettledOnRecord(order.PaymentMethod))
+                return BadRequest(new { message = $"This order was paid by {order.PaymentMethod}, so there is nothing to collect online. Change its payment method to card or invoice first." });
 
             // Contact comes from the live user account (the corrected value), not order.ContactEmail.
             // Null for a no-email account — nothing to send an email to.
@@ -3203,6 +3476,26 @@ namespace DreamCleaningBackend.Controllers
         /// complete it — marked paid/active, loyalty consumed, subscription activated, the
         /// ordinary residential confirmation sent — via <see cref="CompletePartialPaymentOrderAsync"/>.
         /// </summary>
+        /// <summary>Corrects the method / reference / notes of a manually recorded slice.</summary>
+        [HttpPut("orders/{orderId}/partial-payments/{requestId}/manual-payment")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> EditPartialManualPayment(
+            int orderId, int requestId, [FromBody] RecordPartialPaymentManuallyDto dto)
+        {
+            if (!Enum.TryParse<PaymentMethod>(dto?.PaymentMethod, ignoreCase: true, out var pm))
+                return BadRequest(new { message = "Choose Cash, Zelle, Check, Bank transfer or Other." });
+            try
+            {
+                var service = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
+                await service.EditManualPaymentDetailsAsync(orderId, requestId, pm, dto!.PaymentReference, dto.PaymentNotes, GetCurrentUserId());
+                return Ok(new { message = "Payment updated." });
+            }
+            catch (PartialPaymentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpPost("orders/{orderId}/partial-payments/{requestId}/record-manual-payment")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult> RecordPartialPaymentManually(
@@ -3211,8 +3504,14 @@ namespace DreamCleaningBackend.Controllers
             if (!Enum.TryParse<PaymentMethod>(dto?.PaymentMethod, ignoreCase: true, out var pm) ||
                 pm == PaymentMethod.Normal)
             {
-                return BadRequest(new { message = "PaymentMethod must be one of: Cash, Zelle, Check, Other, Invoice." });
+                return BadRequest(new { message = "PaymentMethod must be one of: Cash, Zelle, Check, BankTransfer, Other, Invoice." });
             }
+
+            // The customer already paid this invoice from their bank online and Stripe is still
+            // settling it. Recording it again by hand would count the same money twice.
+            if (await _context.CustomerInvoicePaymentAttempts.AnyAsync(a =>
+                    a.OrderPartialPaymentId == requestId && a.Status == CustomerInvoicePaymentAttemptStatus.Processing))
+                return BadRequest(new { message = "The customer's online bank (ACH) payment for this invoice is still processing through Stripe. Wait for it to settle or fail before recording a payment by hand." });
 
             var order = await _context.Orders
                 .Include(o => o.User)

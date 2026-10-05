@@ -155,6 +155,19 @@ namespace DreamCleaningBackend.Tests
                     EndorsementDetails = "Acme Mutual, policy CGL-99, form CG 20 26 04 13",
                     AdditionalPremium = "None"
                 },
+                // A MIXED allocation, answered in full, so every A8 token has a value here and the
+                // unanswered case can be tested separately.
+                Supplies = new SuppliesSnapshot
+                {
+                    EquipmentProvidedBy = SupplyProvider.Contractor,
+                    TrashLinersProvidedBy = SupplyProvider.Contractor,
+                    PaperTowelsProvidedBy = SupplyProvider.Client,
+                    ToiletTissueProvidedBy = SupplyProvider.Client,
+                    OtherConsumables = new List<ConsumableAllocation>
+                    {
+                        new() { Item = "coffee filters", ProvidedBy = SupplyProvider.Client }
+                    }
+                },
                 Scope = ScopeStructureFor("Office")
             };
             ContractPricingCalculator.Recalculate(snapshot.Pricing);
@@ -268,46 +281,77 @@ namespace DreamCleaningBackend.Tests
         }
 
         /// <summary>
-        /// AN UNANSWERED FIELD IS VISIBLE AND FLAGGED, not silently blank and not "None".
-        ///
-        /// "Employee restroom and fixture counts: None" asserts the premises has no employee
-        /// restroom; an empty string leaves a sentence ending in a stray colon. A ruled blank says
-        /// the question is still open, and flagging it as unresolved is what puts it in the
-        /// preview banner an admin reads before the client does.
+        /// AN UNANSWERED SITE DETAIL DISAPPEARS (template v2.7). No ruled blank, no "None", no
+        /// label - the whole line leaves the agreement, and the preview banner has nothing to
+        /// chase, because nothing in the agreement depends on the detail being recorded.
         /// </summary>
         [Fact]
-        public void AnUnansweredSiteDetailPrintsARuledBlankAndIsFlagged()
+        public void AnUnansweredSiteDetailIsOmittedEntirely()
         {
             var snapshot = OtherClientSnapshot();
             snapshot.SiteDetails.EmployeeRestroomCounts = null;
 
             var rendered = ContractRenderer.Render(snapshot);
 
-            Assert.Contains("EMPLOYEE RESTROOM AND FIXTURE COUNTS: " + ContractPlaceholders.RuledBlank,
-                rendered.PlainText);
-            Assert.Contains("EMPLOYEE_RESTROOM_COUNTS", rendered.UnresolvedTokens);
-            // And it is a blank, not an assertion that there isn't one.
-            Assert.DoesNotContain("EMPLOYEE RESTROOM AND FIXTURE COUNTS: None", rendered.PlainText);
+            Assert.DoesNotContain("EMPLOYEE RESTROOM AND FIXTURE COUNTS", rendered.PlainText);
+            Assert.DoesNotContain("EMPLOYEE_RESTROOM_COUNTS_IF_SET", rendered.UnresolvedTokens);
+            Assert.DoesNotContain(ContractPlaceholders.RuledBlank, rendered.PlainText);
         }
 
         /// <summary>
-        /// The opposite rule, for the fields the drafted agreement writes as "[... OR NONE]".
-        /// An empty completion time is a TERM the Parties agreed, and a crew reading a blank there
-        /// would not know whether one exists.
+        /// A blank completion time, site requirements, food-contact task or initial-work Change
+        /// Order used to print "None". None of them is load-bearing when blank - Section 5(c)
+        /// means "no deadline" when none is stated, and A3(d) / Section 25(e) exclude food-contact
+        /// sanitizing unless a task is named - so the v2.7 agreement drops the lines instead.
         /// </summary>
         [Fact]
-        public void AnOrNoneFieldPrintsNoneRatherThanABlank()
+        public void BlankOptionalTermsAreOmittedRatherThanPrintedAsNone()
         {
             var snapshot = OtherClientSnapshot();
             snapshot.Schedule.CompletionTime = null;
             snapshot.SiteDetails.SiteRequirements = "";
+            snapshot.SiteDetails.FoodContactSanitizing = null;
+            snapshot.SiteDetails.InitialWorkChangeOrder = " ";
 
             var rendered = ContractRenderer.Render(snapshot);
 
-            Assert.Contains("REQUIRED COMPLETION TIME: None", rendered.PlainText);
-            Assert.Contains("SITE, LANDLORD OR BRAND REQUIREMENTS AFFECTING THE SERVICES: None",
-                rendered.PlainText);
-            Assert.DoesNotContain("COMPLETION_TIME", rendered.UnresolvedTokens);
+            Assert.DoesNotContain("Required completion time", rendered.PlainText);
+            Assert.DoesNotContain("REQUIRED COMPLETION TIME", rendered.PlainText);
+            Assert.DoesNotContain("SITE, LANDLORD OR BRAND REQUIREMENTS", rendered.PlainText);
+            Assert.DoesNotContain("FOOD-CONTACT OR DINING-TABLE SANITIZING", rendered.PlainText);
+            Assert.DoesNotContain("INITIAL-WORK CHANGE ORDER", rendered.PlainText);
+            Assert.Empty(rendered.UnresolvedTokens);
+
+            // Food-contact sanitizing is still excluded unless a task is named.
+            Assert.Contains("Food-contact cleaning and sanitizing are excluded except a task "
+                            + "expressly identified in A1 or in paragraph (a), including any dishwashing "
+                            + "listed there.", rendered.PlainText);
+        }
+
+        /// <summary>
+        /// HISTORICAL DOCUMENTS DO NOT MOVE. A body frozen before v2.7 uses the older tokens,
+        /// which keep printing a ruled blank, "None" and "Not applicable" exactly as the document
+        /// did when it was signed - the blank-means-omitted rule reaches only v2.7 bodies.
+        /// </summary>
+        [Fact]
+        public void AFrozenOlderBodyStillPrintsItsBlanksAndNones()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.SiteDetails.EmployeeRestroomCounts = null;
+            snapshot.Schedule.CompletionTime = null;
+            snapshot.Insurance = new InsuranceEndorsementsSnapshot();
+            snapshot.TemplateBodyText =
+                "EMPLOYEE RESTROOM AND FIXTURE COUNTS: {{EMPLOYEE_RESTROOM_COUNTS}}.\n"
+                + "REQUIRED COMPLETION TIME: {{COMPLETION_TIME}}.\n"
+                + "|Additional endorsements agreed for this engagement|{{AGREED_ENDORSEMENTS}}\n"
+                + "|Insurer, policy, endorsement form and edition, protected entity and applicable work|{{ENDORSEMENT_DETAILS}}\n";
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            Assert.Contains("EMPLOYEE RESTROOM AND FIXTURE COUNTS: " + ContractPlaceholders.RuledBlank, text);
+            Assert.Contains("REQUIRED COMPLETION TIME: None", text);
+            Assert.Contains("Additional endorsements agreed for this engagement: None", text);
+            Assert.Contains("applicable work: Not applicable", text);
         }
 
         // ── the two fully optional site details (2026-09-15) ───────────────────
@@ -406,19 +450,21 @@ namespace DreamCleaningBackend.Tests
                 rendered.PlainText);
         }
 
-        // ── the ten-month term (2026-09-15) ────────────────────────────────────
+        // ── the minimum commitment is contract-specific (template v2.7, 2026-09-30) ──
 
         /// <summary>
-        /// A CONTRACT DRAFTED ON THE DEFAULTS SAYS TEN MONTHS EVERYWHERE IT SAYS ANYTHING.
+        /// A CONTRACT DRAFTED ON THE DEFAULTS HAS NO MINIMUM COMMITMENT, and says nothing that
+        /// suggests one exists.
         ///
-        /// Section 3(a), Section 3(b) and Exhibit B1 all quote the term, and both end dates are
-        /// derived from the commencement date rather than typed — so one render is enough to
-        /// prove the five references agree. Rendering through the SEEDED body rather than
-        /// asserting on the snapshot is the point: a default nobody wired into the document would
-        /// pass a property test and fail here.
+        /// There is no company-wide commitment; one exists only where a client agreed one. So the
+        /// default render must contain no Minimum Commitment Period, no Minimum Commitment End
+        /// Date and no Initial Term - only the plain statement that none applies - and the notice
+        /// is thirty days everywhere it is quoted. Rendered through the SEEDED body rather than
+        /// asserted on the snapshot, because a default nobody wired into the document would pass a
+        /// property test and fail here.
         /// </summary>
         [Fact]
-        public void TheDefaultTermIsTenMonthsInEveryPlaceTheDocumentStatesIt()
+        public void TheDefaultContractHasNoMinimumCommitmentAnywhere()
         {
             var snapshot = OtherClientSnapshot();
             snapshot.Term = new TermSnapshot
@@ -427,30 +473,170 @@ namespace DreamCleaningBackend.Tests
             };
 
             var rendered = ContractRenderer.Render(snapshot);
+            var text = rendered.PlainText;
 
-            // 3(a) and Exhibit B1's Initial Term End Date row.
-            Assert.Contains("The Initial Term runs for ten (10) months from the Service "
-                            + "Commencement Date", rendered.PlainText);
-            Assert.Contains("through the day immediately preceding its ten (10)-month anniversary",
-                rendered.PlainText);
-            Assert.Contains("January 31, 2027", rendered.PlainText);
+            Assert.DoesNotContain("Minimum Commitment Period", text);
+            Assert.DoesNotContain("Minimum Commitment End Date", text);
+            Assert.DoesNotContain("Initial Term", text);
+            Assert.DoesNotContain("MINIMUM COMMITMENT PERIOD", text);
 
-            // 3(b) and Exhibit B1's Minimum Commitment End Date row.
-            Assert.Contains("ten (10) calendar months later", rendered.PlainText);
-            Assert.Contains("being ten (10) calendar months after the Service Commencement Date",
-                rendered.PlainText);
-            Assert.Contains("February 1, 2027", rendered.PlainText);
+            // It says so, in Section 3, Section 36 and Exhibit B1.
+            Assert.Contains("3. TERM AND RENEWAL", text);
+            Assert.Contains("(b) No minimum service commitment applies.", text);
+            Assert.Contains("(h) Minimum commitment. No minimum service commitment applies.", text);
+            Assert.Contains("It begins on the Service Commencement Date stated in Exhibit B and "
+                            + "continues on a month-to-month basis until terminated in accordance "
+                            + "with Section 4.", text);
+            Assert.Contains("Term and termination: Month-to-month from the Service Commencement Date. "
+                            + "No minimum service commitment applies.", text);
+            Assert.DoesNotContain("Initial Term End Date", text);
+            Assert.DoesNotContain("zero (0)", text);
 
-            // The sixty-day notice is unchanged, and so is the rule that it may be GIVEN during
-            // the commitment period while taking effect no earlier than its end.
-            Assert.Contains("sixty (60) calendar days' written notice", rendered.PlainText);
+            // Thirty days, in 3(d), 4(a), 36(i) and Exhibit B1 alike.
+            Assert.Contains("thirty (30) calendar days' written notice", text);
+            Assert.DoesNotContain("sixty (60) calendar days' written notice", text);
+
+            // Cause, nonpayment and safety rights are untouched.
+            Assert.Contains("Either Party may terminate this Agreement at any time if the other "
+                            + "Party materially breaches this Agreement", text);
+            Assert.Contains("Contractor may terminate for nonpayment of an undisputed amount", text);
+
+            // Nothing on a dropped line reaches the preview's warning banner.
+            Assert.DoesNotContain("MINIMUM_COMMITMENT_END_DATE", rendered.UnresolvedTokens);
+            Assert.DoesNotContain("INITIAL_TERM_END_DATE", rendered.UnresolvedTokens);
+            Assert.DoesNotContain(ContractPlaceholders.GuardMinimumCommitment, rendered.UnresolvedTokens);
+            Assert.DoesNotContain(ContractPlaceholders.GuardNoMinimumCommitment, rendered.UnresolvedTokens);
+        }
+
+        /// <summary>
+        /// A CUSTOM COMMITMENT READS EXACTLY AS AGREED, in every place the document states it.
+        /// Twelve months here - no preset, just the number the admin typed - with the Initial Term
+        /// raised to match by <c>ContractService.NormalizeTerm</c>.
+        /// </summary>
+        [Theory]
+        [InlineData(3, "three (3)", "July 1, 2026")]
+        [InlineData(6, "six (6)", "October 1, 2026")]
+        [InlineData(12, "twelve (12)", "April 1, 2027")]
+        public void ACustomCommitmentIsStatedAsAgreed(int months, string words, string endDate)
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Term = ContractService.NormalizeTerm(new TermSnapshot
+            {
+                MinimumCommitmentMonths = months,
+                ServiceCommencementDate = new DateTime(2026, 4, 1)
+            });
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            Assert.Contains("3. TERM, MINIMUM COMMITMENT PERIOD AND RENEWAL", text);
+            Assert.Contains($"{words} calendar months later", text);
+            Assert.Contains($"being {words} calendar months after the Service Commencement Date", text);
+            Assert.Contains(endDate, text);
+            Assert.Contains($"The Initial Term runs for {words} months from the Service "
+                            + "Commencement Date", text);
             Assert.Contains("Notice may be delivered during the Minimum Commitment Period, but "
                             + "termination for convenience shall not take effect before the "
-                            + "Minimum Commitment End Date", rendered.PlainText);
+                            + "Minimum Commitment End Date", text);
 
-            // And it continues month-to-month afterwards rather than renewing for a second term.
-            Assert.Contains("continues automatically on a month-to-month basis on the same terms "
-                            + "and does not renew for a further fixed term", rendered.PlainText);
+            // Thirty days' notice still applies, and the no-commitment wording is gone.
+            Assert.Contains("thirty (30) calendar days' written notice", text);
+            Assert.DoesNotContain("No minimum commitment period applies", text);
+            Assert.DoesNotContain("no fixed initial term", text);
+        }
+
+        /// <summary>
+        /// The Initial Term can never end before the earliest date the client may leave, and
+        /// without a commitment there is no fixed Initial Term at all.
+        /// </summary>
+        [Fact]
+        public void NormalizeTermKeepsTheInitialTermConsistentWithTheCommitment()
+        {
+            var raised = ContractService.NormalizeTerm(new TermSnapshot
+            {
+                MinimumCommitmentMonths = 6, InitialTermMonths = 2
+            });
+            Assert.Equal(6, raised.InitialTermMonths);
+
+            var longer = ContractService.NormalizeTerm(new TermSnapshot
+            {
+                MinimumCommitmentMonths = 6, InitialTermMonths = 12
+            });
+            Assert.Equal(12, longer.InitialTermMonths);
+
+            var none = ContractService.NormalizeTerm(new TermSnapshot
+            {
+                MinimumCommitmentMonths = 0, InitialTermMonths = 10
+            });
+            Assert.Equal(0, none.InitialTermMonths);
+            Assert.False(none.HasMinimumCommitment);
+
+            var negative = ContractService.NormalizeTerm(new TermSnapshot { MinimumCommitmentMonths = -4 });
+            Assert.Equal(0, negative.MinimumCommitmentMonths);
+        }
+
+        /// <summary>
+        /// AN EXECUTED CONTRACT IS NEVER REWRITTEN. A version frozen against the v2.6 body with the
+        /// old ten-month / sixty-day terms renders them exactly as signed: its snapshot carries
+        /// both the body and the numbers, and nothing in v2.7 reaches either.
+        /// </summary>
+        [Fact]
+        public void AFrozenTenMonthSixtyDayContractStillReadsAsSigned()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.TemplateBodyText =
+                "## 3. TERM, MINIMUM COMMITMENT PERIOD AND RENEWAL\n"
+                + "(a) The Initial Term runs for {{INITIAL_TERM_MONTHS}} months from the Service Commencement Date.\n"
+                + "(b) The Minimum Commitment Period ends {{MINIMUM_COMMITMENT_MONTHS}} calendar months later.\n"
+                + "## 4. TERMINATION\n"
+                + "(a) Either Party may terminate for convenience on at least {{TERMINATION_NOTICE_DAYS}} calendar days' written notice.\n";
+            snapshot.Term = new TermSnapshot
+            {
+                InitialTermMonths = 10,
+                MinimumCommitmentMonths = 10,
+                TerminationNoticeDays = 60,
+                ServiceCommencementDate = new DateTime(2026, 4, 1)
+            };
+
+            var rendered = ContractRenderer.Render(snapshot);
+
+            Assert.Contains("The Initial Term runs for ten (10) months", rendered.PlainText);
+            Assert.Contains("ends ten (10) calendar months later", rendered.PlainText);
+            Assert.Contains("sixty (60) calendar days' written notice", rendered.PlainText);
+            Assert.Empty(rendered.UnresolvedTokens);
+        }
+
+        /// <summary>
+        /// A STORED SNAPSHOT WRITTEN BEFORE v2.7 IS READ BACK UNCHANGED. Its JSON has no supplies
+        /// block and no latent-deficiency limit; the new defaults must not leak into the term it
+        /// recorded, and a parse-and-reserialise round trip (what generating a revision does) must
+        /// keep the ten-month commitment and sixty-day notice it was signed with.
+        /// </summary>
+        [Fact]
+        public void ALegacySnapshotKeepsItsTermsThroughParseAndClone()
+        {
+            const string legacyJson =
+                "{\"contractNumber\":\"DC-2026-0001\",\"versionNumber\":1,"
+                + "\"templateBodyText\":\"(b) The Minimum Commitment Period ends {{MINIMUM_COMMITMENT_MONTHS}} "
+                + "calendar months later, on {{TERMINATION_NOTICE_DAYS}} calendar days' notice.\","
+                + "\"term\":{\"initialTermMonths\":10,\"minimumCommitmentMonths\":10,"
+                + "\"terminationNoticeDays\":60,\"renewalType\":\"month-to-month\"},"
+                + "\"advanced\":{\"qualityComplaintHours\":48}}";
+
+            var parsed = ContractSnapshot.Parse(legacyJson);
+            var cloned = parsed.Clone();
+
+            foreach (var snapshot in new[] { parsed, cloned })
+            {
+                Assert.Equal(10, snapshot.Term.MinimumCommitmentMonths);
+                Assert.Equal(10, snapshot.Term.InitialTermMonths);
+                Assert.Equal(60, snapshot.Term.TerminationNoticeDays);
+                Assert.True(snapshot.Term.HasMinimumCommitment);
+                Assert.Equal(48, snapshot.Advanced.QualityComplaintHours);
+
+                var text = ContractRenderer.Render(snapshot).PlainText;
+                Assert.Contains("ends ten (10) calendar months later, on sixty (60) calendar days' notice",
+                    text);
+            }
         }
 
         /// <summary>
@@ -1138,36 +1324,404 @@ namespace DreamCleaningBackend.Tests
         }
 
         /// <summary>
-        /// HAND SOAP IS OUT OF THE AGREEMENT ENTIRELY (owner's rule).
+        /// HAND SOAP IS NOT DISCUSSED AT ALL (owner's rule, template v2.7).
         ///
-        /// Contractor does not supply, replenish, repair or replace soap or its dispensers, ever.
-        /// The drafted agreement had it in five places - Section 6(c), the Exhibit A restroom
-        /// task row, two recorded site details, A5, A8(a) and an Exhibit B row - and a promise
-        /// left in any one of them is a promise in an executed contract. A8(a) states the
-        /// exclusion outright rather than staying silent, so a client reads it before signing
-        /// instead of discovering it at an empty dispenser.
+        /// Versions 2.0-2.6 stated an express exclusion in A8(a). The owner does not want the
+        /// subject raised in either direction - no promise to supply it and no disclaimer about
+        /// not supplying it - so a newly generated agreement contains the word nowhere, whatever
+        /// business type or supplies arrangement it is drafted with.
         /// </summary>
-        [Fact]
-        public void TheAgreementPromisesNothingAboutHandSoap()
+        [Theory]
+        [InlineData("Restaurant", SupplyProvider.Contractor)]
+        [InlineData("Office", SupplyProvider.Client)]
+        [InlineData("Restaurant", SupplyProvider.Shared)]
+        public void TheAgreementNeverMentionsHandSoap(string businessType, SupplyProvider equipment)
         {
             var snapshot = OtherClientSnapshot();
-            snapshot.Scope = ScopeStructureFor("Restaurant");
+            snapshot.Scope = ScopeStructureFor(businessType);
+            snapshot.Supplies.EquipmentProvidedBy = equipment;
+            snapshot.Supplies.EquipmentArrangementNotes = "Contractor provides vacuums and tools; Client provides chemicals";
             var rendered = ContractRenderer.Render(snapshot);
 
-            // No obligation to put soap anywhere, in any of the places the drafted agreement had one.
             Assert.DoesNotContain("refill", rendered.PlainText, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("replenish", rendered.PlainText, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("Contractor supplies hand soap", rendered.PlainText);
-            Assert.DoesNotContain("compatible hand soap", rendered.PlainText);
-            Assert.DoesNotContain("SOAP DISPENSER LOCATIONS", rendered.PlainText);
-            Assert.DoesNotContain("COMPATIBLE SOAP PRODUCT", rendered.PlainText);
+            Assert.Equal(0, Regex.Matches(rendered.PlainText, "soap", RegexOptions.IgnoreCase).Count);
+            Assert.Equal(0, Regex.Matches(ContractTemplateSeed.BodyText, "soap", RegexOptions.IgnoreCase).Count);
+        }
 
-            // The ONLY surviving mention is the express exclusion, which is deliberate: silence
-            // would leave a client discovering it at an empty dispenser.
-            Assert.Contains("Hand soap and its dispensers are not included", rendered.PlainText);
+        // ── supplies, equipment and consumables (template v2.7) ─────────────────
 
-            var mentions = Regex.Matches(rendered.PlainText, "soap", RegexOptions.IgnoreCase).Count;
-            Assert.True(mentions == 1, $"Expected exactly one mention of soap, found {mentions}.");
+        /// <summary>
+        /// CLEANING SUPPLIES CAN BE COMPANY-PROVIDED: the recurring fee includes them, supplied at
+        /// Contractor's expense with no separate charge - the arrangement v2.6 hardcoded for all.
+        /// </summary>
+        [Fact]
+        public void SuppliesCanBeProvidedByTheContractor()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Supplies.EquipmentProvidedBy = SupplyProvider.Contractor;
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            Assert.Contains("The recurring fee includes all labor, supervision, cleaning equipment, "
+                            + "tools, chemicals, products and ordinary cleaning supplies", text);
+            Assert.Contains("No separate equipment or cleaning-product charge applies.", text);
+            Assert.Contains("Cleaning equipment, tools, chemicals, products and ordinary cleaning "
+                            + "supplies: Contractor", text);
+        }
+
+        /// <summary>
+        /// CLEANING SUPPLIES CAN BE CLIENT-PROVIDED: the fee then buys labor and supervision, the
+        /// Client supplies the products, and Contractor may decline an unsafe or unsuitable one.
+        /// The document must not still claim Contractor supplies them at its own expense.
+        /// </summary>
+        [Fact]
+        public void SuppliesCanBeProvidedByTheClient()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Supplies.EquipmentProvidedBy = SupplyProvider.Client;
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            Assert.Contains("The recurring fee includes all labor and supervision. Client supplies, "
+                            + "at its own cost, the cleaning equipment", text);
+            Assert.Contains("may decline to use a product or item of equipment it reasonably "
+                            + "considers unsafe or unsuitable", text);
+            Assert.DoesNotContain("Contractor supplies them at its own expense", text);
+            Assert.DoesNotContain("All-inclusive", text, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Cleaning equipment, tools, chemicals, products and ordinary cleaning "
+                            + "supplies: Client", text);
+        }
+
+        /// <summary>A shared arrangement must say how it is shared, or it is flagged.</summary>
+        [Fact]
+        public void ASharedSuppliesArrangementPrintsItsDescriptionOrIsFlagged()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Supplies.EquipmentProvidedBy = SupplyProvider.Shared;
+            snapshot.Supplies.EquipmentArrangementNotes = "Contractor provides vacuums; Client provides chemicals";
+
+            var described = ContractRenderer.Render(snapshot);
+            Assert.Contains("Divided between the Parties: Contractor provides vacuums; Client "
+                            + "provides chemicals", described.PlainText);
+            Assert.DoesNotContain("EQUIPMENT_PROVIDED_BY", described.UnresolvedTokens);
+
+            snapshot.Supplies.EquipmentArrangementNotes = null;
+            Assert.Contains("EQUIPMENT_PROVIDED_BY", ContractRenderer.Render(snapshot).UnresolvedTokens);
+        }
+
+        /// <summary>
+        /// CONSUMABLES CAN BE SPLIT ITEM BY ITEM - here Contractor provides the trash liners and
+        /// Client the paper towels and toilet tissue - and Section 6(c) no longer assigns them all
+        /// to Client in fixed prose.
+        /// </summary>
+        [Fact]
+        public void ConsumablesCanBeAllocatedToEitherPartyItemByItem()
+        {
+            var text = ContractRenderer.Render(OtherClientSnapshot()).PlainText;
+
+            Assert.Contains("Trash bags and liners: Contractor", text);
+            Assert.Contains("Paper towels: Client", text);
+            Assert.Contains("Toilet tissue: Client", text);
+            Assert.Contains("Other agreed consumables: Client: coffee filters", text);
+            Assert.DoesNotContain("Client supplies, at its own cost, toilet tissue, paper towels", text);
+            Assert.Contains("are allocated between the Parties in Exhibit B, B3", text);
+        }
+
+        /// <summary>
+        /// Nothing is assumed: an allocation nobody answered prints a ruled blank and lands in the
+        /// preview's warning banner, rather than defaulting to the Client as v2.6 did.
+        /// </summary>
+        [Fact]
+        public void AnUnansweredAllocationIsFlaggedRatherThanAssumed()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Supplies = new SuppliesSnapshot();
+
+            var rendered = ContractRenderer.Render(snapshot);
+
+            Assert.Contains("EQUIPMENT_PROVIDED_BY", rendered.UnresolvedTokens);
+            Assert.Contains("TRASH_LINERS_PROVIDED_BY", rendered.UnresolvedTokens);
+            Assert.Contains("PAPER_TOWELS_PROVIDED_BY", rendered.UnresolvedTokens);
+            Assert.Contains("TOILET_TISSUE_PROVIDED_BY", rendered.UnresolvedTokens);
+            // No further consumables were agreed, so that row leaves the exhibit entirely.
+            Assert.DoesNotContain("Other agreed consumables", rendered.PlainText);
+            Assert.DoesNotContain("OTHER_CONSUMABLES", rendered.UnresolvedTokens);
+        }
+
+        /// <summary>A single consumable is provided by one Party; "Shared" is refused on save.</summary>
+        [Fact]
+        public void NormalizeSuppliesRefusesASharedConsumableAndDropsNamelessRows()
+        {
+            var result = ContractService.NormalizeSupplies(new SuppliesSnapshot
+            {
+                EquipmentProvidedBy = SupplyProvider.Shared,
+                EquipmentArrangementNotes = "  split  ",
+                PaperTowelsProvidedBy = SupplyProvider.Shared,
+                OtherConsumables = new List<ConsumableAllocation>
+                {
+                    new() { Item = "  ", ProvidedBy = SupplyProvider.Client },
+                    new() { Item = " seat covers ", ProvidedBy = SupplyProvider.Contractor }
+                }
+            });
+
+            Assert.Equal(SupplyProvider.Shared, result.EquipmentProvidedBy);
+            Assert.Equal("split", result.EquipmentArrangementNotes);
+            Assert.Null(result.PaperTowelsProvidedBy);
+            Assert.Single(result.OtherConsumables);
+            Assert.Equal("seat covers", result.OtherConsumables[0].Item);
+        }
+
+        // ── the Satisfaction Guarantee (template v2.7) ──────────────────────────
+
+        /// <summary>
+        /// 24 HOURS, WITH A NARROW 72-HOUR EXCEPTION, AND CORRECTION RATHER THAN A REFUND.
+        /// The same rule the published policy and the landing page state.
+        /// </summary>
+        [Fact]
+        public void TheGuaranteeIsTwentyFourHoursWithANarrowSeventyTwoHourException()
+        {
+            var text = ContractRenderer.Render(OtherClientSnapshot()).PlainText;
+
+            Assert.Contains("within twenty-four (24) hours after completion of the visit", text);
+            Assert.Contains("in any event no later than seventy-two (72) hours after completion of "
+                            + "the visit; this is a limited exception for deficiencies not "
+                            + "reasonably discoverable sooner", text);
+            Assert.Contains("reasonable opportunity to correct the affected task or area without "
+                            + "additional charge", text);
+            Assert.Contains("does not include re-cleaning of the entire Premises", text);
+            Assert.Contains("does not by itself entitle Client to a refund of the full visit fee", text);
+            Assert.Contains("conditions caused after Contractor completed the visit, including by "
+                            + "Client's employees, other contractors, construction crews, building "
+                            + "staff, vendors or occupants", text);
+            Assert.DoesNotContain("forty-eight (48) hours after the visit", text);
+        }
+
+        // ── Scope of Work detail and optional exhibits (template v2.7) ──────────
+
+        private static readonly string[] SiteDetailLabels =
+        {
+            "APPROXIMATE SERVICED SQUARE FOOTAGE", "CUSTOMER RESTROOM AND FIXTURE COUNTS",
+            "EMPLOYEE RESTROOM AND FIXTURE COUNTS", "FLOOR AND SURFACE MATERIALS",
+            "INCLUDED KITCHEN EQUIPMENT AND EXTERIOR SURFACES", "TOUCHPOINTS AND CLEARED SURFACES",
+            "INTERIOR GLASS AND WINDOW LOCATIONS", "INCLUDED FOOD-CONTACT OR DINING-TABLE SANITIZING",
+            "ACCESS METHOD AND CLOSEOUT PROCEDURE REFERENCE", "EQUIPMENT THAT MUST REMAIN OPERATING",
+            "WASTE, RECYCLING AND SEPARATELY COLLECTED ORGANICS", "FOOD-SERVICE PERMIT HOLDER",
+            "SITE, LANDLORD OR BRAND REQUIREMENTS", "BASELINE WALKTHROUGH DATE AND RECORD",
+            "INITIAL-WORK CHANGE ORDER"
+        };
+
+        /// <summary>Detailed mode, every site detail filled: every one of them prints.</summary>
+        [Fact]
+        public void DetailedScopeWithEverySiteDetailPrintsThemAll()
+        {
+            var text = ContractRenderer.Render(OtherClientSnapshot()).PlainText;
+
+            foreach (var label in SiteDetailLabels) Assert.Contains(label, text);
+            Assert.Contains("The Parties shall record the following site details", text);
+            Assert.Contains("A1. INCLUDED AREAS AND TASKS", text);
+        }
+
+        /// <summary>Detailed mode, two of fifteen filled: exactly those two print.</summary>
+        [Fact]
+        public void DetailedScopeWithTwoSiteDetailsPrintsOnlyThoseTwo()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.SiteDetails = new SiteDetailsSnapshot
+            {
+                ApproximateSquareFootage = "3,200 square feet",
+                WasteReceptacleLocations = "loading dock, bay 2"
+            };
+
+            var rendered = ContractRenderer.Render(snapshot);
+            var text = rendered.PlainText;
+
+            Assert.Contains("APPROXIMATE SERVICED SQUARE FOOTAGE: 3,200 square feet", text);
+            Assert.Contains("ORGANICS RECEPTACLE LOCATIONS: loading dock, bay 2", text);
+            var printed = SiteDetailLabels.Count(label => text.Contains(label, StringComparison.Ordinal));
+            Assert.Equal(2, printed);
+            Assert.DoesNotContain(ContractPlaceholders.RuledBlank, text);
+            Assert.Empty(rendered.UnresolvedTokens);
+        }
+
+        /// <summary>With no site details at all, the list and its introduction both disappear.</summary>
+        [Fact]
+        public void DetailedScopeWithNoSiteDetailsDropsTheListAndItsIntroduction()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.SiteDetails = new SiteDetailsSnapshot();
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            foreach (var label in SiteDetailLabels) Assert.DoesNotContain(label, text);
+            Assert.DoesNotContain("The Parties shall record the following site details", text);
+            // The detailed scope itself is still there.
+            Assert.Contains("A1. INCLUDED AREAS AND TASKS", text);
+            Assert.Contains("A8. BASELINE AND DEEP CLEANING", text);
+        }
+
+        /// <summary>
+        /// Simplified mode: a one-paragraph Exhibit A, none of the detailed content, and every
+        /// reference in the body pointing at the Scope of Work that paragraph records.
+        /// </summary>
+        [Fact]
+        public void SimplifiedScopeRendersOnlyTheShortClause()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.ScopeDetail = ScopeDetailMode.Simplified;
+
+            var rendered = ContractRenderer.Render(snapshot);
+            var text = rendered.PlainText;
+
+            Assert.Contains("The Parties have agreed the service scope separately through their "
+                            + "service discussions, walkthrough, written instructions, service "
+                            + "specifications, or other mutually accepted directions.", text);
+            Assert.Contains("Contractor will perform the mutually agreed commercial cleaning services "
+                            + "at the Premises according to the agreed schedule.", text);
+            Assert.Contains("Material additional work or services outside the agreed scope require "
+                            + "separate approval in accordance with Section 9.", text);
+            Assert.DoesNotContain("A1. INCLUDED AREAS AND TASKS", text);
+            Assert.DoesNotContain("A2. EXCLUDED AREAS", text);
+            Assert.DoesNotContain("SERVICE PREMISES:", text);
+            foreach (var label in SiteDetailLabels) Assert.DoesNotContain(label, text);
+
+            Assert.Contains("The Scope of Work is recorded in Exhibit A.", text);
+            Assert.Contains("work outside the Scope of Work recorded in Exhibit A", text);
+            Assert.Empty(rendered.UnresolvedTokens);
+        }
+
+        /// <summary>
+        /// Omitted mode: NO Exhibit A, and not one reference to it left behind - every clause that
+        /// used to point at it now points at the agreed Scope of Work, and the signature block
+        /// executes Exhibit B alone. The scope protection survives: unagreed work is still outside
+        /// the agreement and still needs approval.
+        /// </summary>
+        [Fact]
+        public void OmittedScopeHasNoExhibitAAndNoReferenceToIt()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.ScopeDetail = ScopeDetailMode.Omitted;
+
+            var rendered = ContractRenderer.Render(snapshot);
+            var text = rendered.PlainText;
+
+            Assert.DoesNotContain("Exhibit A", text);
+            Assert.DoesNotContain("EXHIBIT A", text);
+            Assert.DoesNotContain("Exhibits A and B", text);
+            Assert.DoesNotContain(" A1", text);
+            Assert.DoesNotContain(rendered.Blocks,
+                b => b.Kind == ContractBlockKind.Heading && b.Text == "EXHIBIT A");
+
+            Assert.Contains("(a) Contractor shall provide the commercial cleaning services mutually "
+                            + "agreed by the Parties (the \"Services\" or the \"Scope of Work\") at the "
+                            + "premises described in paragraph (b) (the \"Premises\").", text);
+            Assert.Contains("(c) Exhibit B is incorporated into and forms part of this Agreement.", text);
+            Assert.Contains("including Sections 1 through 36, Exhibit B, and the representations", text);
+            Assert.Contains("Services not expressly described in the agreed Scope of Work are not "
+                            + "included. Materially additional services, and work outside the Scope of "
+                            + "Work, require separate approval, and a material change to the Scope of "
+                            + "Work requires a Change Order or written confirmation under Section 9.", text);
+            Assert.Contains("obligates Contractor to perform work outside the agreed Scope of Work", text);
+
+            // The supplies allocation lives in Exhibit B, so it survives the omission.
+            Assert.Contains("B3. SUPPLIES, EQUIPMENT AND CONSUMABLES", text);
+            Assert.Empty(rendered.UnresolvedTokens);
+        }
+
+        /// <summary>No endorsement beyond Section 20 → no B5 at all; the Section 20 baseline stays.</summary>
+        [Fact]
+        public void AnEmptyEndorsementsExhibitDisappears()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Insurance = new InsuranceEndorsementsSnapshot();
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            Assert.DoesNotContain("ADDITIONAL INSURANCE ENDORSEMENTS", text);
+            Assert.DoesNotContain("Additional endorsements agreed", text);
+            // The legacy blank rendering of the insurer row was "Not applicable".
+            Assert.DoesNotContain("applicable work: Not applicable", text);
+            Assert.DoesNotContain("Insurer, policy, endorsement form", text);
+            Assert.Contains("20. INSURANCE", text);
+            Assert.Contains("Commercial General Liability insurance", text);
+        }
+
+        /// <summary>A partly filled B5 prints only the filled rows.</summary>
+        [Fact]
+        public void APartialEndorsementsExhibitPrintsOnlyItsFilledRows()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Insurance = new InsuranceEndorsementsSnapshot { AgreedEndorsements = "Additional insured" };
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            Assert.Contains("B5. ADDITIONAL INSURANCE ENDORSEMENTS", text);
+            Assert.Contains("Additional endorsements agreed for this engagement: Additional insured", text);
+            Assert.DoesNotContain("Insurer, policy, endorsement form", text);
+            Assert.DoesNotContain("Agreed additional premium", text);
+        }
+
+        /// <summary>
+        /// Empty optional contact rows leave Exhibit B4. The primaries stay: Section 14 permits a
+        /// failed-access charge only after an attempt to reach the on-call contact, so a missing
+        /// one is still flagged rather than silently dropped.
+        /// </summary>
+        [Fact]
+        public void EmptyOptionalContactRowsDisappearFromExhibitB4()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Contacts.ContractorApprovalEmail = null;
+            snapshot.Contacts.ClientApprovalEmail = "";
+            snapshot.Contacts.ContractorBackupContact = null;
+            snapshot.Contacts.ClientBackupContact = null;
+
+            var rendered = ContractRenderer.Render(snapshot);
+            var text = rendered.PlainText;
+
+            Assert.DoesNotContain("Contractor approval email", text);
+            Assert.DoesNotContain("Client approval email", text);
+            Assert.DoesNotContain("backup on-call contact:", text);
+            Assert.Contains("Client primary on-call contact: Dana Okafor", text);
+            Assert.Contains("Client operational email: facilities@northline.example", text);
+            Assert.Empty(rendered.UnresolvedTokens);
+        }
+
+        /// <summary>
+        /// Nothing optional is padded with "None" or "Not applicable": a contract with every
+        /// optional field empty contains neither word.
+        /// </summary>
+        [Fact]
+        public void EmptyOptionalFieldsNeverPrintNoneOrNotApplicable()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.SiteDetails = new SiteDetailsSnapshot();
+            snapshot.Insurance = new InsuranceEndorsementsSnapshot();
+            snapshot.Schedule.CompletionTime = null;
+            snapshot.Contacts.ContractorApprovalEmail = null;
+            snapshot.Contacts.ClientApprovalEmail = null;
+            snapshot.Contacts.ContractorBackupContact = null;
+            snapshot.Contacts.ClientBackupContact = null;
+            snapshot.Supplies.OtherConsumables.Clear();
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            Assert.DoesNotMatch(new Regex(@"\bNone\b"), text);
+            Assert.DoesNotContain("Not applicable", text);
+            Assert.DoesNotContain(ContractPlaceholders.RuledBlank, text);
+            Assert.DoesNotContain(ContractPlaceholders.OmitLineSentinel, text);
+        }
+
+        /// <summary>The outer limit can never close before the standard window it extends.</summary>
+        [Fact]
+        public void TheLatentLimitIsNeverShorterThanTheStandardWindow()
+        {
+            var snapshot = OtherClientSnapshot();
+            snapshot.Advanced.QualityComplaintHours = 96;
+            snapshot.Advanced.QualityLatentDeficiencyLimitHours = 72;
+
+            var text = ContractRenderer.Render(snapshot).PlainText;
+
+            Assert.Contains("no later than ninety-six (96) hours after completion", text);
         }
 
         // ── structure ──────────────────────────────────────────────────────────
@@ -1179,15 +1733,17 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains("EXHIBIT A", rendered.PlainText);
             Assert.Contains("SCOPE OF WORK", rendered.PlainText);
             Assert.Contains("EXHIBIT B", rendered.PlainText);
-            Assert.Contains("PRICING, BILLING AND CONTACT DETAILS", rendered.PlainText);
+            Assert.Contains("SCHEDULE, PRICING, SUPPLIES AND CONTACTS", rendered.PlainText);
             // Exhibit B is a two-column schedule, so it must produce table rows, not paragraphs.
             Assert.Contains(rendered.Blocks, b => b.Kind == ContractBlockKind.ExhibitRow);
 
             // All four of Exhibit B's sub-sections, including the two the drafted agreement added.
             Assert.Contains("B1. SERVICE DATES AND SCHEDULE", rendered.PlainText);
             Assert.Contains("B2. PRICING AND PAYMENT", rendered.PlainText);
-            Assert.Contains("B3. INSURANCE", rendered.PlainText);
+            Assert.Contains("B3. SUPPLIES, EQUIPMENT AND CONSUMABLES", rendered.PlainText);
             Assert.Contains("B4. AUTHORIZED REPRESENTATIVES AND CONTACTS", rendered.PlainText);
+            // B5 prints because this fixture agreed endorsements beyond Section 20.
+            Assert.Contains("B5. ADDITIONAL INSURANCE ENDORSEMENTS", rendered.PlainText);
         }
 
         /// <summary>
@@ -1445,8 +2001,11 @@ namespace DreamCleaningBackend.Tests
             foreach (var item in snapshot.Scope.Groups.First(g => g.Key == "excluded-areas").Items)
                 item.Selected = false;
 
+            // Since v3.1 an emptied group takes its whole subsection with it - no "none", and no
+            // broken "The following are excluded: ." either.
             var rendered = ContractRenderer.Render(snapshot);
-            Assert.Contains("The following are excluded: none.", rendered.PlainText);
+            Assert.DoesNotContain("EXCLUDED AREAS", rendered.PlainText);
+            Assert.DoesNotContain("excluded: .", rendered.PlainText);
         }
 
         [Fact]
@@ -1459,8 +2018,13 @@ namespace DreamCleaningBackend.Tests
             var extra = snapshot.Scope.Groups.First(g => g.Key == "additional-tasks");
             extra.Items.Add(new ScopeItem { Label = "Whiteboard cleaning", Selected = true, IsCustom = true });
 
+            // Numbered after the last subsection that actually rendered (v3.1), never a fixed A10.
             var rendered = ContractRenderer.Render(snapshot);
-            Assert.Contains("A10. ADDITIONAL SCOPE", rendered.PlainText);
+            var additional = rendered.Blocks.Single(b => b.Kind == ContractBlockKind.SubHeading
+                && b.Text.EndsWith(". ADDITIONAL SCOPE"));
+            var numbered = rendered.Blocks.Count(b => b.Kind == ContractBlockKind.SubHeading
+                && System.Text.RegularExpressions.Regex.IsMatch(b.Text, @"^A\d+\. "));
+            Assert.Equal($"A{numbered}. ADDITIONAL SCOPE", additional.Text);
             Assert.Contains("Whiteboard cleaning", rendered.PlainText);
         }
 

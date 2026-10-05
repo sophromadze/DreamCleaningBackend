@@ -61,6 +61,12 @@ namespace DreamCleaningBackend.Models
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
 
+        // Custom ("Pre-Arranged") orders only: whether the bedroom / bathroom counts the admin
+        // entered are shown to the CUSTOMER on their order details. The counts are informational
+        // on a custom order (the price is the admin-typed total), so sharing them is the admin's
+        // call — ticked on the booking form. False (hidden) for every existing order.
+        public bool ShowRoomCountsToCustomer { get; set; }
+
         // Apartment/condo vs house/townhouse. Nullable because every order created before this
         // feature has no value and must keep rendering without an empty field; legacy orders are
         // deliberately NOT backfilled. Written only through PropertyDetailsHelper.Apply.
@@ -112,6 +118,26 @@ namespace DreamCleaningBackend.Models
 
         [Column(TypeName = "decimal(5,2)")]
         public decimal LoyaltyDiscountPercentage { get; set; } = 0;
+
+        // The RULE each discount was booked with (2026-10), so an order edit can re-apply it
+        // exactly like booking does instead of scaling the stored dollar figure by the subtotal
+        // ratio (which drifted a cent and turned "$20 off" into a proportional discount).
+        //   DiscountPercent      - promo / special offer is a percentage: round2(subTotal x % / 100)
+        //   DiscountFixedAmount  - promo / special offer is a fixed amount: its face value, capped
+        //                          so the discounted subtotal never goes below zero
+        //   SubscriptionDiscountPercent - the plan's percentage at booking
+        // Null = no rule known (an order booked before this existed and not backfilled, or a
+        // discount a SuperAdmin typed by hand); edits then keep the old proportional re-scale.
+        // Written ONLY by BookingCreationService and cleared by a manual SuperAdmin override.
+        // Read through OrderPricingCalculator.ResolveEditedDiscounts.
+        [Column(TypeName = "decimal(5,2)")]
+        public decimal? DiscountPercent { get; set; }
+
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal? DiscountFixedAmount { get; set; }
+
+        [Column(TypeName = "decimal(5,2)")]
+        public decimal? SubscriptionDiscountPercent { get; set; }
 
         [StringLength(50)]
         public string? PromoCode { get; set; }
@@ -350,6 +376,20 @@ namespace DreamCleaningBackend.Models
 
         [ForeignKey("ContractClientId")]
         public virtual Contracts.ContractClient? ContractClient { get; set; }
+
+        /// <summary>
+        /// The commercial contract this cleaning is performed under (2026-10). Stamped by a
+        /// recurring plan linked to a contract; null on every earlier order and on ordinary
+        /// bookings. The service location is the contract's own.
+        ///
+        /// An OPERATIONAL link, never a price: under a weekly flat fee the customer charge is the
+        /// contract's weekly fee on the invoice, worked out per service week from the cleanings
+        /// selected — see <c>InvoiceOrderLinkService</c>.
+        /// </summary>
+        public int? ContractId { get; set; }
+
+        [ForeignKey("ContractId")]
+        public virtual Contracts.Contract? Contract { get; set; }
 
         /// <summary>
         /// When a fully-paid commercial invoice settled this order. Null while the invoice is

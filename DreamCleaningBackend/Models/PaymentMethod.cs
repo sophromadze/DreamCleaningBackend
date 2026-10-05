@@ -22,7 +22,15 @@ namespace DreamCleaningBackend.Models
         /// <see cref="PaymentMethodRules"/> instead, or an unpaid invoice order would be counted
         /// as revenue the day it was created.
         /// </summary>
-        Invoice = 5
+        Invoice = 5,
+
+        /// <summary>
+        /// A bank-to-bank transfer the admin read off the statement (2026-09). A SETTLED manual
+        /// method exactly like Cash / Zelle / Check / Other — recording it means the money has
+        /// already arrived — so every rule that asks <see cref="PaymentMethodRules"/> treats it
+        /// the same way with no further change. Appended, never inserted: the column is an int.
+        /// </summary>
+        BankTransfer = 6
     }
 
     /// <summary>

@@ -231,12 +231,8 @@ namespace DreamCleaningBackend.Services
                 return;
             }
 
-            var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
-                .Select(x => x.ExtraService?.Name ?? "")
-                .Where(n => !string.IsNullOrWhiteSpace(n))
-                .ToList();
             var isCustom = order.ServiceType?.IsCustom ?? false;
-            var supplyChecklist = CustomerSupplyChecklist.Resolve(extraNames, isCustom);
+            var supplyChecklist = CustomerSupplyChecklist.Resolve(CustomerSupplyChecklist.ExtrasOf(order), isCustom);
             var customerName = Capitalize(order.ContactFirstName);
             var serviceTime = order.ServiceTime.ToString();
             var address = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";

@@ -1,5 +1,6 @@
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using SixLabors.ImageSharp;
@@ -71,7 +72,9 @@ namespace DreamCleaningBackend.Services
             var uploadDir = Path.Combine(basePath, Subfolder);
             Directory.CreateDirectory(uploadDir);
 
-            var fileName = $"user-{userId}-{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}.webp";
+            // Random name only (2026-10): the user id and timestamp made the name partly
+            // predictable. Files saved before keep their old names.
+            var fileName = PrivateFileUrls.NewFileName(".webp");
             var fullPath = Path.Combine(uploadDir, fileName);
 
             using (var image = await Image.LoadAsync(imageStream))

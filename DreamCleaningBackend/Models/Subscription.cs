@@ -15,7 +15,10 @@ namespace DreamCleaningBackend.Models
         [Column(TypeName = "decimal(5,2)")]
         public decimal DiscountPercentage { get; set; } = 0;
         // Subscription period in days (0 for one-time)
-        public int SubscriptionDays { get; set; } 
+        public int SubscriptionDays { get; set; }
+        // Shows the "Most popular" badge on the booking page. At most one plan holds it - the
+        // admin endpoints clear it on the others whenever one is set.
+        public bool IsMostPopular { get; set; }
         public bool IsActive { get; set; } = true;
         public int DisplayOrder { get; set; }
         // Navigation properties

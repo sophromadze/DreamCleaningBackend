@@ -103,6 +103,10 @@ namespace DreamCleaningBackend.DTOs
         public int? BedroomsQuantity { get; set; }
         public int? BathroomsQuantity { get; set; }
 
+        /// <summary>Custom pricing only: show the bedroom/bathroom counts to the customer on their
+        /// order details. Ignored for every other service type.</summary>
+        public bool ShowRoomCountsToCustomer { get; set; }
+
         /// <summary>"Apartment" or "House"; null for legacy orders and for service types that
         /// have no levels service. Normalized server-side by PropertyDetailsHelper - an unknown
         /// string is stored as null rather than trusted, so the column can only ever hold one of

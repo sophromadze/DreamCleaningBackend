@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
@@ -580,7 +581,7 @@ namespace DreamCleaningBackend.Services
                             var known = string.Join(", ", _websiteContent.Topics);
                             return (AnthropicContentBlock.OfToolResult(id,
                                 _websiteContent.Topics.Contains(topic)
-                                    ? "Page content is temporarily unavailable — do not guess the answer; offer to connect the customer with the team instead."
+                                    ? "Page content is temporarily unavailable — do not guess the answer; connect the customer with the team now by calling escalate_to_human."
                                     : $"Unknown topic '{topic}'. Valid topics: {known}", true), false);
                         }
                         return (AnthropicContentBlock.OfToolResult(id, content), false);
@@ -716,7 +717,7 @@ namespace DreamCleaningBackend.Services
             new AnthropicTool
             {
                 Name = "escalate_to_human",
-                Description = "Hands the conversation over to a human team member. Use when you cannot answer confidently, the customer asks for a human, or the topic is a complaint/refund/existing-booking change. After calling this, tell the customer the team will reply here shortly.",
+                Description = "Hands the conversation over to a human team member. Call it IMMEDIATELY, in the same response, whenever you cannot answer confidently — never ask the customer for permission first — and also when the customer asks for a human, or the topic is a complaint/refund/existing-booking change. After calling this, tell the customer the team will reply here shortly.",
                 InputSchema = new
                 {
                     type = "object",
@@ -875,7 +876,13 @@ namespace DreamCleaningBackend.Services
                 if (!string.IsNullOrWhiteSpace(m.Content))
                     sb.Append(m.Content);
                 if (m.ImagePath != null)
-                    sb.Append(" [photo: ").Append(siteUrl).Append(m.ImagePath).Append(']');
+                {
+                    // Read outside the site (Telegram topic, company inbox), so no cookie: an
+                    // expiring signed link instead of the old public path (folder is private).
+                    var link = PrivateFileLinkSigner.SignedChatLink(
+                        _configuration["AppSettings:Token"], siteUrl, m.ImagePath, DateTime.UtcNow);
+                    sb.Append(" [photo: ").Append(link ?? "see the admin Chats tab").Append(']');
+                }
                 sb.AppendLine();
             }
             return sb.ToString();

@@ -38,6 +38,9 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>How many people the work was split across — max(MaidsCount, assigned).</summary>
         public int SplitCount { get; set; }
 
+        /// <summary>The order's own cleaner count (Order.MaidsCount), which the Wages card edits.</summary>
+        public int MaidsCount { get; set; }
+
         /// <summary>How many assignment rows the order has. Zero means nobody is on it yet.</summary>
         public int AssignedCount { get; set; }
 

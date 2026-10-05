@@ -11,6 +11,15 @@ namespace DreamCleaningBackend.Models
         [StringLength(100)]
         public string Name { get; set; } // e.g., "First Time Discount", "Mother's Day Special"
 
+        /// <summary>
+        /// Stable admin-assigned identifier ("first-time"), unique when set, NULL for an ordinary
+        /// offer. How code recognises THE first-time offer without its Name (editable) or its Type
+        /// (production's first-time offer is Custom, and the admin panel can't change Type) - see
+        /// FirstTimeOfferHelper. Same shape rules as ServiceType.ServiceKey (SpecialOfferKeyPolicy).
+        /// </summary>
+        [StringLength(50)]
+        public string? OfferKey { get; set; }
+
         [StringLength(500)]
         public string Description { get; set; }
 

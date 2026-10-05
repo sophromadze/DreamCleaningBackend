@@ -412,7 +412,8 @@ namespace DreamCleaningBackend.Services.Commercial
         /// The contract's PRICE MODE decides the invoice's tax mode, so the two documents cannot
         /// disagree about whether the agreed figure already includes tax.
         /// </summary>
-        private static void ApplyContractPricing(
+        /// <remarks>Public so the pricing-basis tests can drive it without the numbering and mail services.</remarks>
+        public static void ApplyContractPricing(
             ContractSnapshot snapshot,
             BillingSettings settings,
             CommercialInvoice invoice,
@@ -442,6 +443,41 @@ namespace DreamCleaningBackend.Services.Commercial
             }
 
             var dates = InvoiceService.ParseServiceDates(invoice.ServiceDatesJson);
+
+            // A WEEKLY FLAT FEE is billed as weeks, never as visits (2026-09-30). One line: the
+            // weekly fee times the weeks the invoice covers - the weekly billing interval, which the
+            // contract form requires for this basis. Tax is then computed once on that subtotal by
+            // InvoiceCalculator ($875.00 -> $77.66 -> $952.66), never on six rounded visit shares.
+            if (pricing.PricingBasis == ContractPricingBasis.WeeklyFlatFee)
+            {
+                var weeks = snapshot.Billing?.Frequency == ContractBillingFrequency.Weekly
+                    ? Math.Max(1, snapshot.Billing.IntervalCount)
+                    : 1;
+
+                invoice.Items.Add(new CommercialInvoiceItem
+                {
+                    Description = BuildWeeklyFeeLineDescription(snapshot, dates),
+                    Quantity = weeks,
+                    UnitPrice = unitPrice,
+                    Amount = InvoiceCalculator.LineAmount(weeks, unitPrice),
+                    SortOrder = 0,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                });
+
+                // The fee is flat, so a week with fewer scheduled dates (a mid-week start, a
+                // holiday) still bills the full fee. Said so, never silently prorated.
+                var expected = weeks * Math.Max(1, snapshot.Schedule.VisitsPerPeriod);
+                if (dates.Count > 0 && dates.Count != expected)
+                {
+                    result.Warnings.Add(
+                        $"This contract charges a flat weekly fee. The period on this invoice lists "
+                        + $"{dates.Count} scheduled visit(s) where {expected} would be a full week's "
+                        + "schedule; the full weekly fee has been billed. Review before sending.");
+                }
+                return;
+            }
+
             var visits = Math.Max(1, dates.Count);
 
             invoice.Items.Add(new CommercialInvoiceItem
@@ -454,6 +490,18 @@ namespace DreamCleaningBackend.Services.Commercial
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             });
+        }
+
+        private static string BuildWeeklyFeeLineDescription(ContractSnapshot snapshot, List<DateTime> dates)
+        {
+            var visits = Math.Max(1, snapshot.Schedule.VisitsPerPeriod);
+            var text = $"Weekly commercial cleaning service fee - {visits} scheduled "
+                + $"visit{(visits == 1 ? "" : "s")} per week";
+
+            var period = ServiceDateFormatter.Describe(dates, null, null);
+            if (period.HasValue) text += $" ({period.Text})";
+
+            return text.Length > 500 ? text[..500] : text;
         }
 
         private static string BuildContractLineDescription(ContractSnapshot snapshot, List<DateTime> dates)
@@ -504,7 +552,8 @@ namespace DreamCleaningBackend.Services.Commercial
 
             result.Warnings.Add(
                 $"Current contract pricing differs from the previous invoice. The contract quotes "
-                + $"{contractUnit:C} per visit; this draft was copied from {previous.InvoiceNumber} at "
+                + $"{contractUnit:C} per {(pricing.PricingBasis == ContractPricingBasis.WeeklyFlatFee ? "week" : "visit")}; "
+                + $"this draft was copied from {previous.InvoiceNumber} at "
                 + $"{string.Join(", ", rates)}. Nothing has been changed - review the line items "
                 + "before sending.");
         }

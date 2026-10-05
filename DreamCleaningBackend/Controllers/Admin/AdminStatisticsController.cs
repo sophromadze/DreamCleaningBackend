@@ -56,6 +56,67 @@ namespace DreamCleaningBackend.Controllers
         private decimal StripeFeePercent => _configuration.GetValue<decimal>("Stripe:FeePercent", 0.029m);
         private decimal StripeFixedFee => _configuration.GetValue<decimal>("Stripe:FixedFeePerOrder", 0.30m);
 
+        // Stripe ACH Direct Debit pricing: 0.8% capped at $5.00 per debit (2026-09). A regular
+        // invoice paid "from your bank online" costs this, not the card rate. Overridable too.
+        private decimal StripeAchFeePercent => _configuration.GetValue<decimal>("Stripe:AchFeePercent", 0.008m);
+        private decimal StripeAchFeeCap => _configuration.GetValue<decimal>("Stripe:AchFeeCap", 5.00m);
+
+        /// <summary>
+        /// The Stripe fee each card-flow order (IsPaid, PaymentMethod Normal) actually cost,
+        /// statistics-only. ONE place for the totals card and the daily chart. Money that never
+        /// went through a card is taken out of the card-fee base:
+        ///  - order-edit top-ups paid outside Stripe (Zelle / cash / check / bank transfer),
+        ///  - part-payment slices an admin RECORDED as paid outside Stripe (e.g. a regular
+        ///    invoice paid by bank transfer) — no Stripe fee at all,
+        ///  - regular-invoice slices paid by Stripe ACH — charged the ACH rate instead.
+        /// The card fixed fee applies only when something was actually charged to a card.
+        /// </summary>
+        private async Task<Dictionary<int, decimal>> StripeFeesByOrderAsync(IQueryable<Order> orders)
+        {
+            var paid = orders.Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal);
+
+            var totals = await paid.Select(o => new { o.Id, o.Total }).ToListAsync();
+            if (totals.Count == 0) return new Dictionary<int, decimal>();
+
+            var manualTopUps = await paid
+                .SelectMany(o => o.UpdateHistory)
+                .Where(h => h.IsPaid && h.PaymentMethod != PaymentMethod.Normal)
+                .GroupBy(h => h.OrderId)
+                .Select(g => new { OrderId = g.Key, Sum = g.Sum(x => x.AdditionalAmount) })
+                .ToDictionaryAsync(x => x.OrderId, x => x.Sum);
+
+            var ids = totals.Select(t => t.Id).ToList();
+
+            var manualSlices = await _context.OrderPartialPayments
+                .Where(p => ids.Contains(p.OrderId) && p.Status == OrderPartialPaymentStatus.Paid
+                            && p.PaymentMethod != PaymentMethod.Normal)
+                .GroupBy(p => p.OrderId)
+                .Select(g => new { OrderId = g.Key, Sum = g.Sum(x => x.PaidAmount ?? x.RequestedAmount) })
+                .ToDictionaryAsync(x => x.OrderId, x => x.Sum);
+
+            var achDebits = (await _context.CustomerInvoicePaymentAttempts
+                    .Where(a => ids.Contains(a.OrderId) && a.Status == CustomerInvoicePaymentAttemptStatus.Succeeded)
+                    .Select(a => new { a.OrderId, a.Amount, a.ProcessingFee })
+                    .ToListAsync())
+                .ToLookup(a => a.OrderId);
+
+            var fees = new Dictionary<int, decimal>();
+            foreach (var t in totals)
+            {
+                var ach = achDebits[t.Id].ToList();
+                var cardBase = t.Total
+                    - (manualTopUps.TryGetValue(t.Id, out var top) ? top : 0m)
+                    - (manualSlices.TryGetValue(t.Id, out var man) ? man : 0m)
+                    - ach.Sum(a => a.Amount);
+
+                var cardFee = cardBase >= 0.50m ? cardBase * StripeFeePercent + StripeFixedFee : 0m;
+                // Stripe charges ACH on the whole debit (bill + any fee passed to the customer).
+                var achFee = ach.Sum(a => Math.Min((a.Amount + a.ProcessingFee) * StripeAchFeePercent, StripeAchFeeCap));
+                fees[t.Id] = decimal.Round(cardFee + achFee, 2);
+            }
+            return fees;
+        }
+
         // ───── Retained sales tax (tax collected outside Stripe) ─────
         // Sales tax charged on a Cash/Zelle/Check/Other payment is not remitted, so the reports
         // count it as company revenue instead of as a pass-through. Everything a caller needs to
@@ -261,26 +322,14 @@ namespace DreamCleaningBackend.Controllers
 
             // Stripe processing fees — statistics-only. Only real card charges qualify
             // (IsPaid && PaymentMethod==Normal); manual/cash orders are never charged by Stripe.
-            var stripeAgg = await windowed
-                .Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal)
-                .GroupBy(_ => 1)
-                .Select(g => new { Count = g.Count(), Total = g.Sum(o => o.Total) })
-                .FirstOrDefaultAsync();
+            // Per order, from the one helper the daily chart uses too — see StripeFeesByOrderAsync.
+            stats.StripeFees = (await StripeFeesByOrderAsync(windowed)).Values.Sum();
 
             // Mixed-payment correction: when a Stripe order was later topped up via an order edit
             // whose additional amount was collected OUTSIDE Stripe (Zelle/Cash/Check), that part of
             // o.Total never went through the card. Subtract those manually-paid additional amounts
             // from the percentage-fee base so no Stripe fee is charged on money Stripe never touched.
             // The per-order fixed fee stays — the base order still had one real card transaction.
-            var manualAdditionalsOnStripeOrders = await windowed
-                .Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal)
-                .SelectMany(o => o.UpdateHistory)
-                .Where(h => h.IsPaid && h.PaymentMethod != PaymentMethod.Normal)
-                .SumAsync(h => (decimal?)h.AdditionalAmount) ?? 0m;
-
-            stats.StripeFees = stripeAgg == null ? 0m
-                : decimal.Round((stripeAgg.Total - manualAdditionalsOnStripeOrders) * StripeFeePercent
-                                + stripeAgg.Count * StripeFixedFee, 2);
 
             // Admin bonuses (GEL), converted to USD per-month at each month's locked FX rate.
             // Staff bonuses, taken from the SAME per-order figures the shifts panel pays out
@@ -436,15 +485,6 @@ namespace DreamCleaningBackend.Controllers
                 o.TotalRefundedAmount,
                 RetainedTaxFor(additionalTax, o.Id, o.Tax, o.PaymentMethod)));
 
-            // Per-order sum of additional amounts that were paid OUTSIDE Stripe (mirrors the
-            // mixed-payment correction in /statistics). Subtracted from each order's Stripe-fee
-            // base below so the daily chart's fees/revenue match the totals page.
-            var manualAdditionalsByOrder = await query
-                .SelectMany(o => o.UpdateHistory)
-                .Where(h => h.IsPaid && h.PaymentMethod != PaymentMethod.Normal)
-                .GroupBy(h => h.OrderId)
-                .Select(g => new { OrderId = g.Key, Sum = g.Sum(x => x.AdditionalAmount) })
-                .ToDictionaryAsync(x => x.OrderId, x => x.Sum);
 
             // Preload the locked month snapshots for every month present in the data (not the raw
             // window — an open-ended "all time" range must not iterate from year 1).
@@ -454,10 +494,7 @@ namespace DreamCleaningBackend.Controllers
                 snaps[m.Year * 100 + m.Month] = await _financialRateService.GetOrCreateAsync(m.Year, m.Month);
             }
 
-            var feePercent = StripeFeePercent;
-            var fixedFee = StripeFixedFee;
-
-            decimal StripeFeeFor(decimal total) => decimal.Round(total * feePercent + fixedFee, 2);
+            var stripeFeesByOrder = await StripeFeesByOrderAsync(query);
             // Staff bonus per ORDER, in GEL, from the same source the totals page and the shifts
             // panel use — an order can owe an administrator and their manager at different rates,
             // so there is no per-order constant to multiply by any more. Orders that earn nothing
@@ -484,9 +521,7 @@ namespace DreamCleaningBackend.Controllers
                 .GroupBy(o => o.ServiceDate.Date)
                 .ToDictionary(g => g.Key, g =>
                 {
-                    var stripeFees = g.Where(o => o.IsPaid && o.PaymentMethod == PaymentMethod.Normal)
-                                      .Sum(o => StripeFeeFor(o.Total
-                                          - (manualAdditionalsByOrder.TryGetValue(o.Id, out var mAdd) ? mAdd : 0m)));
+                    var stripeFees = g.Sum(o => stripeFeesByOrder.TryGetValue(o.Id, out var fee) ? fee : 0m);
                     // Mirrors /statistics: a fully-refunded order earns no bonus, but a partially
                     // refunded one does — the company kept part of the money. Both cases are
                     // already decided by which orders bonusCosts contains, so there is nothing to

@@ -1,3 +1,4 @@
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Helpers.Commercial;
 using DreamCleaningBackend.DTOs.Commercial;
 using DreamCleaningBackend.Models.Commercial;
@@ -79,7 +80,7 @@ namespace DreamCleaningBackend.Services.Commercial
                     page.Content().Element(e => ComposeContent(e, invoice, publicUrl));
                     page.Footer().Element(e => ComposeFooter(e, invoice));
                 });
-            }).GeneratePdf();
+            }).GeneratePdfExclusive();
         }
 
         // ── Header: logo and company on the left, the invoice's identity on the right ─────────

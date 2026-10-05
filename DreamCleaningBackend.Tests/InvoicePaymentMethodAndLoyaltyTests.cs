@@ -349,7 +349,7 @@ namespace DreamCleaningBackend.Tests
         /// for the handful of rules that are only enforceable on that side.</summary>
         private static string SolutionRoot()
         {
-            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            var dir = new DirectoryInfo(SourceTree.TestsProjectDir);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "DreamCleaningNG")))
                 dir = dir.Parent;
 

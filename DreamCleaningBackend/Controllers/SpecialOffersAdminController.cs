@@ -7,6 +7,7 @@ using System.Security.Claims;
 using DreamCleaningBackend.Models;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -47,6 +48,10 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<SpecialOfferAdminDto>> CreateSpecialOffer(CreateSpecialOfferDto dto)
         {
+            // The offer key is SuperAdmin-only (SpecialOfferKeyPolicy); the rest of the tab is open to Admins.
+            if (!User.IsInRole("SuperAdmin") && SpecialOfferKeyPolicy.Normalize(dto.OfferKey) != null)
+                return StatusCode(403, new { message = SpecialOfferKeyPolicy.SuperAdminOnlyMessage });
+
             try
             {
                 var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
@@ -63,6 +68,17 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<SpecialOfferAdminDto>> UpdateSpecialOffer(int id, UpdateSpecialOfferDto dto)
         {
+            // An Admin's form posts the key back unchanged; only an actual CHANGE needs a SuperAdmin.
+            if (dto.OfferKeyProvided && !User.IsInRole("SuperAdmin"))
+            {
+                var storedKey = await _context.SpecialOffers
+                    .Where(o => o.Id == id)
+                    .Select(o => o.OfferKey)
+                    .FirstOrDefaultAsync();
+                if (SpecialOfferKeyPolicy.Normalize(dto.OfferKey) != SpecialOfferKeyPolicy.Normalize(storedKey))
+                    return StatusCode(403, new { message = SpecialOfferKeyPolicy.SuperAdminOnlyMessage });
+            }
+
             try
             {
                 var offer = await _specialOfferService.UpdateSpecialOffer(id, dto);

@@ -260,6 +260,10 @@ builder.Services.AddScoped<IOrderRefundService, OrderRefundService>();
 // Admin-requested part-payments of an order's own total ("$1,000 now, the rest later"). The only
 // writer of Order.AmountPaid — see Helpers/OrderBalance.cs for the balance rule it enforces.
 builder.Services.AddScoped<IOrderPartialPaymentService, OrderPartialPaymentService>();
+// Regular customer invoices (Admin → Invoices) — a bill wrapped around an order's own payment.
+builder.Services.AddScoped<ICustomerInvoiceService, CustomerInvoiceService>();
+builder.Services.AddScoped<CustomerInvoiceAchService>();
+builder.Services.AddSingleton<CustomerInvoicePdfService>();
 // Saved cards, AutoPay and billing notices (2026-09) — replaces the one-card "card on file".
 // Rollout is controlled server-side by Billing:SavedCardsEnabled / Billing:AutoPayEnabled (both
 // OFF when absent). SavedCardChargeService is the ONLY thing that charges a saved card.
@@ -580,9 +584,34 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0
         });
     });
+
+    // Profile -> Gift Cards send / resend (GiftCardController). Each call emails a third party, so
+    // it is capped per IP here; GiftCardService adds the per-user hourly cap and per-card resend
+    // cooldown (the limiter runs before authentication, so it cannot partition by user).
+    options.AddPolicy(GiftCardController.SendRateLimitPolicy, httpContext =>
+    {
+        var clientIp = httpContext.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+            ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
+        if (string.IsNullOrEmpty(clientIp))
+            clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter(clientIp, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(10),
+            QueueLimit = 0
+        });
+    });
 });
 
 var app = builder.Build();
+
+// Static key matcher logs one warning per (key, name) it had to match by NAME - see ExtraServiceKeys.
+DreamCleaningBackend.Helpers.ExtraServiceKeys.Logger = app.Services.GetRequiredService<ILoggerFactory>()
+    .CreateLogger("DreamCleaningBackend.ExtraServiceKeys");
+// Same for the first-time special offer when it has no OfferKey - see FirstTimeOfferHelper.
+DreamCleaningBackend.Helpers.FirstTimeOfferHelper.Logger = app.Services.GetRequiredService<ILoggerFactory>()
+    .CreateLogger("DreamCleaningBackend.SpecialOfferKeys");
 
 // Get logger
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
@@ -672,11 +701,9 @@ if (!string.IsNullOrEmpty(fileUploadPath))
     var fullPath = Path.GetFullPath(fileUploadPath);
     Directory.CreateDirectory(fullPath); // Ensure directory exists
 
-    app.UseStaticFiles(new StaticFileOptions
-    {
-        FileProvider = new PhysicalFileProvider(fullPath),
-        RequestPath = "" // Serve from root, so /images/file.jpg works
-    });
+    // Only the PUBLIC upload folders are static files; private ones go through access-checked
+    // endpoints (see Helpers/PrivateFiles.cs).
+    DreamCleaningBackend.Helpers.PublicUploadStaticFiles.Use(app, fullPath);
 }
 
 app.UseCors(app.Environment.IsDevelopment() ? "AllowAngularApp" : "ProductionPolicy");

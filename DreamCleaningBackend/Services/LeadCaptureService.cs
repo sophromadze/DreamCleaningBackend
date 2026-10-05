@@ -25,7 +25,8 @@ namespace DreamCleaningBackend.Services
             string? phone,
             string? serviceAddress = null,
             string? cleaningType = null,
-            string? message = null)
+            string? message = null,
+            string? leadType = null)
         {
             try
             {
@@ -80,6 +81,7 @@ namespace DreamCleaningBackend.Services
                     ServiceAddress = string.IsNullOrWhiteSpace(serviceAddress) ? null : serviceAddress.Trim(),
                     CleaningType = string.IsNullOrWhiteSpace(cleaningType) ? null : cleaningType.Trim(),
                     Message = string.IsNullOrWhiteSpace(message) ? null : message.Trim(),
+                    Type = LeadType.IsValid(leadType) ? leadType! : LeadType.Residential,
                     Stage = LeadStage.New,
                     Source = source,
                     CreatedAt = DateTime.UtcNow,

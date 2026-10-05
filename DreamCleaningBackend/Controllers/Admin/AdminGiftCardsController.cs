@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
@@ -91,7 +92,12 @@ namespace DreamCleaningBackend.Controllers
                     IsPaid = giftCard.IsPaid,
                     CreatedAt = giftCard.CreatedAt,
                     PaidAt = giftCard.PaidAt,
-                    PurchasedByUserName = giftCard.PurchasedByUser.FirstName + " " + giftCard.PurchasedByUser.LastName,
+                    PurchasedByUserName = giftCard.PurchasedByUser != null
+                        ? giftCard.PurchasedByUser.FirstName + " " + giftCard.PurchasedByUser.LastName
+                        : null,
+                    PurchasedByUserEmail = giftCard.PurchasedByUser?.Email,
+                    IsPendingSend = giftCard.IsPendingSend,
+                    SentAt = giftCard.SentAt,
                     TotalAmountUsed = giftCard.OriginalAmount - giftCard.CurrentBalance,
                     TimesUsed = giftCard.GiftCardUsages.Count,
                     LastUsedAt = giftCard.GiftCardUsages.OrderByDescending(u => u.UsedAt).FirstOrDefault()?.UsedAt,
@@ -272,78 +278,18 @@ namespace DreamCleaningBackend.Controllers
         public async Task<ActionResult> GetGiftCardConfig()
         {
             var config = await _context.GiftCardConfigs.FirstOrDefaultAsync();
+            // The background IN EFFECT, never a path that 404s: a missing upload (or a legacy
+            // /images/... value) falls back to the built-in default — see GiftCardBackground.
+            var resolved = GiftCardBackground.Resolve(_configuration["FileUpload:Path"], config?.BackgroundImagePath);
 
             return Ok(new
             {
-                backgroundImagePath = config?.BackgroundImagePath ?? "",
+                backgroundImagePath = resolved.Url,
                 lastUpdated = config?.LastUpdated,
-                hasBackground = !string.IsNullOrEmpty(config?.BackgroundImagePath)
+                hasBackground = !resolved.IsDefault,
+                isDefault = resolved.IsDefault,
+                configuredImageMissing = resolved.ConfiguredImageMissing
             });
-        }
-
-        [HttpGet("debug-gift-card-image")]
-        [AllowAnonymous] // Debug endpoint to test image loading
-        public async Task<ActionResult> DebugGiftCardImage()
-        {
-            try
-            {
-                var config = await _context.GiftCardConfigs.FirstOrDefaultAsync();
-                var backgroundPath = config?.BackgroundImagePath;
-                var fileUploadPath = _configuration["FileUpload:Path"];
-
-                var debugInfo = new
-                {
-                    configExists = config != null,
-                    backgroundPathFromDb = backgroundPath ?? "NULL",
-                    fileUploadPath = fileUploadPath ?? "NULL",
-                    paths = new List<object>()
-                };
-
-                if (!string.IsNullOrEmpty(backgroundPath) && !string.IsNullOrEmpty(fileUploadPath))
-                {
-                    // Test path 1: Current implementation
-                    var normalizedPath = backgroundPath.TrimStart('/', '\\');
-                    var pathParts = normalizedPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
-                    var fullImagePath1 = Path.Combine(new[] { fileUploadPath }.Concat(pathParts).ToArray());
-                    
-                    // Test path 2: Simple combine
-                    var fullImagePath2 = Path.Combine(fileUploadPath, backgroundPath.TrimStart('/'));
-                    
-                    // Test path 3: Extract filename only
-                    var fileName = Path.GetFileName(backgroundPath);
-                    var fullImagePath3 = Path.Combine(fileUploadPath, "images", fileName);
-
-                    debugInfo.paths.Add(new
-                    {
-                        method = "Current implementation (split path)",
-                        path = fullImagePath1,
-                        exists = System.IO.File.Exists(fullImagePath1),
-                        fileSize = System.IO.File.Exists(fullImagePath1) ? new FileInfo(fullImagePath1).Length : 0
-                    });
-
-                    debugInfo.paths.Add(new
-                    {
-                        method = "Simple combine",
-                        path = fullImagePath2,
-                        exists = System.IO.File.Exists(fullImagePath2),
-                        fileSize = System.IO.File.Exists(fullImagePath2) ? new FileInfo(fullImagePath2).Length : 0
-                    });
-
-                    debugInfo.paths.Add(new
-                    {
-                        method = "Filename only",
-                        path = fullImagePath3,
-                        exists = System.IO.File.Exists(fullImagePath3),
-                        fileSize = System.IO.File.Exists(fullImagePath3) ? new FileInfo(fullImagePath3).Length : 0
-                    });
-                }
-
-                return Ok(debugInfo);
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new { error = ex.Message, stackTrace = ex.StackTrace });
-            }
         }
 
         [HttpPost("upload-gift-card-background")]
@@ -366,12 +312,12 @@ namespace DreamCleaningBackend.Controllers
                 if (file.Length > 5 * 1024 * 1024)
                     return BadRequest(new { message = "File size must be less than 5MB" });
 
-                // Generate unique filename (always .webp)
-                var baseFileName = $"gift-card-bg-{DateTime.UtcNow:yyyyMMddHHmmss}";
-                var fileName = $"{baseFileName}.webp";
+                // Unique name per upload (always .webp), so the URL can be cached for a year and a
+                // replaced background is a new URL rather than a stale cached one.
+                var fileName = GiftCardBackground.NewFileName();
 
-                // Define the path where frontend serves static files
-                var uploadPath = Path.Combine(_configuration["FileUpload:Path"], "images");
+                // Its own folder (2026-10), never the site's /images: deploys don't touch it.
+                var uploadPath = Path.Combine(_configuration["FileUpload:Path"], GiftCardBackground.UploadFolder.Replace('/', Path.DirectorySeparatorChar));
 
                 // Create directory if it doesn't exist
                 Directory.CreateDirectory(uploadPath);
@@ -424,7 +370,7 @@ namespace DreamCleaningBackend.Controllers
                 }
 
                 // Update database with new image path
-                var relativePath = $"/images/{fileName}";
+                var relativePath = GiftCardBackground.UrlFor(fileName);
 
                 var config = await _context.GiftCardConfigs.FirstOrDefaultAsync();
                 var previousBackgroundPath = config?.BackgroundImagePath;
@@ -439,13 +385,11 @@ namespace DreamCleaningBackend.Controllers
                 }
                 else
                 {
-                    // Delete old image if exists
-                    if (!string.IsNullOrEmpty(config.BackgroundImagePath) &&
-                        config.BackgroundImagePath != "/images/mainImage.webp" &&
-                        config.BackgroundImagePath != "/images/mainImage.png")
+                    // Delete the previous upload — only ever a file in the gift-cards folder. A legacy
+                    // /images/... value names a site image now, which is never ours to delete.
+                    var oldImagePath = GiftCardBackground.DiskPath(_configuration["FileUpload:Path"], config.BackgroundImagePath);
+                    if (oldImagePath != null)
                     {
-                        var oldFileName = Path.GetFileName(config.BackgroundImagePath);
-                        var oldImagePath = Path.Combine(uploadPath, oldFileName);
                         if (System.IO.File.Exists(oldImagePath))
                         {
                             try

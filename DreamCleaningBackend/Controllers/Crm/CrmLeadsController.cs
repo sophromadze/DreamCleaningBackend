@@ -214,21 +214,29 @@ namespace DreamCleaningBackend.Controllers.Crm
             if (!string.IsNullOrWhiteSpace(cityLine)) addressParts.Add(cityLine);
 
             var serviceTypeName = order.GetDisplayServiceTypeName();
-            var isCommercial = serviceTypeName.Contains("office", StringComparison.OrdinalIgnoreCase)
-                || serviceTypeName.Contains("commercial", StringComparison.OrdinalIgnoreCase);
+
+            // A keyed (non-custom) type is recognised by its ServiceType.ServiceKey; a custom order's
+            // label, or a type nobody has keyed, by its name as before.
+            var serviceTypeKey = order.GetRecognisableServiceTypeKey();
+            var isCommercial = serviceTypeKey != null
+                ? serviceTypeKey == "office"
+                : serviceTypeName.Contains("office", StringComparison.OrdinalIgnoreCase)
+                  || serviceTypeName.Contains("commercial", StringComparison.OrdinalIgnoreCase);
 
             // Residential orders are split into Deep / Regular the same way the admin orders
             // table does it: a deep-cleaning extra on the order (not super-deep) marks it Deep.
-            // Prefer the ExtraService flags; fall back to name matching for legacy data.
-            var normalizedTypeName = new string(serviceTypeName.ToLowerInvariant()
-                .Where(char.IsLetter).ToArray());
-            if (normalizedTypeName == "residentialcleaning")
+            // The ExtraService flags decide; an unkeyed row with neither flag falls back to its name.
+            var isResidential = serviceTypeKey != null
+                ? serviceTypeKey == "residential"
+                : new string(serviceTypeName.ToLowerInvariant().Where(char.IsLetter).ToArray()) == "residentialcleaning";
+            if (isResidential)
             {
                 var isDeep = order.OrderExtraServices.Any(oes =>
                     oes.ExtraService != null
-                    && !oes.ExtraService.IsSuperDeepCleaning
+                    && !ExtraServiceKeys.IsSuperDeep(oes.ExtraService)
                     && (oes.ExtraService.IsDeepCleaning
-                        || (oes.ExtraService.Name != null
+                        || (string.IsNullOrWhiteSpace(oes.ExtraService.ExtraServiceKey)
+                            && oes.ExtraService.Name != null
                             && oes.ExtraService.Name.Contains("deep", StringComparison.OrdinalIgnoreCase)
                             && !oes.ExtraService.Name.Contains("super", StringComparison.OrdinalIgnoreCase))));
                 serviceTypeName = isDeep ? "Deep Cleaning" : "Regular Cleaning";

@@ -223,7 +223,7 @@ public class PlanSelectionTests
 
     private static string FindRepoDirectory(string relative)
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        var dir = new DirectoryInfo(SourceTree.TestsProjectDir);
         while (dir != null)
         {
             var candidate = Path.Combine(dir.FullName, relative.Replace('/', Path.DirectorySeparatorChar));

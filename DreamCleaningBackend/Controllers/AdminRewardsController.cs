@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
@@ -121,6 +122,34 @@ namespace DreamCleaningBackend.Controllers
 
         // ─── User Rewards ────────────────────────────────────────────────────────
 
+        // ── One-time correction: Bubble points on PAST refunds and cancellations (2026-10) ──
+        //
+        // Dry run (GET) changes nothing and lists every affected order with the balance before and
+        // after. Apply (POST) takes the dry run's planId and performs exactly that plan - if anything
+        // changed in between (a new order, a balance moved) it refuses, so what runs is what was
+        // reviewed. Idempotent: corrected orders are marked in the history and never revisited.
+        // Refunds from this release on are handled automatically when they happen.
+
+        [HttpGet("points-correction")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<RefundPointsReversal.CorrectionPlan>> PreviewPointsCorrection() =>
+            Ok(await RefundPointsReversal.BuildCorrectionPlanAsync(_context));
+
+        [HttpPost("points-correction")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<RefundPointsReversal.CorrectionPlan>> ApplyPointsCorrection([FromQuery] string planId)
+        {
+            if (string.IsNullOrWhiteSpace(planId))
+                return BadRequest(new { message = "Run the dry run first and pass its planId." });
+
+            var adminId = int.TryParse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id) ? id : 0;
+            var applied = await RefundPointsReversal.ApplyCorrectionPlanAsync(_context, _logger, planId,
+                $"the one-time points correction run by user #{adminId} on {DateTime.UtcNow:yyyy-MM-dd} UTC (plan {planId})");
+            if (applied == null)
+                return Conflict(new { message = "The data changed since that dry run, so nothing was applied. Run the dry run again and review the new list." });
+            return Ok(applied);
+        }
+
         [HttpGet("users/{userId}/summary")]
         public async Task<ActionResult<AdminUserRewardsSummaryDto>> GetUserSummary(int userId)
         {
@@ -133,7 +162,7 @@ namespace DreamCleaningBackend.Controllers
                 if (user == null) return NotFound();
 
                 var summary = await _pointsService.GetSummary(userId);
-                var history = await _pointsService.GetHistory(userId, 1, 50);
+                var history = await _pointsService.GetHistory(userId, 1, 50, adminView: true);
                 var referrals = await _referralService.GetMyReferrals(userId);
 
                 return Ok(new AdminUserRewardsSummaryDto

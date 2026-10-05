@@ -160,10 +160,32 @@ namespace DreamCleaningBackend.Services
         public async Task<(decimal discountAmount, decimal subscriptionDiscountAmount)> ResolveDiscountsAsync(
             CreateBookingDto dto, int orderUserId, decimal subTotal)
         {
+            var resolved = await ResolveDiscountDetailsAsync(dto, orderUserId, subTotal);
+            return (resolved.DiscountAmount, resolved.SubscriptionDiscountAmount);
+        }
+
+        /// <summary>
+        /// The two discounts plus the RULE behind each (2026-10), which CreateOrderAsync records on
+        /// the order so an edit can re-apply it exactly — see Order.DiscountPercent.
+        /// </summary>
+        private sealed record DiscountDetails(
+            decimal DiscountAmount, decimal? DiscountPercent, decimal? DiscountFixedAmount,
+            decimal SubscriptionDiscountAmount, decimal? SubscriptionDiscountPercent);
+
+        private async Task<DiscountDetails> ResolveDiscountDetailsAsync(
+            CreateBookingDto dto, int orderUserId, decimal subTotal)
+        {
             var (promoCode, _, _) = ResolveGiftCardAndPromo(dto);
+            decimal? discountPercent = null;
+            decimal? discountFixedAmount = null;
+            decimal? subscriptionDiscountPercent = null;
 
             // Promo slot priority mirrors the booking page's calculateTotal():
-            // special offer > first-time marker ("firstUse") > regular promo code.
+            // special offer > regular promo code. A first-time customer's discount is their granted
+            // first-time SPECIAL OFFER (UserSpecialOfferId above); the old "firstUse" marker is no
+            // longer accepted - nothing sends it, and it could never succeed (it required a
+            // FirstTime-TYPE offer, which production's first-time offer is not). Old orders that
+            // carry it are still read for display (OrderDtoMapper, OrderReorderPreviewService).
             var discountAmount = 0m;
 
             if (dto.UserSpecialOfferId.HasValue && dto.UserSpecialOfferId.Value > 0)
@@ -181,9 +203,8 @@ namespace DreamCleaningBackend.Services
                 if (userOffer.ExpiresAt.HasValue && userOffer.ExpiresAt.Value < DateTime.UtcNow)
                     throw new InvalidOperationException("The selected special offer has expired.");
 
-                discountAmount = userOffer.SpecialOffer.IsPercentage
-                    ? OrderPricingCalculator.Round2(subTotal * userOffer.SpecialOffer.DiscountValue / 100m)
-                    : Math.Min(userOffer.SpecialOffer.DiscountValue, subTotal);
+                (discountAmount, discountPercent, discountFixedAmount) =
+                    ApplyPromoRule(userOffer.SpecialOffer.IsPercentage, userOffer.SpecialOffer.DiscountValue, subTotal);
             }
             else if (dto.SpecialOfferId.HasValue && dto.SpecialOfferId.Value > 0)
             {
@@ -213,36 +234,8 @@ namespace DreamCleaningBackend.Services
                         throw new InvalidOperationException("This special offer is for first-time customers only.");
                 }
 
-                discountAmount = offer.IsPercentage
-                    ? OrderPricingCalculator.Round2(subTotal * offer.DiscountValue / 100m)
-                    : Math.Min(offer.DiscountValue, subTotal);
-            }
-            else if (promoCode == "firstUse")
-            {
-                // First-time discount: the user must actually still be a first-time customer,
-                // and the percentage comes from their granted FirstTime special offer in the DB.
-                var isFirstTime = await _context.Users
-                    .AsNoTracking()
-                    .Where(u => u.Id == orderUserId)
-                    .Select(u => (bool?)u.FirstTimeOrder)
-                    .FirstOrDefaultAsync() ?? false;
-
-                var firstTimeOffer = await _context.UserSpecialOffers
-                    .AsNoTracking()
-                    .Include(uso => uso.SpecialOffer)
-                    .Where(uso => uso.UserId == orderUserId &&
-                                  !uso.IsUsed &&
-                                  uso.SpecialOffer.IsActive &&
-                                  uso.SpecialOffer.Type == OfferType.FirstTime)
-                    .OrderByDescending(uso => uso.GrantedAt)
-                    .FirstOrDefaultAsync();
-
-                if (!isFirstTime || firstTimeOffer == null)
-                    throw new InvalidOperationException("The first-time discount is no longer available on this account.");
-
-                discountAmount = firstTimeOffer.SpecialOffer.IsPercentage
-                    ? OrderPricingCalculator.Round2(subTotal * firstTimeOffer.SpecialOffer.DiscountValue / 100m)
-                    : Math.Min(firstTimeOffer.SpecialOffer.DiscountValue, subTotal);
+                (discountAmount, discountPercent, discountFixedAmount) =
+                    ApplyPromoRule(offer.IsPercentage, offer.DiscountValue, subTotal);
             }
             else if (!string.IsNullOrEmpty(promoCode) && !promoCode.StartsWith("SPECIAL_OFFER:", StringComparison.OrdinalIgnoreCase))
             {
@@ -260,9 +253,12 @@ namespace DreamCleaningBackend.Services
                 if (pc.MaxUsageCount.HasValue && pc.CurrentUsageCount >= pc.MaxUsageCount.Value)
                     throw new InvalidOperationException("Promo code usage limit reached.");
 
-                discountAmount = pc.IsPercentage
-                    ? OrderPricingCalculator.Round2(subTotal * pc.DiscountValue / 100m)
-                    : pc.DiscountValue;
+                // A fixed promo CODE is now capped at the subtotal like a fixed special offer
+                // always was (2026-10). The charged total is unchanged - CalculateTotals already
+                // floors the discounted subtotal at 0 - but the stored discount is now what
+                // actually came off, the same figure every order edit produces.
+                (discountAmount, discountPercent, discountFixedAmount) =
+                    ApplyPromoRule(pc.IsPercentage, pc.DiscountValue, subTotal);
             }
 
             // Subscription discount: only when the ORDER OWNER's active (non-expired)
@@ -287,14 +283,23 @@ namespace DreamCleaningBackend.Services
                     if (hasActiveSubscription && owner!.Subscription != null &&
                         owner.Subscription.SubscriptionDays == selected.SubscriptionDays)
                     {
-                        subscriptionDiscountAmount = OrderPricingCalculator.Round2(
-                            subTotal * selected.DiscountPercentage / 100m);
+                        subscriptionDiscountAmount = OrderPricingCalculator.PercentOf(
+                            subTotal, selected.DiscountPercentage);
+                        subscriptionDiscountPercent = selected.DiscountPercentage;
                     }
                 }
             }
 
-            return (discountAmount, subscriptionDiscountAmount);
+            return new DiscountDetails(discountAmount, discountPercent, discountFixedAmount,
+                subscriptionDiscountAmount, subscriptionDiscountPercent);
         }
+
+        /// <summary>One promo / special-offer rule, shared by all three promo branches.</summary>
+        private static (decimal amount, decimal? percent, decimal? fixedAmount) ApplyPromoRule(
+            bool isPercentage, decimal value, decimal subTotal) =>
+            isPercentage
+                ? (OrderPricingCalculator.PercentOf(subTotal, value), value, null)
+                : (OrderPricingCalculator.CapFixedDiscount(value, subTotal, 0m), null, value);
 
         public async Task<Order> CreateOrderAsync(CreateBookingDto dto, int orderUserId, bool allowCustomPricing,
             BookingCreationOptions? options = null)
@@ -339,9 +344,11 @@ namespace DreamCleaningBackend.Services
             // Promo/first-time/special-offer and subscription discounts are derived from the
             // DB against the backend subtotal — dto.DiscountAmount / dto.SubscriptionDiscountAmount
             // are never trusted (same model as the loyalty slot below).
-            var (discountAmount, subscriptionDiscountAmount) =
-                options.RecurringSeriesId.HasValue ? (0m, 0m)
-                    : await ResolveDiscountsAsync(dto, orderUserId, quote.SubTotal);
+            var discountDetails = options.RecurringSeriesId.HasValue
+                ? new DiscountDetails(0m, null, null, 0m, null)
+                : await ResolveDiscountDetailsAsync(dto, orderUserId, quote.SubTotal);
+            var discountAmount = discountDetails.DiscountAmount;
+            var subscriptionDiscountAmount = discountDetails.SubscriptionDiscountAmount;
 
             // Admin recreate flow: the plan stays on the order, its discount does not. Applied
             // here rather than by clearing dto.SubscriptionId so the recreated order still counts
@@ -429,7 +436,8 @@ namespace DreamCleaningBackend.Services
                 DiscountAmount = discountAmount, // promo/first-time discount ONLY (server-derived)
                 SubscriptionDiscountAmount = subscriptionDiscountAmount,
                 BedroomsQuantity = dto.BedroomsQuantity,
-                BathroomsQuantity = dto.BathroomsQuantity
+                BathroomsQuantity = dto.BathroomsQuantity,
+                ShowRoomCountsToCustomer = serviceType.IsCustom && dto.ShowRoomCountsToCustomer
             };
 
             // First-touch + converting-session acquisition attribution. Admin-created orders
@@ -477,6 +485,8 @@ namespace DreamCleaningBackend.Services
             else if (!options.SuppressAutomaticDiscounts && ResidentialLoyaltyPolicy.AppliesTo(order))
                 await ApplyLoyaltyDiscountAndStackingAsync(order, orderUserId);
 
+            RecordDiscountRules(order, discountDetails);
+
             var totals = OrderPricingCalculator.CalculateTotals(new OrderPricingCalculator.TotalsInput
             {
                 SubTotal = order.SubTotal,
@@ -500,7 +510,8 @@ namespace DreamCleaningBackend.Services
                 ? serviceType.Name
                 : order.CustomServiceDisplayName;
             order.CleanerHourlyRate = OrderPricingCalculator.GetDefaultCleanerHourlyRate(
-                quote.DeepCleaningFee, rateServiceTypeName);
+                quote.DeepCleaningFee, rateServiceTypeName,
+                serviceType.IsCustom ? null : serviceType.ServiceKey);
             // A brand-new order has no cleaner assignments yet, so this is the MaidsCount
             // estimate by definition. It stops being an estimate the moment someone is assigned
             // — see CleanerPayrollCalculator, which owns this column from then on.
@@ -588,6 +599,26 @@ namespace DreamCleaningBackend.Services
             order.LoyaltyDiscountPercentage = finalLoyaltyPct;
             order.SubscriptionDiscountAmount = subscriptionAmount;
             order.DiscountAmount = promoAmount;
+        }
+
+        /// <summary>
+        /// Records the rule behind each discount that SURVIVED stacking, so an order edit re-prices
+        /// it exactly like booking (OrderPricingCalculator.ResolveEditedDiscounts). A slot stacking
+        /// dropped gets no rule, which is what keeps an edit from reviving it. A fixed amount is
+        /// capped once more against the other survivors: subscription and promo can stack, and the
+        /// discounted subtotal must never go below zero.
+        /// </summary>
+        private static void RecordDiscountRules(Order order, DiscountDetails details)
+        {
+            var promoSurvived = order.DiscountAmount > 0m;
+            order.DiscountPercent = promoSurvived ? details.DiscountPercent : null;
+            order.DiscountFixedAmount = promoSurvived ? details.DiscountFixedAmount : null;
+            order.SubscriptionDiscountPercent = order.SubscriptionDiscountAmount > 0m
+                ? details.SubscriptionDiscountPercent : null;
+
+            if (order.DiscountFixedAmount is decimal face)
+                order.DiscountAmount = OrderPricingCalculator.CapFixedDiscount(
+                    face, order.SubTotal, order.SubscriptionDiscountAmount + order.LoyaltyDiscountAmount);
         }
 
         // Marks the user's special offer as used and stamps the offer name onto the order.

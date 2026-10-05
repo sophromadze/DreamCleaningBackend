@@ -667,7 +667,8 @@ namespace DreamCleaningBackend.Tests
         ///
         /// Each correction adds one: v2.2 dropped the Client mailing address, v2.3 made a backup
         /// on-call contact optional, v2.4 took the example rooms out of A2, v2.5 put the service
-        /// address in the preamble, and v2.6 added the consolidated Section 36. A database
+        /// address in the preamble, v2.6 added the consolidated Section 36, and v2.7 made the
+        /// minimum commitment, the supplies allocation and the guarantee window per-contract. A database
         /// carrying every earlier row has to end with ALL of them retired and only the current one default;
         /// retiring just the newest would leave the soap draft selectable again, which is the
         /// failure the SupersededVersions list exists to prevent.
@@ -735,6 +736,18 @@ namespace DreamCleaningBackend.Tests
                 IsActive = true,
                 IsDefault = false
             });
+            context.ContractTemplates.Add(new ContractTemplate
+            {
+                Name = ContractTemplateSeed.TemplateName,
+                Version = "2.6",
+                Description = "The drafted agreement, while the commitment and supplies were hardcoded.",
+                BodyText =
+                    "(b) The Minimum Commitment Period begins on the Service Commencement Date.\n"
+                    + "(a) Hand soap and its dispensers are not included.\n"
+                    + "@SIGNATURE_BLOCK\n",
+                IsActive = true,
+                IsDefault = false
+            });
             await context.SaveChangesAsync();
 
             await Seeder(context).SeedAsync();
@@ -749,6 +762,7 @@ namespace DreamCleaningBackend.Tests
             Assert.False(rows.Single(t => t.Version == "2.3").IsActive);
             Assert.False(rows.Single(t => t.Version == "2.4").IsActive);
             Assert.False(rows.Single(t => t.Version == "2.5").IsActive);
+            Assert.False(rows.Single(t => t.Version == "2.6").IsActive);
 
             var current = rows.Single(t => t.Version == ContractTemplateSeed.TemplateVersion);
             Assert.True(current.IsActive);
@@ -790,6 +804,14 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains("## 36. CANCELLATION, RESCHEDULING AND CONTRACT TERMINATION",
                 current.BodyText);
             Assert.Contains("Sections 1 through 36", current.BodyText);
+
+            // 2.6 is retired but keeps its own words - an agreement executed against it still
+            // renders the commitment and the soap sentence it was signed with - while the current
+            // body guards the commitment and never mentions soap.
+            Assert.Contains("Hand soap", rows.Single(t => t.Version == "2.6").BodyText);
+            Assert.DoesNotContain("soap", current.BodyText, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("{{IF_MINIMUM_COMMITMENT}}", current.BodyText);
+            Assert.Contains("{{IF_NO_MINIMUM_COMMITMENT}}", current.BodyText);
         }
     }
 }

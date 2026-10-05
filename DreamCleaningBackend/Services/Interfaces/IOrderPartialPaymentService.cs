@@ -26,6 +26,19 @@ namespace DreamCleaningBackend.Services.Interfaces
         Task<OrderPartialPayment> CreateRequestAsync(
             int orderId, decimal amount, string? note, int adminUserId, CancellationToken ct = default);
 
+        /// <summary>
+        /// The request behind a regular customer invoice (Admin → Invoices). Same rules as
+        /// <see cref="CreateRequestAsync"/>, with one exception for SPLIT invoices: when
+        /// <paramref name="allowAlongsideOpenRequests"/> is true, other open requests on the order
+        /// do not block it — each split invoice charges its OWN request (the payment page names
+        /// it), so "which one does the page charge?" has an answer. Together the open requests may
+        /// never exceed what is still owed. Does not save a transaction of its own; the caller
+        /// owns it when creating several.
+        /// </summary>
+        Task<OrderPartialPayment> CreateInvoiceRequestAsync(
+            int orderId, decimal amount, string? note, int adminUserId, bool allowAlongsideOpenRequests,
+            CancellationToken ct = default);
+
         /// <summary>Withdraw a live request. The row is kept as Cancelled, never deleted.</summary>
         /// <exception cref="PartialPaymentException">Not found, or already settled.</exception>
         Task<OrderPartialPayment> CancelRequestAsync(
@@ -61,6 +74,16 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// <exception cref="PartialPaymentException">Not found, already settled/cancelled, method
         /// is Normal, or the request now exceeds what is owed.</exception>
         Task<PartialPaymentSettlement> RecordManualPaymentAsync(
+            int orderId, int requestId, PaymentMethod method, string? paymentReference, string? paymentNotes,
+            int adminUserId, CancellationToken ct = default);
+
+        /// <summary>
+        /// Corrects the method / reference / notes of a slice an admin RECORDED as paid outside
+        /// Stripe — the amount and the settlement stay exactly as they are.
+        /// </summary>
+        /// <exception cref="PartialPaymentException">Not found, not a manually recorded payment, or
+        /// the method is Normal/Invoice.</exception>
+        Task EditManualPaymentDetailsAsync(
             int orderId, int requestId, PaymentMethod method, string? paymentReference, string? paymentNotes,
             int adminUserId, CancellationToken ct = default);
 

@@ -449,7 +449,16 @@ namespace DreamCleaningBackend.Controllers
                     o.UserId,
                     o.ServiceDate,
                     o.OrderDate,
-                    Spend = o.Total - o.TotalRefundedAmount,
+                    // REALIZED money only (owner's rule, 2026-10): paid minus refunded, the same as
+                    // the user panel, the Users export and CRM lifetime value. A booked cleaning
+                    // that is not paid yet still COUNTS (customers, orders, new/returning) but adds
+                    // nothing to spend. The settled test is OrderPaymentFilter.IsSettled written
+                    // out, because EF cannot translate the helper inside a projection.
+                    Spend = (o.IsPaid
+                             || (o.PaymentMethod != PaymentMethod.Normal
+                                 && (o.PaymentMethod != PaymentMethod.Invoice || o.InvoicePaidAt != null)))
+                        ? o.Total - o.TotalRefundedAmount
+                        : 0m,
                     o.SubscriptionId,
                     // The tier the ORDER recorded. Read off the order rather than off the customer,
                     // because User.SubscriptionId is today's plan and would misreport history.

@@ -217,7 +217,9 @@ namespace DreamCleaningBackend.Tests
         [Fact]
         public void TheDishwasherTranscriptIsQuotedSoTheRuleCannotBeReadAsAbstract()
         {
-            Assert.Contains("can i pay extra to get my dishwasher cleaned?", Prompt);
+            // Case-insensitive: the prompt quotes the customer with a capital "I". What matters is
+            // that the real question is quoted, not how its first person pronoun is cased.
+            Assert.Contains("can i pay extra to get my dishwasher cleaned?", Prompt, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("we don't offer dishwasher interior cleaning as an extra", Prompt);
         }
 
@@ -230,7 +232,49 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains(
                 "Step 3 is MANDATORY here, exactly as it is under REQUESTS TO CHECK, CONFIRM OR LOOK SOMETHING UP, and the once-or-twice-per-conversation limit under ESCALATION does not apply to it",
                 Prompt);
-            Assert.Contains("If they accept, call escalate_to_human", Prompt);
+            Assert.Contains("Call escalate_to_human in that SAME response. Do NOT ask whether they'd like to be connected", Prompt);
+        }
+
+        // ===== Connect, don't ask (owner's rule, 2026-09) =====
+        //
+        // The follow-up to the dishwasher fix answered "I'm not sure whether we can add
+        // dishwasher interior cleaning as a paid extra" and then ASKED whether to connect.
+        // The owner's rule: never sound unsure, and when the assistant can't answer, the
+        // conversation goes to the team straight away — no permission question.
+
+        [Fact]
+        public void WhenTheAgentCannotAnswer_ItConnectsInTheSameReply_WithoutAsking()
+        {
+            Assert.Contains("CONNECT, DON'T ASK", Prompt);
+            Assert.Contains("call escalate_to_human in the SAME response as your message", Prompt);
+            Assert.Contains("never wait for the customer to agree", Prompt);
+            // The old permission wording must not survive anywhere.
+            Assert.DoesNotContain("If they accept, call escalate_to_human", Prompt);
+            Assert.DoesNotContain("Would you like me to connect you with someone on our team so they can confirm it for you?", Prompt);
+        }
+
+        [Fact]
+        public void TheAgentNeverTellsACustomerItIsNotSure()
+        {
+            Assert.Contains("NEVER write \"I'm not sure\", \"I'm not certain\", \"I don't know\"", Prompt);
+            // The rule the dishwasher follow-up was built on is gone.
+            Assert.DoesNotContain("Say honestly that you're not sure", Prompt);
+            Assert.DoesNotContain("Say you're not sure and offer to escalate", Prompt);
+        }
+
+        [Fact]
+        public void TheDishwasherAnswerIsConfident()
+        {
+            Assert.Contains(
+                "Dishwasher interior cleaning isn't one of our listed extras, but I'm sure our team can handle it. To confirm the details, I'm connecting you with them right now.",
+                Prompt);
+        }
+
+        [Fact]
+        public void TheEscalationToolItselfSaysNotToAskFirst()
+        {
+            var service = ReadBackendFile("Services", "ChatAgentService.cs");
+            Assert.Contains("never ask the customer for permission first", service);
         }
 
         [Fact]
@@ -318,7 +362,7 @@ namespace DreamCleaningBackend.Tests
 
         private static string ReadBackendFile(params string[] parts)
         {
-            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            var dir = new DirectoryInfo(SourceTree.TestsProjectDir);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "DreamCleaningBackend")))
                 dir = dir.Parent;
 

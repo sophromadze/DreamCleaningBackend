@@ -193,7 +193,7 @@ namespace DreamCleaningBackend.Tests
 
         private static string ReadBackendFile(string relativePath)
         {
-            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            var dir = new DirectoryInfo(SourceTree.TestsProjectDir);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "DreamCleaningNG")))
                 dir = dir.Parent;
             Assert.NotNull(dir);

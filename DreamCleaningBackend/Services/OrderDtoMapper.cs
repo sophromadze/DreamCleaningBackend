@@ -29,6 +29,7 @@ namespace DreamCleaningBackend.Services
                 // Effective name: "<label> Cleaning" for custom orders, ServiceType.Name otherwise.
                 ServiceTypeName = order.GetDisplayServiceTypeName(),
                 IsCustomServiceType = order.ServiceType?.IsCustom ?? false,
+                ServiceTypeKey = order.GetRecognisableServiceTypeKey(),
                 CustomServiceDisplayName = order.CustomServiceDisplayName,
                 OrderDate = order.OrderDate,
                 ServiceDate = order.ServiceDate,
@@ -48,6 +49,9 @@ namespace DreamCleaningBackend.Services
                 SubscriptionDiscountAmount = order.SubscriptionDiscountAmount,
                 LoyaltyDiscountAmount = order.LoyaltyDiscountAmount,
                 LoyaltyDiscountPercentage = order.LoyaltyDiscountPercentage,
+                DiscountPercent = order.DiscountPercent,
+                DiscountFixedAmount = order.DiscountFixedAmount,
+                SubscriptionDiscountPercent = order.SubscriptionDiscountPercent,
                 PaymentMethod = order.PaymentMethod.ToString(),
                 PaymentReference = order.PaymentReference,
                 ContractClientId = order.ContractClientId,
@@ -91,6 +95,7 @@ namespace DreamCleaningBackend.Services
                 MaidsCount = order.MaidsCount,
                 BedroomsQuantity = order.BedroomsQuantity,
                 BathroomsQuantity = order.BathroomsQuantity,
+                ShowRoomCountsToCustomer = order.ShowRoomCountsToCustomer,
                 // Both null for legacy orders and for apartments, which every consumer reads as
                 // "render no property-type or levels field" rather than as an empty value.
                 PropertyType = order.PropertyType,
@@ -126,6 +131,9 @@ namespace DreamCleaningBackend.Services
                     Id = oes.Id,
                     ExtraServiceId = oes.ExtraServiceId,
                     ExtraServiceName = oes.ExtraService?.Name ?? "",
+                    ExtraServiceKey = oes.ExtraService?.ExtraServiceKey,
+                    IsDeepCleaning = oes.ExtraService?.IsDeepCleaning ?? false,
+                    IsSuperDeepCleaning = oes.ExtraService?.IsSuperDeepCleaning ?? false,
                     Quantity = oes.Quantity,
                     Hours = oes.Hours,
                     Cost = oes.Cost,

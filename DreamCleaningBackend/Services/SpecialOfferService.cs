@@ -18,11 +18,36 @@ namespace DreamCleaningBackend.Services
             _auditService = auditService;
         }
 
+        /// <summary>
+        /// Normalizes and validates a requested SpecialOffer.OfferKey (rules: SpecialOfferKeyPolicy).
+        /// Returns the value to store (null = no key); throws with a message for the admin otherwise.
+        /// Who may change a key is the controller's check, not this one.
+        /// </summary>
+        private async Task<string?> ResolveOfferKeyAsync(string? raw, int? exceptOfferId)
+        {
+            var key = SpecialOfferKeyPolicy.Normalize(raw);
+            if (key == null) return null;
+
+            var problem = SpecialOfferKeyPolicy.DescribeProblem(key);
+            if (problem != null) throw new Exception(problem);
+
+            var owner = await _context.SpecialOffers
+                .Where(o => o.OfferKey == key && (exceptOfferId == null || o.Id != exceptOfferId))
+                .Select(o => o.Name)
+                .FirstOrDefaultAsync();
+            if (owner != null) throw new Exception(SpecialOfferKeyPolicy.DescribeDuplicate(key, owner));
+
+            return key;
+        }
+
         public async Task<SpecialOfferAdminDto> CreateSpecialOffer(CreateSpecialOfferDto dto, int createdByUserId)
         {
+            var offerKey = await ResolveOfferKeyAsync(dto.OfferKey, exceptOfferId: null);
+
             var offer = new SpecialOffer
             {
                 Name = dto.Name,
+                OfferKey = offerKey,
                 Description = dto.Description,
                 IsPercentage = dto.IsPercentage,
                 DiscountValue = dto.DiscountValue,
@@ -79,6 +104,7 @@ namespace DreamCleaningBackend.Services
                     CreatedAt = o.CreatedAt,
                     MinimumOrderAmount = o.MinimumOrderAmount,
                     RequiresFirstTimeCustomer = o.RequiresFirstTimeCustomer,
+                    OfferKey = o.OfferKey,
                     TotalUsersGranted = o.UserSpecialOffers.Count,
                     TimesUsed = o.UserSpecialOffers.Count(uso => uso.IsUsed)
                 })
@@ -93,6 +119,10 @@ namespace DreamCleaningBackend.Services
 
             var originalOffer = AuditSnapshot.Of(offer);
 
+            // An absent key keeps the stored one (see UpdateSpecialOfferDto.OfferKey).
+            if (dto.OfferKeyProvided)
+                offer.OfferKey = await ResolveOfferKeyAsync(dto.OfferKey, exceptOfferId: offer.Id);
+
             offer.Name = dto.Name;
             offer.Description = dto.Description;
             offer.IsPercentage = dto.IsPercentage;
@@ -105,7 +135,8 @@ namespace DreamCleaningBackend.Services
             offer.ValidTo = dto.ValidTo;
             offer.Icon = dto.Icon;
             offer.BadgeColor = dto.BadgeColor;
-            offer.MinimumOrderAmount = dto.MinimumOrderAmount;
+            if (dto.MinimumOrderAmountProvided)
+                offer.MinimumOrderAmount = dto.MinimumOrderAmount;
             offer.IsActive = dto.IsActive;
             offer.UpdatedAt = DateTime.UtcNow;
 
@@ -123,8 +154,8 @@ namespace DreamCleaningBackend.Services
             if (offer == null)
                 return false;
 
-            // Don't allow deletion of first-time offer
-            if (offer.Type == OfferType.FirstTime)
+            // Don't allow deletion of first-time offer: the keyed one, or (as always) a FirstTime-type row.
+            if (FirstTimeOfferHelper.IsProtectedFromDeletion(offer))
                 throw new Exception("Cannot delete the first-time customer discount");
 
             _context.SpecialOffers.Remove(offer);
@@ -175,6 +206,7 @@ namespace DreamCleaningBackend.Services
                         CreatedAt = o.CreatedAt,
                         MinimumOrderAmount = o.MinimumOrderAmount,
                         RequiresFirstTimeCustomer = o.RequiresFirstTimeCustomer,
+                        OfferKey = o.OfferKey,
                         TotalUsersGranted = stats?.TotalGranted ?? 0,
                         TimesUsed = stats?.TimesUsed ?? 0
                     };
@@ -311,6 +343,7 @@ namespace DreamCleaningBackend.Services
                     Icon = o.Icon,
                     BadgeColor = o.BadgeColor,
                     CreatedAt = o.CreatedAt,
+                    OfferKey = o.OfferKey,
                     TotalUsersGranted = o.UserSpecialOffers.Count,
                     TimesUsed = o.UserSpecialOffers.Count(uso => uso.IsUsed)
                 })
@@ -431,7 +464,8 @@ namespace DreamCleaningBackend.Services
                     IsUsed = uso.IsUsed,
                     Icon = uso.SpecialOffer.Icon,
                     BadgeColor = uso.SpecialOffer.BadgeColor,
-                    MinimumOrderAmount = uso.SpecialOffer.MinimumOrderAmount
+                    MinimumOrderAmount = uso.SpecialOffer.MinimumOrderAmount,
+                    OfferKey = uso.SpecialOffer.OfferKey
                 })
                 .ToListAsync();
         }
@@ -474,7 +508,8 @@ namespace DreamCleaningBackend.Services
                     Description = uso.SpecialOffer.Description,
                     IsPercentage = uso.SpecialOffer.IsPercentage,
                     DiscountValue = uso.SpecialOffer.DiscountValue,
-                    MinimumOrderAmount = uso.SpecialOffer.MinimumOrderAmount
+                    MinimumOrderAmount = uso.SpecialOffer.MinimumOrderAmount,
+                    OfferKey = uso.SpecialOffer.OfferKey
                 })
                 .FirstOrDefaultAsync();
         }

@@ -220,11 +220,19 @@ namespace DreamCleaningBackend.Services
             var user = await _context.Users.FindAsync(userId);
             if (user == null) return;
 
-            var totalToReverse = entries.Sum(e => e.Points);
+            // A refund may already have taken some of these points back (RefundPointsReversal).
+            // Only what is still on the balance comes off now, and those reversal rows go with the
+            // earned rows they offset - otherwise moving a refunded order out of Done would take
+            // the same points twice.
+            var refundReversals = await _context.BubblePointsHistories
+                .Where(h => h.OrderId == orderId && Helpers.RefundPointsReversal.ReversalTypes.Contains(h.Type))
+                .ToListAsync();
+            var totalToReverse = entries.Sum(e => e.Points) + refundReversals.Sum(e => e.Points);
 
             // Delete the history entries — this restores visible history and TotalEarned,
             // and allows ProcessOrderCompletion to re-run if order is marked Done again
             _context.BubblePointsHistories.RemoveRange(entries);
+            _context.BubblePointsHistories.RemoveRange(refundReversals);
 
             // Reduce current points balance
             user.BubblePoints = Math.Max(0, user.BubblePoints - totalToReverse);
@@ -470,11 +478,20 @@ namespace DreamCleaningBackend.Services
             };
         }
 
-        public async Task<PagedResult<BubblePointsHistoryDto>> GetHistory(int userId, int page, int pageSize)
+        public async Task<PagedResult<BubblePointsHistoryDto>> GetHistory(int userId, int page, int pageSize, bool adminView = false)
         {
             pageSize = Math.Min(pageSize, 100);
+            var reversalTypes = Helpers.RefundPointsReversal.ReversalTypes;
+            // Admin point adjustments ARE shown — the customer's balance moved, and a history that
+            // does not explain the balance reads as points appearing or vanishing. Only the
+            // 0-point "AdminAdjustment" rows stay hidden: AdminGrantCredit writes those as a note
+            // about a DOLLAR credit, which has no place in a points history.
+            // A 0-point refund/cancellation reversal is only the one-time correction's "done" marker
+            // (the customer had nothing left to take back) - nothing moved, so the customer never
+            // sees it. Admins do: it explains why the order was not corrected for points.
             var query = _context.BubblePointsHistories
-                .Where(h => h.UserId == userId && h.Type != "AdminAdjustment")
+                .Where(h => h.UserId == userId && (h.Type != "AdminAdjustment" || h.Points != 0))
+                .Where(h => adminView || h.Points != 0 || !reversalTypes.Contains(h.Type))
                 .OrderByDescending(h => h.CreatedAt);
 
             var total = await query.CountAsync();
@@ -491,6 +508,19 @@ namespace DreamCleaningBackend.Services
                     CreatedAt = h.CreatedAt
                 })
                 .ToListAsync();
+
+            // The customer sees refund/cancellation reversals as a neutral "Balance adjustment" with
+            // no order number and no reason (owner's rule, 2026-10) - the row is still there, so the
+            // history keeps adding up to the balance. Staff read the full record (adminView).
+            if (!adminView)
+            {
+                foreach (var item in items.Where(i => Helpers.RefundPointsReversal.IsReversal(i.Type)))
+                {
+                    item.Type = Helpers.RefundPointsReversal.CustomerFacingType;
+                    item.Description = null;
+                    item.OrderId = null;
+                }
+            }
 
             return new PagedResult<BubblePointsHistoryDto>
             {

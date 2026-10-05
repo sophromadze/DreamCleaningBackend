@@ -15,7 +15,9 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// Capture (or merge into) a lead from an inbound source. If an OPEN lead
         /// (not Won/Lost) already exists for the same email or phone, a timeline entry is
         /// appended to it instead of creating a duplicate. Returns the lead, or null if
-        /// capture failed (never throws).
+        /// capture failed (never throws). <paramref name="leadType"/> applies to a NEW lead only
+        /// (<see cref="LeadType"/>; null keeps the Residential default) — a repeat inquiry never
+        /// re-types a card an admin may already have classified.
         /// </summary>
         Task<Lead?> CaptureAsync(
             string source,
@@ -25,6 +27,7 @@ namespace DreamCleaningBackend.Services.Interfaces
             string? phone,
             string? serviceAddress = null,
             string? cleaningType = null,
-            string? message = null);
+            string? message = null,
+            string? leadType = null);
     }
 }

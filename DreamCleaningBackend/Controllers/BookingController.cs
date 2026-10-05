@@ -24,6 +24,13 @@ namespace DreamCleaningBackend.Controllers
     [ApiController]
     public class BookingController : ControllerBase
     {
+        /// <summary>
+        /// The admin booking page's "Invoice" choice for a regular customer (2026-09). Not a
+        /// <see cref="PaymentMethod"/> member: the order is an ordinary Normal (card) order and a
+        /// regular customer invoice is issued for it. "Invoice" stays the commercial method.
+        /// </summary>
+        public const string RegularInvoicePaymentMethodValue = "RegularInvoice";
+
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly ISubscriptionService _subscriptionService;
@@ -236,7 +243,8 @@ namespace DreamCleaningBackend.Controllers
                     Name = f.Name,
                     Description = f.Description,
                     DiscountPercentage = f.DiscountPercentage,
-                    SubscriptionDays = f.SubscriptionDays
+                    SubscriptionDays = f.SubscriptionDays,
+                    IsMostPopular = f.IsMostPopular
                 })
                 .ToListAsync();
 
@@ -275,6 +283,9 @@ namespace DreamCleaningBackend.Controllers
                 hasSubscription = true,
                 subscriptionId = user.SubscriptionId,
                 subscriptionName = user.Subscription.Name,
+                // The plan's identity for the booking page's "does the active plan match the selected
+                // one" check - it used to map subscriptionName back to days by name.
+                subscriptionDays = user.Subscription.SubscriptionDays,
                 discountPercentage = user.Subscription.DiscountPercentage,
                 expiryDate = user.SubscriptionExpiryDate,
                 preferredSubscriptionId,
@@ -590,8 +601,16 @@ namespace DreamCleaningBackend.Controllers
                 // Parse manual payment method up front so order construction can choose the
                 // initial Status (Pending for Stripe / Normal, Active for manual). Anything
                 // unrecognised falls back to Normal — defensive default keeps the original flow.
+                // "RegularInvoice" (2026-09) is NOT a stored payment method. It books exactly like a
+                // Normal (card) order — Pending, unpaid, payable online — and then issues a regular
+                // customer invoice for it (Admin → Invoices) INSTEAD of the Pay Now link: the
+                // customer can pay the invoice by card or by bank transfer. "Invoice" keeps meaning
+                // the COMMERCIAL invoice flow, which needs a commercial client.
+                var issueRegularInvoice = string.Equals(dto.PaymentMethod?.Trim(), RegularInvoicePaymentMethodValue,
+                    StringComparison.OrdinalIgnoreCase);
+
                 var paymentMethod = PaymentMethod.Normal;
-                if (!string.IsNullOrWhiteSpace(dto.PaymentMethod) &&
+                if (!issueRegularInvoice && !string.IsNullOrWhiteSpace(dto.PaymentMethod) &&
                     !Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out paymentMethod))
                 {
                     paymentMethod = PaymentMethod.Normal;
@@ -799,12 +818,9 @@ namespace DreamCleaningBackend.Controllers
                     var manualAddressDisplay = $"{order.ServiceAddress}{(!string.IsNullOrEmpty(order.AptSuite) ? $", {order.AptSuite}" : "")}";
                     var manualServiceTimeStr = order.ServiceTime.ToString();
 
-                    var manualExtraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
-                        .Select(x => x.ExtraService?.Name ?? "")
-                        .Where(n => !string.IsNullOrWhiteSpace(n))
-                        .ToList();
                     var manualIsCustomServiceType = order.ServiceType?.IsCustom ?? false;
-                    var manualSupplyChecklist = CustomerSupplyChecklist.Resolve(manualExtraNames, manualIsCustomServiceType);
+                    var manualSupplyChecklist = CustomerSupplyChecklist.Resolve(
+                        CustomerSupplyChecklist.ExtrasOf(order), manualIsCustomServiceType);
 
                     // Read off the tracked order HERE — detached work never touches the entity.
                     var manualOrderId = order.Id;
@@ -887,7 +903,41 @@ namespace DreamCleaningBackend.Controllers
                     });
                 }
 
-                // Send payment reminder notifications (SMS and Email)
+                // REGULAR INVOICE: issue the invoice and send IT instead of the Pay Now link. The
+                // invoice page pays through this same order (card) or records a bank transfer, so
+                // one link is all the customer needs — sending both would ask twice for one bill.
+                // A failure to issue it is logged and does not undo the booking: the admin can
+                // issue it from Admin → Invoices.
+                if (issueRegularInvoice)
+                {
+                    try
+                    {
+                        var customerInvoices = HttpContext.RequestServices.GetRequiredService<ICustomerInvoiceService>();
+                        var issued = await customerInvoices.CreateAsync(new CreateCustomerInvoiceDto
+                        {
+                            OrderId = order.Id,
+                            SendEmail = notifyCustomerByEmail,
+                            SendSms = notifyCustomerBySms
+                        }, adminUserId);
+
+                        if (notifyCustomerByEmail || notifyCustomerBySms)
+                        {
+                            foreach (var invoice in issued)
+                            {
+                                var sent = await customerInvoices.SendAsync(
+                                    invoice.Id, notifyCustomerByEmail, notifyCustomerBySms, adminUserId);
+                                _logger.LogInformation("Admin booking {OrderId}: {Message}", order.Id, sent.Message);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Order {OrderId} was booked for a regular invoice, but the invoice could not be issued", order.Id);
+                    }
+                }
+
+                // Send payment reminder notifications (SMS and Email) — the Pay Now link.
+                if (!issueRegularInvoice)
                 try
                 {
                     // Reload target user to get latest data
@@ -1566,7 +1616,10 @@ namespace DreamCleaningBackend.Controllers
                 // A saved-card charge (admin / AutoPay) holds this order right now. Issuing a
                 // client secret beside it is how one cleaning gets paid twice.
                 var savedCardLockKey = Models.Billing.BillingPaymentAttempt.OrderObligationKey(order.Id);
-                if (await _context.BillingPaymentAttempts.AnyAsync(a => a.ActiveLockKey == savedCardLockKey))
+                // ...and so does a regular-invoice BANK (ACH) payment that is still settling.
+                if (await _context.BillingPaymentAttempts.AnyAsync(a => a.ActiveLockKey == savedCardLockKey)
+                    || await _context.CustomerInvoicePaymentAttempts.AnyAsync(a =>
+                        a.OrderId == order.Id && a.Status == CustomerInvoicePaymentAttemptStatus.Processing))
                     return BadRequest(new
                     {
                         message = "A payment for this order is already being processed. Please wait a moment and refresh the page — do not pay again.",
@@ -2362,7 +2415,8 @@ namespace DreamCleaningBackend.Controllers
         [HttpPost("create-partial-payment-intent/{orderId}")]
         [AllowAnonymous]
         public async Task<ActionResult<PartialPaymentIntentDto>> CreatePartialPaymentIntent(
-            int orderId, [FromQuery] string? guestToken = null, [FromQuery] bool payFullBalance = false)
+            int orderId, [FromQuery] string? guestToken = null, [FromQuery] bool payFullBalance = false,
+            [FromQuery] int? partialPaymentId = null)
         {
             try
             {
@@ -2385,7 +2439,11 @@ namespace DreamCleaningBackend.Controllers
 
                 // A saved-card charge holds this order — see create-payment-intent.
                 var partialLockKey = Models.Billing.BillingPaymentAttempt.OrderObligationKey(order.Id);
-                if (await _context.BillingPaymentAttempts.AnyAsync(a => a.ActiveLockKey == partialLockKey))
+                // A regular-invoice bank (ACH) payment settling for this order blocks the card too:
+                // the money is on its way, it just takes a few business days.
+                if (await _context.BillingPaymentAttempts.AnyAsync(a => a.ActiveLockKey == partialLockKey)
+                    || await _context.CustomerInvoicePaymentAttempts.AnyAsync(a =>
+                        a.OrderId == order.Id && a.Status == CustomerInvoicePaymentAttemptStatus.Processing))
                     return BadRequest(new
                     {
                         message = "A payment for this order is already being processed. Please wait a moment and refresh the page — do not pay again.",
@@ -2400,7 +2458,14 @@ namespace DreamCleaningBackend.Controllers
                     return BadRequest(new { message = PaymentConsentPolicy.ConsentRequiredMessage, requiresConsent = true });
 
                 var partialPayments = HttpContext.RequestServices.GetRequiredService<IOrderPartialPaymentService>();
-                var request = await partialPayments.GetPendingRequestAsync(orderId);
+                // A regular customer invoice names its OWN request (an order split into several
+                // invoices has several open at once); without one, the latest open request is
+                // charged exactly as before.
+                var request = partialPaymentId.HasValue
+                    ? await _context.OrderPartialPayments.FirstOrDefaultAsync(p =>
+                        p.Id == partialPaymentId.Value && p.OrderId == orderId
+                        && p.Status == OrderPartialPaymentStatus.Pending)
+                    : await partialPayments.GetPendingRequestAsync(orderId);
                 if (request == null)
                     return BadRequest(new { message = "There is no payment request open for this order.", noPartialRequest = true });
 
@@ -2675,13 +2740,8 @@ namespace DreamCleaningBackend.Controllers
             var specialInstructions = order.SpecialInstructions;
             var uploadedPhotos = bookingDataDto?.UploadedPhotos;
 
-            var extraNames = (order.OrderExtraServices ?? new List<OrderExtraService>())
-                .Select(x => x.ExtraService?.Name ?? "")
-                .Where(n => !string.IsNullOrWhiteSpace(n))
-                .ToList();
-
             var isCustomServiceType = order.ServiceType.IsCustom;
-            var supplyChecklist = CustomerSupplyChecklist.Resolve(extraNames, isCustomServiceType);
+            var supplyChecklist = CustomerSupplyChecklist.Resolve(CustomerSupplyChecklist.ExtrasOf(order), isCustomServiceType);
 
             BackgroundWork.Run(_scopeFactory, _logger, $"booking confirmation email for order {notifiedOrderId}", async services =>
             {

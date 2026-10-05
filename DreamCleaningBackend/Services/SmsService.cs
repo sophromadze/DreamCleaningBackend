@@ -238,6 +238,14 @@ namespace DreamCleaningBackend.Services
             await SendSmsAsync(phoneNumber, msg);
         }
 
+        public async Task SendCustomerInvoiceSmsAsync(string phoneNumber, string customerName, string invoiceNumber,
+            decimal amountDue, int orderId, string invoiceUrl)
+        {
+            var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;
+            var msg = $"Hi {firstName}, here is your Dream Cleaning invoice {invoiceNumber} for order #{orderId}: {amountDue:C} due. View and pay by card or bank transfer: {invoiceUrl}";
+            await SendSmsAsync(phoneNumber, msg);
+        }
+
         public async Task SendReviewRequestSmsAsync(string phoneNumber, string customerName)
         {
             var firstName = customerName.Split(' ').FirstOrDefault() ?? customerName;

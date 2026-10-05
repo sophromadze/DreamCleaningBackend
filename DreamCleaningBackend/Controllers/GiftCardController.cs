@@ -1,6 +1,7 @@
 // DreamCleaningBackend/Controllers/GiftCardController.cs
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Services.Interfaces;
@@ -48,7 +49,33 @@ namespace DreamCleaningBackend.Controllers
                     // User is not authenticated - allow anonymous purchase
                     userId = null;
                 }
-                
+
+                if (createDto.SendLater)
+                {
+                    // "Buy for myself - send later" lives in the buyer's profile, so it needs an account.
+                    if (userId == null)
+                        return Unauthorized(new { message = "Please log in to buy a gift card for yourself and send it later." });
+
+                    // Sender name/email come from the account, not from the form.
+                    var buyer = await _context.Users.AsNoTracking()
+                        .Where(u => u.Id == userId.Value)
+                        .Select(u => new { u.FirstName, u.LastName, u.Email })
+                        .FirstOrDefaultAsync();
+                    if (buyer == null)
+                        return Unauthorized(new { message = "Please log in to buy a gift card for yourself and send it later." });
+
+                    createDto.SenderName = $"{buyer.FirstName} {buyer.LastName}".Trim();
+                    createDto.SenderEmail = buyer.Email;
+                    createDto.RecipientName = null;
+                    createDto.RecipientEmail = null;
+                    createDto.Message = null;
+                }
+                else if (string.IsNullOrWhiteSpace(createDto.RecipientName) || string.IsNullOrWhiteSpace(createDto.RecipientEmail))
+                {
+                    // Today's "send now" flow: the recipient is required, exactly as before.
+                    return BadRequest(new { message = "Recipient name and email are required." });
+                }
+
                 var giftCard = await _giftCardService.CreateGiftCard(userId, createDto);
 
                 // Create Stripe payment intent
@@ -91,13 +118,74 @@ namespace DreamCleaningBackend.Controllers
                 if (giftCard == null)
                     return NotFound(new { message = "Gift card not found" });
 
+                // The payment must be the one created for THIS card - any other successful payment
+                // must not be able to mark it paid.
+                if (string.IsNullOrEmpty(dto.PaymentIntentId)
+                    || !string.Equals(giftCard.PaymentIntentId, dto.PaymentIntentId, StringComparison.Ordinal))
+                {
+                    _logger.LogWarning("[GIFT CARD CONTROLLER] confirm-payment for gift card {GiftCardId} with a payment that does not belong to it", giftCardId);
+                    return BadRequest(new { message = "Payment does not match this gift card" });
+                }
+
+                // A repeated confirm (retry, refresh, second tab) must not send the emails again.
+                // Only the browser's confirm sends them - the webhook only marks the card paid - so a
+                // card already paid via the webhook has not had its emails yet: "already confirmed"
+                // means a previous confirm-payment got as far as sending.
+                if (giftCard.IsPaid && giftCard.EmailsSentOnPurchase)
+                {
+                    return Ok(new
+                    {
+                        message = "Gift card payment already confirmed",
+                        paymentIntentId = dto.PaymentIntentId,
+                        alreadyConfirmed = true
+                    });
+                }
+
                 // Verify payment with Stripe
                 var paymentIntent = await _stripeService.GetPaymentIntentAsync(dto.PaymentIntentId);
 
                 if (paymentIntent.Status == "succeeded")
                 {
+                    // Claim the email send atomically so two concurrent confirms can't both send.
+                    var claimedEmails = await _context.GiftCards
+                        .Where(gc => gc.Id == giftCardId && !gc.EmailsSentOnPurchase)
+                        .ExecuteUpdateAsync(s => s.SetProperty(gc => gc.EmailsSentOnPurchase, true));
+
                     // Mark as paid
                     await _giftCardService.MarkGiftCardAsPaid(giftCardId, dto.PaymentIntentId);
+
+                    if (claimedEmails == 0)
+                    {
+                        return Ok(new
+                        {
+                            message = "Gift card payment already confirmed",
+                            paymentIntentId = dto.PaymentIntentId,
+                            alreadyConfirmed = true
+                        });
+                    }
+
+                    if (giftCard.IsPendingSend)
+                    {
+                        // "Buy for myself - send later": the buyer's receipt only. Nothing goes to a
+                        // recipient until the card is sent from the profile.
+                        try
+                        {
+                            await _emailService.SendGiftCardSenderConfirmationAsync(
+                                giftCard.SenderEmail, giftCard.SenderName, null, null,
+                                giftCard.Code, giftCard.OriginalAmount, null, sendLater: true);
+                        }
+                        catch (Exception emailEx)
+                        {
+                            _logger.LogError(emailEx, "[GIFT CARD CONTROLLER] Send-later receipt email failed for gift card {GiftCardId}", giftCardId);
+                        }
+
+                        return Ok(new
+                        {
+                            message = "Gift card payment processed successfully. The gift card is saved in your profile.",
+                            paymentIntentId = dto.PaymentIntentId,
+                            sendLater = true
+                        });
+                    }
 
                     // Get the updated gift card details to send the email
                     // For anonymous purchases, get gift card directly from context
@@ -122,8 +210,8 @@ namespace DreamCleaningBackend.Controllers
                         // Send email notification to recipient
                         _logger.LogInformation($"[GIFT CARD CONTROLLER] Sending notification email to recipient: {updatedGiftCard.RecipientEmail}");
                         await _emailService.SendGiftCardNotificationAsync(
-                            updatedGiftCard.RecipientEmail,
-                            updatedGiftCard.RecipientName,
+                            updatedGiftCard.RecipientEmail ?? "",
+                            updatedGiftCard.RecipientName ?? "",
                             updatedGiftCard.SenderName,
                             updatedGiftCard.Code,
                             updatedGiftCard.OriginalAmount,
@@ -139,7 +227,8 @@ namespace DreamCleaningBackend.Controllers
                             updatedGiftCard.SenderName,
                             updatedGiftCard.RecipientName,
                             updatedGiftCard.RecipientEmail,
-                            updatedGiftCard.Code,
+                            // The card now belongs to the recipient: the buyer sees the last 4 only.
+                            GiftCardService.MaskCode(updatedGiftCard.Code),
                             updatedGiftCard.OriginalAmount,
                             updatedGiftCard.Message ?? ""
                         );
@@ -201,6 +290,65 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(new { message = "Failed to get gift cards: " + ex.Message });
             }
         }
+
+        // ---- Profile -> Gift Cards. Every action is scoped to the token's user in GiftCardService:
+        // another user's card id answers 404, exactly like an id that does not exist. ----
+
+        public const string SendRateLimitPolicy = "gift-card-send";
+
+        [HttpGet("mine")]
+        public async Task<ActionResult<List<MyGiftCardDto>>> GetMyGiftCards()
+        {
+            try
+            {
+                var userId = GetUserId();
+                return Ok(await _giftCardService.GetMyGiftCards(userId));
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to load the user's gift cards");
+                return BadRequest(new { message = "Failed to load your gift cards." });
+            }
+        }
+
+        [HttpPost("mine/{id:int}/send")]
+        [EnableRateLimiting(SendRateLimitPolicy)]
+        public async Task<ActionResult<MyGiftCardDto>> SendMyGiftCard(int id, [FromBody] SendMyGiftCardDto dto)
+        {
+            int userId;
+            try { userId = GetUserId(); }
+            catch (UnauthorizedAccessException) { return Unauthorized(); }
+
+            var result = await _giftCardService.SendMyGiftCard(id, userId, dto);
+            return ToActionResult(result);
+        }
+
+        [HttpPost("mine/{id:int}/resend")]
+        [EnableRateLimiting(SendRateLimitPolicy)]
+        public async Task<ActionResult<MyGiftCardDto>> ResendMyGiftCard(int id)
+        {
+            int userId;
+            try { userId = GetUserId(); }
+            catch (UnauthorizedAccessException) { return Unauthorized(); }
+
+            var result = await _giftCardService.ResendMyGiftCard(id, userId);
+            return ToActionResult(result);
+        }
+
+        private ActionResult ToActionResult(GiftCardSendResult result) => result.Kind switch
+        {
+            GiftCardSendResult.ResultKind.Ok => Ok(result.Card),
+            GiftCardSendResult.ResultKind.NotFound => NotFound(new { message = result.Message }),
+            GiftCardSendResult.ResultKind.TooMany => StatusCode(StatusCodes.Status429TooManyRequests, new { message = result.Message }),
+            // The card IS sent (recipient saved) but the email bounced - 502 with the updated card.
+            GiftCardSendResult.ResultKind.EmailFailed => StatusCode(StatusCodes.Status502BadGateway, new { message = result.Message, card = result.Card }),
+            GiftCardSendResult.ResultKind.Failed => StatusCode(StatusCodes.Status502BadGateway, new { message = result.Message }),
+            _ => BadRequest(new { message = result.Message })
+        };
 
         [HttpGet("{code}/usage-history")]
         public async Task<ActionResult<List<GiftCardUsageDto>>> GetGiftCardUsageHistory(string code)

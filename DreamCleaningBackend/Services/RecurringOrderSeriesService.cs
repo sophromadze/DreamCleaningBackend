@@ -3,6 +3,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Helpers.Recurring;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services.Commercial;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -25,6 +26,9 @@ namespace DreamCleaningBackend.Services
         Task<RecurringSeriesDto?> GetAsync(int seriesId);
         Task<RecurringSeriesDto?> GetForOrderAsync(int orderId);
         Task<List<RecurringSeriesDto>> ListAsync(bool includeInactive);
+
+        /// <summary>The executed contracts a plan built from this order may be linked to.</summary>
+        Task<RecurringContractOptionsDto> GetContractOptionsAsync(int orderId);
 
         /// <summary>Fills the horizon for ONE series. Idempotent.</summary>
         Task<RecurringGenerationResultDto> GenerateAsync(int seriesId, int? actingUserId = null);
@@ -103,7 +107,9 @@ namespace DreamCleaningBackend.Services
         public async Task<RecurringSeriesDto> CreateAsync(
             int templateOrderId, SaveRecurringSeriesDto dto, int adminUserId)
         {
-            var validation = RecurrenceCalculator.Validate(dto.IntervalUnit, dto.IntervalValue);
+            var validation = RecurrenceCalculator.Validate(dto.IntervalUnit, dto.IntervalValue)
+                ?? RecurrenceCalculator.ValidatePattern(dto.IntervalUnit, dto.ServiceDaysOfWeek,
+                    dto.ServiceDaysOfMonth, dto.UpcomingOccurrenceTarget);
             if (validation != null) throw new RecurringSeriesException(validation);
 
             ValidateDiscount(dto);
@@ -145,18 +151,26 @@ namespace DreamCleaningBackend.Services
             if (dto.ServiceTime.HasValue && (dto.ServiceTime < TimeSpan.Zero || dto.ServiceTime >= TimeSpan.FromDays(1)))
                 throw new RecurringSeriesException("Choose a valid service time.");
 
+            var contract = await ResolveContractAsync(order, dto.ContractId);
+
             var series = new RecurringOrderSeries
             {
                 UserId = order.UserId,
                 TemplateOrderId = order.Id,
                 IntervalValue = dto.IntervalValue,
                 IntervalUnit = dto.IntervalUnit,
+                ServiceDaysOfWeek = RecurrenceCalculator.FormatDaysOfWeek(dto.ServiceDaysOfWeek?.Select(d => (DayOfWeek)d)),
+                ServiceDaysOfMonth = RecurrenceCalculator.FormatDaysOfMonth(dto.ServiceDaysOfMonth),
+                UpcomingOccurrenceTarget = dto.UpcomingOccurrenceTarget,
+                ContractId = contract?.ContractId,
                 AnchorDate = anchor,
                 ServiceTime = dto.ServiceTime ?? order.ServiceTime,
                 EndDate = dto.EndDate?.Date,
                 IsActive = dto.IsActive,
                 CopyCleanerAssignments = dto.CopyCleanerAssignments,
-                AutoRequestPayment = dto.AutoRequestPayment ?? true,
+                // A weekly flat fee is billed by the contract's weekly invoice. A per-visit payment
+                // request would ask the customer for money the invoice already covers.
+                AutoRequestPayment = contract?.IsWeeklyFlatFee != true && (dto.AutoRequestPayment ?? true),
                 RecurringLoyaltyDiscountPercent = dto.RecurringLoyaltyDiscountPercent,
                 RecurringLoyaltyDiscountAmount = dto.RecurringLoyaltyDiscountAmount,
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
@@ -171,7 +185,10 @@ namespace DreamCleaningBackend.Services
             // The template joins its own series so the panel can show the schedule from the order
             // the admin set it up on. It is NOT marked as generated — a person booked it.
             order.RecurringSeriesId = series.Id;
-            order.RecurrenceOccurrenceDate = anchor;
+            // The slot the template fills is its OWN service date. It used to be the anchor, which
+            // is the same date unless the admin typed a different First cleaning — and then the
+            // template silently claimed that first visit, so it was never generated (2026-10).
+            order.RecurrenceOccurrenceDate = order.ServiceDate.Date;
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
@@ -184,7 +201,9 @@ namespace DreamCleaningBackend.Services
                     PreviousSeriesId = previousSeriesId,
                     TemplateOrderId = order.Id,
                     CustomerUserId = order.UserId,
-                    Recurrence = RecurrenceCalculator.Describe(series.IntervalUnit, series.IntervalValue),
+                    Recurrence = RecurrenceCalculator.Describe(RecurrenceRule.From(series)),
+                    series.UpcomingOccurrenceTarget,
+                    series.ContractId,
                     FirstServiceDate = anchor,
                     series.EndDate,
                     CopiesCleanerAssignments = series.CopyCleanerAssignments,
@@ -217,7 +236,9 @@ namespace DreamCleaningBackend.Services
         public async Task<RecurringSeriesDto> UpdateAsync(
             int seriesId, SaveRecurringSeriesDto dto, int adminUserId)
         {
-            var validation = RecurrenceCalculator.Validate(dto.IntervalUnit, dto.IntervalValue);
+            var validation = RecurrenceCalculator.Validate(dto.IntervalUnit, dto.IntervalValue)
+                ?? RecurrenceCalculator.ValidatePattern(dto.IntervalUnit, dto.ServiceDaysOfWeek,
+                    dto.ServiceDaysOfMonth, dto.UpcomingOccurrenceTarget);
             if (validation != null) throw new RecurringSeriesException(validation);
 
             var series = await _context.RecurringOrderSeries
@@ -230,6 +251,31 @@ namespace DreamCleaningBackend.Services
             if (series.StoppedAt.HasValue)
                 throw new RecurringSeriesException("This recurring series has been stopped permanently.");
 
+            // Once a plan keeps a COUNT it cannot quietly fall back to the legacy 30-day window —
+            // a blank box on the form would otherwise change how much the plan generates.
+            if (dto.UpcomingOccurrenceTarget == null && series.UpcomingOccurrenceTarget != null)
+                throw new RecurringSeriesException("Choose how many upcoming cleanings to generate.");
+
+            // The contract is re-validated only when it CHANGES: a plan linked to a contract that
+            // has since completed must still be editable for its time or its cleaners.
+            var contractChanged = dto.ContractId != series.ContractId;
+            ContractBillingProfile? contract;
+            if (contractChanged)
+            {
+                var template = await _context.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == series.TemplateOrderId)
+                    ?? throw new RecurringSeriesException("The order this plan was built from no longer exists.");
+                contract = await ResolveContractAsync(template, dto.ContractId);
+            }
+            else
+            {
+                contract = series.ContractId.HasValue
+                    ? await ContractBillingProfile.LoadAsync(_context, series.ContractId.Value)
+                    : null;
+            }
+
+            var daysOfWeek = RecurrenceCalculator.FormatDaysOfWeek(dto.ServiceDaysOfWeek?.Select(d => (DayOfWeek)d));
+            var daysOfMonth = RecurrenceCalculator.FormatDaysOfMonth(dto.ServiceDaysOfMonth);
+
             var anchor = (dto.AnchorDate ?? series.AnchorDate).Date;
             if (dto.EndDate.HasValue && dto.EndDate.Value.Date < anchor)
                 throw new RecurringSeriesException("The end date is before the first service date.");
@@ -239,6 +285,7 @@ namespace DreamCleaningBackend.Services
                 throw new RecurringSeriesException("Choose a valid service time.");
             var ruleChanged = series.IntervalValue != dto.IntervalValue
                 || series.IntervalUnit != dto.IntervalUnit || series.AnchorDate != anchor
+                || series.ServiceDaysOfWeek != daysOfWeek || series.ServiceDaysOfMonth != daysOfMonth
                 || series.ServiceTime != serviceTime || series.EndDate != dto.EndDate?.Date
                 || (series.RecurringLoyaltyDiscountPercent ?? 0) != (dto.RecurringLoyaltyDiscountPercent ?? 0)
                 || (series.RecurringLoyaltyDiscountAmount ?? 0) != (dto.RecurringLoyaltyDiscountAmount ?? 0);
@@ -273,12 +320,17 @@ namespace DreamCleaningBackend.Services
 
             series.IntervalValue = dto.IntervalValue;
             series.IntervalUnit = dto.IntervalUnit;
+            series.ServiceDaysOfWeek = daysOfWeek;
+            series.ServiceDaysOfMonth = daysOfMonth;
+            series.UpcomingOccurrenceTarget = dto.UpcomingOccurrenceTarget;
+            series.ContractId = contract?.ContractId;
             series.AnchorDate = anchor;
             series.ServiceTime = serviceTime;
             series.EndDate = dto.EndDate?.Date;
             series.IsActive = dto.IsActive;
             series.CopyCleanerAssignments = dto.CopyCleanerAssignments;
-            series.AutoRequestPayment = dto.AutoRequestPayment ?? series.AutoRequestPayment;
+            series.AutoRequestPayment = contract?.IsWeeklyFlatFee != true
+                && (dto.AutoRequestPayment ?? series.AutoRequestPayment);
             series.RecurringLoyaltyDiscountPercent = dto.RecurringLoyaltyDiscountPercent;
             series.RecurringLoyaltyDiscountAmount = dto.RecurringLoyaltyDiscountAmount;
             series.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
@@ -452,21 +504,18 @@ namespace DreamCleaningBackend.Services
                 return result;
             }
 
-            var dates = RecurrenceCalculator.OccurrencesWithinHorizon(
-                series.AnchorDate, series.IntervalUnit, series.IntervalValue,
-                today, RecurrenceCalculator.HorizonDays, series.EndDate)
-                .Where(d => !series.GenerateAfterDate.HasValue || d > series.GenerateAfterDate.Value).ToList();
-
-            if (dates.Count == 0) return result;
-
             // What already exists for this series, by occurrence date. The unique index is the
             // real guard; this is the cheap path that stops us building a booking DTO per date.
-            var existing = await _context.Orders
-                .Where(o => o.RecurringSeriesId == series.Id && o.RecurrenceOccurrenceDate != null)
-                .Select(o => o.RecurrenceOccurrenceDate!.Value)
-                .ToListAsync();
+            var seriesOrders = await LoadSlotsAsync(series.Id);
+            var existingDates = seriesOrders
+                .Where(o => o.OccurrenceDate != null)
+                .Select(o => o.OccurrenceDate!.Value.Date)
+                .ToHashSet();
 
-            var existingDates = existing.Select(d => d.Date).ToHashSet();
+            var rule = await BuildRuleAsync(series);
+            var dates = PlanDates(series, rule, today, seriesOrders);
+
+            if (dates.Count == 0) return result;
 
             var template = await LoadTemplateAsync(series);
             if (template == null)
@@ -476,6 +525,8 @@ namespace DreamCleaningBackend.Services
                     + "Point the series at another order or pause it.");
                 return result;
             }
+
+            var createdDates = new List<DateTime>();
 
             foreach (var date in dates)
             {
@@ -494,6 +545,7 @@ namespace DreamCleaningBackend.Services
 
                     result.CreatedOrderIds.Add(order.Id);
                     result.CreatedCount++;
+                    createdDates.Add(date.Date);
                 }
                 catch (DbUpdateException ex) when (IsUniqueViolation(ex))
                 {
@@ -517,7 +569,10 @@ namespace DreamCleaningBackend.Services
             var reloaded = await _context.RecurringOrderSeries.FirstOrDefaultAsync(s => s.Id == series.Id);
             if (reloaded != null)
             {
-                reloaded.GeneratedThroughDate = today.AddDays(RecurrenceCalculator.HorizonDays);
+                // A count-driven plan is generated through its furthest slot, not a fixed window.
+                reloaded.GeneratedThroughDate = series.UpcomingOccurrenceTarget.HasValue
+                    ? existingDates.Concat(createdDates).DefaultIfEmpty(today).Max()
+                    : today.AddDays(RecurrenceCalculator.HorizonDays);
                 reloaded.UpdatedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
             }
@@ -532,10 +587,8 @@ namespace DreamCleaningBackend.Services
                         SeriesId = series.Id,
                         TemplateOrderId = series.TemplateOrderId,
                         CreatedOrderIds = result.CreatedOrderIds,
-                        Dates = result.CreatedOrderIds.Count == 0
-                            ? Array.Empty<string>()
-                            : dates.Where(d => !existingDates.Contains(d.Date))
-                                   .Select(d => d.ToString("yyyy-MM-dd")).ToArray(),
+                        Dates = createdDates.Select(d => d.ToString("yyyy-MM-dd")).ToArray(),
+                        series.UpcomingOccurrenceTarget,
                         CopiedCleanerAssignments = series.CopyCleanerAssignments,
                         // Stated in the payload on purpose: this is the fact somebody will come
                         // looking for when they ask why a cleaner never heard about the job.
@@ -574,16 +627,30 @@ namespace DreamCleaningBackend.Services
             dto.ServiceTime = series.ServiceTime.ToString(@"hh\:mm");
             dto.ApartmentId = template.ApartmentId;
 
+            // A WEEKLY FLAT FEE cleaning is an operational record billed through the contract's
+            // weekly invoice: it is created on the Invoice method for the contract's client, so
+            // nothing — no automatic request, no Pay All, no AutoPay — ever asks for it on its
+            // own. Per-visit contracts and residential plans keep the template's arrangement.
+            var weeklyFlat = template.Contract?.IsWeeklyFlatFee == true;
+            var paymentMethod = weeklyFlat ? PaymentMethod.Invoice : template.Order.PaymentMethod;
+
+            // A tip is never inherited onto a weekly-flat-fee visit (2026-10): nobody collects it —
+            // the invoice bills the weekly fee — yet payroll would pay it out, and committing the
+            // invoice would carve it out of the taxable fee. A tip for such a visit, if ever wanted,
+            // is an explicit act, not something recurrence copies.
+            if (weeklyFlat) dto.Tips = 0;
+            var contractClientId = weeklyFlat ? template.Contract!.ContractClientId : template.Order.ContractClientId;
+
             var options = new BookingCreationOptions
             {
                 RecurringSeriesId = series.Id,
                 RecurringLoyaltyDiscountPercent = series.RecurringLoyaltyDiscountPercent,
                 RecurringLoyaltyDiscountAmount = series.RecurringLoyaltyDiscountAmount,
-                ExcludeRecurringLoyalty = template.CommercialLoyaltyExcluded,
+                ExcludeRecurringLoyalty = template.CommercialLoyaltyExcluded || weeklyFlat,
                 RecurrenceOccurrenceDate = occurrenceDate.Date,
                 InitialStatus = OrderStatuses.Pending,
-                PaymentMethod = template.Order.PaymentMethod,
-                ContractClientId = template.Order.ContractClientId,
+                PaymentMethod = paymentMethod,
+                ContractClientId = contractClientId,
                 // A generated occurrence is not a recorded payment: no reference, no notes, no
                 // "recorded at" stamp. BookingCreationService only writes those for a settled
                 // method anyway (see PaymentMethodRules), and passing them would be a lie.
@@ -598,8 +665,11 @@ namespace DreamCleaningBackend.Services
             order.RecurringSeriesId = series.Id;
             order.RecurrenceOccurrenceDate = occurrenceDate.Date;
             order.IsGeneratedByRecurringSeries = true;
-            order.ContractClientId = template.Order.ContractClientId;
+            order.ContractClientId = contractClientId;
+            order.ContractId = template.Contract?.ContractId;
             order.AssignedAdminId = template.Order.AssignedAdminId;
+
+            if (weeklyFlat) await ZeroOperationalPricingAsync(order);
 
             await _context.SaveChangesAsync();
 
@@ -607,6 +677,34 @@ namespace DreamCleaningBackend.Services
                 await CopyCleanerAssignmentsAsync(series, template, order.Id);
 
             return order;
+        }
+
+        /// <summary>
+        /// A WEEKLY FLAT FEE visit is an OPERATIONAL record, not a charge (2026-10): its price
+        /// columns and its service/extra line costs are zero, and every price surface shows
+        /// "Billed weekly by contract …" instead (see <c>ContractBilledOrders</c>).
+        ///
+        /// What it KEEPS is everything the work needs: the service and extra lines (quantities and
+        /// durations), TotalDuration, MaidsCount and the cleaner rate — so staffing, schedules,
+        /// payroll hours and the cleaner's task list are exactly as before.
+        ///
+        /// Built through the ordinary creation path first and zeroed after, deliberately: that keeps
+        /// the lines, durations and staffing identical to a priced occurrence instead of growing a
+        /// second, price-free creation path. Sending the contract's invoice later writes each
+        /// visit's share of the weekly fee onto it, exactly as before; the money is the invoice's.
+        /// </summary>
+        private async Task ZeroOperationalPricingAsync(Order order)
+        {
+            order.SubTotal = 0m;
+            order.Tax = 0m;
+            order.Tips = 0m;
+            order.CompanyDevelopmentTips = 0m;
+            order.Total = 0m;
+
+            foreach (var line in await _context.OrderServices.Where(s => s.OrderId == order.Id).ToListAsync())
+                line.Cost = 0m;
+            foreach (var line in await _context.OrderExtraServices.Where(e => e.OrderId == order.Id).ToListAsync())
+                line.Cost = 0m;
         }
 
         /// <summary>
@@ -699,6 +797,7 @@ namespace DreamCleaningBackend.Services
                     o.InvoicePaidAt,
                     o.PaymentMethod,
                     o.IsGeneratedByRecurringSeries,
+                    o.ContractId,
                     AssignedCleanerCount = _context.OrderCleaners.Count(oc => oc.OrderId == o.Id),
                     AutoAssignedNotNotified = _context.OrderCleaners.Count(
                         oc => oc.OrderId == o.Id
@@ -718,7 +817,10 @@ namespace DreamCleaningBackend.Services
                 TemplateOrderId = series.TemplateOrderId,
                 IntervalValue = series.IntervalValue,
                 IntervalUnit = series.IntervalUnit,
-                IntervalLabel = RecurrenceCalculator.Describe(series.IntervalUnit, series.IntervalValue),
+                IntervalLabel = RecurrenceCalculator.Describe(RecurrenceRule.From(series)),
+                ServiceDaysOfWeek = RecurrenceCalculator.ParseDaysOfWeek(series.ServiceDaysOfWeek).Select(d => (int)d).ToList(),
+                ServiceDaysOfMonth = RecurrenceCalculator.ParseDaysOfMonth(series.ServiceDaysOfMonth),
+                UpcomingOccurrenceTarget = series.UpcomingOccurrenceTarget,
                 AnchorDate = series.AnchorDate,
                 ServiceTime = series.ServiceTime,
                 EndDate = series.EndDate,
@@ -747,25 +849,165 @@ namespace DreamCleaningBackend.Services
                     IsTemplate = o.Id == series.TemplateOrderId,
                     WasGenerated = o.IsGeneratedByRecurringSeries,
                     PaymentMethod = o.PaymentMethod.ToString(),
+                    ContractId = o.ContractId,
                     AssignedCleanerCount = o.AssignedCleanerCount,
                     AutoAssignedNotNotifiedCount = o.AutoAssignedNotNotified
                 }).ToList()
             };
 
-            var have = orders
-                .Where(o => o.RecurrenceOccurrenceDate != null)
-                .Select(o => o.RecurrenceOccurrenceDate!.Value.Date)
-                .ToHashSet();
+            var today = NyTimeHelper.NowNy.Date;
+            var slots = orders.Select(o => new OccurrenceSlot(o.RecurrenceOccurrenceDate, o.ServiceDate, o.Status)).ToList();
+            dto.UpcomingCount = slots.Count(s => s.IsUpcoming(today));
 
-            dto.PendingDates = RecurrenceCalculator
-                .OccurrencesWithinHorizon(series.AnchorDate, series.IntervalUnit, series.IntervalValue,
-                    NyTimeHelper.NowNy.Date, RecurrenceCalculator.HorizonDays, series.EndDate)
-                .Where(d => series.IsActive && series.StoppedAt == null && !have.Contains(d.Date)
-                    && (!series.GenerateAfterDate.HasValue || d > series.GenerateAfterDate.Value))
-                .ToList();
+            if (series.ContractId.HasValue)
+            {
+                var profile = await ContractBillingProfile.LoadAsync(_context, series.ContractId.Value);
+                if (profile != null)
+                {
+                    dto.Contract = ToOptionDto(profile);
+                    dto.BillingControlledByContract = profile.IsWeeklyFlatFee;
+                }
+            }
+
+            dto.PendingDates = series.IsActive && series.StoppedAt == null
+                ? PlanDates(series, await BuildRuleAsync(series), today, slots)
+                : new List<DateTime>();
 
             return dto;
         }
+
+        // ── Which dates a pass should create ──────────────────────────────────────────────────
+
+        /// <summary>One existing order of a plan, as far as date planning is concerned.</summary>
+        private sealed record OccurrenceSlot(DateTime? OccurrenceDate, DateTime ServiceDate, string Status)
+        {
+            /// <summary>
+            /// Counts toward the upcoming target: still to happen (today included — a visit stays
+            /// upcoming until its day is over) and not cancelled, refunded or skipped.
+            /// </summary>
+            public bool IsUpcoming(DateTime today) =>
+                ServiceDate.Date >= today && !OrderStatuses.IsCancelled(Status) && !OrderStatuses.IsRefunded(Status);
+        }
+
+        private async Task<List<OccurrenceSlot>> LoadSlotsAsync(int seriesId) =>
+            (await _context.Orders
+                .Where(o => o.RecurringSeriesId == seriesId)
+                .Select(o => new { o.RecurrenceOccurrenceDate, o.ServiceDate, o.Status })
+                .ToListAsync())
+            .Select(o => new OccurrenceSlot(o.RecurrenceOccurrenceDate, o.ServiceDate, o.Status))
+            .ToList();
+
+        /// <summary>
+        /// The plan's date rule. A contract-linked plan counts its weekly cycles from the
+        /// contract's own service-week start, so a fortnightly plan's cycles are the contract's
+        /// billing weeks; anything else counts from Sunday.
+        /// </summary>
+        private async Task<RecurrenceRule> BuildRuleAsync(RecurringOrderSeries series)
+        {
+            var weekStart = DayOfWeek.Sunday;
+            if (series.ContractId.HasValue && series.ServiceDaysOfWeek != null)
+            {
+                var profile = await ContractBillingProfile.LoadAsync(_context, series.ContractId.Value);
+                if (profile != null) weekStart = profile.WeekStart;
+            }
+            return RecurrenceRule.From(series, weekStart);
+        }
+
+        /// <summary>
+        /// The dates one generation pass should create.
+        ///
+        /// COUNT MODE (<see cref="RecurringOrderSeries.UpcomingOccurrenceTarget"/> set): tops the
+        /// plan up to the target — the upcoming cleanings that already exist count toward it, so a
+        /// second pass asks for nothing, and a visit that has passed frees exactly one new slot.
+        /// LEGACY MODE (null): every date inside the rolling 30-day horizon, as before.
+        /// Either way a date the plan already holds (any status) is never offered again.
+        /// </summary>
+        private static List<DateTime> PlanDates(
+            RecurringOrderSeries series, RecurrenceRule rule, DateTime today, List<OccurrenceSlot> slots)
+        {
+            var taken = slots.Where(s => s.OccurrenceDate != null).Select(s => s.OccurrenceDate!.Value.Date).ToList();
+
+            if (series.UpcomingOccurrenceTarget is int target)
+            {
+                var needed = target - slots.Count(s => s.IsUpcoming(today));
+                return RecurrenceCalculator.NextMissingOccurrences(rule, today, taken, needed, series.GenerateAfterDate);
+            }
+
+            var have = taken.ToHashSet();
+            return RecurrenceCalculator.OccurrencesWithinHorizon(rule, today)
+                .Where(d => !have.Contains(d)
+                    && (!series.GenerateAfterDate.HasValue || d > series.GenerateAfterDate.Value))
+                .ToList();
+        }
+
+        // ── Commercial contract linkage ───────────────────────────────────────────────────────
+
+        public async Task<RecurringContractOptionsDto> GetContractOptionsAsync(int orderId)
+        {
+            var order = await _context.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId)
+                ?? throw new RecurringSeriesException("Order not found.");
+
+            var result = new RecurringContractOptionsDto();
+            var (clientId, contracts) = await LoadContractOptionsAsync(order);
+            result.ContractClientId = clientId;
+            result.Contracts = contracts.Select(ToOptionDto).ToList();
+            if (result.Contracts.Count == 1) result.SuggestedContractId = result.Contracts[0].Id;
+            return result;
+        }
+
+        /// <summary>
+        /// The commercial client the order belongs to — its own, or the one its customer account
+        /// is linked to — and that client's EXECUTED contracts (the statuses an invoice may be
+        /// raised against). One rule for the panel's list and for the save guard below.
+        /// </summary>
+        private async Task<(int? ClientId, List<ContractBillingProfile> Contracts)> LoadContractOptionsAsync(Order order)
+        {
+            var clientId = order.ContractClientId ?? await _context.ContractClients
+                .Where(c => c.SourceUserId == order.UserId && c.IsActive)
+                .OrderBy(c => c.Id)
+                .Select(c => (int?)c.Id)
+                .FirstOrDefaultAsync();
+
+            if (clientId == null) return (null, new List<ContractBillingProfile>());
+
+            var statuses = Helpers.Commercial.ContractInvoiceEligibility.InvoiceableStatuses.ToList();
+            var contracts = await _context.Contracts
+                .Include(c => c.ServiceLocation)
+                .Where(c => c.ContractClientId == clientId && !c.IsHidden && statuses.Contains(c.Status))
+                .OrderBy(c => c.Id)
+                .AsNoTracking()
+                .ToListAsync();
+
+            var profiles = new List<ContractBillingProfile>(contracts.Count);
+            foreach (var contract in contracts)
+                profiles.Add(await ContractBillingProfile.FromContractAsync(_context, contract));
+            return (clientId, profiles);
+        }
+
+        private async Task<ContractBillingProfile?> ResolveContractAsync(Order order, int? contractId)
+        {
+            if (contractId == null) return null;
+            var (_, contracts) = await LoadContractOptionsAsync(order);
+            return contracts.FirstOrDefault(c => c.ContractId == contractId.Value)
+                ?? throw new RecurringSeriesException(
+                    "That contract is not an executed contract of this order's commercial client.");
+        }
+
+        private static RecurringContractOptionDto ToOptionDto(ContractBillingProfile p) => new()
+        {
+            Id = p.ContractId,
+            ContractNumber = p.ContractNumber,
+            Status = p.Status.ToString(),
+            ContractClientId = p.ContractClientId,
+            ServiceAddress = p.ServiceAddress,
+            PricingBasis = p.PricingBasis.ToString(),
+            IsWeeklyFlatFee = p.IsWeeklyFlatFee,
+            VisitsPerWeek = p.VisitsPerWeek,
+            PreTaxPrice = p.PreTaxPrice,
+            SalesTaxAmount = p.SalesTaxAmount,
+            TotalPrice = p.TotalPrice,
+            WeekDefinition = p.WeekDefinition
+        };
 
         // ── The template, loaded once per pass ────────────────────────────────────────────────
 
@@ -778,6 +1020,9 @@ namespace DreamCleaningBackend.Services
             public required List<int> CleanerIds { get; init; }
             public int? ApartmentId { get; init; }
             public bool CommercialLoyaltyExcluded { get; init; }
+
+            /// <summary>The plan's linked contract, when it has one.</summary>
+            public ContractBillingProfile? Contract { get; init; }
         }
 
         private async Task<TemplateSnapshot?> LoadTemplateAsync(RecurringOrderSeries series)
@@ -840,7 +1085,10 @@ namespace DreamCleaningBackend.Services
                 CleanerIds = cleanerIds,
                 CommercialLoyaltyExcluded = !ResidentialLoyaltyPolicy.AppliesTo(order)
                     || await _context.CommercialInvoiceOrders.AnyAsync(l => l.OrderId == order.Id),
-                ApartmentId = apartmentStillExists ? order.ApartmentId : null
+                ApartmentId = apartmentStillExists ? order.ApartmentId : null,
+                Contract = series.ContractId.HasValue
+                    ? await ContractBillingProfile.LoadAsync(_context, series.ContractId.Value)
+                    : null
             };
         }
 
@@ -901,7 +1149,11 @@ namespace DreamCleaningBackend.Services
         {
             s.IntervalValue,
             IntervalUnit = s.IntervalUnit.ToString(),
-            Recurrence = RecurrenceCalculator.Describe(s.IntervalUnit, s.IntervalValue),
+            Recurrence = RecurrenceCalculator.Describe(RecurrenceRule.From(s)),
+            s.ServiceDaysOfWeek,
+            s.ServiceDaysOfMonth,
+            s.UpcomingOccurrenceTarget,
+            s.ContractId,
             s.AnchorDate,
             s.EndDate,
             s.IsActive,

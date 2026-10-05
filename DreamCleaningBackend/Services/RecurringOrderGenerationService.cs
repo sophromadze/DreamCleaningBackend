@@ -148,8 +148,18 @@ namespace DreamCleaningBackend.Services
 
             var seriesRows = await context.RecurringOrderSeries
                 .Where(s => s.IsActive && s.StoppedAt == null && (s.AutoRequestPayment || autoPaySeriesIds.Contains(s.Id)))
-                .Select(s => new { s.Id, s.AutoRequestPayment })
+                .Select(s => new { s.Id, s.AutoRequestPayment, s.ContractId })
                 .ToListAsync(ct);
+
+            // A WEEKLY FLAT FEE plan is billed by the contract's weekly invoice. Its cleanings are
+            // operational records, so nothing here may request — or AutoPay — money for one visit,
+            // whatever the series' own switch or a stale authorisation says. (Its occurrences are
+            // created on the Invoice method too; this is the second, independent guard.)
+            var weeklyFlatContractIds = await LoadWeeklyFlatFeeContractIdsAsync(
+                context, seriesRows.Where(s => s.ContractId != null).Select(s => s.ContractId!.Value));
+            seriesRows = seriesRows
+                .Where(s => s.ContractId == null || !weeklyFlatContractIds.Contains(s.ContractId.Value))
+                .ToList();
 
             var charges = provider.GetService<Billing.ISavedCardChargeService>();
             var authorizations = provider.GetService<Billing.IPaymentAuthorizationService>();
@@ -316,6 +326,19 @@ namespace DreamCleaningBackend.Services
         /// however many cleaners, which is the wall-clock figure every customer-facing surface
         /// shows — and erring long is the safe direction for a rule about not asking too soon.
         /// </summary>
+        /// <summary>The contracts among <paramref name="contractIds"/> that charge a weekly flat fee.</summary>
+        public static async Task<HashSet<int>> LoadWeeklyFlatFeeContractIdsAsync(
+            ApplicationDbContext context, IEnumerable<int> contractIds)
+        {
+            var result = new HashSet<int>();
+            foreach (var contractId in contractIds.Distinct())
+            {
+                var profile = await Commercial.ContractBillingProfile.LoadAsync(context, contractId);
+                if (profile?.IsWeeklyFlatFee == true) result.Add(contractId);
+            }
+            return result;
+        }
+
         private static DateTime? ResolvePreviousCleaningEnd(List<Order> orders, Order current)
         {
             var previous = orders

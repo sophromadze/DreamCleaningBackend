@@ -120,11 +120,19 @@ namespace DreamCleaningBackend.Services.Contracts
                 // issue. That is exactly how a corrected body sat in source control while every
                 // contract still promised hand soap and printed its signature block above the
                 // exhibits. The fix is always to raise ContractTemplateSeed.TemplateVersion.
+                //
+                // IT ALSO FIRES WHEN ANOTHER APPLICATION SEEDED THE ROW (2026-09-30). Dream Cleaning
+                // and Sweep It Real are forks with the same template Name; pointed at one database,
+                // the first to start inserts ITS body at a version number and the other adopts it -
+                // which is how Dream Cleaning drafts came to render Sweep It Real's Ohio v2.7, hand
+                // soap and all. The seeder cannot tell whose row it is, so it does not guess: give
+                // each application its own database.
                 _logger.LogWarning(
                     "Master service agreement template v{Version} in the database does not match "
                     + "ContractTemplateSeed.BodyText. The STORED body is what contracts render, so "
                     + "the seed edit has not been applied. If the seed is the correction, raise "
-                    + "ContractTemplateSeed.TemplateVersion so it is inserted as a new version.",
+                    + "ContractTemplateSeed.TemplateVersion so it is inserted as a new version. If another "
+                    + "application shares this database, it may have seeded this row.",
                     ContractTemplateSeed.TemplateVersion);
             }
 
@@ -277,14 +285,12 @@ namespace DreamCleaningBackend.Services.Contracts
         /// <summary>
         /// Takes hand soap out of a STORED scope checklist, in place.
         ///
-        /// HAND SOAP IS OUT OF THE AGREEMENT ENTIRELY (owner's rule) - Contractor does not supply,
-        /// replenish, repair or replace it, now or in the future. Removing it from the agreement
+        /// HAND SOAP IS OUT OF THE AGREEMENT ENTIRELY (owner's rule) - since template v2.7 the
+        /// subject is not raised at all, in either direction. Removing it from the agreement
         /// body was only half the job: Exhibit A's area/task grid and the restroom checklist are
         /// SCOPE DATA, seeded into a row that this service inserts once and then never rewrites.
         /// A database seeded before the rule therefore kept printing "refill identified soap
-        /// dispensers" inside the exhibit, on a document whose Section A8 says the opposite - and
-        /// a contract that contradicts itself about who buys the soap is worse than one that never
-        /// mentioned it.
+        /// dispensers" inside the exhibit of a document that otherwise never mentions it.
         ///
         /// It is a REPAIR, not a rewrite: only an item that actually mentions soap is touched, and
         /// it is replaced with the seeded item of the same group and label - never with prose this
@@ -312,7 +318,7 @@ namespace DreamCleaningBackend.Services.Contracts
                     {
                         _logger.LogWarning(
                             "Scope template \"{Template}\", group \"{Group}\": the item \"{Item}\" mentions "
-                            + "hand soap, which the agreement excludes in A8. There is no seeded wording to "
+                            + "hand soap, which the agreement does not cover. There is no seeded wording to "
                             + "restore it from, so it was left alone - edit it in Commercial > Business Types.",
                             templateName, group.Key, item.Label);
                         continue;

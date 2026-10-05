@@ -41,6 +41,51 @@ namespace DreamCleaningBackend.Services.Contracts
         /// </summary>
         public const string OmitLineSentinel = "OMIT_LINE";
 
+        /// <summary>
+        /// Line guards: a template line ending in {{IF_MINIMUM_COMMITMENT}} is printed only when a
+        /// minimum commitment was agreed, and one ending in {{IF_NO_MINIMUM_COMMITMENT}} only when
+        /// none was. The applicable guard resolves to an empty string, the other to
+        /// <see cref="OmitLineSentinel"/>.
+        /// </summary>
+        public const string GuardMinimumCommitment = "IF_MINIMUM_COMMITMENT";
+        public const string GuardNoMinimumCommitment = "IF_NO_MINIMUM_COMMITMENT";
+
+        /// <summary>
+        /// Whether a token is a LINE GUARD - every guard's name starts with IF_. A guard that
+        /// applies is EMPTY by design, so the renderer must not report it as unresolved; one that
+        /// does not apply is the OMIT sentinel. The same names drive the block directive
+        /// "@IF IF_NAME" ... "@ENDIF", which drops a whole run of lines - Exhibit A, or the
+        /// optional endorsements subsection - when its guard does not apply.
+        /// </summary>
+        public static bool IsLineGuard(string tokenName) =>
+            tokenName.StartsWith("IF_", StringComparison.Ordinal);
+
+        /// <summary>
+        /// What an unresolved token means to the admin filling in the form, for the preview banner
+        /// and the refusal to send. The renderer only reports a token whose line SURVIVED the
+        /// contract's own configuration (scope mode, commitment, optional rows), so by the time a
+        /// name reaches here it is a value this document genuinely prints and nobody supplied.
+        /// </summary>
+        public static string DescribeToken(string tokenName) => tokenName switch
+        {
+            "EFFECTIVE_DATE" => "Effective date",
+            "SERVICE_COMMENCEMENT_DATE" => "First recurring service date",
+            "MINIMUM_COMMITMENT_END_DATE" or "INITIAL_TERM_END_DATE" =>
+                "First recurring service date (the commitment dates are derived from it)",
+            "EQUIPMENT_PROVIDED_BY" => "Supplies: who provides cleaning supplies and equipment",
+            "TRASH_LINERS_PROVIDED_BY" => "Supplies: who provides trash bags and liners",
+            "PAPER_TOWELS_PROVIDED_BY" => "Supplies: who provides paper towels",
+            "TOILET_TISSUE_PROVIDED_BY" => "Supplies: who provides toilet tissue",
+            "OTHER_CONSUMABLES" => "Supplies: who provides each other consumable",
+            "CONTRACTOR_REPRESENTATIVE" => "Contractor signer",
+            "CLIENT_REPRESENTATIVE" => "Client signer",
+            "CONTRACTOR_OPERATIONAL_EMAIL" => "Contacts: contractor operational email",
+            "CLIENT_OPERATIONAL_EMAIL" => "Contacts: client operational email",
+            "CONTRACTOR_SUPERVISOR" => "Contacts: contractor supervisor / on-call contact",
+            "CLIENT_ON_CALL_CONTACT" => "Contacts: client primary on-call contact",
+            _ => tokenName
+        };
+
         public static Dictionary<string, string> Build(ContractSnapshot s)
         {
             var map = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -145,7 +190,7 @@ namespace DreamCleaningBackend.Services.Contracts
             Put("CLIENT_CITY", cl.City);
             Put("CLIENT_STATE", cl.State);
             Put("CLIENT_ZIP", cl.Zip);
-            Put("CLIENT_NOTICE_EMAIL", cl.NoticeEmail);
+            Put("CLIENT_NOTICE_EMAIL", ResolveClientNoticeEmail(s.Contacts, cl));
             Put("CLIENT_PHONE", ContractTextFormat.Phone(cl.Phone));
 
             // KEPT ONLY FOR BODIES WRITTEN BEFORE v2.2. The current agreement does not ask Client
@@ -260,6 +305,21 @@ namespace DreamCleaningBackend.Services.Contracts
             PutBlank("MINIMUM_COMMITMENT_END_DATE", DateOrNull(t.ResolveMinimumCommitmentEndDate()));
             PutBlank("INITIAL_TERM_END_DATE", DateOrNull(t.ResolveInitialTermEndDate()));
 
+            // LINE GUARDS for the minimum commitment (template v2.7). There is no company-wide
+            // commitment; one exists only where this client agreed one. So Sections 3, 4 and 36
+            // and Exhibit B1 carry each affected sentence twice - once for each case - and every
+            // copy ends in one of these two tokens. The guard that does not apply resolves to the
+            // OMIT sentinel and takes its line with it; the one that does resolves to nothing and
+            // leaves the line as written. The legal text stays in the template, where a SuperAdmin
+            // can read and edit it, rather than being composed here.
+            //
+            // A contract with no commitment therefore contains no Minimum Commitment Period, no
+            // Minimum Commitment End Date and no Initial Term - only the statement that none
+            // applies. ContractRenderer treats these two names as guards, so their empty value is
+            // never reported as an unresolved token.
+            map[GuardMinimumCommitment] = t.HasMinimumCommitment ? string.Empty : OmitLineSentinel;
+            map[GuardNoMinimumCommitment] = t.HasMinimumCommitment ? OmitLineSentinel : string.Empty;
+
             // ── Pricing (all figures server-derived) ───────────────────────────
             var p = s.Pricing;
             Put("PRE_TAX_PRICE", ContractTextFormat.Money(p.PreTaxPrice));
@@ -336,6 +396,11 @@ namespace DreamCleaningBackend.Services.Contracts
             Put("RESOLUTION_PAYMENT_BUSINESS_DAYS", ContractTextFormat.WordsWithDigits(a.ResolutionPaymentBusinessDays));
             Put("DAMAGE_NOTICE_BUSINESS_DAYS", ContractTextFormat.WordsWithDigits(a.DamageNoticeBusinessDays));
             Put("QUALITY_COMPLAINT_HOURS", ContractTextFormat.WordsWithDigits(a.QualityComplaintHours));
+            // Section 22(a)'s narrow outer limit for a deficiency not reasonably discoverable
+            // inside the standard window. Never shorter than that window: an outer limit that
+            // closed before the standard period would contradict the sentence before it.
+            Put("QUALITY_LATENT_LIMIT_HOURS", ContractTextFormat.WordsWithDigits(
+                Math.Max(a.QualityLatentDeficiencyLimitHours, a.QualityComplaintHours)));
             Put("QUALITY_CORRECTION_BUSINESS_DAYS", ContractTextFormat.WordsWithDigits(a.QualityCorrectionBusinessDays));
             Put("REFUND_BUSINESS_DAYS", ContractTextFormat.WordsWithDigits(a.RefundBusinessDays));
 
@@ -399,7 +464,7 @@ namespace DreamCleaningBackend.Services.Contracts
             PutOrNone("SITE_REQUIREMENTS", sd.SiteRequirements);
             PutOrNone("INITIAL_WORK_CHANGE_ORDER", sd.InitialWorkChangeOrder);
 
-            // ── Exhibit B3: insurance endorsements ─────────────────────────────
+            // ── Insurance endorsements: B3 in bodies before v2.7 (these legacy tokens), B5 since ──
             var ins = s.Insurance ?? new InsuranceEndorsementsSnapshot();
             PutOrNone("AGREED_ENDORSEMENTS", ins.AgreedEndorsements);
             PutOrNone("ENDORSEMENT_PREMIUM", ins.AdditionalPremium);
@@ -458,6 +523,130 @@ namespace DreamCleaningBackend.Services.Contracts
             PutOrOmitLine("CONTRACTOR_BACKUP_CONTACT", contacts.ContractorBackupContact);
             PutOrOmitLine("CLIENT_BACKUP_CONTACT", contacts.ClientBackupContact);
 
+            // ── Section 6(b) / Exhibit B, B3: supplies, equipment and consumables ──
+            // No company-wide allocation exists (2026-09-30): each answer is a term of this
+            // agreement. An unanswered one prints a RULED BLANK in B3, which puts it in the
+            // preview's unresolved banner - never a guessed "Client", which would quietly
+            // reinstate the allocation the older templates hardcoded.
+            var sup = s.Supplies ?? new SuppliesSnapshot();
+            Put("SUPPLIES_FEE_CLAUSE", SuppliesFeeClause(sup.EquipmentProvidedBy));
+            map["EQUIPMENT_PROVIDED_BY"] = EquipmentProvidedByText(sup);
+            PutBlank("TRASH_LINERS_PROVIDED_BY", ProviderName(sup.TrashLinersProvidedBy));
+            PutBlank("PAPER_TOWELS_PROVIDED_BY", ProviderName(sup.PaperTowelsProvidedBy));
+            PutBlank("TOILET_TISSUE_PROVIDED_BY", ProviderName(sup.ToiletTissueProvidedBy));
+            // Genuinely optional: with no further consumables agreed the row leaves the exhibit.
+            PutOrOmitLine("OTHER_CONSUMABLES", OtherConsumablesText(sup.OtherConsumables));
+
+            // ── Template v2.7: Scope of Work detail and blank-means-omitted ─────
+            // Exhibit A is Detailed, Simplified or Omitted per contract. The body's references to
+            // it go through {{SCOPE_REF}} and the EXHIBITS_* phrases, so no clause can point at an
+            // exhibit the document does not contain; the exhibit itself sits inside
+            // "@IF IF_SCOPE_DETAILED" / "@IF IF_SCOPE_SIMPLIFIED" blocks.
+            var mode = s.ScopeDetail;
+            void Guard(string name, bool applies) => map[name] = applies ? string.Empty : OmitLineSentinel;
+            Guard("IF_SCOPE_DETAILED", mode == ScopeDetailMode.Detailed);
+            Guard("IF_SCOPE_NOT_DETAILED", mode != ScopeDetailMode.Detailed);
+            Guard("IF_SCOPE_SIMPLIFIED", mode == ScopeDetailMode.Simplified);
+            Guard("IF_SCOPE_OMITTED", mode == ScopeDetailMode.Omitted);
+            Put("SCOPE_REF", mode switch
+            {
+                ScopeDetailMode.Simplified => "the Scope of Work recorded in Exhibit A",
+                ScopeDetailMode.Omitted => "the agreed Scope of Work",
+                _ => "Exhibit A"
+            });
+            var hasExhibitA = mode != ScopeDetailMode.Omitted;
+            Put("EXHIBITS_LIST", hasExhibitA ? "Exhibits A and B" : "Exhibit B");
+            Put("EXHIBITS_INCORPORATED", hasExhibitA
+                ? "Exhibit A and Exhibit B are incorporated into and form part"
+                : "Exhibit B is incorporated into and forms part");
+            Put("EXHIBITS_SIGNED", hasExhibitA ? "Exhibit A and Exhibit B" : "Exhibit B");
+
+            // The v2.7 body prints an OPTIONAL field only when it holds a value: no ruled blank,
+            // no "None", no "Not applicable" - the whole line or row leaves the document. These are
+            // TWINS of the older tokens rather than a change to them, because an executed contract
+            // re-renders its frozen body through this map, and the older tokens must keep printing
+            // exactly what was signed. Nothing here is load-bearing when blank: Section 25(e) and
+            // A3(d) exclude food-contact sanitizing unless a task is named, Section 5(c) means no
+            // deadline when none is stated, and the Section 20 coverage stands on its own.
+            string OptionalValue(string? value) =>
+                string.IsNullOrWhiteSpace(value) ? OmitLineSentinel : value.Trim();
+            var siteValues = new (string Key, string? Value)[]
+            {
+                ("SQUARE_FOOTAGE", sd.ApproximateSquareFootage),
+                ("CUSTOMER_RESTROOM_COUNTS", sd.CustomerRestroomCounts),
+                ("EMPLOYEE_RESTROOM_COUNTS", sd.EmployeeRestroomCounts),
+                ("FLOOR_MATERIALS", sd.FloorMaterials),
+                ("KITCHEN_EQUIPMENT_SURFACES", sd.KitchenEquipmentAndSurfaces),
+                ("TOUCHPOINT_LOCATIONS", sd.TouchpointLocations),
+                ("INTERIOR_GLASS_LOCATIONS", sd.InteriorGlassLocations),
+                ("FOOD_CONTACT_SANITIZING", sd.FoodContactSanitizing),
+                ("ACCESS_METHOD_REFERENCE", sd.AccessMethodReference),
+                ("EQUIPMENT_RESTRICTIONS", sd.EquipmentRestrictions),
+                ("WASTE_RECEPTACLE_LOCATIONS", sd.WasteReceptacleLocations),
+                ("FOOD_PERMIT_HOLDER", sd.FoodServicePermitHolder),
+                ("SITE_REQUIREMENTS", sd.SiteRequirements),
+                ("BASELINE_WALKTHROUGH", sd.BaselineWalkthroughRecord),
+                ("INITIAL_WORK_CHANGE_ORDER", sd.InitialWorkChangeOrder)
+            };
+            foreach (var (key, value) in siteValues) map[key + "_IF_SET"] = OptionalValue(value);
+            // The introduction to the A1 site-details list prints only when the list has an entry.
+            // The two baseline rows sit under A8, so they do not count here.
+            Guard("IF_ANY_SITE_DETAIL", siteValues
+                .Where(v => v.Key is not ("BASELINE_WALKTHROUGH" or "INITIAL_WORK_CHANGE_ORDER"))
+                .Any(v => !string.IsNullOrWhiteSpace(v.Value)));
+
+            map["COMPLETION_TIME_IF_SET"] = OptionalValue(sc.CompletionTime);
+
+            // Template v2.8: a completion time is MENTIONED only when one was agreed. Without one,
+            // Section 5(c) does not point at an Exhibit B row that is not there, and 5(e) / 9(b)
+            // speak of changes to "the day or arrival window" rather than a deadline that does
+            // not exist.
+            var hasCompletionTime = !string.IsNullOrWhiteSpace(sc.CompletionTime);
+            Guard("IF_COMPLETION_TIME", hasCompletionTime);
+            Guard("IF_NO_COMPLETION_TIME", !hasCompletionTime);
+            Put("SCHEDULE_CHANGE_TERMS", hasCompletionTime
+                ? "day, arrival window or completion deadline"
+                : "day or arrival window");
+
+            // Template v3.1: two Detailed Exhibit A subsections have no scope group of their own, so
+            // whether their work was bought is read off the SELECTED included items - label or
+            // detail naming the subject, in any included group (area/task rows, checklists and custom
+            // categories alike). An interior-glass site detail also counts. Unselected rows never do.
+            bool IncludesWork(params string[] words) => (s.Scope?.Groups ?? new List<ScopeGroup>())
+                .Where(g => !string.Equals(g.Kind, "excluded", StringComparison.OrdinalIgnoreCase) && !g.Archived)
+                .SelectMany(g => g.Items)
+                .Where(i => i.Selected && !i.Archived)
+                .Any(i => words.Any(w =>
+                    (i.Label ?? string.Empty).Contains(w, StringComparison.OrdinalIgnoreCase)
+                    || (i.Detail ?? string.Empty).Contains(w, StringComparison.OrdinalIgnoreCase)));
+            Guard("IF_TRASH_SCOPE", IncludesWork("trash", "waste", "recycling"));
+            Guard("IF_INTERIOR_GLASS_SCOPE", IncludesWork("glass", "window")
+                || !string.IsNullOrWhiteSpace(sd.InteriorGlassLocations));
+
+            // Template v3.0: per-visit or weekly flat pricing. Each pricing sentence exists once per
+            // basis; the one that does not apply drops its line. PRE_TAX_PRICE / SALES_TAX_AMOUNT /
+            // TOTAL_PRICE are already the WEEKLY figures in weekly mode (see the calculator), and the
+            // caps are already built on the per-visit allocation - so no other token changes.
+            var weekly = s.Pricing?.PricingBasis == ContractPricingBasis.WeeklyFlatFee;
+            Guard("IF_PER_VISIT_PRICING", !weekly);
+            Guard("IF_WEEKLY_FLAT_PRICING", weekly);
+
+            // Section 35(f): "A1" / "A8" style references exist only in a Detailed Exhibit A.
+            Put("EXHIBIT_CROSS_REFERENCES", mode == ScopeDetailMode.Detailed
+                ? "references beginning with A or B refer to the corresponding exhibit"
+                : "references beginning with B refer to the corresponding part of Exhibit B");
+            map["CONTRACTOR_APPROVAL_EMAIL_IF_SET"] = OptionalValue(contacts.ContractorApprovalEmail);
+            map["CLIENT_APPROVAL_EMAIL_IF_SET"] = OptionalValue(contacts.ClientApprovalEmail);
+
+            // Exhibit B5 exists only when an endorsement beyond Section 20 was agreed.
+            map["AGREED_ENDORSEMENTS_IF_SET"] = OptionalValue(ins.AgreedEndorsements);
+            map["ENDORSEMENT_DETAILS_IF_SET"] = OptionalValue(ins.EndorsementDetails);
+            map["ENDORSEMENT_PREMIUM_IF_SET"] = OptionalValue(ins.AdditionalPremium);
+            Guard("IF_ANY_ENDORSEMENT",
+                !string.IsNullOrWhiteSpace(ins.AgreedEndorsements)
+                || !string.IsNullOrWhiteSpace(ins.EndorsementDetails)
+                || !string.IsNullOrWhiteSpace(ins.AdditionalPremium));
+
             // ── Derived scheduling prose ───────────────────────────────────────
             // Section 5(f) / Exhibit A CONDITIONS: whether the premises are open during service.
             Put("CLOSED_PREMISES_TEXT", sc.PerformedWhileClosed
@@ -494,6 +683,96 @@ namespace DreamCleaningBackend.Services.Contracts
             };
         }
 
+        /// <summary>
+        /// Section 6(b) - what the recurring fee includes, which depends on who provides the
+        /// cleaning equipment and supplies. Where the Client provides some or all of them,
+        /// Contractor may decline an item it reasonably considers unsafe or unsuitable: a crew
+        /// cannot be obliged to use a product it has no way to vouch for.
+        /// </summary>
+        private static string SuppliesFeeClause(SupplyProvider? provider) => provider switch
+        {
+            SupplyProvider.Contractor =>
+                "The recurring fee includes all labor, supervision, cleaning equipment, tools, "
+                + "chemicals, products and ordinary cleaning supplies used by Contractor's personnel "
+                + "to perform the included Services. Contractor supplies them at its own expense. No "
+                + "separate equipment or cleaning-product charge applies.",
+            SupplyProvider.Client =>
+                "The recurring fee includes all labor and supervision. Client supplies, at its own "
+                + "cost, the cleaning equipment, tools, chemicals, products and ordinary cleaning "
+                + "supplies needed for the included Services, in adequate quantity and safe working "
+                + "order, as recorded in Exhibit B, B3. Contractor shall use Client-supplied products "
+                + "according to their labels and may decline to use a product or item of equipment it "
+                + "reasonably considers unsafe or unsuitable for the task, notifying Client promptly.",
+            SupplyProvider.Shared =>
+                "The recurring fee includes all labor and supervision and the cleaning equipment, "
+                + "tools, chemicals, products and ordinary cleaning supplies allocated to Contractor in "
+                + "Exhibit B, B3, which Contractor supplies at its own expense; no separate charge "
+                + "applies for them. Client supplies, at its own cost, the items allocated to Client "
+                + "there, in adequate quantity and safe working order. Contractor shall use "
+                + "Client-supplied products according to their labels and may decline to use a product "
+                + "or item of equipment it reasonably considers unsafe or unsuitable for the task, "
+                + "notifying Client promptly.",
+            _ =>
+                "Cleaning equipment, tools, chemicals, products and ordinary cleaning supplies are "
+                + "provided, at its own expense, by the Party identified in Exhibit B, B3."
+        };
+
+        /// <summary>
+        /// Exhibit B, B3's equipment row. A shared arrangement must say HOW it is shared, so one
+        /// with no description is an unanswered question and prints a ruled blank.
+        /// </summary>
+        private static string EquipmentProvidedByText(SuppliesSnapshot sup)
+        {
+            if (sup.EquipmentProvidedBy == SupplyProvider.Shared)
+            {
+                return string.IsNullOrWhiteSpace(sup.EquipmentArrangementNotes)
+                    ? RuledBlank
+                    : $"Divided between the Parties: {sup.EquipmentArrangementNotes.Trim()}";
+            }
+            return ProviderName(sup.EquipmentProvidedBy) ?? RuledBlank;
+        }
+
+        /// <summary>"Contractor" / "Client", or null when nobody has answered.</summary>
+        private static string? ProviderName(SupplyProvider? provider) => provider switch
+        {
+            SupplyProvider.Contractor => "Contractor",
+            SupplyProvider.Client => "Client",
+            _ => null
+        };
+
+        /// <summary>
+        /// "Contractor: hand towels and seat covers; Client: coffee filters". Grouped by Party so
+        /// the row reads as an allocation rather than a list to cross-reference. An item nobody has
+        /// assigned yet is listed with a ruled blank rather than guessed.
+        /// </summary>
+        private static string? OtherConsumablesText(List<ConsumableAllocation>? items)
+        {
+            var named = (items ?? new List<ConsumableAllocation>())
+                .Where(i => i != null && !string.IsNullOrWhiteSpace(i.Item))
+                .ToList();
+            if (named.Count == 0) return null;
+
+            var parts = new List<string>();
+            foreach (var (provider, label) in new[]
+            {
+                ((SupplyProvider?)SupplyProvider.Contractor, "Contractor"),
+                ((SupplyProvider?)SupplyProvider.Client, "Client")
+            })
+            {
+                var names = named.Where(i => i.ProvidedBy == provider).Select(i => i.Item.Trim()).ToList();
+                if (names.Count > 0) parts.Add($"{label}: {ContractTextFormat.JoinWithAnd(names)}");
+            }
+
+            var unassigned = named
+                .Where(i => i.ProvidedBy != SupplyProvider.Contractor && i.ProvidedBy != SupplyProvider.Client)
+                .Select(i => i.Item.Trim())
+                .ToList();
+            if (unassigned.Count > 0)
+                parts.Add($"{ContractTextFormat.JoinWithAnd(unassigned)}: {RuledBlank}");
+
+            return string.Join("; ", parts);
+        }
+
         /// <summary>"one (1) scheduled cleaning visit per calendar week".</summary>
         private static string FrequencyText(ScheduleSnapshot sc)
         {
@@ -508,6 +787,26 @@ namespace DreamCleaningBackend.Services.Contracts
         /// <summary>First non-blank of the two. Used where a field falls back to a Party's own record.</summary>
         private static string? Coalesce(string? preferred, string? fallback) =>
             string.IsNullOrWhiteSpace(preferred) ? fallback : preferred;
+
+        /// <summary>
+        /// Exhibit B4's "Client notice email". See <see cref="OperationalContactsSnapshot.ClientNoticeEmail"/>.
+        ///
+        /// A snapshot written before the field existed (null) renders the client record's notice
+        /// email and nothing else - exactly what it printed when it was generated, so a signed
+        /// version re-rendered for its executed PDF says what was signed. Otherwise the field's own
+        /// value wins, then the client record, then the approval email, then the operational one.
+        /// </summary>
+        internal static string? ResolveClientNoticeEmail(OperationalContactsSnapshot? contacts, ClientSnapshot client)
+        {
+            if (contacts?.ClientNoticeEmail is null) return client.NoticeEmail;
+
+            return new[]
+                {
+                    contacts.ClientNoticeEmail, client.NoticeEmail,
+                    contacts.ClientApprovalEmail, contacts.ClientOperationalEmail
+                }
+                .FirstOrDefault(e => !string.IsNullOrWhiteSpace(e))?.Trim();
+        }
 
         /// <summary>
         /// "Nodar Alania, CEO" - the authorized-representative line in Exhibit B4.

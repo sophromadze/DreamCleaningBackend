@@ -66,6 +66,20 @@ namespace DreamCleaningBackend.Services.Contracts
         /// <summary>Exhibit B3 - endorsements agreed beyond the Section 20 baseline.</summary>
         public InsuranceEndorsementsSnapshot Insurance { get; set; } = new();
 
+        /// <summary>
+        /// Section 6(b) / Exhibit B, B3 - who provides supplies, equipment and each consumable.
+        /// See <see cref="SuppliesSnapshot"/>.
+        /// </summary>
+        public SuppliesSnapshot Supplies { get; set; } = new();
+
+        /// <summary>
+        /// How much of the Scope of Work the agreement carries (template v2.7 and later): the
+        /// full Exhibit A, a one-paragraph Exhibit A, or no Exhibit A at all. See
+        /// <see cref="ScopeDetailMode"/>. Defaults to Detailed, which is exactly what every
+        /// earlier template printed; only a v2.7+ body reads it.
+        /// </summary>
+        public ScopeDetailMode ScopeDetail { get; set; } = ScopeDetailMode.Detailed;
+
         public ScopeStructure Scope { get; set; } = new();
 
         /// <summary>
@@ -346,10 +360,6 @@ namespace DreamCleaningBackend.Services.Contracts
         public string? TouchpointLocations { get; set; }
         public string? InteriorGlassLocations { get; set; }
 
-        // NO SOAP FIELDS. Hand soap and its dispensers are outside the Services entirely -
-        // Contractor never supplies, replenishes, repairs or replaces them (Exhibit A, A8(a)), so
-        // there is nothing about them for the Parties to record.
-
         /// <summary>
         /// Exhibit A: any included food-contact or dining-table sanitizing task, its surface,
         /// frequency and the required wash/rinse/sanitize procedure.
@@ -415,6 +425,24 @@ namespace DreamCleaningBackend.Services.Contracts
         public string? ClientApprovalEmail { get; set; }
 
         /// <summary>
+        /// Exhibit B4's "Client notice email" - the mailbox Section 32 serves formal notice on - as
+        /// its OWN field (2026-10-02). Before this it had no input of its own and always printed
+        /// the client record's <see cref="ClientSnapshot.NoticeEmail"/>.
+        ///
+        /// NULL and BLANK mean different things, and the difference is what keeps a signed
+        /// agreement reading the way it was signed:
+        ///   null  - the snapshot predates the field (every version frozen before it, and any
+        ///           draft not re-saved since). Renders exactly as before: the client record's
+        ///           notice email, nothing else.
+        ///   blank - saved by the form that has the field, left empty. Falls back to the client
+        ///           record's notice email, then the approval email, then the operational email,
+        ///           so the row always names somewhere notice can actually be sent.
+        /// A filled value is printed as given and never borrowed from, or written into, the
+        /// approval or operational email.
+        /// </summary>
+        public string? ClientNoticeEmail { get; set; }
+
+        /// <summary>
         /// RETIRED FROM THE DOCUMENT (2026-09-15), kept so older versions still render.
         ///
         /// Template v2.2 asks Client for no mailing address: the preamble identifies Client by
@@ -462,6 +490,82 @@ namespace DreamCleaningBackend.Services.Contracts
     }
 
     /// <summary>
+    /// Who provides an item: Dream Cleaning NYC (the Contractor), the Client, or - for cleaning
+    /// supplies and equipment only - both, divided as the agreement describes. Persisted as an
+    /// int inside FullSnapshotJson, so values are appended and never renumbered.
+    /// </summary>
+    public enum SupplyProvider
+    {
+        Contractor = 0,
+        Client = 1,
+        Shared = 2
+    }
+
+    /// <summary>
+    /// Exhibit A's level of detail, chosen per contract (2026-09-30). Persisted as an int inside
+    /// FullSnapshotJson, so values are appended and never renumbered.
+    /// </summary>
+    public enum ScopeDetailMode
+    {
+        /// <summary>The full Exhibit A: area/task table, checklists, and any recorded site details.</summary>
+        Detailed = 0,
+
+        /// <summary>A one-paragraph Exhibit A saying the scope was agreed separately.</summary>
+        Simplified = 1,
+
+        /// <summary>No Exhibit A. Section 1 states that the scope was agreed separately.</summary>
+        Omitted = 2
+    }
+
+    /// <summary>One consumable beyond the three standard ones, and who provides it.</summary>
+    public class ConsumableAllocation
+    {
+        public string Item { get; set; } = string.Empty;
+        public SupplyProvider? ProvidedBy { get; set; }
+    }
+
+    /// <summary>
+    /// Section 6(b) and Exhibit B, B3 - who provides the cleaning supplies and equipment, and who
+    /// provides each consumable (2026-09-30).
+    ///
+    /// THERE IS NO COMPANY-WIDE RULE. Some clients buy everything from us, some supply their own
+    /// products, and most consumables are split item by item - "we bring the liners, you stock the
+    /// paper". Template v2.6 and earlier hardcoded one arrangement (Contractor supplies products;
+    /// Client supplies tissue, towels and liners), which was wrong for every client on the other
+    /// arrangement. Each answer here is now a term of the individual agreement.
+    ///
+    /// EVERY ANSWER STARTS UNSET, and an unset one renders a ruled blank that lands in the
+    /// preview's unresolved banner. Pre-filling "Client" would quietly reinstate the old hardcoded
+    /// allocation for anyone who never opened the panel - the exact assumption being removed.
+    ///
+    /// Only template v2.7 and later reference these tokens. A snapshot frozen before this block
+    /// existed deserialises it to the unset defaults and renders its own frozen wording, untouched.
+    /// </summary>
+    public class SuppliesSnapshot
+    {
+        /// <summary>Cleaning products, chemicals, tools, vacuums and similar equipment.</summary>
+        public SupplyProvider? EquipmentProvidedBy { get; set; }
+
+        /// <summary>
+        /// How a SHARED equipment arrangement is divided - e.g. "Contractor provides vacuums and
+        /// tools; Client provides cleaning chemicals". Printed in B3 only when the provider is
+        /// <see cref="SupplyProvider.Shared"/>; a shared arrangement with no description is a
+        /// ruled blank, because "divided between the Parties" alone describes nothing.
+        /// </summary>
+        public string? EquipmentArrangementNotes { get; set; }
+
+        public SupplyProvider? TrashLinersProvidedBy { get; set; }
+        public SupplyProvider? PaperTowelsProvidedBy { get; set; }
+        public SupplyProvider? ToiletTissueProvidedBy { get; set; }
+
+        /// <summary>
+        /// Any further agreed consumables. Items with a blank name are dropped on save; an empty
+        /// list drops the "Other agreed consumables" row from Exhibit A entirely.
+        /// </summary>
+        public List<ConsumableAllocation> OtherConsumables { get; set; } = new();
+    }
+
+    /// <summary>
     /// How often the contract is INVOICED. Separate from <see cref="ScheduleSnapshot"/> because
     /// "when do we clean" and "how often do we bill" are different questions with different
     /// answers - see <c>ContractBillingFrequency</c>.
@@ -486,19 +590,37 @@ namespace DreamCleaningBackend.Services.Contracts
 
     public class TermSnapshot
     {
-        // The commercial terms actually being offered: committed for TEN months (raised from six
-        // on 2026-09-15), then month-to-month with sixty days notice. They apply to NEW drafts
-        // only - every generated version carries its own frozen copy, so nothing already signed
-        // moves, and a draft in progress keeps whatever an admin typed.
+        // NO STANDARD MINIMUM COMMITMENT (owner's decision, 2026-09-30). A new draft starts with
+        // none, and 30 days' written notice ends ongoing service. The previous defaults - a
+        // ten-month term and commitment, sixty days' notice - were a company-wide rule the
+        // business does not have. Defaults only: every generated version carries its own frozen
+        // copy, so an executed ten-month agreement keeps rendering exactly what was signed, and a
+        // draft in progress keeps whatever an admin typed.
         //
-        // The two are separate columns and are deliberately equal rather than merged: the Initial
-        // Term is how long the fixed term runs, the Minimum Commitment Period is the earliest a
-        // termination for convenience may TAKE EFFECT, and Section 3 states them as different
-        // facts even when the numbers agree. Section 3(a)/(b), Exhibit B1 and both derived end
-        // dates read these two fields, so there is no third place to keep in step.
-        public int InitialTermMonths { get; set; } = 10;
-        public int MinimumCommitmentMonths { get; set; } = 10;
-        public int TerminationNoticeDays { get; set; } = 60;
+        // ZERO MONTHS MEANS "NO MINIMUM COMMITMENT", deliberately, rather than a separate flag. A
+        // boolean added now would deserialise to its default on every snapshot frozen before it
+        // existed, and could turn an executed six-month commitment into "none"; the month count
+        // is present on every snapshot ever written, so reading the commitment off it is right for
+        // old and new alike. HasMinimumCommitment is the one place that says so.
+        //
+        // With a commitment, the Initial Term and the Minimum Commitment Period are separate
+        // columns: the Initial Term is how long the fixed term runs, the commitment is the
+        // earliest a termination for convenience may TAKE EFFECT, and Section 3 states them as
+        // different facts even when the numbers agree. Without one there is no fixed initial
+        // term at all - the agreement runs month-to-month from commencement - so the Initial Term
+        // is only meaningful while a commitment exists, and ContractService.NormalizeTerm keeps
+        // it at least as long as the commitment.
+        public int InitialTermMonths { get; set; } = 0;
+        public int MinimumCommitmentMonths { get; set; } = 0;
+        public int TerminationNoticeDays { get; set; } = 30;
+
+        /// <summary>
+        /// Whether a minimum service commitment was specifically agreed for this contract. Template
+        /// v2.7 prints the commitment and Initial Term language only when this is true, and states
+        /// that none applies when it is false. Derived, so it is kept out of the frozen JSON.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool HasMinimumCommitment => MinimumCommitmentMonths > 0;
 
         /// <summary>
         /// The first RECURRING service date. Distinct from the Effective Date, and Section 3 hangs
@@ -517,16 +639,28 @@ namespace DreamCleaningBackend.Services.Contracts
         /// <see cref="MinimumCommitmentMonths"/>, never stored: two dates that are supposed to be
         /// the same arithmetic eventually disagree, and this one is quoted in Section 3(b), Section
         /// 4(a) and Exhibit B1.
+        ///
+        /// NULL WITHOUT A COMMITMENT (2026-09-30). There is no such date, and computing a
+        /// "zero-month" one produced an End Date equal to the commencement date - a concept that
+        /// does not exist dressed up as a term of the agreement.
         /// </summary>
         public DateTime? ResolveMinimumCommitmentEndDate() =>
-            ServiceCommencementDate?.AddMonths(Math.Max(0, MinimumCommitmentMonths));
+            HasMinimumCommitment
+                ? ServiceCommencementDate?.AddMonths(MinimumCommitmentMonths)
+                : null;
 
         /// <summary>
         /// Last day of the Initial Term: the day immediately preceding the commencement date's
         /// N-month anniversary, which is what Exhibit B1's wording describes.
+        ///
+        /// NULL WITHOUT A FIXED TERM. The zero-month arithmetic printed an Initial Term End Date
+        /// of 3 October for a 4 October commencement - an agreement ending the day before it
+        /// began. A month-to-month agreement has no end date to print.
         /// </summary>
         public DateTime? ResolveInitialTermEndDate() =>
-            ServiceCommencementDate?.AddMonths(Math.Max(0, InitialTermMonths)).AddDays(-1);
+            InitialTermMonths > 0
+                ? ServiceCommencementDate?.AddMonths(InitialTermMonths).AddDays(-1)
+                : null;
 
         /// <summary>Phrase dropped into Section 3(d), e.g. "month-to-month".</summary>
         public string RenewalType { get; set; } = "month-to-month";
@@ -551,6 +685,29 @@ namespace DreamCleaningBackend.Services.Contracts
 
         /// <summary>The single amount the admin typed. Meaning depends on <see cref="PriceMode"/>.</summary>
         public decimal PriceInput { get; set; }
+
+        /// <summary>
+        /// Per visit, or one flat fee per calendar week. Defaults to per visit so every snapshot
+        /// frozen before this existed reads exactly as it was signed. In weekly mode
+        /// <see cref="PreTaxPrice"/> / <see cref="SalesTaxAmount"/> / <see cref="TotalPrice"/> are
+        /// WEEKLY figures - tax is computed once on the weekly fee, never per visit.
+        /// </summary>
+        public ContractPricingBasis PricingBasis { get; set; } = ContractPricingBasis.PerVisit;
+
+        /// <summary>
+        /// Server-derived, weekly mode only: the scheduled visits one weekly fee covers, frozen from
+        /// the schedule so the allocation below can be re-checked from the document alone.
+        /// </summary>
+        public int ScheduledVisitsPerFeePeriod { get; set; } = 1;
+
+        /// <summary>
+        /// Server-derived: the pre-tax value of ONE visit, used only for the per-visit caps
+        /// (cancellation, failed access, liability). Per visit it is the fee itself; weekly it is
+        /// the weekly pre-tax fee / <see cref="ScheduledVisitsPerFeePeriod"/> at FULL decimal
+        /// precision ($875 / 6 = 145.8333...) - only each cap is rounded, never this.
+        /// It is an allocation for calculation, not a price, and the agreement says so.
+        /// </summary>
+        public decimal PerVisitAllocation { get; set; }
 
         public decimal SalesTaxRatePercent { get; set; } = 8.875m;
 
@@ -705,8 +862,24 @@ namespace DreamCleaningBackend.Services.Contracts
         /// <summary>Section 21: business days after discovery to notify alleged damage.</summary>
         public int DamageNoticeBusinessDays { get; set; } = 5;
 
-        /// <summary>Section 22(a): hours to identify a material failure to complete an included task.</summary>
-        public int QualityComplaintHours { get; set; } = 48;
+        /// <summary>
+        /// Section 22(a): the STANDARD window, in hours after the visit is completed, to report a
+        /// material failure to complete an included task. 24 since 2026-09-30 (was 48), so the
+        /// agreement, the published policy and the landing page's "report any issue within 24
+        /// hours" all state one rule.
+        /// </summary>
+        public int QualityComplaintHours { get; set; } = 24;
+
+        /// <summary>
+        /// Section 22(a): the OUTER LIMIT, in hours after the visit is completed, for a deficiency
+        /// that could not reasonably have been identified inside <see cref="QualityComplaintHours"/>.
+        ///
+        /// A narrow exception, not a second general window - the clause only reaches it for an
+        /// issue that was not reasonably discoverable sooner. Referenced only by template v2.7 and
+        /// later; a snapshot frozen before it existed deserialises to this default and its body
+        /// never quotes it.
+        /// </summary>
+        public int QualityLatentDeficiencyLimitHours { get; set; } = 72;
 
         /// <summary>Section 22(b): business days Contractor has to re-perform a deficient task.</summary>
         public int QualityCorrectionBusinessDays { get; set; } = 2;

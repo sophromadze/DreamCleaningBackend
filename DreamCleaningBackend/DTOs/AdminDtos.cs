@@ -22,6 +22,15 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>Floor for base price + services. 0 = no floor.</summary>
         public decimal MinimumPrice { get; set; }
 
+        /// <summary>Stable admin-assigned identifier, null when unset. See ServiceType.ServiceKey.</summary>
+        public string? ServiceKey { get; set; }
+
+        /// <summary>Marketing-only price, null when unset. See ServiceType.DisplayPrice.</summary>
+        public decimal? DisplayPrice { get; set; }
+
+        /// <summary>per-hour-per-cleaner, per-hour or from; null with DisplayPrice.</summary>
+        public string? DisplayPriceUnit { get; set; }
+
         public List<ServiceDto> Services { get; set; } = new List<ServiceDto>();
         public List<ExtraServiceDto> ExtraServices { get; set; } = new List<ExtraServiceDto>();
     }
@@ -106,6 +115,9 @@ namespace DreamCleaningBackend.DTOs
     {
         public int Id { get; set; }
         public string Name { get; set; }
+
+        /// <summary>Stable admin-assigned identifier, null when unset. See ExtraService.ExtraServiceKey.</summary>
+        public string? ExtraServiceKey { get; set; }
         public string? Description { get; set; }
         public decimal Price { get; set; }
         public decimal Duration { get; set; }
@@ -138,6 +150,13 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>Floor for base price + services. 0 = no floor.</summary>
         public decimal MinimumPrice { get; set; } = 0m;
+
+        /// <summary>Optional. Blank = no key. Validated by ServiceTypeKeyPolicy.</summary>
+        public string? ServiceKey { get; set; }
+
+        /// <summary>Optional marketing-only price; set with DisplayPriceUnit or not at all. See ServiceTypeDisplayPricePolicy.</summary>
+        public decimal? DisplayPrice { get; set; }
+        public string? DisplayPriceUnit { get; set; }
     }
 
     public class UpdateServiceTypeDto
@@ -158,6 +177,16 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>Floor for base price + services. 0 = no floor.</summary>
         public decimal MinimumPrice { get; set; } = 0m;
+
+        /// <summary>
+        /// The FULL intended key: blank clears it. The Booking Services form always sends it, so
+        /// an ordinary edit (a name or price change) re-sends the current key unchanged.
+        /// </summary>
+        public string? ServiceKey { get; set; }
+
+        /// <summary>The FULL intended display price, like ServiceKey: both null clears it.</summary>
+        public decimal? DisplayPrice { get; set; }
+        public string? DisplayPriceUnit { get; set; }
     }
 
     // Service DTOs
@@ -239,6 +268,9 @@ namespace DreamCleaningBackend.DTOs
         public int? ServiceTypeId { get; set; }
         public bool IsAvailableForAll { get; set; } = true;
         public int DisplayOrder { get; set; }
+
+        /// <summary>See ExtraService.ExtraServiceKey. Blank or missing = no key.</summary>
+        public string? ExtraServiceKey { get; set; }
     }
 
     public class UpdateExtraServiceDto
@@ -260,6 +292,23 @@ namespace DreamCleaningBackend.DTOs
         public int? ServiceTypeId { get; set; }
         public bool IsAvailableForAll { get; set; }
         public int DisplayOrder { get; set; }
+
+        /// <summary>
+        /// See ExtraService.ExtraServiceKey. ABSENT from the body leaves the stored key alone - an
+        /// admin page built before this field existed (still open in a browser across the deploy)
+        /// must not wipe the keys the AddExtraServiceKey migration filled in. Present-but-blank
+        /// (or null) clears it.
+        /// </summary>
+        public string? ExtraServiceKey
+        {
+            get => _extraServiceKey;
+            set { _extraServiceKey = value; ExtraServiceKeyProvided = true; }
+        }
+        private string? _extraServiceKey;
+
+        /// <summary>True when the request body carried <see cref="ExtraServiceKey"/> at all.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool ExtraServiceKeyProvided { get; private set; }
     }
 
     // Subscription DTOs
@@ -273,6 +322,8 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public int SubscriptionDays { get; set; }
         public int DisplayOrder { get; set; }
+        /// <summary>Shows the "Most popular" badge. Setting it clears it on every other plan.</summary>
+        public bool IsMostPopular { get; set; }
     }
 
     public class UpdateSubscriptionDto
@@ -285,6 +336,12 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public int SubscriptionDays { get; set; }
         public int DisplayOrder { get; set; }
+        /// <summary>
+        /// "Most popular" badge. NULL / absent keeps the stored flag (an admin page loaded before the
+        /// field existed must not clear the badge the migration set); true moves the badge to this
+        /// plan, false removes it.
+        /// </summary>
+        public bool? IsMostPopular { get; set; }
     }
 
     // Promo Code DTOs
@@ -387,8 +444,8 @@ namespace DreamCleaningBackend.DTOs
         public string Code { get; set; }
         public decimal OriginalAmount { get; set; }
         public decimal CurrentBalance { get; set; }
-        public string RecipientName { get; set; }
-        public string RecipientEmail { get; set; }
+        public string? RecipientName { get; set; }
+        public string? RecipientEmail { get; set; }
         public string SenderName { get; set; }
         public string SenderEmail { get; set; }
         public string? Message { get; set; }
@@ -397,6 +454,10 @@ namespace DreamCleaningBackend.DTOs
         public DateTime CreatedAt { get; set; }
         public DateTime? PaidAt { get; set; }
         public string PurchasedByUserName { get; set; }
+        public string? PurchasedByUserEmail { get; set; }
+        // "Buy for myself - send later" card that has not been sent yet.
+        public bool IsPendingSend { get; set; }
+        public DateTime? SentAt { get; set; }
 
         // Calculated fields
         public decimal TotalAmountUsed { get; set; }
@@ -518,6 +579,8 @@ namespace DreamCleaningBackend.DTOs
         public DateTime? LastCleaningDate { get; set; }
         /// <summary>Service type name of the user's most recent non-cancelled order.</summary>
         public string? LastCleaningServiceType { get; set; }
+        /// <summary>ServiceType.ServiceKey of that order's NON-custom type (null for custom / unkeyed).</summary>
+        public string? LastCleaningServiceTypeKey { get; set; }
         /// <summary>Bedrooms quantity from the user's most recent order, if recorded.</summary>
         public int? LastBedrooms { get; set; }
         /// <summary>Bathrooms quantity from the user's most recent order, if recorded.</summary>
@@ -853,6 +916,15 @@ namespace DreamCleaningBackend.DTOs
         public decimal? TaxOverride { get; set; }
         /// <summary>The discounted subtotal <see cref="TaxOverride"/> was split out of.</summary>
         public decimal? TaxOverrideBase { get; set; }
+
+        /// <summary>
+        /// True when the admin TYPED the price in this edit (the SubTotal or Total field). The
+        /// server otherwise re-prices the order from its lines with the shared calculator and
+        /// ignores <see cref="SubTotal"/> (logging a warning when they differ by more than a cent);
+        /// with this set, the typed figure is kept as a deliberate manual price. Custom
+        /// ("Pre-Arranged") orders always keep their agreed amount and need no flag. (2026-10)
+        /// </summary>
+        public bool? PriceTypedByAdmin { get; set; }
         public decimal? DiscountAmount { get; set; }
         public decimal? SubscriptionDiscountAmount { get; set; }
         /// <summary>Recalculated loyalty discount on subtotal change (scaled proportionally on
@@ -871,9 +943,18 @@ namespace DreamCleaningBackend.DTOs
 
     public class SuperAdminOrderServiceUpdateDto
     {
+        /// <summary>Existing row: OrderService.Id. New row: 0, with <see cref="ServiceId"/>.</summary>
         public int OrderServiceId { get; set; }
+        /// <summary>
+        /// New rows only. The admin editor adds exactly one kind of row: the priced LEVELS line,
+        /// when an order booked as an apartment (so it never got one) becomes a house on a service
+        /// type that charges for levels. Anything else is refused server-side.
+        /// </summary>
+        public int? ServiceId { get; set; }
         public int Quantity { get; set; }
         public decimal Cost { get; set; }
+        /// <summary>New rows only: the line's minutes from the editor's quote. Existing rows keep theirs.</summary>
+        public decimal? Duration { get; set; }
     }
 
     public class SuperAdminOrderExtraServiceUpdateDto

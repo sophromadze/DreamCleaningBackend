@@ -49,6 +49,20 @@ namespace DreamCleaningBackend.Services.Contracts
             new(@"\{\{([A-Z0-9_]+(?::[a-z0-9\-]+)?)\}\}", RegexOptions.Compiled);
 
         private const string ScopePrefix = "SCOPE:";
+
+        /// <summary>
+        /// "@IF IF_SCOPE_ANY:key" keeps its block only when that scope group has a selected item -
+        /// how a Detailed Exhibit A drops a kitchen, floor or restroom subsection nobody bought.
+        /// </summary>
+        private const string ScopeAnyGuardPrefix = "IF_SCOPE_ANY:";
+
+        /// <summary>
+        /// A body whose Exhibit A headings are written "### A#n. TITLE" (template v3.1+) is numbered
+        /// here, in the order the subsections actually appear. A body with literal "A1."-style
+        /// headings - every version frozen before 3.1 - is never renumbered, so it re-renders
+        /// byte-for-byte as it was generated.
+        /// </summary>
+        private const string AutoNumberMarker = "### A#";
         private const string ScopeTablePrefix = "SCOPE_TABLE:";
 
         public static RenderedContract Render(ContractSnapshot snapshot)
@@ -62,7 +76,9 @@ namespace DreamCleaningBackend.Services.Contracts
             var consumedScopeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var unresolved = new List<string>();
 
-            var lines = ExpandLines(snapshot.TemplateBodyText ?? string.Empty, scopeGroups, consumedScopeKeys);
+            var body = snapshot.TemplateBodyText ?? string.Empty;
+            var autoNumber = body.Contains(AutoNumberMarker, StringComparison.Ordinal);
+            var lines = ExpandLines(body, scopeGroups, consumedScopeKeys, autoNumber);
 
             var blocks = new List<ContractBlock>();
             var paragraph = new StringBuilder();
@@ -74,9 +90,49 @@ namespace DreamCleaningBackend.Services.Contracts
                 paragraph.Clear();
             }
 
+            // Depth of an "@IF IF_NAME" block whose guard does not apply. Lines inside it are
+            // dropped BEFORE substitution, so nothing in an omitted exhibit reaches the document or
+            // the unresolved banner. Blocks nest; an applicable block's directives simply vanish.
+            var skipDepth = 0;
+
             foreach (var rawLine in lines)
             {
-                var line = Substitute(rawLine, tokens, scopeGroups, consumedScopeKeys, unresolved);
+                var directive = rawLine.Trim();
+                if (directive.StartsWith("@IF ", StringComparison.Ordinal))
+                {
+                    FlushParagraph();
+                    if (skipDepth > 0) { skipDepth++; continue; }
+                    var guardName = directive.Substring(4).Trim();
+                    if (guardName.StartsWith(ScopeAnyGuardPrefix, StringComparison.Ordinal))
+                    {
+                        var key = guardName.Substring(ScopeAnyGuardPrefix.Length);
+                        if (!scopeGroups.TryGetValue(key, out var guardGroup)
+                            || !guardGroup.Items.Any(i => i.Selected && !string.IsNullOrWhiteSpace(i.Label)))
+                        {
+                            skipDepth = 1;
+                        }
+                    }
+                    else if (!tokens.TryGetValue(guardName, out var guardValue)
+                        || guardValue == ContractPlaceholders.OmitLineSentinel)
+                    {
+                        skipDepth = 1;
+                    }
+                    continue;
+                }
+                if (directive == "@ENDIF")
+                {
+                    FlushParagraph();
+                    if (skipDepth > 0) skipDepth--;
+                    continue;
+                }
+                if (skipDepth > 0) continue;
+
+                // Unresolved tokens are collected per LINE and kept only if the line survives. A
+                // line dropped by the OMIT sentinel - a conditional clause that does not apply to
+                // this contract - is not in the document, so a blank on it is not a question
+                // anybody needs to answer.
+                var lineUnresolved = new List<string>();
+                var line = Substitute(rawLine, tokens, scopeGroups, consumedScopeKeys, lineUnresolved);
 
                 // A token that resolved to the OMIT sentinel takes its whole line with it. This is
                 // how a clause becomes CONDITIONAL without teaching the template body an if/else:
@@ -91,6 +147,7 @@ namespace DreamCleaningBackend.Services.Contracts
                     FlushParagraph();
                     continue;
                 }
+                unresolved.AddRange(lineUnresolved);
 
                 if (string.IsNullOrWhiteSpace(line))
                 {
@@ -153,6 +210,8 @@ namespace DreamCleaningBackend.Services.Contracts
             }
             FlushParagraph();
 
+            if (autoNumber) NumberExhibitA(blocks, body);
+
             var plain = BuildPlainText(blocks);
             return new RenderedContract
             {
@@ -162,6 +221,59 @@ namespace DreamCleaningBackend.Services.Contracts
                 Sha256 = Hash(plain),
                 UnresolvedTokens = unresolved.Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList()
             };
+        }
+
+        private static readonly Regex AutoHeading = new(@"^A#(\d+)\.\s*(.*)$", RegexOptions.Compiled);
+
+        /// <summary>
+        /// A cross-reference to an Exhibit A subsection: "in A1", "under A4", "and A8". Anchored on
+        /// the preposition so a unit number in an address ("Suite A2") is never rewritten.
+        /// </summary>
+        private static readonly Regex SubsectionReference = new(
+            @"\b(in|under|see|per|to|of|and|or)\s+A(\d{1,2})\b", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Numbers the "A#n" subsections that survived rendering A1, A2, A3... in order, then
+        /// rewrites every "in A4"-style reference inside Exhibit A to the new number. A reference to
+        /// a subsection that is not in this document (its work was not selected) becomes
+        /// "Exhibit A" rather than pointing at a number that does not exist.
+        /// </summary>
+        private static void NumberExhibitA(List<ContractBlock> blocks, string body)
+        {
+            var declared = new HashSet<int>(Regex.Matches(body, @"### A#(\d+)\.")
+                .Select(m => int.Parse(m.Groups[1].Value)));
+            var map = new Dictionary<int, int>();
+            var next = 1;
+
+            foreach (var block in blocks.Where(b => b.Kind == ContractBlockKind.SubHeading))
+            {
+                var m = AutoHeading.Match(block.Text);
+                if (!m.Success) continue;
+                var canonical = int.Parse(m.Groups[1].Value);
+                map[canonical] = next;
+                block.Text = $"A{next}. {m.Groups[2].Value}";
+                next++;
+            }
+
+            string Remap(string text) => SubsectionReference.Replace(text, m =>
+            {
+                var canonical = int.Parse(m.Groups[2].Value);
+                if (map.TryGetValue(canonical, out var number)) return $"{m.Groups[1].Value} A{number}";
+                return declared.Contains(canonical) ? $"{m.Groups[1].Value} Exhibit A" : m.Value;
+            });
+
+            var inExhibitA = false;
+            foreach (var block in blocks)
+            {
+                if (block.Kind == ContractBlockKind.Heading)
+                {
+                    inExhibitA = block.Text == "EXHIBIT A" || (inExhibitA && block.Text == "SCOPE OF WORK");
+                    continue;
+                }
+                if (!inExhibitA || block.Kind == ContractBlockKind.SubHeading) continue;
+                block.Text = Remap(block.Text);
+                if (block.Label != null) block.Label = Remap(block.Label);
+            }
         }
 
         /// <summary>SHA-256, lowercase hex. Computed over the canonical plain text.</summary>
@@ -181,7 +293,8 @@ namespace DreamCleaningBackend.Services.Contracts
         private static List<string> ExpandLines(
             string body,
             IReadOnlyDictionary<string, ScopeGroup> groups,
-            HashSet<string> consumed)
+            HashSet<string> consumed,
+            bool autoNumber = false)
         {
             var source = body.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
 
@@ -238,7 +351,9 @@ namespace DreamCleaningBackend.Services.Contracts
                 if (extra.Count == 0) continue;
 
                 output.Add("");
-                output.Add("### A10. ADDITIONAL SCOPE");
+                // An auto-numbered body takes the next free number; an older body keeps the literal
+                // "A10" it was generated with.
+                output.Add(autoNumber ? "### A#99. ADDITIONAL SCOPE" : "### A10. ADDITIONAL SCOPE");
                 foreach (var group in extra)
                 {
                     output.Add("");
@@ -314,6 +429,10 @@ namespace DreamCleaningBackend.Services.Contracts
 
                 if (tokens.TryGetValue(name, out var value))
                 {
+                    // A line guard that applies is EMPTY by design - it exists only to let its
+                    // line through - so its empty value is not a missing answer.
+                    if (ContractPlaceholders.IsLineGuard(name)) return value;
+
                     // A RULED BLANK COUNTS AS UNRESOLVED. It is a mapped token whose value nobody
                     // supplied - an unanswered restroom count, a missing commencement date - and
                     // the whole point of printing a visible blank rather than "None" is that the

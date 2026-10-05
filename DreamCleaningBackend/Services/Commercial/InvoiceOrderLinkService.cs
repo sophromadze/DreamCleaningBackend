@@ -96,7 +96,7 @@ namespace DreamCleaningBackend.Services.Commercial
         /// must never appear on this one's invoice, however the accounts are linked.
         /// </summary>
         public async Task<InvoiceEligibleOrdersDto> GetEligibleOrdersAsync(
-            int contractClientId, int? forInvoiceId, DateTime? from, DateTime? to)
+            int contractClientId, int? forInvoiceId, DateTime? from, DateTime? to, int? contractId = null)
         {
             var linkedUserId = await ResolveLinkedAccountIdAsync(contractClientId);
 
@@ -131,6 +131,22 @@ namespace DreamCleaningBackend.Services.Commercial
 
             var result = new InvoiceEligibleOrdersDto { ContractClientId = contractClientId };
 
+            // What makes a row identifiable in a week of six near-identical visits: who is on it,
+            // and which contract it was scheduled under.
+            var cleaners = (await _context.OrderCleaners
+                    .Where(oc => orderIds.Contains(oc.OrderId))
+                    .Select(oc => new { oc.OrderId, oc.Cleaner.FirstName, oc.Cleaner.LastName })
+                    .AsNoTracking()
+                    .ToListAsync())
+                .GroupBy(c => c.OrderId)
+                .ToDictionary(g => g.Key, g => string.Join(", ", g.Select(c => $"{c.FirstName} {c.LastName}".Trim())));
+
+            var contractIds = orders.Where(o => o.ContractId != null).Select(o => o.ContractId!.Value).Distinct().ToList();
+            var contractNumbers = contractIds.Count == 0
+                ? new Dictionary<int, string>()
+                : await _context.Contracts.Where(c => contractIds.Contains(c.Id))
+                    .ToDictionaryAsync(c => c.Id, c => c.ContractNumber);
+
             foreach (var order in orders)
             {
                 var mine = forInvoiceId.HasValue
@@ -151,13 +167,24 @@ namespace DreamCleaningBackend.Services.Commercial
                     Status = order.Status,
                     Total = order.Total,
                     ContactName = $"{order.ContactFirstName} {order.ContactLastName}".Trim(),
+                    OccurrenceDate = order.RecurrenceOccurrenceDate,
+                    ContractId = order.ContractId,
+                    ContractNumber = order.ContractId.HasValue
+                        ? contractNumbers.GetValueOrDefault(order.ContractId.Value)
+                        : null,
+                    AssignedCleaners = cleaners.GetValueOrDefault(order.Id) ?? string.Empty,
                     IsOnThisInvoice = mine != null,
                     AllocatedAmount = mine?.AllocatedAmount,
                     BilledOnInvoiceId = other?.CommercialInvoiceId,
                     BilledOnInvoiceNumber = other?.Invoice?.InvoiceNumber
                 };
 
-                var blocked = ResolveBlockedReason(order, other);
+                // A cleaning performed under a DIFFERENT contract of the same client is listed
+                // with the reason rather than offered: it belongs on that contract's invoice.
+                var blocked = ResolveBlockedReason(order, other)
+                    ?? (contractId.HasValue && order.ContractId.HasValue && order.ContractId != contractId
+                        ? $"Scheduled under contract {row.ContractNumber ?? "#" + order.ContractId}, not the one on this invoice."
+                        : null);
                 row.BlockedReason = blocked;
                 row.CanSelect = blocked == null || row.IsOnThisInvoice;
 
@@ -330,6 +357,39 @@ namespace DreamCleaningBackend.Services.Commercial
 
             if (orders.Any(o => OrderStatuses.IsCancelled(o.Status) || OrderStatuses.IsRefunded(o.Status)))
                 throw new InvoiceWorkflowException("Cancelled or refunded cleanings cannot be selected.");
+
+            // ── The contract the cleanings were scheduled under ───────────────────────────────
+            //
+            // A cleaning a contract-linked recurring plan produced carries that contract. It may
+            // only be billed on an invoice for THE SAME contract — and an invoice with no contract
+            // chosen must not price it as an ordinary order, because a weekly-flat-fee visit's own
+            // total is not a charge (six of them are not six weekly fees).
+            var scheduledUnder = orders.Where(o => o.ContractId != null).ToList();
+            if (scheduledUnder.Count > 0)
+            {
+                if (!invoice.ContractId.HasValue)
+                {
+                    var ids = scheduledUnder.Select(o => o.ContractId!.Value).Distinct().ToList();
+                    var numbers = await _context.Contracts.Where(c => ids.Contains(c.Id))
+                        .Select(c => c.ContractNumber).ToListAsync();
+                    throw new InvoiceWorkflowException(
+                        $"These cleanings were scheduled under contract {string.Join(", ", numbers)}. "
+                        + "Choose that contract on the invoice before linking them.");
+                }
+
+                var otherContract = scheduledUnder.Where(o => o.ContractId != invoice.ContractId).ToList();
+                if (otherContract.Count > 0)
+                    throw new InvoiceWorkflowException(
+                        "These cleanings were scheduled under a different contract: "
+                        + string.Join(", ", otherContract.Select(o => $"#{o.Id}")) + ".");
+            }
+
+            ContractBillingProfile? weeklyFee = null;
+            if (invoice.ContractId.HasValue && orders.Count > 0 && !dto.NegotiatedGroupTotal.HasValue)
+            {
+                var profile = await ContractBillingProfile.LoadAsync(_context, invoice.ContractId.Value);
+                if (profile?.IsWeeklyFlatFee == true) weeklyFee = profile;
+            }
             // Current order totals already include their discounts. A stale cloned invoice
             // discount must not reduce that selected-order sum for a second time.
             if (orders.Count > 0 && !dto.NegotiatedGroupTotal.HasValue)
@@ -353,7 +413,11 @@ namespace DreamCleaningBackend.Services.Commercial
 
             List<InvoiceAllocationLine> lines;
 
-            if (dto.NegotiatedGroupTotal.HasValue && candidates.Count > 0)
+            if (weeklyFee != null)
+            {
+                lines = ApplyWeeklyFlatFee(invoice, orders, weeklyFee, result);
+            }
+            else if (dto.NegotiatedGroupTotal.HasValue && candidates.Count > 0)
             {
                 var solve = InvoiceGroupTotalSolver.Solve(
                     dto.NegotiatedGroupTotal.Value, invoice.TaxType, invoice.TaxRate,
@@ -448,7 +512,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 OrderStatus = byDate[l.OrderId].Status
             }).ToList();
 
-            if (dto.NegotiatedGroupTotal.HasValue && lines.Any(l => l.ChangesOrderTotal))
+            if ((dto.NegotiatedGroupTotal.HasValue || weeklyFee != null) && lines.Any(l => l.ChangesOrderTotal))
             {
                 result.Warnings.Add(
                     $"Sending this invoice will change {lines.Count(l => l.ChangesOrderTotal)} order "
@@ -467,6 +531,90 @@ namespace DreamCleaningBackend.Services.Commercial
             return result;
         }
 
+
+        /// <summary>
+        /// WEEKLY FLAT FEE: one weekly fee per DISTINCT CONTRACT SERVICE WEEK the selected
+        /// cleanings fall in — never one per cleaning. Six visits Sunday to Friday of one week are
+        /// one $875.00 pre-tax fee; twelve visits over two weeks are two.
+        ///
+        ///  • The week is the contract's own (<see cref="ContractBillingProfile.WeekStart"/>, from
+        ///    its "Monday through Sunday" definition), never a rolling seven days from the first
+        ///    cleaning, and a recurring visit is placed by its SCHEDULED occurrence date so a
+        ///    moved visit still settles the week it belonged to.
+        ///  • A PARTIAL week is NOT prorated. The fee is the agreed weekly fee; a short week is
+        ///    reported as a warning for the admin to review, and nothing is blocked.
+        ///  • Tax is computed once, by the invoice calculator, on the weekly fee — the line carries
+        ///    the tax-inclusive weekly total on an Included invoice and the pre-tax fee otherwise.
+        ///  • The invoice total is then split across the weeks, and each week's share across its
+        ///    cleanings, in exact cents — that is only the internal allocation the send commits onto
+        ///    the orders, so the bookings add up to the invoice. It is not a per-visit price.
+        /// </summary>
+        private static List<InvoiceAllocationLine> ApplyWeeklyFlatFee(
+            CommercialInvoice invoice, List<Order> orders, ContractBillingProfile contract, InvoiceOrdersResultDto result)
+        {
+            var unit = invoice.TaxType == InvoiceTaxType.Included ? contract.TotalPrice : contract.PreTaxPrice;
+            if (unit <= 0m)
+                throw new InvoiceWorkflowException(
+                    $"Contract {contract.ContractNumber} has no weekly fee recorded, so these cleanings cannot be priced.");
+
+            var weeks = ServiceWeekCalculator.GroupByWeek(
+                orders, o => (o.RecurrenceOccurrenceDate ?? o.ServiceDate).Date, contract.WeekStart);
+
+            invoice.DiscountType = InvoiceDiscountType.None;
+            invoice.DiscountValue = null;
+            invoice.Items.Clear();
+
+            var visits = contract.VisitsPerWeek;
+            var sort = 0;
+            foreach (var week in weeks)
+            {
+                var text = $"Weekly commercial cleaning service fee - {visits} scheduled visit{(visits == 1 ? "" : "s")} "
+                    + $"per week (service week of {week.Key:MMM d, yyyy})";
+                invoice.Items.Add(new CommercialInvoiceItem
+                {
+                    Description = text.Length > 500 ? text[..500] : text,
+                    Quantity = 1m,
+                    UnitPrice = unit,
+                    Amount = InvoiceCalculator.LineAmount(1m, unit),
+                    SortOrder = sort++,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                });
+
+                var selected = week.Count();
+                if (selected != visits)
+                {
+                    result.Warnings.Add(selected < visits
+                        ? $"Only {selected} of {visits} scheduled visits for the service week of {week.Key:MMM d, yyyy} "
+                          + $"are selected. This contract uses a flat weekly fee of {contract.PreTaxPrice:C}. "
+                          + "Review before creating the invoice."
+                        : $"{selected} cleanings are selected for the service week of {week.Key:MMM d, yyyy}, where the "
+                          + $"contract schedules {visits}. The flat weekly fee of {contract.PreTaxPrice:C} is billed once. "
+                          + "Review before creating the invoice.");
+                }
+            }
+
+            InvoiceService.RecomputeTotalsFromRows(invoice);
+            result.PricedAsWeeklyFlatFee = true;
+            result.ServiceWeekCount = weeks.Count;
+
+            // Exact-cent split: invoice total → weeks → that week's cleanings.
+            var weekShares = InvoiceOrderAllocator.DistributeEqually(
+                weeks.Select((w, i) => new InvoiceAllocationCandidate { OrderId = i, ServiceDate = w.Key }).ToList(),
+                invoice.Total);
+
+            var lines = new List<InvoiceAllocationLine>();
+            for (var i = 0; i < weeks.Count; i++)
+            {
+                var candidates = weeks[i]
+                    .OrderBy(o => o.ServiceDate).ThenBy(o => o.Id)
+                    .Select(o => new InvoiceAllocationCandidate { OrderId = o.Id, ServiceDate = o.ServiceDate, CurrentTotal = o.Total })
+                    .ToList();
+                lines.AddRange(InvoiceOrderAllocator.DistributeEqually(candidates, weekShares[i].AllocatedAmount));
+            }
+
+            return lines.OrderBy(l => l.ServiceDate).ThenBy(l => l.OrderId).ToList();
+        }
 
         /// <summary>
         /// One line per visit, so the client can check the bill against their own diary.

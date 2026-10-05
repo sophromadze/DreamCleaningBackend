@@ -62,6 +62,24 @@ namespace DreamCleaningBackend.Controllers.Admin
             => Ok(await _series.GetForOrderAsync(orderId));
 
         /// <summary>
+        /// The executed commercial contracts a plan built from this order may be linked to — the
+        /// order's own client's, or those of the client its customer account is linked to.
+        /// </summary>
+        [HttpGet("from-order/{orderId:int}/contracts")]
+        [RequirePermission(Permission.View)]
+        public async Task<ActionResult<RecurringContractOptionsDto>> ContractOptions(int orderId)
+        {
+            try
+            {
+                return Ok(await _series.GetContractOptionsAsync(orderId));
+            }
+            catch (RecurringSeriesException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// Makes an existing order recurring, and immediately fills the 30-day horizon.
         ///
         /// A 400 here is a rule the admin can act on — most often the daily interval, which is out

@@ -180,6 +180,48 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        public async Task<ChargeReceiptSendResult> SendChargeReceiptAsync(string paymentIntentId, string email)
+        {
+            // Synthetic references (gift-card-covered orders) never touched Stripe.
+            if (string.IsNullOrWhiteSpace(paymentIntentId) || !paymentIntentId.StartsWith("pi_"))
+                return new ChargeReceiptSendResult { FailureReason = "This payment was not made by card on the website, so there is no receipt to send." };
+
+            try
+            {
+                var intent = await new PaymentIntentService().GetAsync(paymentIntentId, new PaymentIntentGetOptions
+                {
+                    Expand = new List<string> { "latest_charge" }
+                });
+                var charge = intent.LatestCharge;
+                if (intent.Status != "succeeded" || charge == null || charge.Status != "succeeded" || !charge.Paid)
+                    return new ChargeReceiptSendResult { FailureReason = "This payment has not completed, so there is no receipt to send." };
+
+                // Stripe emails a receipt for a settled charge ONLY when receipt_email CHANGES —
+                // writing the address it already holds is a silent no-op. The customer's address
+                // is usually on the charge from checkout, so a plain update would do nothing on the
+                // first click, never mind a resend. Clearing it first makes the second write a
+                // change every time. If the second write fails the field is left empty, which only
+                // affects future sends and is repaired by the next click.
+                var charges = new ChargeService();
+                if (!string.IsNullOrEmpty(charge.ReceiptEmail))
+                    await charges.UpdateAsync(charge.Id, new ChargeUpdateOptions { ReceiptEmail = "" });
+                await charges.UpdateAsync(charge.Id, new ChargeUpdateOptions { ReceiptEmail = email });
+
+                return new ChargeReceiptSendResult
+                {
+                    Sent = true,
+                    ChargeId = charge.Id,
+                    Amount = charge.Amount / 100m,
+                    LiveMode = charge.Livemode
+                };
+            }
+            catch (StripeException ex)
+            {
+                _logger.LogError(ex, "Could not send the receipt for payment intent {PaymentIntentId}", paymentIntentId);
+                return new ChargeReceiptSendResult { FailureReason = "The receipt could not be sent right now. Please try again in a moment." };
+            }
+        }
+
         public async Task<string> CreateOrGetCustomerAsync(User user)
         {
             var customerService = new CustomerService();

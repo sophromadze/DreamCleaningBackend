@@ -180,6 +180,8 @@ namespace DreamCleaningBackend.Controllers
                         ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
                             ? o.CustomServiceDisplayName + " Cleaning"
                             : (o.ServiceType != null ? o.ServiceType.Name : ""),
+                        // GetRecognisableServiceTypeKey, written out for SQL.
+                        ServiceTypeKey = o.ServiceType != null && !o.ServiceType.IsCustom ? o.ServiceType.ServiceKey : null,
                         o.BedroomsQuantity,
                         o.BathroomsQuantity
                     })
@@ -188,8 +190,13 @@ namespace DreamCleaningBackend.Controllers
 
             var lastOrderByUser = lastOrders.ToDictionary(o => o.UserId);
 
+            // REAL orders only - not cancelled, not fully refunded (owner's rule, 2026-10): the same
+            // rule as the user panel's Total Jobs, so the "new / returning / no orders" filter and
+            // the panel never disagree about how many jobs a customer has had.
             var orderCounts = await _context.Orders
-                .Where(o => userIds.Contains(o.UserId) && o.Status != "Cancelled")
+                .Where(o => userIds.Contains(o.UserId)
+                            && o.Status != OrderStatuses.Cancelled
+                            && o.Status != OrderStatuses.Refunded)
                 .GroupBy(o => o.UserId)
                 .Select(g => new { UserId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(g => g.UserId, g => g.Count);
@@ -200,6 +207,7 @@ namespace DreamCleaningBackend.Controllers
                 {
                     u.LastCleaningDate = lo.ServiceDate;
                     u.LastCleaningServiceType = lo.ServiceTypeName;
+                    u.LastCleaningServiceTypeKey = string.IsNullOrWhiteSpace(lo.ServiceTypeKey) ? null : lo.ServiceTypeKey.Trim();
                     u.LastBedrooms = lo.BedroomsQuantity;
                     u.LastBathrooms = lo.BathroomsQuantity;
                 }
@@ -281,6 +289,8 @@ namespace DreamCleaningBackend.Controllers
                         ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
                             ? o.CustomServiceDisplayName + " Cleaning"
                             : (o.ServiceType != null ? o.ServiceType.Name : ""),
+                        // GetRecognisableServiceTypeKey, written out for SQL (null for custom / unkeyed).
+                        ServiceTypeKey = o.ServiceType != null && !o.ServiceType.IsCustom ? o.ServiceType.ServiceKey : null,
                         o.ServiceAddress,
                         o.AptSuite,
                         o.City,
@@ -309,10 +319,11 @@ namespace DreamCleaningBackend.Controllers
                 .Select(os => new { os.OrderId, os.Quantity })
                 .ToDictionaryAsync(x => x.OrderId, x => x.Quantity);
 
-            // Total $ spent per user, across all non-cancelled, non-refunded orders, with refunded
-            // money netted out of the rest so the export matches what the customer actually paid.
+            // Total $ spent per user: REALIZED money only (settled, not cancelled or refunded, net of
+            // part refunds) — see OrderPaymentFilter.WhereRealizedSpend. Unpaid future bookings and
+            // weekly-flat-fee operational visits are not spend until their payment lands.
             var totalSpentByUser = await _context.Orders
-                .Where(o => o.Status != OrderStatuses.Cancelled && o.Status != OrderStatuses.Refunded)
+                .WhereRealizedSpend()
                 .GroupBy(o => o.UserId)
                 .Select(g => new { UserId = g.Key, Total = g.Sum(o => o.Total - o.TotalRefundedAmount) })
                 .ToDictionaryAsync(g => g.UserId, g => g.Total);
@@ -340,7 +351,11 @@ namespace DreamCleaningBackend.Controllers
                 {
                     var st = (lo.ServiceTypeName ?? "").Trim();
                     var stLower = st.ToLowerInvariant();
-                    if (stLower.Contains("residential"))
+                    // Residential by ServiceKey; only an unkeyed (or custom) type by its name.
+                    var isResidential = !string.IsNullOrWhiteSpace(lo.ServiceTypeKey)
+                        ? lo.ServiceTypeKey.Trim() == "residential"
+                        : stLower.Contains("residential");
+                    if (isResidential)
                     {
                         serviceTypeLabel = deepOrderIdSet.Contains(lo.Id) ? "Deep" : "Regular";
                     }
@@ -516,6 +531,20 @@ namespace DreamCleaningBackend.Controllers
             {
                 // Log but don't fail registration
                 _logger.LogError(ex, $"Failed to grant special offers to user {user.Id}");
+            }
+
+            // Same welcome bonus a customer gets when they register themselves (AuthService
+            // TryGrantWelcomeBonusAsync). GrantWelcomeBonus is idempotent through
+            // User.WelcomeBonusGranted and honours the WelcomeBonusEnabled / PointsSystemEnabled
+            // settings, so an office-created account is treated exactly like a self-registered one.
+            try
+            {
+                var bubblePoints = HttpContext.RequestServices.GetRequiredService<IBubblePointsService>();
+                await bubblePoints.GrantWelcomeBonus(user.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GrantWelcomeBonus failed for admin-registered user {UserId}", user.Id);
             }
 
             if (!user.IsNoEmailUser)
@@ -1418,7 +1447,10 @@ namespace DreamCleaningBackend.Controllers
 
                 var orders = await _context.Orders
                     .Include(o => o.ServiceType)
-                    .Where(o => o.UserId == userId && o.Status != "Cancelled")
+                    // EVERY order, cancelled and refunded included: this feeds the user's History
+                    // tab, which is a record, not a statistic. The statistics (GetUserDetails,
+                    // the list's last-order columns) keep their own non-cancelled filters.
+                    .Where(o => o.UserId == userId)
                     .OrderByDescending(o => o.OrderDate)
                     .Select(o => new OrderListDto
                     {
@@ -1430,6 +1462,7 @@ namespace DreamCleaningBackend.Controllers
                         ServiceTypeName = o.ServiceType != null && o.ServiceType.IsCustom && o.CustomServiceDisplayName != null && o.CustomServiceDisplayName != ""
                             ? o.CustomServiceDisplayName + " Cleaning"
                             : (o.ServiceType != null ? o.ServiceType.Name : ""),
+                        ServiceTypeKey = o.ServiceType != null && !o.ServiceType.IsCustom ? o.ServiceType.ServiceKey : null,
                         IsCustomServiceType = o.ServiceType != null && o.ServiceType.IsCustom,
                         CustomServiceDisplayName = o.CustomServiceDisplayName,
                         ServiceDate = o.ServiceDate,
@@ -1454,6 +1487,8 @@ namespace DreamCleaningBackend.Controllers
                         PaidAt = o.PaidAt,
                         CancellationReason = o.CancellationReason,
                         IsLateCancellation = o.IsLateCancellation,
+                        // Lets the History pill show RefundH for a partial refund, as the Orders tab does.
+                        TotalRefundedAmount = o.TotalRefundedAmount,
                         PointsRedeemed = o.PointsRedeemed,
                         PointsRedeemedDiscount = o.PointsRedeemedDiscount,
                         RewardBalanceUsed = o.RewardBalanceUsed,
@@ -1467,6 +1502,16 @@ namespace DreamCleaningBackend.Controllers
                         PaymentNotes = o.PaymentNotes
                     })
                     .ToListAsync();
+
+                // Weekly-flat-fee operational cleanings show who bills them instead of a $0 price.
+                var ids = orders.Select(o => o.Id).ToList();
+                var contractOrders = await _context.Orders
+                    .Where(o => ids.Contains(o.Id) && o.ContractId != null)
+                    .Select(o => new Order { Id = o.Id, ContractId = o.ContractId })
+                    .ToListAsync();
+                var contractLabels = await ContractBilledOrders.LoadLabelsAsync(_context, contractOrders);
+                foreach (var dto in orders)
+                    dto.BilledByContractLabel = contractLabels.GetValueOrDefault(dto.Id);
 
                 return Ok(orders);
             }
@@ -1622,13 +1667,21 @@ namespace DreamCleaningBackend.Controllers
                 if (user == null)
                     return NotFound(new { message = "User not found" });
 
-                // Calculate user statistics from Orders table (excluding cancelled orders)
+                // Statistics from the Orders table. Cancelled AND refunded orders are excluded
+                // (owner's rule, 2026-10): a fully refunded order is not a job the customer had,
+                // and money we gave back was not spent. A PART refund keeps its order (its status
+                // is unchanged) and only the refunded amount comes off - see RealizedAmount. These
+                // two figures are what the admin user panel shows as Total Jobs / Total Spent.
                 var userOrders = await _context.Orders
-                    .Where(o => o.UserId == userId && o.Status != "Cancelled")
+                    .Where(o => o.UserId == userId
+                                && o.Status != OrderStatuses.Cancelled
+                                && o.Status != OrderStatuses.Refunded)
                     .ToListAsync();
 
                 var totalOrders = userOrders.Count;
-                var totalSpent = userOrders.Sum(o => o.Total);
+                // Realized money only — an unpaid future booking is not spend (2026-10).
+                var totalSpent = userOrders.Where(OrderPaymentFilter.IsRealizedSpendInMemory)
+                    .Sum(OrderPaymentFilter.RealizedAmount);
                 var lastOrderDate = userOrders.OrderByDescending(o => o.OrderDate).FirstOrDefault()?.OrderDate;
 
                 var userDetail = new UserDetailDto

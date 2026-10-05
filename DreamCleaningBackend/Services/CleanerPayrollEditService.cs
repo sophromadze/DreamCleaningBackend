@@ -216,6 +216,36 @@ namespace DreamCleaningBackend.Services
                 BuildRateChangeFields(pinnedToOldRate, movedOntoTheNewRate));
         }
 
+        /// <summary>
+        /// Sets how many cleaners the order is staffed for. It moves the labour cost — the
+        /// automatic split divides across max(MaidsCount, assigned), and unassigned slots are
+        /// paid — so the total is re-summed and recorded like every other write here. It never
+        /// touches the customer's price or <see cref="Order.TotalDuration"/>.
+        ///
+        /// A no-op (same count) writes nothing and logs nothing.
+        /// </summary>
+        public async Task SetOrderMaidsCountAsync(Order order, int maidsCount)
+        {
+            var previousCount = order.MaidsCount;
+            if (previousCount == maidsCount) return;
+
+            var beforeTotal = order.CleanerTotalSalary;
+
+            order.MaidsCount = maidsCount;
+            ApplyOrderTotalSalary(order);
+            order.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            await _audit.LogActionAsync(
+                AuditEntityTypes.OrderCleanerCount,
+                order.Id,
+                "Update",
+                new { MaidsCount = previousCount, CleanerTotalSalary = beforeTotal },
+                new { MaidsCount = order.MaidsCount, CleanerTotalSalary = order.CleanerTotalSalary },
+                new[] { nameof(Order.MaidsCount), nameof(Order.CleanerTotalSalary) });
+        }
+
         private static List<string> BuildRateChangeFields(List<string> pinned, List<string> dropped)
         {
             var fields = new List<string> { nameof(Order.CleanerHourlyRate), nameof(Order.CleanerTotalSalary) };
@@ -329,5 +359,8 @@ namespace DreamCleaningBackend.Services
         Task<int> SetHoursForEveryCleanerAsync(Order order, decimal? billableMinutes);
 
         Task SetOrderHourlyRateAsync(Order order, decimal hourlyRate);
+
+        /// <summary>Sets Order.MaidsCount and re-sums the labour cost. No-op when unchanged.</summary>
+        Task SetOrderMaidsCountAsync(Order order, int maidsCount);
     }
 }
