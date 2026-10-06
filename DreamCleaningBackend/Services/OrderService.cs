@@ -68,10 +68,19 @@ namespace DreamCleaningBackend.Services
 
             var contractLabels = await ContractBilledOrders.LoadLabelsAsync(_context, orders);
 
+            // Orders with a Done request waiting for approval - one grouped query for the list.
+            var pendingDoneOrderIds = new HashSet<int>(await _context.PendingOrderEdits
+                .Where(p => p.Status == "Pending" && p.Kind == PendingOrderEditKinds.Done)
+                .Select(p => p.OrderId)
+                .Distinct()
+                .ToListAsync());
+
             return orders.Select(o => new OrderListDto
             {
                 Id = o.Id,
                 BilledByContractLabel = contractLabels.GetValueOrDefault(o.Id),
+                IsCommercial = o.IsCommercial,
+                HasPendingDoneRequest = pendingDoneOrderIds.Contains(o.Id),
                 UserId = o.UserId,
                 ContactEmail = o.ContactEmail,
                 ContactFirstName = o.ContactFirstName,
@@ -818,25 +827,6 @@ namespace DreamCleaningBackend.Services
             }
 
             return finalAdditionalAmount;
-        }
-
-        public async Task<bool> MarkOrderAsDone(int orderId)
-        {
-            var order = await _orderRepository.GetByIdAsync(orderId);
-
-            if (order == null)
-                throw new Exception("Order not found");
-
-            if (order.Status == "Cancelled")
-                throw new Exception("Cannot complete a cancelled order");
-
-            order.Status = "Done";
-            order.UpdatedAt = DateTime.UtcNow;
-
-            await _orderRepository.UpdateAsync(order);
-            await _orderRepository.SaveChangesAsync();
-
-            return true;
         }
 
         public async Task<List<OrderListDto>> GetUserOrdersForAdmin(int userId)

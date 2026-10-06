@@ -55,6 +55,7 @@ namespace DreamCleaningBackend.Services
                 PaymentMethod = order.PaymentMethod.ToString(),
                 PaymentReference = order.PaymentReference,
                 ContractClientId = order.ContractClientId,
+                IsCommercial = order.IsCommercial,
                 InvoicePaidAt = order.InvoicePaidAt,
                 RecurringSeriesId = order.RecurringSeriesId,
                 IsGeneratedByRecurringSeries = order.IsGeneratedByRecurringSeries,

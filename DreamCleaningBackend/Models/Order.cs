@@ -361,6 +361,19 @@ namespace DreamCleaningBackend.Models
         /// order carries that too.</summary>
         public bool IsGeneratedByRecurringSeries { get; set; }
 
+        /// <summary>
+        /// Regular (household) vs Commercial (business) work - the admin Orders tab's two
+        /// sub-tabs (2026-10). Stored PER ORDER and written only by the server: at creation it
+        /// follows <see cref="Helpers.OrderCommercialPolicy"/> (the customer's business flag, a
+        /// commercial client or contract on the order, or an admin's explicit choice in Admin
+        /// Mode), and afterwards only an admin's explicit move changes it. Flipping a user's
+        /// business flag later deliberately re-flags NOTHING that already exists, so a manual
+        /// move is never undone behind the admin's back.
+        ///
+        /// A grouping label, not a price: no pricing, loyalty or reporting math reads it.
+        /// </summary>
+        public bool IsCommercial { get; set; }
+
         // ─── Commercial invoice billing (2026-09) ─────────────────────────────────────────
         // Only meaningful when PaymentMethod == Invoice. See PaymentMethodRules: Invoice is the
         // one outside-Stripe method that does NOT mean the money has already arrived.
@@ -546,6 +559,29 @@ namespace DreamCleaningBackend.Models
 
         [StringLength(200)]
         public string? AcquisitionCampaign { get; set; }
+
+        // Raw first-touch signals behind the channel above (2026-10), so the order's source can be
+        // classified on the SERVER (Helpers/OrderSourceClassifier) instead of only trusting the
+        // browser's verdict. Same lifecycle as Acquisition*: self-service only, null on admin
+        // bookings and on every order placed before the capture existed.
+
+        /// <summary>Which ad click id the landing URL carried: gclid / gbraid / wbraid (Google
+        /// Ads) or msclkid (Microsoft Ads). Null when none did.</summary>
+        [StringLength(10)]
+        public string? AcquisitionClickIdType { get; set; }
+
+        /// <summary>The click id value itself, kept for offline-conversion matching.</summary>
+        [StringLength(255)]
+        public string? AcquisitionClickId { get; set; }
+
+        /// <summary>The external referrer of the first landing (scheme + host + path, never the
+        /// query string). Null for a direct visit or an internal one.</summary>
+        [StringLength(300)]
+        public string? AcquisitionReferrer { get; set; }
+
+        /// <summary>Path of the first page the visitor landed on (no query string).</summary>
+        [StringLength(300)]
+        public string? AcquisitionLandingPage { get; set; }
 
         // CONVERTING-session attribution — "what channel drove the visit where THIS order was placed."
         // Parallel to the first-touch Acquisition* fields above but re-evaluated each session (not

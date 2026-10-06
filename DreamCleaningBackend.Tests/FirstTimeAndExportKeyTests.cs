@@ -148,7 +148,7 @@ namespace DreamCleaningBackend.Tests
         public async Task OrdersExportLabelsResidentialByKey()
         {
             await SeedOrders();
-            var controller = new AdminOrdersController(_db, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!,
+            var controller = new AdminOrdersController(_db, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!,
                 NullLogger<AdminOrdersController>.Instance)
             { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
 

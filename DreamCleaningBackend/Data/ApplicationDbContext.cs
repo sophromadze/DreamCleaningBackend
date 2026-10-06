@@ -1202,6 +1202,14 @@ namespace DreamCleaningBackend.Data
                 .WithMany()
                 .HasForeignKey(poe => poe.ReviewedByUserId)
                 .OnDelete(DeleteBehavior.Restrict);
+            // Every row written before the Kind column existed is a field edit.
+            modelBuilder.Entity<PendingOrderEdit>()
+                .Property(poe => poe.Kind)
+                .HasDefaultValue(PendingOrderEditKinds.Edit);
+            // "Is a request already waiting on this order?" is asked on every Done click and for
+            // every row of the admin Orders list.
+            modelBuilder.Entity<PendingOrderEdit>()
+                .HasIndex(poe => new { poe.OrderId, poe.Status, poe.Kind });
 
             // OrderReminderAcknowledgment configuration
             modelBuilder.Entity<OrderReminderAcknowledgment>(entity =>

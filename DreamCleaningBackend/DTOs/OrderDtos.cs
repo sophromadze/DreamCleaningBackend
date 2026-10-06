@@ -116,6 +116,10 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>The commercial client an Invoice-method order is billed to. Null otherwise.</summary>
         public int? ContractClientId { get; set; }
 
+        /// <summary>Regular (false) or Commercial (true) - the admin Orders sub-tab the order
+        /// sits under. See Order.IsCommercial.</summary>
+        public bool IsCommercial { get; set; }
+
         /// <summary>
         /// Set for an operational cleaning under a WEEKLY FLAT FEE contract — "Billed weekly by
         /// contract DCC-…". Price surfaces show this instead of the order's $0 total.
@@ -434,6 +438,10 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>The commercial client an Invoice-method order is billed to. Null otherwise.</summary>
         public int? ContractClientId { get; set; }
 
+        /// <summary>Regular (false) or Commercial (true) - the admin Orders sub-tab the order
+        /// sits under. See Order.IsCommercial.</summary>
+        public bool IsCommercial { get; set; }
+
         /// <summary>
         /// Set for an operational cleaning under a WEEKLY FLAT FEE contract — "Billed weekly by
         /// contract DCC-…". Price surfaces show this instead of the order's $0 total.
@@ -475,6 +483,10 @@ namespace DreamCleaningBackend.DTOs
         // Soft-hidden from the default list view. Rows only appear when "Show hidden orders" is
         // ticked, and are dimmed with a HIDDEN badge so they can't be mistaken for live orders.
         public bool IsHidden { get; set; }
+
+        /// <summary>A Done request is waiting for approval on this order (2026-10). Drives the
+        /// "Done requested" pill and stops the Done button sending a duplicate.</summary>
+        public bool HasPendingDoneRequest { get; set; }
     }
 
     public class CancelOrderDto

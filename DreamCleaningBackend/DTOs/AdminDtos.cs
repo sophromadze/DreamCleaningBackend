@@ -752,6 +752,61 @@ namespace DreamCleaningBackend.DTOs
         public string? PaymentMethod { get; set; }
         public string? PaymentReference { get; set; }
         public string? PaymentNotes { get; set; }
+
+        /// <summary>
+        /// Only read when the change becomes a Done REQUEST (an Admin without the direct-save
+        /// grant moving an order into Done, see OrderDoneApprovalPolicy): the Done modal's "send
+        /// review link" choice, carried on the request and honoured on approval, and an optional
+        /// note for the reviewer. A direct change still sends the review link from the browser.
+        /// </summary>
+        public bool SendReviewRequest { get; set; }
+
+        [StringLength(1000)]
+        public string? Reason { get; set; }
+    }
+
+    /// <summary>
+    /// What a Done request asks for (2026-10) - stored as the request's ProposedChangesJson and
+    /// replayed through OrderStatusChangeService when a reviewer approves it, so the order ends
+    /// up exactly as if the requester had been allowed to press Done.
+    /// </summary>
+    public class DoneRequestPayload
+    {
+        public string? PaymentMethod { get; set; }
+        public string? PaymentReference { get; set; }
+        public string? PaymentNotes { get; set; }
+        public bool SendReviewRequest { get; set; }
+        /// <summary>Transport only - persisted on PendingOrderEdit.Reason.</summary>
+        public string? Reason { get; set; }
+    }
+
+    /// <summary>Body of <c>PUT orders/{orderId}/order-type</c>.</summary>
+    public class UpdateOrderTypeDto
+    {
+        public bool IsCommercial { get; set; }
+    }
+
+    /// <summary>
+    /// One change request on an order, as the order's own panel lists it (2026-10). Readable by
+    /// every Admin, so whoever sent a request sees it waiting - and sees the outcome, with the
+    /// reviewer's reason - instead of the request vanishing into a queue only reviewers can open.
+    /// </summary>
+    public class OrderChangeRequestDto
+    {
+        public int Id { get; set; }
+        public int OrderId { get; set; }
+        public string Kind { get; set; } = "Edit";
+        public string Status { get; set; } = "Pending";
+        public int RequestedByUserId { get; set; }
+        public string RequestedByName { get; set; } = "";
+        public DateTime RequestedAt { get; set; }
+        public string? Reason { get; set; }
+        public List<PendingOrderEditFieldChangeDto>? RequestedChanges { get; set; }
+        public string? ReviewedByName { get; set; }
+        public DateTime? ReviewedAt { get; set; }
+        public string? RejectReason { get; set; }
+        /// <summary>True when the caller sent this request.</summary>
+        public bool IsMine { get; set; }
     }
 
     // SuperAdmin-only: record a non-Stripe payment for a single additional-amount (order-edit) row.
@@ -978,6 +1033,8 @@ namespace DreamCleaningBackend.DTOs
         public string RequestedByName { get; set; } = "";
         public DateTime RequestedAt { get; set; }
         public string Status { get; set; } = "Pending";
+        /// <summary>Edit or Done - see PendingOrderEditKinds.</summary>
+        public string Kind { get; set; } = "Edit";
     }
 
     /// <summary>
@@ -1025,8 +1082,13 @@ namespace DreamCleaningBackend.DTOs
         public string RequestedByName { get; set; } = "";
         public DateTime RequestedAt { get; set; }
         public string Status { get; set; } = "Pending";
+        /// <summary>Edit or Done - see PendingOrderEditKinds.</summary>
+        public string Kind { get; set; } = "Edit";
         public OrderDto? CurrentOrder { get; set; }
+        /// <summary>The edit payload. Null for a Done request.</summary>
         public SuperAdminUpdateOrderDto? ProposedChanges { get; set; }
+        /// <summary>The Done payload. Null for an edit request.</summary>
+        public DoneRequestPayload? DoneRequest { get; set; }
 
         /// <summary>What was asked for, as captured at submit time. Null for legacy rows.</summary>
         public List<PendingOrderEditFieldChangeDto>? RequestedChanges { get; set; }

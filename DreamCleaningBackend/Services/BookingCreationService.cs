@@ -73,6 +73,14 @@ namespace DreamCleaningBackend.Services
         /// makes the order count as recurring in the CRM), only its DISCOUNT is suppressed.
         /// </summary>
         public bool SuppressAutomaticDiscounts { get; set; }
+
+        /// <summary>
+        /// Regular vs Commercial chosen EXPLICITLY for this order: an admin's choice in the
+        /// booking page's Admin Mode, or a recurring occurrence inheriting its template's. Null =
+        /// derive it from the customer and the billing link (<see cref="OrderCommercialPolicy"/>).
+        /// Never set from a self-service request - a customer cannot file their own order.
+        /// </summary>
+        public bool? IsCommercial { get; set; }
     }
 
     public interface IBookingCreationService
@@ -367,6 +375,15 @@ namespace DreamCleaningBackend.Services
                 .Where(OrderBookedFilter.IsRealBooking)
                 .AnyAsync();
 
+            // Regular vs Commercial, decided once here (see OrderCommercialPolicy) and never
+            // re-derived: a later change to the customer's business flag leaves this order alone.
+            var customerIsBusiness = await _context.Users
+                .Where(u => u.Id == orderUserId)
+                .Select(u => u.IsBusiness)
+                .FirstOrDefaultAsync();
+            var isCommercial = OrderCommercialPolicy.ResolveForNewOrder(
+                customerIsBusiness, options.ContractClientId, contractId: null, options.IsCommercial);
+
             var order = new Order
             {
                 // Stamped before the insert so the unique index can reject a concurrent
@@ -424,6 +441,7 @@ namespace DreamCleaningBackend.Services
                 ManualPaymentRecordedByUserId = settledOnRecord ? options.ManualPaymentRecordedByUserId : null,
                 // Only meaningful for the Invoice method — who the cleaning is billed to.
                 ContractClientId = options.ContractClientId,
+                IsCommercial = isCommercial,
                 // Who booked it: the create-for-user flow passes the admin; self-service leaves null.
                 BookedByAdminUserId = options.BookedByAdminUserId,
                 // Back-dated admin re-entry only — see BookingCreationOptions.IsAutoCancelExempt.
@@ -671,6 +689,21 @@ namespace DreamCleaningBackend.Services
             order.AcquisitionSource = AcquisitionChannels.Clamp(attr?.Source, 200);
             order.AcquisitionMedium = AcquisitionChannels.Clamp(attr?.Medium, 100);
             order.AcquisitionCampaign = AcquisitionChannels.Clamp(attr?.Campaign, 200);
+
+            // Raw signals for the server-side classifier (OrderSourceClassifier). The click id
+            // type must be one we know, and its value is dropped without one; the referrer and
+            // landing page lose their query strings, which is where personal data would travel.
+            var clickIdType = OrderSourceClassifier.NormalizeClickIdType(attr?.ClickIdType);
+            order.AcquisitionClickIdType = clickIdType;
+            order.AcquisitionClickId = clickIdType == null ? null : AcquisitionChannels.Clamp(attr?.ClickId, 255);
+            order.AcquisitionReferrer = AcquisitionChannels.ClampUrlWithoutQuery(attr?.Referrer, 300);
+            order.AcquisitionLandingPage = AcquisitionChannels.ClampUrlWithoutQuery(attr?.LandingPage, 300);
+
+            // An ad click IS paid search whatever the browser concluded. A cookie written before
+            // the browser learnt gbraid/wbraid (iOS Google Ads clicks) labelled those visits
+            // Organic or Direct, and the CRM Ads tab reads this column.
+            if (clickIdType != null)
+                order.AcquisitionChannel = "Paid Search";
         }
 
         // Converting-session attribution. Unlike first touch there is no "Phone/Unknown" sentinel:

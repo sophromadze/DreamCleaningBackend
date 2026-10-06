@@ -50,6 +50,8 @@ namespace DreamCleaningBackend.Services
         public const string OrderAdminNote = "OrderAdminNote";
         /// <summary>Order hidden from / restored to the admin list. EntityId = order id.</summary>
         public const string OrderVisibility = "OrderVisibility";
+        /// <summary>Order moved between the Regular and Commercial sub-tabs. EntityId = order id.</summary>
+        public const string OrderType = "OrderType";
         /// <summary>Order moved to another customer, or that move undone. EntityId = order id.</summary>
         public const string OrderTransferAction = "OrderTransferAction";
         /// <summary>Change request submitted / approved / rejected. EntityId = order id.</summary>
@@ -277,6 +279,7 @@ namespace DreamCleaningBackend.Services
                 // (c) pseudo-entities with no single row behind them
                 [OrderAdminNote] = "Notes are free text on the order - edit the note instead.",
                 [OrderVisibility] = "Show or hide the order again from the orders panel.",
+                [OrderType] = "Move the order back to Regular or Commercial from the orders panel.",
                 [OrderEditRequest] = "Change requests are a decision record. Submit a new request instead.",
                 [OrderAssignedAdmin] = "Reassign the order from the orders panel instead.",
                 [CustomerInvoiceAction] = "An invoice that was sent cannot be unsent. Void it from the Invoices tab instead.",

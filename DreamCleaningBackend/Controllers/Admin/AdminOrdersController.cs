@@ -43,6 +43,7 @@ namespace DreamCleaningBackend.Controllers
         private readonly IOrderPaymentStatusReconciler _reconciler;
         private readonly IOrderReorderPreviewService _reorderPreviewService;
         private readonly ICleanerPayrollEditService _payrollEditService;
+        private readonly IOrderStatusChangeService _statusChangeService;
         private readonly ILogger<AdminOrdersController> _logger;
 
         public AdminOrdersController(ApplicationDbContext context,
@@ -62,9 +63,11 @@ namespace DreamCleaningBackend.Controllers
             IOrderPaymentStatusReconciler reconciler,
             IOrderReorderPreviewService reorderPreviewService,
             ICleanerPayrollEditService payrollEditService,
+            IOrderStatusChangeService statusChangeService,
             ILogger<AdminOrdersController> logger)
         {
             _payrollEditService = payrollEditService;
+            _statusChangeService = statusChangeService;
             _logger = logger;
             _context = context;
             _orderService = orderService;
@@ -266,6 +269,7 @@ namespace DreamCleaningBackend.Controllers
                 ("phone",         "Phone"),
                 ("serviceAt",     "Date & Time"),
                 ("serviceType",   "Service Type"),
+                ("orderType",     "Order Type"),
                 ("address",       "Address"),
                 ("borough",       "Borough"),
                 ("zip",           "Zip"),
@@ -324,7 +328,8 @@ namespace DreamCleaningBackend.Controllers
                     o.Tax,
                     o.Total,
                     o.Status,
-                    o.PaymentMethod
+                    o.PaymentMethod,
+                    o.IsCommercial
                 })
                 .ToListAsync();
 
@@ -420,6 +425,9 @@ namespace DreamCleaningBackend.Controllers
                             break;
                         case "serviceType":
                             ws.Cell(row, col).Value = serviceTypeLabel;
+                            break;
+                        case "orderType":
+                            ws.Cell(row, col).Value = o.IsCommercial ? "Commercial" : "Regular";
                             break;
                         case "address":
                             ws.Cell(row, col).Value = address;
@@ -1261,168 +1269,75 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var order = await _context.Orders.FindAsync(orderId);
-                if (order == null)
+                var newStatus = OrderStatusChangeService.NormalizeSettableStatus(dto.Status);
+                if (newStatus == null)
+                    return BadRequest(new { message = $"'{dto.Status}' is not a status an order can be set to. Use Pending, Active, Done or Cancelled." });
+
+                var currentStatus = await _context.Orders
+                    .Where(o => o.Id == orderId)
+                    .Select(o => o.Status)
+                    .FirstOrDefaultAsync();
+                if (currentStatus == null)
                     return NotFound();
 
-                // CREATE A COPY FOR AUDITING with only relevant fields
-                var originalOrder = new Order
+                // Moving into Done from anything but Active needs a reviewer unless the caller may
+                // apply order changes directly (OrderDoneApprovalPolicy). Such a caller's Done
+                // becomes a REQUEST through the same queue as order edits - enforced here, not in
+                // the panel, so the row button, the Done modal and any direct API call all land in
+                // the same place.
+                if (OrderDoneApprovalPolicy.RequiresApproval(
+                        GetCurrentUserRole(), await CallerHasOrderEditGrantAsync(), currentStatus, newStatus))
                 {
-                    Id = order.Id,
-                    Status = order.Status,
-                    UserId = order.UserId,
-                    Total = order.Total,
-                    ServiceDate = order.ServiceDate,
-                    ServiceTime = order.ServiceTime,
-                    OrderDate = order.OrderDate,
-                    ContactFirstName = order.ContactFirstName,
-                    ContactLastName = order.ContactLastName,
-                    ContactEmail = order.ContactEmail,
-                    UpdatedAt = order.UpdatedAt
-                };
-
-                // Store the previous status for checking
-                var previousStatus = order.Status;
-
-                // Update the status
-                order.Status = dto.Status;
-                order.UpdatedAt = DateTime.UtcNow; // Use UTC for consistency
-
-                // When admin reactivates a cancelled order, exempt it from auto-cancellation
-                if (string.Equals(previousStatus, "Cancelled", StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(dto.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
-                {
-                    order.IsAutoCancelExempt = true;
-                }
-
-                // Payment method recording on Done transition (Phase 1). The Done modal sends
-                // the selected payment method; if the admin changed it (e.g. order was created
-                // expecting Stripe but customer paid Zelle), we persist the correction here.
-                // ManualPaymentRecordedAt / RecordedBy are only stamped when the method is NOT
-                // Normal — those fields are reserved for genuine manual-payment audit trails.
-                // When dto.PaymentMethod is omitted, existing values on the order are preserved
-                // (no clobber to null).
-                if (string.Equals(dto.Status, "Done", StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrWhiteSpace(dto.PaymentMethod))
-                {
-                    if (Enum.TryParse<PaymentMethod>(dto.PaymentMethod, ignoreCase: true, out var pm))
+                    return await SubmitDoneRequestAsync(orderId, new DoneRequestPayload
                     {
-                        order.PaymentMethod = pm;
-                        order.PaymentReference = PaymentMethodRules.IsOutsideStripe(pm) ? dto.PaymentReference : null;
-                        order.PaymentNotes = PaymentMethodRules.IsOutsideStripe(pm) ? dto.PaymentNotes : null;
-                        // Only a method whose money has ALREADY arrived gets the "recorded at"
-                        // stamp. Invoice is handled outside Stripe but is not settled by being
-                        // chosen — its invoice being paid in full is what settles it.
-                        if (PaymentMethodRules.IsSettledOnRecord(pm))
-                        {
-                            order.ManualPaymentRecordedAt = DateTime.UtcNow;
-                            order.ManualPaymentRecordedByUserId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-                        }
-                    }
+                        PaymentMethod = dto.PaymentMethod,
+                        PaymentReference = dto.PaymentReference,
+                        PaymentNotes = dto.PaymentNotes,
+                        SendReviewRequest = dto.SendReviewRequest,
+                        Reason = dto.Reason
+                    });
                 }
 
-                // Save changes FIRST
-                await _context.SaveChangesAsync();
+                await _statusChangeService.ApplyAsync(orderId,
+                    new OrderStatusChange(newStatus, dto.PaymentMethod, dto.PaymentReference, dto.PaymentNotes),
+                    paymentRecordedByUserId: GetCurrentUserId());
 
-                // Bubble Rewards: process order completion when status changes to Done
-                if (dto.Status == "Done" && previousStatus != "Done")
-                {
-                    try { await _bubblePointsService.ProcessOrderCompletion(orderId); }
-                    catch (Exception rewardsEx) { _logger.LogError(rewardsEx, $"[BubbleRewards] ProcessOrderCompletion failed for order {orderId}"); }
-                }
-
-                // Bubble Rewards: reverse points when order moves away from Done
-                if (previousStatus == "Done" && dto.Status != "Done")
-                {
-                    try { await _bubblePointsService.ReverseOrderCompletion(orderId); }
-                    catch (Exception rewardsEx) { _logger.LogError(rewardsEx, $"[BubbleRewards] ReverseOrderCompletion failed for order {orderId}"); }
-                }
-
-                // Handle special offer re-marking when reactivating from cancelled status
-                if (previousStatus == "Cancelled" && dto.Status == "Active")
-                {
-                    // Loyalty Discount: symmetric to the reverse-on-cancel hook in this same
-                    // controller's CancelOrder. Re-consume the order's loyalty snapshot via
-                    // ApplyToOrderAsync, which zeros the user's current % and stamps LastUsedAt.
-                    //
-                    // Trade-off (flagged for review): if the user's loyalty journey advanced
-                    // after the cancellation (e.g. cron upgraded them to 15% during the gap),
-                    // reactivation consumes that current % too. Spec section 2.7 only covers
-                    // the cancellation direction explicitly; reactivation is rare and admin-
-                    // driven, and the audit log makes the consumption traceable.
-                    if (order.LoyaltyDiscountAmount > 0m && order.LoyaltyDiscountPercentage > 0m)
-                    {
-                        try
-                        {
-                            await _loyaltyDiscountService.ApplyToOrderAsync(orderId);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, $"Loyalty discount re-apply failed for order {orderId} on admin reactivation — order is Active but user state may be stale");
-                        }
-                    }
-
-                    // Check if order had a discount amount (indicating a special offer was used)
-                    if (order.DiscountAmount > 0)
-                    {
-                        // Find any special offer for this user that might have been the one used
-                        var userSpecialOffers = await _context.UserSpecialOffers
-                            .Where(uso => uso.UserId == order.UserId && !uso.IsUsed)
-                            .Include(uso => uso.SpecialOffer)
-                            .ToListAsync();
-
-                        // Try to find a special offer that matches the discount amount
-                        var matchingOffer = userSpecialOffers.FirstOrDefault(uso =>
-                            (uso.SpecialOffer.IsPercentage &&
-                             Math.Round(order.SubTotal * (uso.SpecialOffer.DiscountValue / 100), 2) == order.DiscountAmount) ||
-                            (!uso.SpecialOffer.IsPercentage &&
-                             uso.SpecialOffer.DiscountValue == order.DiscountAmount));
-
-                        if (matchingOffer != null)
-                        {
-                            matchingOffer.IsUsed = true;
-                            matchingOffer.UsedAt = DateTime.UtcNow;
-                            matchingOffer.UsedOnOrderId = orderId;
-                            await _context.SaveChangesAsync();
-
-                            _logger.LogInformation($"Re-marked special offer {matchingOffer.SpecialOfferId} as used for user {matchingOffer.UserId} after reactivating order {orderId}");
-                        }
-                    }
-                }
-
-                // Create a copy of the updated order for auditing
-                var updatedOrder = new Order
-                {
-                    Id = order.Id,
-                    Status = order.Status,
-                    UserId = order.UserId,
-                    Total = order.Total,
-                    ServiceDate = order.ServiceDate,
-                    ServiceTime = order.ServiceTime,
-                    OrderDate = order.OrderDate,
-                    ContactFirstName = order.ContactFirstName,
-                    ContactLastName = order.ContactLastName,
-                    ContactEmail = order.ContactEmail,
-                    UpdatedAt = order.UpdatedAt
-                };
-
-                // LOG THE UPDATE AFTER saving
-                try
-                {
-                    await _auditService.LogUpdateAsync(originalOrder, updatedOrder);
-                }
-                catch (Exception auditEx)
-                {
-                    // Log the audit failure but don't fail the main operation
-                    _logger.LogError(auditEx, "Audit logging failed");
-                }
-
-                return Ok(new { message = $"Order status updated to {dto.Status}" });
+                return Ok(new { message = $"Order status updated to {newStatus}" });
             }
             catch (Exception ex)
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Queues a Done request and answers 202 with it, so the panel can show "Done requested"
+        /// instead of a status the order does not have. 409 when one is already waiting.
+        /// </summary>
+        private async Task<ActionResult> SubmitDoneRequestAsync(int orderId, DoneRequestPayload payload)
+        {
+            PendingOrderEdit pending;
+            try
+            {
+                pending = await _statusChangeService.SubmitDoneRequestAsync(orderId, payload, GetCurrentUserId());
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound();
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { message = ex.Message, doneRequested = true });
+            }
+
+            await LogOrderEditRequestAsync(pending, "DoneRequested", ReadRequestedChanges(pending));
+
+            return Accepted(new
+            {
+                message = $"Done request for order #{orderId} sent for approval.",
+                doneRequested = true,
+                requestId = pending.Id
+            });
         }
 
         /// <summary>
@@ -1556,52 +1471,12 @@ namespace DreamCleaningBackend.Controllers
         {
             try
             {
-                var order = await _context.Orders
-                    .Include(o => o.User)
-                    .FirstOrDefaultAsync(o => o.Id == orderId);
-                if (order == null)
-                    return NotFound();
-
-                var customerName = $"{order.ContactFirstName} {order.ContactLastName}".Trim();
-                var email = order.ContactEmail;
-                var phone = order.User?.Phone ?? order.ContactPhone;
-
-                // Tracked, not assumed: both sends swallow their own exceptions, so the audit
-                // row has to reflect what actually left rather than what was attempted.
-                var reviewEmailSent = false;
-                var reviewSmsSent = false;
-
-                // Send email if available
-                if (!string.IsNullOrWhiteSpace(email))
-                {
-                    try
-                    {
-                        await _emailService.SendReviewRequestEmailAsync(email, customerName);
-                        reviewEmailSent = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"Failed to send review email for order #{orderId}");
-                    }
-                }
-
-                // Send SMS if phone available and SMS enabled
-                if (!string.IsNullOrWhiteSpace(phone) && _smsService.IsSmsEnabled())
-                {
-                    try
-                    {
-                        await _smsService.SendReviewRequestSmsAsync(phone, customerName);
-                        reviewSmsSent = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"Failed to send review SMS for order #{orderId}");
-                    }
-                }
-
-                await LogOrderNotificationIfSentAsync(orderId, "ReviewRequestSent", reviewEmailSent, reviewSmsSent, "Review request");
-
+                await _statusChangeService.SendReviewRequestAsync(orderId, GetCurrentUserId());
                 return Ok(new { message = "Review request sent" });
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound();
             }
             catch (Exception ex)
             {
@@ -1764,14 +1639,31 @@ namespace DreamCleaningBackend.Controllers
         /// The grant is read live from the DB rather than from a claim, so revoking it takes
         /// effect on the caller's very next request. Rule: Helpers/OrderEditApprovalPolicy.
         /// </summary>
-        private async Task<bool> CallerCanApplyOrderEditsAsync()
+        private async Task<bool> CallerCanApplyOrderEditsAsync() =>
+            OrderEditApprovalPolicy.CanSaveDirectly(GetCurrentUserRole(), await CallerHasOrderEditGrantAsync());
+
+        /// <summary>The caller's direct-save grant, read from the DB (not a claim) so granting and
+        /// revoking take effect on the next request.</summary>
+        private async Task<bool> CallerHasOrderEditGrantAsync()
         {
             var callerId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-            var granted = await _context.Users
+            return await _context.Users
                 .Where(u => u.Id == callerId)
                 .Select(u => u.CanEditOrdersWithoutApproval)
                 .FirstOrDefaultAsync();
-            return OrderEditApprovalPolicy.CanSaveDirectly(GetCurrentUserRole(), granted);
+        }
+
+        /// <summary>
+        /// Refuses a status the editor may not write: anything but the four settable ones, unless
+        /// it is the status the order already has (a Refunded order's editor posts "Refunded" back
+        /// untouched on every save).
+        /// </summary>
+        private static string? EditorStatusError(string? currentStatus, string? requestedStatus)
+        {
+            if (requestedStatus == null || OrderStatuses.Is(requestedStatus, currentStatus ?? "")) return null;
+            return OrderStatusChangeService.NormalizeSettableStatus(requestedStatus) == null
+                ? $"'{requestedStatus}' is not a status an order can be set to. Use Pending, Active, Done or Cancelled."
+                : null;
         }
 
         /// <summary>
@@ -1804,6 +1696,12 @@ namespace DreamCleaningBackend.Controllers
                 !OrderDiscountEditPolicy.KeepsDiscounts(orderBefore, dto))
                 return BadRequest(new { message = OrderDiscountEditPolicy.RefusalMessage });
 
+            var statusError = EditorStatusError(orderBefore.Status, dto.Status);
+            if (statusError != null)
+                return BadRequest(new { message = statusError });
+            if (dto.Status != null)
+                dto.Status = OrderStatusChangeService.NormalizeSettableStatus(dto.Status) ?? orderBefore.Status;
+
             try
             {
                 await _orderService.SuperAdminFullUpdateOrder(orderId, editorId, dto);
@@ -1812,6 +1710,11 @@ namespace DreamCleaningBackend.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+
+            // A status changed through the editor runs the same transition side effects as the
+            // panel's status buttons (points on Done, their reversal, the reactivation re-consume).
+            // Before 2026-10 an order set to Done here never earned its bubble points.
+            await _statusChangeService.RunTransitionHooksAsync(orderId, orderBefore.Status, dto.Status ?? orderBefore.Status);
 
             var orderAfter = await _context.Orders
                 .Include(o => o.OrderServices)
@@ -2022,7 +1925,8 @@ namespace DreamCleaningBackend.Controllers
                     RequestedByUserId = poe.RequestedByUserId,
                     RequestedByName = poe.RequestedByUser.FirstName + " " + poe.RequestedByUser.LastName,
                     RequestedAt = poe.RequestedAt,
-                    Status = poe.Status
+                    Status = poe.Status,
+                    Kind = poe.Kind
                 })
                 .ToListAsync();
             return Ok(list);
@@ -2063,12 +1967,18 @@ namespace DreamCleaningBackend.Controllers
             // Single source of truth for the order-details shape (see OrderDtoMapper).
             var currentOrder = OrderDtoMapper.ToOrderDto(order);
 
+            // The payload's shape follows the request's kind: an edit carries the update DTO, a
+            // Done request the Done modal's choices.
+            var isDoneRequest = PendingOrderEditKinds.IsDone(pending.Kind);
             SuperAdminUpdateOrderDto? proposed = null;
-            try
+            if (!isDoneRequest)
             {
-                proposed = JsonConvert.DeserializeObject<SuperAdminUpdateOrderDto>(pending.ProposedChangesJson);
+                try
+                {
+                    proposed = JsonConvert.DeserializeObject<SuperAdminUpdateOrderDto>(pending.ProposedChangesJson);
+                }
+                catch { /* ignore */ }
             }
-            catch { /* ignore */ }
 
             var requestedChanges = ReadRequestedChanges(pending);
 
@@ -2080,8 +1990,10 @@ namespace DreamCleaningBackend.Controllers
                 RequestedByName = pending.RequestedByUser != null ? $"{pending.RequestedByUser.FirstName} {pending.RequestedByUser.LastName}" : "",
                 RequestedAt = pending.RequestedAt,
                 Status = pending.Status,
+                Kind = pending.Kind,
                 CurrentOrder = currentOrder,
                 ProposedChanges = proposed,
+                DoneRequest = isDoneRequest ? _statusChangeService.ReadDonePayload(pending) : null,
                 RequestedChanges = requestedChanges,
                 // "No payload" and "an empty payload" are the same thing to a reviewer: there is
                 // nothing to read. Both fall back to the live diff against ProposedChanges.
@@ -2143,6 +2055,9 @@ namespace DreamCleaningBackend.Controllers
             if (pending.Status != "Pending")
                 return BadRequest(new { message = "This edit was already approved or rejected" });
 
+            if (PendingOrderEditKinds.IsDone(pending.Kind))
+                return await ApproveDoneRequestAsync(pending);
+
             SuperAdminUpdateOrderDto? dto;
             try
             {
@@ -2172,7 +2087,18 @@ namespace DreamCleaningBackend.Controllers
                 !OrderDiscountEditPolicy.KeepsDiscounts(orderBefore, dto))
                 return BadRequest(new { message = OrderDiscountEditPolicy.RefusalMessage + " Ask a SuperAdmin to review this request." });
 
+            var statusError = EditorStatusError(orderBefore.Status, dto.Status);
+            if (statusError != null)
+                return BadRequest(new { message = statusError + " Reject this request instead." });
+            if (dto.Status != null)
+                dto.Status = OrderStatusChangeService.NormalizeSettableStatus(dto.Status) ?? orderBefore.Status;
+
             await _orderService.SuperAdminFullUpdateOrder(pending.OrderId, currentUserId, dto);
+
+            // Same transition side effects as the status buttons - an approved edit that moves the
+            // order to Done earns its points like any other Done.
+            await _statusChangeService.RunTransitionHooksAsync(
+                pending.OrderId, orderBefore.Status, dto.Status ?? orderBefore.Status);
 
             pending.Status = "Approved";
             pending.ReviewedByUserId = currentUserId;
@@ -2227,9 +2153,123 @@ namespace DreamCleaningBackend.Controllers
             // A rejection changes nothing about the order, which is exactly why it had no trace
             // whatsoever before: no order diff, no audit row. "I sent that change and nothing
             // happened" was unanswerable.
-            await LogOrderEditRequestAsync(pending, "ChangeRejected", ReadRequestedChanges(pending));
+            await LogOrderEditRequestAsync(pending,
+                PendingOrderEditKinds.IsDone(pending.Kind) ? "DoneRejected" : "ChangeRejected",
+                ReadRequestedChanges(pending));
 
-            return Ok(new { message = "Order edit rejected" });
+            return Ok(new { message = PendingOrderEditKinds.IsDone(pending.Kind) ? "Done request rejected" : "Order edit rejected" });
+        }
+
+        /// <summary>
+        /// Approves a Done request: the order goes to Done through the SAME service the Done button
+        /// uses (status, payment method, bubble points, audit), then the requester's review-link
+        /// choice is honoured. A request overtaken by events is closed rather than replayed: an
+        /// order somebody already finished is not finished twice, and a cancelled or refunded one
+        /// is not resurrected by a stale click.
+        /// </summary>
+        private async Task<ActionResult> ApproveDoneRequestAsync(PendingOrderEdit pending)
+        {
+            var reviewerId = GetCurrentUserId();
+            var outcome = await _statusChangeService.ApplyDoneRequestAsync(pending, reviewerId);
+
+            switch (outcome)
+            {
+                case DoneRequestOutcome.OrderNotFound:
+                    return NotFound(new { message = "Order not found" });
+                case DoneRequestOutcome.OrderNoLongerEligible:
+                    return BadRequest(new { message = $"Order #{pending.OrderId} was cancelled or refunded after this request was sent. Reject the request instead." });
+            }
+
+            pending.Status = "Approved";
+            pending.ReviewedByUserId = reviewerId;
+            pending.ReviewedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            await LogOrderEditRequestAsync(pending, "DoneApproved", ReadRequestedChanges(pending));
+
+            return Ok(new
+            {
+                message = outcome == DoneRequestOutcome.AlreadyDone
+                    ? $"Order #{pending.OrderId} was already Done. The request is closed."
+                    : $"Order #{pending.OrderId} marked as Done."
+            });
+        }
+
+        /// <summary>
+        /// Every change request on one order - edits and Done requests, waiting or decided - for the
+        /// order's own panel (2026-10). Open to every Admin, not only reviewers: this is how the
+        /// person who SENT a request sees that it is waiting, and later what became of it, which
+        /// the reviewer-only queue never told them.
+        /// </summary>
+        [HttpGet("orders/{orderId}/change-requests")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        public async Task<ActionResult<List<OrderChangeRequestDto>>> GetOrderChangeRequests(int orderId)
+        {
+            var callerId = GetCurrentUserId();
+            var rows = await _context.PendingOrderEdits
+                .AsNoTracking()
+                .Where(p => p.OrderId == orderId)
+                .Include(p => p.RequestedByUser)
+                .Include(p => p.ReviewedByUser)
+                .OrderByDescending(p => p.RequestedAt)
+                .ToListAsync();
+
+            return Ok(rows.Select(p => new OrderChangeRequestDto
+            {
+                Id = p.Id,
+                OrderId = p.OrderId,
+                Kind = p.Kind,
+                Status = p.Status,
+                RequestedByUserId = p.RequestedByUserId,
+                RequestedByName = p.RequestedByUser != null ? $"{p.RequestedByUser.FirstName} {p.RequestedByUser.LastName}".Trim() : "",
+                RequestedAt = p.RequestedAt,
+                Reason = p.Reason,
+                RequestedChanges = ReadRequestedChanges(p),
+                ReviewedByName = p.ReviewedByUser != null ? $"{p.ReviewedByUser.FirstName} {p.ReviewedByUser.LastName}".Trim() : null,
+                ReviewedAt = p.ReviewedAt,
+                RejectReason = p.RejectReason,
+                IsMine = p.RequestedByUserId == callerId
+            }).ToList());
+        }
+
+        /// <summary>
+        /// Moves an order between the Regular and Commercial sub-tabs (2026-10). Stored on the order,
+        /// so the move outlives any later change to the customer's business flag. Not an order edit:
+        /// it moves no price, so it never enters the approval queue. Audit-logged.
+        /// </summary>
+        [HttpPut("orders/{orderId}/order-type")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> UpdateOrderType(int orderId, [FromBody] UpdateOrderTypeDto dto)
+        {
+            var order = await _context.Orders.FindAsync(orderId);
+            if (order == null)
+                return NotFound();
+
+            if (order.IsCommercial == dto.IsCommercial)
+                return Ok(new { message = "No change", isCommercial = order.IsCommercial });
+
+            var before = order.IsCommercial;
+            order.IsCommercial = dto.IsCommercial;
+            order.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.OrderType, orderId, "OrderTypeChanged",
+                    new { OrderType = before ? "Commercial" : "Regular" },
+                    new { OrderType = dto.IsCommercial ? "Commercial" : "Regular" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not audit order type change on order {OrderId}", orderId);
+            }
+
+            return Ok(new
+            {
+                message = $"Order #{orderId} moved to {(dto.IsCommercial ? "Commercial" : "Regular")}.",
+                isCommercial = order.IsCommercial
+            });
         }
 
         /// <summary>

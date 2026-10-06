@@ -651,6 +651,10 @@ namespace DreamCleaningBackend.Services
                 InitialStatus = OrderStatuses.Pending,
                 PaymentMethod = paymentMethod,
                 ContractClientId = contractClientId,
+                // An occurrence is filed where its template is - an admin who moved the template
+                // to Regular or Commercial meant the whole series. A contract plan is commercial
+                // work by definition.
+                IsCommercial = template.Order.IsCommercial || template.Contract != null,
                 // A generated occurrence is not a recorded payment: no reference, no notes, no
                 // "recorded at" stamp. BookingCreationService only writes those for a settled
                 // method anyway (see PaymentMethodRules), and passing them would be a lie.

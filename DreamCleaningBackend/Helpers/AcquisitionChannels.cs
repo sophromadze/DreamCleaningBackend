@@ -41,5 +41,19 @@ namespace DreamCleaningBackend.Helpers
             var trimmed = value.Trim();
             return trimmed.Length <= maxLength ? trimmed : trimmed.Substring(0, maxLength);
         }
+
+        /// <summary>
+        /// A referrer or landing-page URL with its query string and fragment removed, then
+        /// clamped. Queries carry search terms, email addresses and tokens - none of which an
+        /// attribution report needs, and none of which should sit on an order row.
+        /// </summary>
+        public static string? ClampUrlWithoutQuery(string? value, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            var trimmed = value.Trim();
+            var cut = trimmed.IndexOfAny(new[] { '?', '#' });
+            if (cut >= 0) trimmed = trimmed.Substring(0, cut);
+            return Clamp(trimmed, maxLength);
+        }
     }
 }

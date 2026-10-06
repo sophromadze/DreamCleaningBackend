@@ -653,6 +653,18 @@ namespace DreamCleaningBackend.Controllers
                     initialStatus = requested;
                 }
 
+                // Starting an order straight at Done is a move into Done, so it follows the same
+                // approval rule as the panel's Done button (OrderDoneApprovalPolicy): a caller who
+                // may not mark orders Done gets the order in its ordinary starting status plus a
+                // Done request for a reviewer, never a Done order.
+                var doneRequested = false;
+                if (OrderDoneApprovalPolicy.RequiresApproval(
+                        adminUser.Role, adminUser.CanEditOrdersWithoutApproval, fromStatus: null, initialStatus))
+                {
+                    doneRequested = true;
+                    initialStatus = PaymentMethodRules.IsSettledOnRecord(paymentMethod) ? "Active" : "Pending";
+                }
+
                 // Back-dating is the reason this flow exists (re-entering cash jobs that were
                 // missed at the time), and an unpaid order whose service date has passed is
                 // auto-cancelled on sight by OrderService. Exempt it, or the order the admin just
@@ -714,8 +726,33 @@ namespace DreamCleaningBackend.Controllers
                     BookedByAdminUserId = adminUserId,
                     IsAutoCancelExempt = isBackDated,
                     SuppressAutomaticDiscounts = suppressAutomaticDiscounts,
-                    ContractClientId = dto.ContractClientId
+                    ContractClientId = dto.ContractClientId,
+                    // The Admin Mode Regular/Commercial choice - this endpoint is staff-only, which
+                    // is what makes it the one place a client value may set the flag.
+                    IsCommercial = dto.IsCommercial
                 });
+
+                if (doneRequested)
+                {
+                    try
+                    {
+                        var statusChange = HttpContext.RequestServices.GetRequiredService<IOrderStatusChangeService>();
+                        await statusChange.SubmitDoneRequestAsync(order.Id, new DoneRequestPayload
+                        {
+                            PaymentMethod = paymentMethod.ToString(),
+                            PaymentReference = dto.PaymentReference,
+                            PaymentNotes = dto.PaymentNotes,
+                            Reason = "Created as Done"
+                        }, adminUserId);
+                    }
+                    catch (Exception ex)
+                    {
+                        // The booking stands either way; the admin can still request Done from
+                        // the Orders panel.
+                        doneRequested = false;
+                        _logger.LogError(ex, "Could not queue the Done request for order {OrderId} created for user", order.Id);
+                    }
+                }
 
                 // A back-dated re-entry usually describes a job that already happened, so the
                 // admin can start it at Done. Run the same completion hook the Orders panel runs
@@ -896,6 +933,7 @@ namespace DreamCleaningBackend.Controllers
                     return Ok(new BookingResponseDto
                     {
                         OrderId = order.Id,
+                        DoneRequested = doneRequested,
                         Status = order.Status,
                         Total = order.Total,
                         PaymentIntentId = null,
@@ -1060,6 +1098,7 @@ namespace DreamCleaningBackend.Controllers
                 return Ok(new BookingResponseDto
                 {
                     OrderId = order.Id,
+                        DoneRequested = doneRequested,
                     Status = order.Status,
                     Total = order.Total,
                     PaymentIntentId = null, // No payment intent yet

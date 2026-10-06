@@ -5233,9 +5233,25 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("varchar(50)");
 
+                    b.Property<string>("AcquisitionClickId")
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("AcquisitionClickIdType")
+                        .HasMaxLength(10)
+                        .HasColumnType("varchar(10)");
+
+                    b.Property<string>("AcquisitionLandingPage")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
                     b.Property<string>("AcquisitionMedium")
                         .HasMaxLength(100)
                         .HasColumnType("varchar(100)");
+
+                    b.Property<string>("AcquisitionReferrer")
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
 
                     b.Property<string>("AcquisitionSource")
                         .HasMaxLength(200)
@@ -5398,6 +5414,9 @@ namespace DreamCleaningBackend.Migrations
                         .HasColumnType("datetime(6)");
 
                     b.Property<bool>("IsAutoCancelExempt")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("IsCommercial")
                         .HasColumnType("tinyint(1)");
 
                     b.Property<bool>("IsGeneratedByRecurringSeries")
@@ -6279,6 +6298,13 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<string>("FieldChangesJson")
                         .HasColumnType("LONGTEXT");
 
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)")
+                        .HasDefaultValue("Edit");
+
                     b.Property<int>("OrderId")
                         .HasColumnType("int");
 
@@ -6313,11 +6339,11 @@ namespace DreamCleaningBackend.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("OrderId");
-
                     b.HasIndex("RequestedByUserId");
 
                     b.HasIndex("ReviewedByUserId");
+
+                    b.HasIndex("OrderId", "Status", "Kind");
 
                     b.ToTable("PendingOrderEdits");
                 });

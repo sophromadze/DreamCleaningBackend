@@ -51,6 +51,17 @@ namespace DreamCleaningBackend.Models
         [StringLength(1000)]
         public string? Reason { get; set; }
 
+        /// <summary>
+        /// What is being asked for (2026-10): <see cref="PendingOrderEditKinds.Edit"/> - a field
+        /// edit whose <see cref="ProposedChangesJson"/> is a SuperAdminUpdateOrderDto - or
+        /// <see cref="PendingOrderEditKinds.Done"/> - an Admin asking to mark the order Done, whose
+        /// payload is a <c>DoneRequestPayload</c> (payment method + review-link choice). One queue,
+        /// one reviewer rule, one audit trail for both; every row that existed before this column
+        /// is an Edit, which is the column default.
+        /// </summary>
+        [StringLength(20)]
+        public string Kind { get; set; } = PendingOrderEditKinds.Edit;
+
         /// <summary>Pending, Approved, Rejected</summary>
         [StringLength(20)]
         public string Status { get; set; } = "Pending";
@@ -63,5 +74,18 @@ namespace DreamCleaningBackend.Models
 
         [StringLength(500)]
         public string? RejectReason { get; set; }
+    }
+
+    /// <summary>The values <see cref="PendingOrderEdit.Kind"/> holds.</summary>
+    public static class PendingOrderEditKinds
+    {
+        /// <summary>A field edit; the payload is a SuperAdminUpdateOrderDto.</summary>
+        public const string Edit = "Edit";
+
+        /// <summary>A request to mark the order Done; the payload is a DoneRequestPayload.</summary>
+        public const string Done = "Done";
+
+        public static bool IsDone(string? kind) =>
+            string.Equals(kind, Done, StringComparison.OrdinalIgnoreCase);
     }
 }

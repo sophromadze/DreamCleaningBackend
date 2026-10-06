@@ -34,6 +34,13 @@ namespace DreamCleaningBackend.DTOs
         /// </summary>
         public bool CanSaveCard { get; set; }
 
+        /// <summary>
+        /// create-for-user only (2026-10): the admin asked for the order to start Done but may not
+        /// mark orders Done themselves, so it was created in its ordinary starting status and a
+        /// Done request was sent for approval instead (see OrderDoneApprovalPolicy).
+        /// </summary>
+        public bool DoneRequested { get; set; }
+
         public string SessionId { get; set; } // For new bookings created via prepare-payment
         // Guest booking: returned when user was auto-created so frontend can authenticate
         public string? GuestToken { get; set; }

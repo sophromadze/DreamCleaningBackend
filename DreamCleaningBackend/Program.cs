@@ -256,6 +256,8 @@ builder.Services.AddSingleton<IBookingDataService, BookingDataService>();
 builder.Services.AddScoped<IStripeService, StripeService>();
 // Admin-initiated refunds. Only ever runs from the orders panel — nothing refunds automatically.
 builder.Services.AddScoped<IOrderRefundService, OrderRefundService>();
+// One implementation of an admin status change + the Done-request approval flow (2026-10).
+builder.Services.AddScoped<IOrderStatusChangeService, OrderStatusChangeService>();
 
 // Admin-requested part-payments of an order's own total ("$1,000 now, the rest later"). The only
 // writer of Order.AmountPaid — see Helpers/OrderBalance.cs for the balance rule it enforces.

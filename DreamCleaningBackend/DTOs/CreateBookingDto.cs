@@ -176,6 +176,14 @@ namespace DreamCleaningBackend.DTOs
         /// </summary>
         public int? ContractClientId { get; set; }
 
+        /// <summary>
+        /// Regular (false) or Commercial (true), as chosen on the booking page in Admin Mode
+        /// (2026-10). Null = derive it from the customer (see OrderCommercialPolicy). Lives on
+        /// this ADMIN wrapper, never on the shared CreateBookingDto, so the self-service booking
+        /// endpoints have no field through which a customer could file their own order.
+        /// </summary>
+        public bool? IsCommercial { get; set; }
+
         // ── Admin "recreate a past order" controls (2026-08) ──────────────────────────────────
         // All four are NULLABLE and null means "behave exactly as this endpoint always has".
         // That is what keeps the booking page's Admin Mode flow — which sends none of them —
