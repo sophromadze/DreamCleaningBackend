@@ -694,7 +694,7 @@ namespace DreamCleaningBackend.Services
                 AchTotalCharge = ach.TotalCharge,
                 BankTransfer = payable && !ach.Processing && BillingSettingsService.IsManualAchComplete(settings)
                     ? BillingSettingsService.BuildPaymentInstructions(
-                        settings, invoice.InvoiceNumber, Models.Commercial.InvoicePaymentMethod.AchBankTransfer)
+                        settings, invoice.InvoiceNumber)
                     : null,
                 Company = BillingSettingsService.BuildCompany(settings)
             };

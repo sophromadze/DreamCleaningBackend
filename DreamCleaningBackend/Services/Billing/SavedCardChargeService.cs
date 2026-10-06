@@ -204,9 +204,10 @@ namespace DreamCleaningBackend.Services.Billing
             var blocked = CheckInvoicePayable(invoice);
             if (blocked != null) return blocked;
 
-            var settings = await _services.GetRequiredService<BillingSettingsService>().GetOrCreateAsync(ct);
-            if (!settings.StripeCardEnabled)
-                return Response("blocked", "Card payments for invoices are currently unavailable. Please use bank transfer.");
+            // NOT gated on the invoice's offered payment methods, nor on the Billing Settings card
+            // switch (owner's call, 2026-10): those decide what the public invoice PAGE offers. A
+            // saved card belongs to the linked account holder, who agreed to it in My Invoices or
+            // through an AutoPay authorisation, and is always allowed to settle their own invoice.
 
             int? authorizationId = null;
             var allowBackup = false;

@@ -268,8 +268,7 @@ namespace DreamCleaningBackend.Tests
             };
 
             var instructions = DreamCleaningBackend.Services.Commercial.BillingSettingsService
-                .BuildPaymentInstructions(settings, "DCI-2026-74521863",
-                    DreamCleaningBackend.Models.Commercial.InvoicePaymentMethod.AchBankTransfer);
+                .BuildPaymentInstructions(settings, "DCI-2026-74521863");
 
             Assert.Equal("DCI-2026-74521863", instructions.PaymentReference);
             Assert.Equal("ACH Bank Transfer", instructions.Method);

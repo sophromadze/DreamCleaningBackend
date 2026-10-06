@@ -38,6 +38,7 @@ public class LinkedInvoiceDraftTests
                 NullLogger<InvoiceOrderLinkService>.Instance);
         }
         public SaveInvoiceDto Draft() => new() { ContractClientId = 1, TaxType = InvoiceTaxType.Included, TaxRate = 8.875m,
+            PaymentMethods = InvoicePaymentMethods.OnlineBank, Recipients = new() { "billing@example.com" },
             OrderIds = new() { 3, 1, 2 }, ServiceStartDate = Dates[0], ServiceEndDate = Dates[0], ServiceDates = new() { Dates[0] },
             Items = new() { new() { Description = "Stale cloned single cleaning", Quantity = 1, UnitPrice = 925.43m } } };
         public void Dispose() => Db.Dispose();

@@ -48,20 +48,41 @@ namespace DreamCleaningBackend.Models.Commercial
     }
 
     /// <summary>
-    /// How the client is expected to pay. ACH is the commercial default and the only one the
-    /// first version actually instructs on; Card is reserved for a later Stripe path and Other
-    /// covers cheques and anything arranged by hand.
+    /// The payment methods ONE invoice offers its customer — a set, chosen per invoice
+    /// (2026-10). Stored as a bit mask in <c>CommercialInvoice.PaymentMethods</c>.
+    ///
+    /// This is the WHOLE answer to "what may the customer use". The Billing Settings toggles only
+    /// decide which boxes are pre-ticked on a new invoice; once an invoice exists, the public page,
+    /// the PDF, the email and the checkout endpoint all read this set and nothing else. Before it
+    /// existed the invoice carried a single "payment method" that no payment path ever read — an
+    /// admin could pick Card and the page would still offer card only if a global switch said so.
+    ///
+    /// Each member is a route the invoice page can actually offer:
+    /// <list type="bullet">
+    /// <item><see cref="OnlineBank"/> — "Pay from Bank", Stripe ACH Direct Debit. The only one
+    /// that carries a customer fee (the ACH processing fee in Billing Settings).</item>
+    /// <item><see cref="Card"/> — "Pay by Card" through Stripe Checkout. No fee to the customer,
+    /// the same as card on a regular invoice.</item>
+    /// <item><see cref="ManualBankTransfer"/> — the customer pushes an ACH/wire from their own
+    /// bank using the printed details; an admin records it. Needs complete bank details.</item>
+    /// <item><see cref="Other"/> — a cheque or anything arranged directly with us. Nothing to
+    /// click: the page tells the customer to contact us, and an admin records the payment.</item>
+    /// </list>
+    /// Append, never renumber: the values are persisted.
     /// </summary>
-    public enum InvoicePaymentMethod
+    [Flags]
+    public enum InvoicePaymentMethods
     {
-        AchBankTransfer = 0,
-        Card = 1,
-        Other = 2
+        None = 0,
+        OnlineBank = 1,
+        Card = 2,
+        ManualBankTransfer = 4,
+        Other = 8
     }
 
     /// <summary>
-    /// How a recorded payment actually arrived. Wider than <see cref="InvoicePaymentMethod"/>
-    /// because what an invoice ASKS for and what turns up are different questions - an ACH
+    /// How a recorded payment actually arrived. Wider than <see cref="InvoicePaymentMethods"/>
+    /// because what an invoice OFFERS and what turns up are different questions - an ACH
     /// invoice is routinely settled by cheque.
     /// </summary>
     public enum InvoicePaymentRecordMethod
@@ -84,7 +105,7 @@ namespace DreamCleaningBackend.Models.Commercial
         Custom = 4
     }
 
-    /// <summary>Which mail an <c>CommercialInvoiceEmailLog</c> row records.</summary>
+    /// <summary>Which mail a <c>CommercialInvoiceEmailLog</c> row records.</summary>
     public enum InvoiceEmailType
     {
         InvoiceSent = 0,

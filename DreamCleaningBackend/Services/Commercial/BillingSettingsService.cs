@@ -147,7 +147,10 @@ namespace DreamCleaningBackend.Services.Commercial
             DefaultDueTerms = s.DefaultDueTerms,
             AchCustomerFeeEnabled = s.AchCustomerFeeEnabled,
             AchCustomerFeeRatePercent = s.AchCustomerFeeRatePercent,
-            AchCustomerFeeCapAmount = s.AchCustomerFeeCapAmount
+            AchCustomerFeeCapAmount = s.AchCustomerFeeCapAmount,
+            DefaultPaymentMethods = Helpers.Commercial.InvoicePaymentMethodRules.DefaultsFrom(s),
+            ManualTransferAvailable = IsManualAchComplete(s),
+            MissingManualAchFields = MissingManualAchFields(s)
         };
 
         /// <summary>
@@ -212,14 +215,6 @@ namespace DreamCleaningBackend.Services.Commercial
             if (string.IsNullOrWhiteSpace(s.BankAccountType)) missing.Add("Account type");
             return missing;
         }
-
-        /// <summary>
-        /// Whether the manual bank block may be shown to a customer at all: switched on AND
-        /// complete. Both halves are needed — an enabled-but-half-configured setting must not
-        /// produce partial instructions.
-        /// </summary>
-        public static bool CanOfferManualAch(BillingSettings s) =>
-            s.ManualAchEnabled && IsManualAchComplete(s);
 
         /// <summary>Last four digits only, e.g. "••••8842". Null stays null.</summary>
         public static string? Mask(string? accountNumber)
@@ -321,6 +316,14 @@ namespace DreamCleaningBackend.Services.Commercial
             if (before.ManualAchEnabled != after.ManualAchEnabled)
                 changed.Add($"manual ACH {(after.ManualAchEnabled ? "enabled" : "disabled")}");
 
+            // The ACH fee is money charged to clients; a change to it is worth a line of its own.
+            if (before.AchCustomerFeeEnabled != after.AchCustomerFeeEnabled)
+                changed.Add($"ACH processing fee {(after.AchCustomerFeeEnabled ? "enabled" : "disabled")}");
+            if (before.AchCustomerFeeRatePercent != Math.Clamp(after.AchCustomerFeeRatePercent, 0m, 10m))
+                changed.Add($"ACH processing fee rate {before.AchCustomerFeeRatePercent:0.####}% → {Math.Clamp(after.AchCustomerFeeRatePercent, 0m, 10m):0.####}%");
+            if (before.AchCustomerFeeCapAmount != Math.Max(0m, after.AchCustomerFeeCapAmount))
+                changed.Add($"ACH processing fee cap {before.AchCustomerFeeCapAmount:C} → {Math.Max(0m, after.AchCustomerFeeCapAmount):C}");
+
             if (before.DefaultTaxType != after.DefaultTaxType) changed.Add("default tax treatment");
             if (before.DefaultTaxRate != after.DefaultTaxRate) changed.Add("default tax rate");
             if (before.DefaultDueTerms != after.DefaultDueTerms) changed.Add("default payment terms");
@@ -337,16 +340,14 @@ namespace DreamCleaningBackend.Services.Commercial
         /// transaction against, so letting it be anything else would break reconciliation.
         /// </summary>
         public static PublicPaymentInstructionsDto BuildPaymentInstructions(
-            BillingSettings settings, string invoiceNumber, InvoicePaymentMethod method)
+            BillingSettings settings, string invoiceNumber)
         {
             return new PublicPaymentInstructionsDto
             {
-                Method = method switch
-                {
-                    InvoicePaymentMethod.AchBankTransfer => "ACH Bank Transfer",
-                    InvoicePaymentMethod.Card => "Card",
-                    _ => "Other"
-                },
+                // This block only ever describes a transfer the customer sends from their own
+                // bank. It used to print the invoice's single "payment method", so a Card invoice
+                // headed its bank details "Card".
+                Method = "ACH Bank Transfer",
                 BankName = settings.BankName,
                 AccountHolder = settings.BankAccountHolder,
                 RoutingNumber = settings.BankRoutingNumber,

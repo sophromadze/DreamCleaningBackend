@@ -47,59 +47,61 @@ namespace DreamCleaningBackend.Services.Commercial
         }
 
         /// <summary>
-        /// Sends (or resends) the invoice to the client's billing contact.
+        /// Sends (or resends) the invoice to every address on its recipient list.
         ///
         /// The PDF is attached when the caller asks for it, but the LINK is what the mail leads
         /// with: the public page always shows the current balance, whereas an attachment is a
         /// snapshot that a later partial payment silently invalidates.
+        ///
+        /// ONE MESSAGE PER RECIPIENT (2026-10), sharing a batch id. A single message with every
+        /// address in "To" would hand each accounts-payable contact the others' addresses and turn
+        /// one bounce into a failed send for everybody; separate messages record each address's
+        /// outcome on its own row, and the batch id is what the send history groups them by.
         /// </summary>
-        public async Task<CommercialInvoiceEmailLog> SendInvoiceAsync(
+        public async Task<InvoiceSendOutcome> SendInvoiceAsync(
             int invoiceId, SendInvoiceDto dto, int userId)
         {
-            var invoice = await _context.CommercialInvoices
-                .Include(i => i.Items)
-                .Include(i => i.Client)
-                .Include(i => i.Contract)
-                .FirstOrDefaultAsync(i => i.Id == invoiceId)
-                ?? throw new InvoiceWorkflowException("Invoice not found.");
+            // The send dialog's list REPLACES the stored one first, through the same validation
+            // and activity trail as the form — so the invoice keeps saying who it went to.
+            if (dto.Recipients != null)
+                await _invoices.UpdateRecipientsAsync(invoiceId, dto.Recipients, false, userId);
+
+            var invoice = await LoadForMailAsync(invoiceId);
 
             if (!InvoiceStatusPolicy.CanSend(invoice.Status))
                 throw new InvoiceWorkflowException("A voided invoice cannot be sent.");
 
-            var recipient = await ResolveRecipientAsync(invoice, dto.RecipientEmail);
+            var recipients = await RequireRecipientsAsync(invoice);
             var isResend = invoice.FirstSentAt.HasValue;
             var subject = $"Invoice {invoice.InvoiceNumber} from Dream Cleaning NYC";
 
             var publicDto = await _invoices.ToPublicDtoAsync(invoice);
             var body = BuildInvoiceEmailBody(publicDto, _invoices.BuildPublicUrl(invoice.PublicToken), dto.Message);
 
-            var log = await DeliverAsync(
-                invoice, recipient, subject, body,
+            var outcome = await DeliverToAllAsync(
+                invoice, recipients, subject, body,
                 isResend ? InvoiceEmailType.InvoiceResent : InvoiceEmailType.InvoiceSent,
                 dto.AttachPdf ? publicDto : null);
 
-            if (log.Status == InvoiceEmailStatus.Sent)
-                await _invoices.MarkSentAsync(invoice, userId, recipient);
+            // Marked sent once the transport accepted it for at least one address. A partial
+            // failure is still a sent invoice — the failed rows say exactly who did not get it.
+            if (outcome.AnySent)
+                await _invoices.MarkSentAsync(invoice, userId, InvoiceRecipientList.Describe(outcome.SentTo));
 
-            return log;
+            return outcome;
         }
 
         /// <summary>
-        /// A payment-chasing reminder.
+        /// A payment-chasing reminder, to every address on the invoice's recipient list.
         ///
         /// Guarded against accidental repetition: the same reminder key cannot go out twice on the
         /// same day unless the admin forces it. Duplicate chasers are how a billing system starts
         /// reading as harassment to the client on the other end.
         /// </summary>
-        public async Task<CommercialInvoiceEmailLog> SendReminderAsync(
+        public async Task<InvoiceSendOutcome> SendReminderAsync(
             int invoiceId, SendInvoiceReminderDto dto, int userId, string reminderKey = "manual")
         {
-            var invoice = await _context.CommercialInvoices
-                .Include(i => i.Items)
-                .Include(i => i.Client)
-                .Include(i => i.Contract)
-                .FirstOrDefaultAsync(i => i.Id == invoiceId)
-                ?? throw new InvoiceWorkflowException("Invoice not found.");
+            var invoice = await LoadForMailAsync(invoiceId);
 
             if (!InvoiceStatusPolicy.CanSendReminder(invoice.Status))
                 throw new InvoiceWorkflowException(
@@ -117,7 +119,11 @@ namespace DreamCleaningBackend.Services.Commercial
                 throw new InvoiceWorkflowException(
                     "A reminder for this invoice has already gone out today.");
 
-            var recipient = await ResolveRecipientAsync(invoice, dto.RecipientEmail);
+            // Applied only once the checks above have passed, so a refused reminder changes nothing.
+            if (dto.Recipients != null)
+                await _invoices.UpdateRecipientsAsync(invoiceId, dto.Recipients, false, userId);
+
+            var recipients = await RequireRecipientsAsync(invoice);
             var subject = invoice.Status == InvoiceStatus.Overdue
                 ? $"Overdue: invoice {invoice.InvoiceNumber} from Dream Cleaning NYC"
                 : $"Reminder: invoice {invoice.InvoiceNumber} from Dream Cleaning NYC";
@@ -125,67 +131,111 @@ namespace DreamCleaningBackend.Services.Commercial
             var publicDto = await _invoices.ToPublicDtoAsync(invoice);
             var body = BuildReminderEmailBody(publicDto, _invoices.BuildPublicUrl(invoice.PublicToken));
 
-            var log = await DeliverAsync(invoice, recipient, subject, body, InvoiceEmailType.Reminder, null);
+            var outcome = await DeliverToAllAsync(invoice, recipients, subject, body, InvoiceEmailType.Reminder, null);
 
-            if (log.Status == InvoiceEmailStatus.Sent)
+            if (outcome.AnySent)
             {
-                _context.CommercialInvoiceReminders.Add(new CommercialInvoiceReminder
+                foreach (var recipient in outcome.SentTo)
                 {
-                    CommercialInvoiceId = invoice.Id,
-                    ReminderKey = reminderKey,
-                    Recipient = recipient,
-                    SentAt = DateTime.UtcNow,
-                    SentByUserId = userId
-                });
+                    _context.CommercialInvoiceReminders.Add(new CommercialInvoiceReminder
+                    {
+                        CommercialInvoiceId = invoice.Id,
+                        ReminderKey = reminderKey,
+                        Recipient = recipient,
+                        SentAt = DateTime.UtcNow,
+                        SentByUserId = userId
+                    });
+                }
                 await _context.SaveChangesAsync();
 
                 await _invoices.LogActivityAsync(invoice.Id, "reminder_sent",
-                    $"Payment reminder sent to {recipient}.", userId);
+                    $"Payment reminder sent to {InvoiceRecipientList.Describe(outcome.SentTo)}.", userId);
             }
 
-            return log;
+            return outcome;
         }
 
-        /// <summary>Confirms a fully-settled invoice. Sent on request, never automatically.</summary>
-        public async Task<CommercialInvoiceEmailLog> SendPaymentReceiptAsync(int invoiceId, int userId)
+        /// <summary>
+        /// Confirms a fully-settled invoice to every address on its recipient list. Sent on request
+        /// by an admin, and by the system when an online payment settles the invoice.
+        /// </summary>
+        public async Task<InvoiceSendOutcome> SendPaymentReceiptAsync(int invoiceId, int userId)
         {
-            var invoice = await _context.CommercialInvoices
-                .Include(i => i.Items)
-                .Include(i => i.Client)
-                .Include(i => i.Contract)
-                .FirstOrDefaultAsync(i => i.Id == invoiceId)
-                ?? throw new InvoiceWorkflowException("Invoice not found.");
+            var invoice = await LoadForMailAsync(invoiceId);
 
             if (invoice.Status != InvoiceStatus.Paid)
                 throw new InvoiceWorkflowException(
                     "A receipt is only sent once the invoice is paid in full.");
 
-            var recipient = await ResolveRecipientAsync(invoice, null);
+            var recipients = await RequireRecipientsAsync(invoice);
             var subject = $"Payment received - invoice {invoice.InvoiceNumber}";
 
             var publicDto = await _invoices.ToPublicDtoAsync(invoice);
             var body = BuildReceiptEmailBody(publicDto, _invoices.BuildPublicUrl(invoice.PublicToken));
 
-            var log = await DeliverAsync(invoice, recipient, subject, body,
+            var outcome = await DeliverToAllAsync(invoice, recipients, subject, body,
                 InvoiceEmailType.PaymentReceipt, publicDto);
 
-            if (log.Status == InvoiceEmailStatus.Sent)
+            if (outcome.AnySent)
             {
                 // userId 0 means the Stripe webhook sent this, not a person — the activity trail
                 // resolves that to "System" rather than naming a non-existent admin.
                 await _invoices.LogActivityAsync(invoice.Id, "payment_confirmation_sent",
-                    $"Payment confirmation sent to {recipient}.",
+                    $"Payment confirmation sent to {InvoiceRecipientList.Describe(outcome.SentTo)}.",
                     userId > 0 ? userId : null,
                     userId > 0 ? null : "System");
             }
 
-            return log;
+            return outcome;
         }
 
         // ── Delivery ─────────────────────────────────────────────────────────────────────────
 
+        private async Task<CommercialInvoice> LoadForMailAsync(int invoiceId) =>
+            await _context.CommercialInvoices
+                .Include(i => i.Items)
+                .Include(i => i.Client)
+                .Include(i => i.Contract)
+                .FirstOrDefaultAsync(i => i.Id == invoiceId)
+            ?? throw new InvoiceWorkflowException("Invoice not found.");
+
         /// <summary>
-        /// Hands the message to the transport and records the outcome either way.
+        /// The invoice's own recipient list (or, on an invoice from before per-invoice recipients,
+        /// the billing address it always went to).
+        ///
+        /// Refuses rather than guesses when there is nothing. An invoice with no deliverable
+        /// address must fail visibly at the moment the admin presses Send - silently skipping the
+        /// mail would leave them believing the client had been billed.
+        /// </summary>
+        private async Task<List<string>> RequireRecipientsAsync(CommercialInvoice invoice)
+        {
+            var recipients = await _invoices.ResolveRecipientsAsync(invoice);
+            if (recipients.Count == 0)
+                throw new InvoiceWorkflowException(
+                    "This invoice has no recipients. Add at least one email address to send it to.");
+            return recipients;
+        }
+
+        /// <summary>
+        /// One message per recipient, every outcome logged under one batch id. The PDF is rendered
+        /// once — it is the same document for everybody.
+        /// </summary>
+        private async Task<InvoiceSendOutcome> DeliverToAllAsync(
+            CommercialInvoice invoice, IReadOnlyList<string> recipients, string subject, string body,
+            InvoiceEmailType type, PublicInvoiceDto? attachAs)
+        {
+            var batchId = Guid.NewGuid().ToString("N");
+            var pdf = attachAs != null ? _pdf.Render(attachAs, _invoices.BuildPublicUrl(invoice.PublicToken)) : null;
+
+            var outcome = new InvoiceSendOutcome();
+            foreach (var recipient in recipients)
+                outcome.Logs.Add(await DeliverAsync(invoice, recipient, subject, body, type, pdf, batchId));
+
+            return outcome;
+        }
+
+        /// <summary>
+        /// Hands ONE message to the transport and records the outcome either way.
         ///
         /// A throwing send is caught, not propagated: the caller's job (recording that a send was
         /// attempted, and leaving the invoice honest about whether it went) matters more than the
@@ -193,11 +243,12 @@ namespace DreamCleaningBackend.Services.Commercial
         /// </summary>
         private async Task<CommercialInvoiceEmailLog> DeliverAsync(
             CommercialInvoice invoice, string recipient, string subject, string body,
-            InvoiceEmailType type, PublicInvoiceDto? attachAs)
+            InvoiceEmailType type, byte[]? pdf, string batchId)
         {
             var log = new CommercialInvoiceEmailLog
             {
                 CommercialInvoiceId = invoice.Id,
+                SendBatchId = batchId,
                 EmailType = type,
                 Recipient = recipient,
                 Subject = subject,
@@ -207,11 +258,10 @@ namespace DreamCleaningBackend.Services.Commercial
 
             try
             {
-                if (attachAs != null)
+                if (pdf != null)
                 {
-                    var bytes = _pdf.Render(attachAs, _invoices.BuildPublicUrl(invoice.PublicToken));
                     await _email.SendEmailWithAttachmentAsync(
-                        recipient, subject, body, bytes,
+                        recipient, subject, body, pdf,
                         InvoicePdfService.BuildFileName(invoice.InvoiceNumber), "application/pdf");
                 }
                 else
@@ -233,32 +283,6 @@ namespace DreamCleaningBackend.Services.Commercial
             _context.CommercialInvoiceEmailLogs.Add(log);
             await _context.SaveChangesAsync();
             return log;
-        }
-
-        /// <summary>
-        /// Who the invoice goes to: an explicit override, then the client's billing contact, then
-        /// the company notice address on the client record.
-        ///
-        /// Refuses rather than guesses when there is nothing. An invoice with no deliverable
-        /// address must fail visibly at the moment the admin presses Send - silently skipping the
-        /// mail would leave them believing the client had been billed.
-        /// </summary>
-        private async Task<string> ResolveRecipientAsync(CommercialInvoice invoice, string? overrideEmail)
-        {
-            var candidate = Trim(overrideEmail);
-
-            if (candidate == null)
-            {
-                var contact = await _invoices.ResolveBillingContactAsync(invoice.ContractClientId);
-                candidate = Trim(contact?.Email) ?? Trim(invoice.Client?.NoticeEmail);
-            }
-
-            if (string.IsNullOrWhiteSpace(candidate))
-                throw new InvoiceWorkflowException(
-                    "This client has no billing email address. Add one to the client record, or "
-                    + "enter an address to send this invoice to.");
-
-            return candidate;
         }
 
         /// <summary>
@@ -459,7 +483,7 @@ namespace DreamCleaningBackend.Services.Commercial
             }
 
             if (card)
-                lines.Add("Card payment is also available on the invoice page.");
+                lines.Add("Card payment is also available on the invoice page, with no processing fee.");
 
             if (manual)
             {
@@ -468,6 +492,13 @@ namespace DreamCleaningBackend.Services.Commercial
                     + $"invoice page, with {E(invoice.PaymentOptions.ManualAchFeeNote).ToLowerInvariant()}. "
                     + $"Please include invoice number <strong>{E(invoice.InvoiceNumber)}</strong> "
                     + "in your payment memo or reference so we can match it to your account.");
+            }
+
+            if (invoice.PaymentOptions.OtherArrangementAvailable)
+            {
+                lines.Add(
+                    "You can also pay by check or another arrangement made with us — please contact "
+                    + $"us and quote invoice number <strong>{E(invoice.InvoiceNumber)}</strong>.");
             }
 
             // Every route is off — say nothing rather than instruct the customer to do something
@@ -562,8 +593,31 @@ namespace DreamCleaningBackend.Services.Commercial
 
         private static string Truncate(string value, int max) =>
             value.Length <= max ? value : value[..max];
+    }
 
-        private static string? Trim(string? value) =>
-            string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    /// <summary>
+    /// What one send produced: a log row per recipient. "Sent" means the transport accepted at
+    /// least one message; the failed rows say exactly who did not get it and why.
+    /// </summary>
+    public sealed class InvoiceSendOutcome
+    {
+        public List<CommercialInvoiceEmailLog> Logs { get; } = new();
+
+        public List<string> SentTo =>
+            Logs.Where(l => l.Status == InvoiceEmailStatus.Sent).Select(l => l.Recipient).ToList();
+
+        public List<CommercialInvoiceEmailLog> Failed =>
+            Logs.Where(l => l.Status == InvoiceEmailStatus.Failed).ToList();
+
+        public bool AnySent => Logs.Any(l => l.Status == InvoiceEmailStatus.Sent);
+
+        public bool AllFailed => Logs.Count > 0 && !AnySent;
+
+        /// <summary>"b@y.com (Mailbox unavailable)" for each failure, or null when none failed.</summary>
+        public string? DescribeFailures() =>
+            Failed.Count == 0
+                ? null
+                : string.Join("; ", Failed.Select(f =>
+                    string.IsNullOrWhiteSpace(f.FailureReason) ? f.Recipient : $"{f.Recipient} ({f.FailureReason})"));
     }
 }

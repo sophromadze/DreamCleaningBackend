@@ -82,6 +82,8 @@ namespace DreamCleaningBackend.Data
         public DbSet<CustomerInvoice> CustomerInvoices { get; set; }
         public DbSet<CustomerInvoicePaymentAttempt> CustomerInvoicePaymentAttempts { get; set; }
         public DbSet<OrderUnassignedPayout> OrderUnassignedPayouts { get; set; }
+        public DbSet<CleanerPayout> CleanerPayouts { get; set; }
+        public DbSet<CleanerPayoutLine> CleanerPayoutLines { get; set; }
         public DbSet<NotificationLog> NotificationLogs { get; set; }
         public DbSet<PollQuestion> PollQuestions { get; set; }
         public DbSet<PollSubmission> PollSubmissions { get; set; }
@@ -1135,6 +1137,62 @@ namespace DreamCleaningBackend.Data
                 entity.HasIndex(p => new { p.OrderId, p.SlotIndex })
                       .IsUnique()
                       .HasDatabaseName("IX_OrderUnassignedPayouts_OrderId_SlotIndex");
+            });
+
+            // Cleaner payouts (2026-10): one row per payment, with the order lines it covered.
+            // History is never deleted, so nothing here cascades from a cleaner, a user or an
+            // order line — the payout must outlive all three.
+            modelBuilder.Entity<CleanerPayout>(entity =>
+            {
+                entity.HasKey(p => p.Id);
+
+                entity.HasOne(p => p.Cleaner)
+                      .WithMany()
+                      .HasForeignKey(p => p.CleanerId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.CreatedByUser)
+                      .WithMany()
+                      .HasForeignKey(p => p.CreatedByUserId)
+                      .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(p => p.RevertedByUser)
+                      .WithMany()
+                      .HasForeignKey(p => p.RevertedByUserId)
+                      .OnDelete(DeleteBehavior.SetNull);
+
+                // The Paid cleaners tab filters by cleaner and by date.
+                entity.HasIndex(p => new { p.CleanerId, p.PaidOn })
+                      .HasDatabaseName("IX_CleanerPayouts_Cleaner_PaidOn");
+                entity.HasIndex(p => p.PaidOn)
+                      .HasDatabaseName("IX_CleanerPayouts_PaidOn");
+
+                // UNIQUE: a double-submitted confirmation collides here instead of paying twice.
+                // NULLs do not collide, so imported and Orders-tab payouts (no key) are unaffected.
+                entity.HasIndex(p => p.IdempotencyKey)
+                      .IsUnique()
+                      .HasDatabaseName("IX_CleanerPayouts_IdempotencyKey");
+            });
+
+            modelBuilder.Entity<CleanerPayoutLine>(entity =>
+            {
+                entity.HasKey(l => l.Id);
+
+                entity.HasOne(l => l.Payout)
+                      .WithMany(p => p.Lines)
+                      .HasForeignKey(l => l.CleanerPayoutId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(l => l.OrderCleaner)
+                      .WithMany()
+                      .HasForeignKey(l => l.OrderCleanerId)
+                      .OnDelete(DeleteBehavior.SetNull);
+
+                // "What has this order line had" — summed on every pay, undo and settlement read.
+                entity.HasIndex(l => new { l.OrderCleanerId, l.RevertedAt })
+                      .HasDatabaseName("IX_CleanerPayoutLines_OrderCleaner_Reverted");
+                entity.HasIndex(l => l.OrderId)
+                      .HasDatabaseName("IX_CleanerPayoutLines_OrderId");
             });
 
             // OrderUpdateHistory configuration

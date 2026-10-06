@@ -30,11 +30,12 @@ namespace DreamCleaningBackend.Services
     /// settled outside this page; widening the predicate in PerformedOrdersWithIncludes is the
     /// one-line change if that turns out to matter.
     /// </summary>
-    public class OutgoingPaymentService : IOutgoingPaymentService
+    public partial class OutgoingPaymentService : IOutgoingPaymentService
     {
         private readonly ApplicationDbContext _context;
         private readonly Interfaces.IAuditService _audit;
         private readonly ICleanerPayrollEditService _payrollEdits;
+        private readonly CleanerPayoutLedger _ledger;
 
         public OutgoingPaymentService(
             ApplicationDbContext context,
@@ -44,6 +45,7 @@ namespace DreamCleaningBackend.Services
             _context = context;
             _audit = audit;
             _payrollEdits = payrollEdits;
+            _ledger = new CleanerPayoutLedger(context);
         }
 
         /// <summary>
@@ -53,9 +55,7 @@ namespace DreamCleaningBackend.Services
         /// acceptable answer six months later.
         /// </summary>
         private static string DescribeCleaner(OrderCleaner assignment) =>
-            assignment.Cleaner == null
-                ? $"Cleaner #{assignment.CleanerId}"
-                : $"{assignment.Cleaner.FirstName} {assignment.Cleaner.LastName}".Trim();
+            CleanerPayoutLedger.DescribeCleaner(assignment);
 
         public async Task<OutgoingPaymentListDto> GetAsync(OutgoingPaymentQuery query)
         {
@@ -170,6 +170,11 @@ namespace DreamCleaningBackend.Services
         public async Task<OutgoingPaymentOrderDto?> MarkCleanerPaidAsync(
             int orderId, int orderCleanerId, MarkCleanerPaidDto dto, int paidByUserId)
         {
+            // Locked, THEN read: what is owed is computed by whoever holds the order, so a second
+            // click (or a second admin) waits and then finds the line already settled.
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await _ledger.LockOrdersAsync(new[] { orderId });
+
             var order = await PerformedOrdersWithIncludes()
                 .FirstOrDefaultAsync(o => o.Id == orderId);
             if (order == null) return null;
@@ -182,21 +187,79 @@ namespace DreamCleaningBackend.Services
             ApplyOrderTotalSalary(order);
 
             var line = BuildPayroll(order).Lines.FirstOrDefault(l => l.OrderCleanerId == orderCleanerId);
-            var wasAlreadyPaid = assignment.IsPaid;
-            var recorded = MarkPaid(assignment, line, dto.PaidVia, dto.PaymentNote, paidByUserId);
+            var toPay = ResolveLineToPay(order, assignment, line);
+            var payouts = toPay == null
+                ? new List<CleanerPayout>()
+                : _ledger.Record(new[] { toPay }, await BuildPayoutDetailsAsync(
+                    paidByUserId, dto.PaidVia, null, dto.PaymentNote, null, null));
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
 
-            // MarkPaid returns null on a line that was already covered; recording a payout that
-            // did not happen would be worse than recording none. A line that WAS paid and is
-            // short is a second, separate payment, so it gets its own row under its own action.
-            if (recorded.HasValue)
-                await LogPayoutAsync(order, wasAlreadyPaid ? "PayoutToppedUp" : "PayoutRecorded",
-                    DescribeCleaner(assignment), recorded.Value, assignment.PaidAmount,
-                    assignment.PaidVia, assignment.PaymentNote, paidByUserId);
+            // Nothing recorded on a line that was already covered; recording a payout that did
+            // not happen would be worse than recording none. A line that WAS paid and is short is
+            // a second, separate payment, so it gets its own row under its own action.
+            await LogRecordedPayoutsAsync(new[] { order }, payouts, paidByUserId);
 
             return BuildOrderRow(order);
+        }
+
+        /// <summary>
+        /// What paying this line NOW means: its outstanding amount, flagged as a top-up when it was
+        /// paid before. Null when it is already settled. A never-paid line worth $0 still returns a
+        /// $0 line — "nothing was owed and that has been checked off" is a decision worth recording.
+        /// </summary>
+        private static CleanerPayoutLedger.LineToPay? ResolveLineToPay(
+            Order order, OrderCleaner assignment, CleanerPayrollCalculator.CleanerLine? line)
+        {
+            var settlement = CleanerPayoutSettlement.Resolve(assignment.IsPaid, assignment.PaidAmount, line?.Payout ?? 0m);
+            return settlement.IsSettled
+                ? null
+                : new CleanerPayoutLedger.LineToPay(order, assignment, settlement.Outstanding, settlement.IsTopUp);
+        }
+
+        private async Task<CleanerPayoutLedger.PayoutDetails> BuildPayoutDetailsAsync(
+            int userId, CleanerPaymentMethod? paidVia, string? reference, string? note,
+            DateTime? paidOn, string? idempotencyKey)
+        {
+            var userName = await _context.Users
+                .Where(u => u.Id == userId)
+                .Select(u => (u.FirstName + " " + u.LastName).Trim())
+                .FirstOrDefaultAsync();
+
+            return new CleanerPayoutLedger.PayoutDetails
+            {
+                PaidOn = (paidOn ?? NyTimeHelper.NowNy).Date,
+                PaidVia = paidVia,
+                Reference = reference,
+                Note = note,
+                UserId = userId,
+                UserName = userName,
+                IdempotencyKey = idempotencyKey
+            };
+        }
+
+        /// <summary>
+        /// One audit row per line paid — "mark all paid" is one click but several payments, and
+        /// "was Marta paid for #412" must be answerable. Written after the commit, so an audit row
+        /// never describes money the database then rolled back.
+        /// </summary>
+        private async Task LogRecordedPayoutsAsync(
+            IEnumerable<Order> orders, IEnumerable<CleanerPayout> payouts, int userId)
+        {
+            var ordersById = orders.ToDictionary(o => o.Id);
+            foreach (var payout in payouts)
+            {
+                foreach (var line in payout.Lines)
+                {
+                    if (!ordersById.TryGetValue(line.OrderId, out var order)) continue;
+                    var assignment = order.OrderCleaners.FirstOrDefault(oc => oc.Id == line.OrderCleanerId);
+                    await LogPayoutAsync(order, line.IsTopUp ? "PayoutToppedUp" : "PayoutRecorded",
+                        payout.CleanerName, line.Amount, assignment?.PaidAmount,
+                        payout.PaidVia, payout.Note, userId, payout.Id, payout.Reference);
+                }
+            }
         }
 
         /// <summary>
@@ -215,7 +278,8 @@ namespace DreamCleaningBackend.Services
         private Task LogPayoutAsync(
             Order order, string action, string who,
             decimal? amount, decimal? totalPaidForLine,
-            CleanerPaymentMethod? via, string? note, int? actingUserId) =>
+            CleanerPaymentMethod? via, string? note, int? actingUserId,
+            int? payoutId = null, string? reference = null, string? reason = null) =>
             _audit.LogActionAsync(
                 AuditEntityTypes.CleanerPayout,
                 order.Id,
@@ -228,6 +292,11 @@ namespace DreamCleaningBackend.Services
                     TotalPaidForLine = totalPaidForLine,
                     PaidVia = via?.ToString(),
                     PaymentNote = note,
+                    // Which payout record this event belongs to, so the audit row and the Paid
+                    // cleaners tab can be read against each other.
+                    PayoutId = payoutId,
+                    PaymentReference = reference,
+                    Reason = reason,
                     // The reported labour cost as it stood when the money went out, so a later
                     // rate change cannot make this row look like it paid the wrong figure.
                     CleanerTotalSalary = order.CleanerTotalSalary
@@ -237,6 +306,9 @@ namespace DreamCleaningBackend.Services
         public async Task<OutgoingPaymentOrderDto?> MarkOrderPaidAsync(
             int orderId, MarkOrderPaidDto dto, int paidByUserId)
         {
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await _ledger.LockOrdersAsync(new[] { orderId });
+
             var order = await PerformedOrdersWithIncludes()
                 .FirstOrDefaultAsync(o => o.Id == orderId);
             if (order == null) return null;
@@ -244,26 +316,26 @@ namespace DreamCleaningBackend.Services
             ApplyOrderTotalSalary(order);
             var payroll = BuildPayroll(order);
 
-            // Each newly-paid line is audited individually, because "mark all paid" is one CLICK
-            // but several payments — the money reaches different people through different
-            // channels, and a single summary row could not answer "was Marta paid for #412".
+            // Unassigned slots are audited here; named cleaners through their payout records.
+            // Each newly-paid line gets its own row, because "mark all paid" is one CLICK but
+            // several payments — the money reaches different people through different channels,
+            // and a single summary row could not answer "was Marta paid for #412".
             var newlyPaid = new List<(string Who, string Action, decimal Amount, decimal? Total, CleanerPaymentMethod? Via)>();
 
             // Every line that still owes something, not merely every UNPAID line: an order edited
             // after payday leaves paid lines short, and "Mark all paid" has to settle those too
             // or the button would leave the order it just settled still showing money owed.
-            foreach (var assignment in order.OrderCleaners)
-            {
-                var line = payroll.Lines.FirstOrDefault(l => l.OrderCleanerId == assignment.Id);
-                var wasAlreadyPaid = assignment.IsPaid;
-                // Each cleaner is paid via their OWN saved method — a "pay all" is one action,
-                // not one payment channel.
-                var recorded = MarkPaid(assignment, line, null, dto.PaymentNote, paidByUserId);
-                if (recorded.HasValue)
-                    newlyPaid.Add((DescribeCleaner(assignment),
-                        wasAlreadyPaid ? "PayoutToppedUp" : "PayoutRecorded",
-                        recorded.Value, assignment.PaidAmount, assignment.PaidVia));
-            }
+            // Each cleaner becomes their own payout, paid via their OWN saved method — a "pay
+            // all" is one action, not one payment channel.
+            var toPay = order.OrderCleaners
+                .Select(a => ResolveLineToPay(order, a, payroll.Lines.FirstOrDefault(l => l.OrderCleanerId == a.Id)))
+                .Where(l => l != null)
+                .Select(l => l!)
+                .ToList();
+            var payouts = toPay.Count == 0
+                ? new List<CleanerPayout>()
+                : _ledger.Record(toPay, await BuildPayoutDetailsAsync(
+                    paidByUserId, null, null, dto.PaymentNote, null, null));
 
             // "Everyone on this order" includes the staffing slots with nobody on file — they
             // were paid too, and leaving them out would make "mark all paid" a lie.
@@ -281,7 +353,9 @@ namespace DreamCleaningBackend.Services
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
 
+            await LogRecordedPayoutsAsync(new[] { order }, payouts, paidByUserId);
             foreach (var (who, action, amount, total, via) in newlyPaid)
                 await LogPayoutAsync(order, action, who, amount, total, via, dto.PaymentNote, paidByUserId);
 
@@ -296,6 +370,9 @@ namespace DreamCleaningBackend.Services
         public async Task<OutgoingPaymentOrderDto?> MarkUnassignedSlotPaidAsync(
             int orderId, int slotIndex, MarkCleanerPaidDto dto, int paidByUserId)
         {
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await _ledger.LockOrdersAsync(new[] { orderId });
+
             var order = await PerformedOrdersWithIncludes()
                 .FirstOrDefaultAsync(o => o.Id == orderId);
             if (order == null) return null;
@@ -312,6 +389,7 @@ namespace DreamCleaningBackend.Services
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
 
             if (recorded.HasValue)
                 await LogPayoutAsync(order, slotWasPaid ? "PayoutToppedUp" : "PayoutRecorded",
@@ -324,6 +402,9 @@ namespace DreamCleaningBackend.Services
         /// <summary>Reverses a payout recorded against an unassigned staffing slot.</summary>
         public async Task<OutgoingPaymentOrderDto?> UndoUnassignedSlotPaymentAsync(int orderId, int slotIndex)
         {
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await _ledger.LockOrdersAsync(new[] { orderId });
+
             var order = await PerformedOrdersWithIncludes()
                 .FirstOrDefaultAsync(o => o.Id == orderId);
             if (order == null) return null;
@@ -346,6 +427,7 @@ namespace DreamCleaningBackend.Services
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
 
             await LogPayoutAsync(order, "PayoutReversed", $"Unassigned slot #{slotIndex + 1}",
                 reversedAmount, 0m, reversedVia, reversedNote, null);
@@ -354,12 +436,16 @@ namespace DreamCleaningBackend.Services
         }
 
         /// <summary>
-        /// Reverses a payout marking. The frozen PaidAmount is cleared with it — the record only
-        /// means anything while IsPaid stands, and leaving a stale amount behind would make an
-        /// un-done payment look like a paid one in any future query.
+        /// "Undo payment" on the Orders tab: reverts every payout line standing against this order
+        /// line — top-ups included — inside the payouts that recorded them, which then read as
+        /// partly reverted on the Paid cleaners tab. Nothing is deleted. The cache on the line is
+        /// rewritten from what is left (nothing), so the amount moves back to unpaid on every tab.
         /// </summary>
-        public async Task<OutgoingPaymentOrderDto?> UndoCleanerPaymentAsync(int orderId, int orderCleanerId)
+        public async Task<OutgoingPaymentOrderDto?> UndoCleanerPaymentAsync(int orderId, int orderCleanerId, int? userId = null)
         {
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await _ledger.LockOrdersAsync(new[] { orderId });
+
             var order = await PerformedOrdersWithIncludes()
                 .FirstOrDefaultAsync(o => o.Id == orderId);
             if (order == null) return null;
@@ -367,24 +453,44 @@ namespace DreamCleaningBackend.Services
             var assignment = order.OrderCleaners.FirstOrDefault(oc => oc.Id == orderCleanerId);
             if (assignment == null) return null;
 
+            // The reversal has to name what is being reversed, so it is read before anything moves.
             var reversedAmount = assignment.PaidAmount;
             var reversedVia = assignment.PaidVia;
             var reversedNote = assignment.PaymentNote;
             var who = DescribeCleaner(assignment);
 
-            assignment.IsPaid = false;
-            assignment.PaidAmount = null;
-            assignment.PaidVia = null;
-            assignment.PaidAt = null;
-            assignment.PaidByUserId = null;
-            assignment.PaymentNote = null;
+            var active = await _context.CleanerPayoutLines
+                .Where(l => l.OrderCleanerId == assignment.Id && l.RevertedAt == null)
+                .ToListAsync();
+
+            if (active.Count > 0)
+            {
+                await _ledger.RevertAsync(active, userId);
+            }
+            else
+            {
+                // A paid flag with no payout behind it can only predate payout records (the
+                // startup import covers those); clear it the way Undo always did.
+                assignment.IsPaid = false;
+                assignment.PaidAmount = null;
+                assignment.PaidVia = null;
+                assignment.PaidAt = null;
+                assignment.PaidByUserId = null;
+                assignment.PaymentNote = null;
+            }
 
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            var payoutIds = active.Select(l => l.CleanerPayoutId).Distinct().ToList();
+            int? singlePayoutId = payoutIds.Count == 1 ? payoutIds[0] : null;
 
             // A reversal clears the whole line, top-ups included — the running total it leaves
             // behind is zero, and saying so is what stops a reader adding the events up wrong.
-            await LogPayoutAsync(order, "PayoutReversed", who, reversedAmount, 0m, reversedVia, reversedNote, null);
+            await LogPayoutAsync(order, "PayoutReversed", who, reversedAmount, 0m, reversedVia, reversedNote, userId,
+                payoutId: singlePayoutId,
+                reason: "Undo payment on the Orders tab");
 
             return BuildOrderRow(order);
         }
@@ -416,7 +522,8 @@ namespace DreamCleaningBackend.Services
 
         /// <summary>
         /// Records a payout against an unassigned staffing slot — the first one, or a TOP-UP when
-        /// the slot's hours grew after it was settled. Same rules as <see cref="MarkPaid"/>.
+        /// the slot's hours grew after it was settled. Same settlement rules as a named cleaner's
+        /// line (<see cref="CleanerPayoutSettlement"/>); a slot has no cleaner, so it has no payout record.
         /// Returns what was handed over NOW, or null when the line was already covered.
         /// </summary>
         private static decimal? MarkSlotPaid(
@@ -437,49 +544,6 @@ namespace DreamCleaningBackend.Services
             record.PaidAt = DateTime.UtcNow;
             record.PaidByUserId = paidByUserId;
             if (!string.IsNullOrWhiteSpace(note)) record.PaymentNote = note.Trim();
-            return amount;
-        }
-
-        /// <summary>
-        /// Records a payout against one cleaner — the first one, or a TOP-UP when the line is
-        /// worth more now than what was handed over (2026-09). Returns the amount recorded NOW,
-        /// or null when the line was already covered and nothing happened.
-        ///
-        /// Three details are load-bearing on the top-up path:
-        ///
-        /// * <see cref="OrderCleaner.PaidAmount"/> is ADDED to, never replaced. It reads as the
-        ///   running total this person has had for this order, so the shortfall can still be
-        ///   computed after the top-up and the first payment is not lost. Each payment is its own
-        ///   audit row, which is where the two events stay separable.
-        /// * The amount recorded is the SHORTFALL, not the whole payout — paying $84.00 again on
-        ///   a line already paid $73.50 would double-count $73.50 of real money.
-        /// * A blank note or method leaves the existing one in place rather than wiping the
-        ///   record of the first payment.
-        ///
-        /// A never-paid line with a $0 payout is still marked paid: "nothing was owed and that
-        /// has been checked off" is a decision worth recording, which is why the guard is
-        /// "already settled" rather than "amount is zero".
-        /// </summary>
-        private static decimal? MarkPaid(
-            OrderCleaner assignment,
-            CleanerPayrollCalculator.CleanerLine? line,
-            CleanerPaymentMethod? paidVia,
-            string? note,
-            int paidByUserId)
-        {
-            // Salary + tips: the cleaner is handed one figure, and that is what we record.
-            var payout = line?.Payout ?? 0m;
-            var settlement = CleanerPayoutSettlement.Resolve(assignment.IsPaid, assignment.PaidAmount, payout);
-            if (settlement.IsSettled) return null;
-
-            var amount = settlement.Outstanding;
-
-            assignment.IsPaid = true;
-            assignment.PaidAmount = OrderPricingCalculator.Round2(settlement.PaidAmount + amount);
-            assignment.PaidVia = paidVia ?? assignment.PaidVia ?? assignment.Cleaner?.PaymentMethod;
-            assignment.PaidAt = DateTime.UtcNow;
-            assignment.PaidByUserId = paidByUserId;
-            if (!string.IsNullOrWhiteSpace(note)) assignment.PaymentNote = note.Trim();
             return amount;
         }
 
@@ -824,7 +888,11 @@ namespace DreamCleaningBackend.Services
         Task<OutgoingPaymentOrderDto?> UpdateOrderHourlyRateAsync(int orderId, decimal hourlyRate);
         Task<OutgoingPaymentOrderDto?> MarkCleanerPaidAsync(int orderId, int orderCleanerId, MarkCleanerPaidDto dto, int paidByUserId);
         Task<OutgoingPaymentOrderDto?> MarkOrderPaidAsync(int orderId, MarkOrderPaidDto dto, int paidByUserId);
-        Task<OutgoingPaymentOrderDto?> UndoCleanerPaymentAsync(int orderId, int orderCleanerId);
+        Task<OutgoingPaymentOrderDto?> UndoCleanerPaymentAsync(int orderId, int orderCleanerId, int? userId = null);
+        Task<UnpaidCleanersDto> GetUnpaidCleanersAsync();
+        Task<PayCleanersResultDto> PayCleanersAsync(PayCleanersDto dto, int userId);
+        Task<CleanerPayoutHistoryDto> GetPayoutHistoryAsync(CleanerPayoutHistoryQuery query);
+        Task<CleanerPayoutDto?> RevertPayoutAsync(int payoutId, string reason, int userId);
         Task<OutgoingPaymentOrderDto?> MarkUnassignedSlotPaidAsync(int orderId, int slotIndex, MarkCleanerPaidDto dto, int paidByUserId);
         Task<OutgoingPaymentOrderDto?> UndoUnassignedSlotPaymentAsync(int orderId, int slotIndex);
     }

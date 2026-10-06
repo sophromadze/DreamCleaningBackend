@@ -438,6 +438,7 @@ public class RecurringRefinementTests
         var service = new InvoiceService(db, new InvoiceNumberService(db, NullLogger<InvoiceNumberService>.Instance),
             new BillingSettingsService(db), new ConfigurationBuilder().Build(), NullLogger<InvoiceService>.Instance);
         var dto = new SaveInvoiceDto { ContractClientId = 1, TaxType = InvoiceTaxType.Included, TaxRate = 8.875m,
+            PaymentMethods = InvoicePaymentMethods.OnlineBank, Recipients = new() { "billing@example.com" },
             Items = new() { new SaveInvoiceItemDto { Description = "Cleaning", Quantity = 1, UnitPrice = 925.43m } } };
         var saved = await service.UpdateAsync(1, dto, 5);
         Assert.Equal(2, InvoiceService.ParseDraftWarnings(saved.DraftWarningsJson).Count);

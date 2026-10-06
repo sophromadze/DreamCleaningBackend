@@ -685,6 +685,21 @@ using (var scope = app.Services.CreateScope())
     {
         logger.LogError(ex, "Contract reference data seeding failed at startup.");
     }
+
+    // Cleaner payout history (2026-10): every order line already marked paid gets an imported
+    // payout record, so the Paid cleaners tab starts complete. Idempotent — a second start finds
+    // nothing to import — and run here, before the first request, so no payment can be recorded
+    // against a line whose history has not been imported yet.
+    try
+    {
+        var imported = await DreamCleaningBackend.Services.CleanerPayoutBackfill.RunAsync(context);
+        if (imported > 0)
+            logger.LogInformation("Imported {Count} historical cleaner payouts at startup.", imported);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Cleaner payout history import failed at startup. It will retry on the next start.");
+    }
 }
 
 // Configure the HTTP request pipeline.

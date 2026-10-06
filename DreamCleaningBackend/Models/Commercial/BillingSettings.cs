@@ -91,28 +91,34 @@ namespace DreamCleaningBackend.Models.Commercial
         [StringLength(20)]
         public string? BankWireRoutingNumber { get; set; }
 
-        // -- Which payment methods a commercial invoice offers ----------------------------------
+        // -- Which payment methods a NEW commercial invoice is pre-ticked with ------------------
         //
-        // Centralized here so the public page, the PDF, the email and the Checkout endpoint all
-        // read one answer. A method that is disabled must be unavailable at the ENDPOINT, not just
-        // hidden in the UI — see InvoiceCheckoutService.
+        // DEFAULTS ONLY (2026-10). Each commercial invoice carries its own set
+        // (CommercialInvoice.PaymentMethods), chosen on the form, and that set — not these
+        // switches — is what the public page, the PDF, the email and the Checkout endpoint read.
+        // Turning a switch off here changes what the NEXT invoice starts with and never re-addresses
+        // one already issued. See InvoicePaymentMethodRules.
 
         /// <summary>
-        /// Stripe ACH Direct Debit — the primary online method. On by default: it is the whole
-        /// point of the online payment flow for commercial clients.
+        /// Stripe ACH Direct Debit ("Pay from Bank") — pre-ticked on new commercial invoices. The
+        /// customer pays the ACH processing fee configured below on top of the balance.
+        ///
+        /// ALSO decides whether a REGULAR (residential) customer invoice offers Pay from Bank — that
+        /// flow has no per-invoice choice, and keeps reading this switch (owner's call, 2026-10).
         /// </summary>
         public bool StripeAchEnabled { get; set; } = true;
 
         /// <summary>
-        /// Stripe card payments. OFF by default and deliberately so: card fees on a four-figure
-        /// commercial invoice are material, and turning them on is an owner's commercial decision
-        /// rather than a default. No surcharge is ever added to the customer either way.
+        /// Stripe card payments — pre-ticked on new commercial invoices when on. OFF by default:
+        /// card fees on a four-figure commercial invoice are material, so offering card is a
+        /// per-invoice commercial decision. No fee is ever added to the customer for card.
         /// </summary>
         public bool StripeCardEnabled { get; set; } = false;
 
         /// <summary>
         /// Manual ACH — the customer pushes a transfer from their own bank and an admin records
-        /// it. On by default, and the fallback whenever Stripe is disabled or unreachable.
+        /// it. Pre-ticked on new commercial invoices when on (and the bank details are complete).
+        /// No fee from us.
         /// </summary>
         public bool ManualAchEnabled { get; set; } = true;
 

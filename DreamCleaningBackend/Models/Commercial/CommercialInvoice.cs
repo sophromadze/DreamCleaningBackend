@@ -10,9 +10,9 @@ namespace DreamCleaningBackend.Models.Commercial
     ///
     /// COMPLETELY SEPARATE FROM THE RESIDENTIAL CHECKOUT. A residential order is charged through
     /// Stripe at booking time and <see cref="Order"/> owns its own money columns. This entity
-    /// never touches that flow: a commercial client is billed after the fact and pays by ACH into
-    /// the company bank account, and an admin records the payment when it lands. Nothing here
-    /// creates a PaymentIntent.
+    /// never touches that flow: a commercial client is billed after the fact and pays by whichever
+    /// of <see cref="PaymentMethods"/> the invoice offers — online through its own Stripe Checkout
+    /// pipeline (<c>InvoiceCheckoutService</c>), or by a transfer/cheque an admin records.
     ///
     /// Every monetary column is decimal(10,2) - never a double. See <c>InvoiceCalculator</c>,
     /// which is the only thing allowed to compute these values; the figures a browser submits are
@@ -147,7 +147,28 @@ namespace DreamCleaningBackend.Models.Commercial
         [Required, StringLength(3)]
         public string Currency { get; set; } = "USD";
 
-        public InvoicePaymentMethod PaymentMethod { get; set; } = InvoicePaymentMethod.AchBankTransfer;
+        /// <summary>
+        /// Every payment method this invoice OFFERS — chosen per invoice on the form, pre-ticked
+        /// from the Billing Settings defaults. The public page, PDF, email and checkout endpoint
+        /// read this and nothing else; see <see cref="InvoicePaymentMethods"/>. Never
+        /// <see cref="InvoicePaymentMethods.None"/> on a row written through the service, which
+        /// refuses an empty set.
+        /// </summary>
+        public InvoicePaymentMethods PaymentMethods { get; set; } =
+            InvoicePaymentMethods.OnlineBank | InvoicePaymentMethods.ManualBankTransfer;
+
+        /// <summary>
+        /// Who this invoice is emailed to, as a JSON array of addresses in the order the admin
+        /// listed them (2026-10). Sending, resending, reminders and receipts all go to exactly
+        /// this list — see <c>InvoiceRecipientList</c>.
+        ///
+        /// A SNAPSHOT, like <see cref="ServiceAddress"/>: editing the client's billing contact
+        /// later does not re-address an invoice already issued. Null only on a row that predates
+        /// the column and could not be backfilled, in which case sending falls back to the
+        /// client's billing contact exactly as it did before.
+        /// </summary>
+        [Column(TypeName = "LONGTEXT")]
+        public string? RecipientEmailsJson { get; set; }
 
         // -- Notes ----------------------------------------------------------------------------
 
@@ -399,6 +420,16 @@ namespace DreamCleaningBackend.Models.Commercial
 
         public InvoiceEmailType EmailType { get; set; }
 
+        /// <summary>
+        /// Ties together the rows of ONE send (2026-10). An invoice goes to every address on its
+        /// recipient list, one message each so a bounce on one address is recorded against that
+        /// address alone; the shared id is what lets the send history show them as one event —
+        /// "Invoice sent to a@x.com, b@y.com" — instead of guessing from timestamps. Null on rows
+        /// written before multi-recipient sending, each of which is its own event.
+        /// </summary>
+        [StringLength(32)]
+        public string? SendBatchId { get; set; }
+
         [Required, StringLength(255)]
         public string Recipient { get; set; } = string.Empty;
 
@@ -529,7 +560,8 @@ namespace DreamCleaningBackend.Models.Commercial
         [Column(TypeName = "decimal(6,3)")]
         public decimal? TaxRate { get; set; }
 
-        public InvoicePaymentMethod PaymentMethod { get; set; } = InvoicePaymentMethod.AchBankTransfer;
+        public InvoicePaymentMethods PaymentMethods { get; set; } =
+            InvoicePaymentMethods.OnlineBank | InvoicePaymentMethods.ManualBankTransfer;
 
         /// <summary>Serialized line items, same shape as the invoice form posts.</summary>
         [Column(TypeName = "LONGTEXT")]

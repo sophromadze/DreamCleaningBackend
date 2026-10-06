@@ -74,6 +74,10 @@ namespace DreamCleaningBackend.Services.Commercial
             var settings = await _billing.GetOrCreateAsync();
             var invoiceDate = (dto.InvoiceDate ?? DateTime.UtcNow).Date;
 
+            // Both checked BEFORE a number is allocated: a refused save must not burn one.
+            ValidatePaymentMethods(dto.PaymentMethods, null, settings);
+            var recipients = ValidateRecipients(dto.Recipients);
+
             for (var attempt = 0; attempt < 3; attempt++)
             {
                 var invoice = new CommercialInvoice
@@ -93,7 +97,8 @@ namespace DreamCleaningBackend.Services.Commercial
                     ServiceAddress = await ResolveServiceAddressAsync(dto),
                     PoNumber = Trim(dto.PoNumber),
                     ClientReference = Trim(dto.ClientReference),
-                    PaymentMethod = dto.PaymentMethod,
+                    PaymentMethods = dto.PaymentMethods,
+                    RecipientEmailsJson = InvoiceRecipientList.Serialize(recipients),
                     CustomerNote = Trim(dto.CustomerNote) ?? settings.DefaultCustomerNote,
                     InternalNote = Trim(dto.InternalNote),
                     Currency = "USD",
@@ -108,6 +113,8 @@ namespace DreamCleaningBackend.Services.Commercial
                     await InvoiceOrderLinkService.ApplySelectionAsync(_context, invoice,
                         new SaveInvoiceOrdersDto { OrderIds = dto.OrderIds, NegotiatedGroupTotal = dto.NegotiatedGroupTotal });
                 ApplyTaxDefaultIfRequested(settings, dto, userId);
+                if (dto.SaveRecipientsAsClientDefault)
+                    client.DefaultInvoiceRecipientsJson = InvoiceRecipientList.Serialize(recipients);
 
                 _context.CommercialInvoices.Add(invoice);
 
@@ -128,7 +135,14 @@ namespace DreamCleaningBackend.Services.Commercial
                 }
 
                 await LogActivityAsync(invoice.Id, "invoice_created",
-                    $"Invoice {invoice.InvoiceNumber} created for {client.LegalEntityName}.", userId);
+                    $"Invoice {invoice.InvoiceNumber} created for {client.LegalEntityName}. "
+                    + $"Payment methods: {InvoicePaymentMethodRules.Describe(invoice.PaymentMethods)}. "
+                    + $"Recipients: {InvoiceRecipientList.Describe(recipients)}.", userId);
+
+                if (dto.SaveRecipientsAsClientDefault)
+                    await LogActivityAsync(invoice.Id, "client_default_recipients_saved",
+                        $"Saved {InvoiceRecipientList.Describe(recipients)} as the default recipients for "
+                        + $"{client.LegalEntityName}'s future invoices.", userId);
 
                 return invoice;
             }
@@ -187,6 +201,17 @@ namespace DreamCleaningBackend.Services.Commercial
             var monetaryEditable = InvoiceStatusPolicy.CanEditMonetaryValues(invoice.Status);
             FinancialSnapshot? before = monetaryEditable ? SnapshotFinancials(invoice) : null;
 
+            var billingSettings = await _billing.GetOrCreateAsync();
+            // The methods are part of what the customer may still DO, so they lock with the
+            // amounts once the invoice is Paid; a payment-method change on a settled invoice would
+            // describe nothing. Recipients stay editable on anything that is not Void, because a
+            // receipt still has to go somewhere after the money lands.
+            var methodsBefore = invoice.PaymentMethods;
+            if (monetaryEditable)
+                ValidatePaymentMethods(dto.PaymentMethods, invoice.PaymentMethods, billingSettings);
+            var recipients = ValidateRecipients(dto.Recipients);
+            var recipientsBefore = InvoiceRecipientList.Parse(invoice.RecipientEmailsJson);
+
             // Always editable.
             invoice.PoNumber = Trim(dto.PoNumber);
             invoice.ClientReference = Trim(dto.ClientReference);
@@ -198,6 +223,10 @@ namespace DreamCleaningBackend.Services.Commercial
             // an admin fixing a service date on a paid invoice is ordinary bookkeeping, the same
             // reasoning that keeps the PO number editable.
             invoice.ServiceDatesJson = SerializeServiceDates(dto.ServiceDates);
+            invoice.RecipientEmailsJson = InvoiceRecipientList.Serialize(recipients);
+            if (dto.SaveRecipientsAsClientDefault)
+                await SaveClientDefaultRecipientsAsync(
+                    monetaryEditable ? dto.ContractClientId : invoice.ContractClientId, recipients);
 
             if (monetaryEditable)
             {
@@ -205,7 +234,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 invoice.ContractId = dto.ContractId;
                 invoice.ContractServiceLocationId = dto.ContractServiceLocationId;
                 invoice.ServiceAddress = await ResolveServiceAddressAsync(dto);
-                invoice.PaymentMethod = dto.PaymentMethod;
+                invoice.PaymentMethods = dto.PaymentMethods;
 
                 var invoiceDate = (dto.InvoiceDate ?? invoice.InvoiceDate).Date;
                 invoice.InvoiceDate = invoiceDate;
@@ -253,6 +282,13 @@ namespace DreamCleaningBackend.Services.Commercial
             {
                 await LogActivityAsync(invoice.Id, "invoice_updated", "Invoice updated.", userId);
             }
+
+            if (invoice.PaymentMethods != methodsBefore)
+                await LogActivityAsync(invoice.Id, "payment_methods_changed",
+                    $"Payment methods changed to {InvoicePaymentMethodRules.Describe(invoice.PaymentMethods)} "
+                    + $"(was {InvoicePaymentMethodRules.Describe(methodsBefore)}).", userId);
+
+            await LogRecipientChangeAsync(invoice.Id, recipientsBefore, recipients, dto.SaveRecipientsAsClientDefault, userId);
 
             foreach (var choice in driftChoices)
                 await LogActivityAsync(invoice.Id, "invoice_drift_choice", $"Draft review: {choice}. Total {invoice.Total:C}; tax {invoice.TaxAmount:C} at {invoice.TaxRate}%.", userId);
@@ -663,7 +699,10 @@ namespace DreamCleaningBackend.Services.Commercial
                 DiscountValue = source.DiscountValue,
                 TaxType = source.TaxType,
                 TaxRate = source.TaxRate,
-                PaymentMethod = source.PaymentMethod,
+                PaymentMethods = source.PaymentMethods,
+                // The copy goes to whoever the original went to; the admin reviews the draft and
+                // can change either before it is sent.
+                RecipientEmailsJson = source.RecipientEmailsJson,
                 CustomerNote = source.CustomerNote,
                 // The internal note is a working comment about THAT invoice - usually a chase or a
                 // correction - and is not carried into a new billing period.
@@ -835,6 +874,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 .ToListAsync();
 
             var billingContact = await ResolveBillingContactAsync(invoice.ContractClientId);
+            var recipientsView = ResolveRecipients(invoice, billingContact);
 
             var attempts = await _context.CommercialInvoicePaymentAttempts
                 .Where(a => a.CommercialInvoiceId == invoiceId)
@@ -931,7 +971,10 @@ namespace DreamCleaningBackend.Services.Commercial
                 Overpayment = InvoiceCalculator.ResolveOverpayment(invoice.Total, invoice.AmountPaid),
 
                 Currency = invoice.Currency,
-                PaymentMethod = invoice.PaymentMethod,
+                PaymentMethods = invoice.PaymentMethods,
+                PaymentMethodsLabel = InvoicePaymentMethodRules.Describe(invoice.PaymentMethods),
+                Recipients = recipientsView.Recipients,
+                RecipientsAreFallback = recipientsView.IsFallback,
 
                 CustomerNote = invoice.CustomerNote,
                 InternalNote = invoice.InternalNote,
@@ -955,6 +998,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 EmailHistory = emails.Select(e => new InvoiceEmailLogDto
                 {
                     Id = e.Id,
+                    SendBatchId = e.SendBatchId,
                     EmailType = e.EmailType,
                     EmailTypeLabel = EmailTypeLabel(e.EmailType),
                     Recipient = e.Recipient,
@@ -1114,13 +1158,11 @@ namespace DreamCleaningBackend.Services.Commercial
                 PaidAt = invoice.PaidAt,
                 CustomerNote = invoice.CustomerNote,
 
-                PaymentMethod = invoice.PaymentMethod,
-                // Bank details appear only when manual ACH is switched on AND complete. A void
-                // invoice is not collectable, so it prints none at all — inviting a payment
-                // nobody can apply is worse than saying nothing.
+                // Bank details appear only when THIS invoice offers manual transfer AND the details
+                // are complete. A void invoice is not collectable, so it prints none at all —
+                // inviting a payment nobody can apply is worse than saying nothing.
                 PaymentInstructions = options.ManualAchAvailable
-                    ? BillingSettingsService.BuildPaymentInstructions(
-                        settings, invoice.InvoiceNumber, invoice.PaymentMethod)
+                    ? BillingSettingsService.BuildPaymentInstructions(settings, invoice.InvoiceNumber)
                     : null,
                 PaymentOptions = options,
                 Company = BillingSettingsService.BuildCompany(settings)
@@ -1145,12 +1187,33 @@ namespace DreamCleaningBackend.Services.Commercial
 
             if (!collectable) return options;
 
-            options.ManualAchAvailable = BillingSettingsService.CanOfferManualAch(settings);
+            // THE INVOICE'S OWN SET decides what is offered (2026-10). The Billing Settings
+            // toggles only pre-tick a new invoice; they used to be the whole answer here, which is
+            // how an invoice saved with "Card" came out with no card button.
+            var offered = invoice.PaymentMethods;
+            var offersOnlineBank = InvoicePaymentMethodRules.Offers(offered, InvoicePaymentMethods.OnlineBank);
+
+            // Manual transfer additionally needs complete bank details — half a set of
+            // instructions is worse than none.
+            options.ManualAchAvailable =
+                InvoicePaymentMethodRules.Offers(offered, InvoicePaymentMethods.ManualBankTransfer)
+                && BillingSettingsService.IsManualAchComplete(settings);
+
+            // A cheque or another arrangement needs nothing from Stripe and nothing to click, so it
+            // is shown even while an online payment settles.
+            if (InvoicePaymentMethodRules.Offers(offered, InvoicePaymentMethods.Other))
+            {
+                options.OtherArrangementAvailable = true;
+                options.OtherArrangementNote = OtherArrangementNote;
+            }
 
             // THE FEE IS QUOTED BEFORE THE CUSTOMER COMMITS TO ANYTHING. Computed here from the
             // invoice's own live balance so a part-payment recorded this morning is reflected, and
             // recomputed identically by the checkout endpoint - the page can only ever DISPLAY it.
-            options.AchProcessingFee = AchProcessingFeeCalculator.Resolve(invoice.BalanceDue, settings);
+            // Zero unless the invoice offers online bank payment: it is that method's fee alone.
+            options.AchProcessingFee = offersOnlineBank
+                ? AchProcessingFeeCalculator.Resolve(invoice.BalanceDue, settings)
+                : 0m;
             options.AchTotalWithFee =
                 AchProcessingFeeCalculator.ResolveTotalCharge(invoice.BalanceDue, options.AchProcessingFee);
             options.AchProcessingFeeLabel = AchProcessingFeeCalculator.CustomerFacingLabel;
@@ -1182,6 +1245,7 @@ namespace DreamCleaningBackend.Services.Commercial
                     ? settling.TotalCharged
                     : AchProcessingFeeCalculator.ResolveTotalCharge(settling.Amount, settling.ProcessingFee);
                 options.ProcessingStartedAt = settling.CreatedAt;
+                options.ProcessingIsCard = settling.PaymentMethod == InvoicePaymentRecordMethod.Card;
 
                 // Both buttons stay OFF while money is genuinely in flight. This is the
                 // duplicate-payment guard's visible half: ACH takes days to settle and the invoice
@@ -1189,8 +1253,8 @@ namespace DreamCleaningBackend.Services.Commercial
                 return options;
             }
 
-            options.StripeAchAvailable = settings.StripeAchEnabled;
-            options.StripeCardAvailable = settings.StripeCardEnabled;
+            options.StripeAchAvailable = offersOnlineBank;
+            options.StripeCardAvailable = InvoicePaymentMethodRules.Offers(offered, InvoicePaymentMethods.Card);
 
             // A failed attempt with nothing in flight: say so plainly and let them retry. The
             // wording is FIXED here rather than taken from Stripe — its message is for admins.
@@ -1201,8 +1265,9 @@ namespace DreamCleaningBackend.Services.Commercial
             if (lastTerminal?.Status == InvoicePaymentAttemptStatus.Failed)
             {
                 options.LastAttemptFailed = true;
-                options.LastFailureMessage =
-                    "Bank payment was unsuccessful. Please try again or use another payment method.";
+                options.LastFailureMessage = lastTerminal.PaymentMethod == InvoicePaymentRecordMethod.Card
+                    ? "Card payment was unsuccessful. Please try again or use another payment method."
+                    : "Bank payment was unsuccessful. Please try again or use another payment method.";
             }
 
             return options;
@@ -1315,12 +1380,126 @@ namespace DreamCleaningBackend.Services.Commercial
         /// did before the flag existed, so no client's invoices change recipient on deployment.
         /// </summary>
         public async Task<ContractContact?> ResolveBillingContactAsync(int clientId) =>
-            await _context.ContractContacts
+            await BillingContactQuery(_context, clientId).FirstOrDefaultAsync();
+
+        /// <summary>
+        /// The ordering <see cref="ResolveBillingContactAsync"/> resolves by, shared with every
+        /// screen that SHOWS the billing contact — the invoice form used to order without the
+        /// primary-billing flag, so it could name one person while the invoice went to another.
+        /// </summary>
+        public static IQueryable<ContractContact> BillingContactQuery(ApplicationDbContext context, int clientId) =>
+            context.ContractContacts
                 .Where(c => c.ContractClientId == clientId && c.IsActive)
                 .OrderBy(c => c.IsPrimaryBillingContact ? 0 : 1)
                 .ThenBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1)
-                .ThenBy(c => c.Id)
-                .FirstOrDefaultAsync();
+                .ThenBy(c => c.Id);
+
+        // ── Payment methods and recipients (2026-10) ─────────────────────────────────────────
+
+        /// <summary>What the public page says when an invoice accepts a cheque or another arrangement.</summary>
+        public const string OtherArrangementNote =
+            "You can also pay by check or another arrangement made with us. Please contact us "
+            + "and quote the invoice number so we can match your payment.";
+
+        private static void ValidatePaymentMethods(
+            InvoicePaymentMethods requested, InvoicePaymentMethods? current, BillingSettings settings)
+        {
+            var problem = InvoicePaymentMethodRules.DescribeProblem(requested, current, settings);
+            if (problem != null) throw new InvoiceWorkflowException(problem);
+        }
+
+        /// <summary>Normalises and validates a recipient list, or refuses it with the reason.</summary>
+        public static List<string> ValidateRecipients(IEnumerable<string?>? raw)
+        {
+            var recipients = InvoiceRecipientList.Normalize(raw);
+            var problem = InvoiceRecipientList.DescribeProblem(recipients);
+            if (problem != null) throw new InvoiceWorkflowException(problem);
+            return recipients;
+        }
+
+        private async Task SaveClientDefaultRecipientsAsync(int clientId, IReadOnlyList<string> recipients)
+        {
+            var client = await _context.ContractClients.FindAsync(clientId)
+                ?? throw new InvoiceWorkflowException("The selected client no longer exists.");
+            client.DefaultInvoiceRecipientsJson = InvoiceRecipientList.Serialize(recipients);
+        }
+
+        private async Task LogRecipientChangeAsync(
+            int invoiceId, IReadOnlyList<string> before, IReadOnlyList<string> after, bool savedAsDefault, int userId)
+        {
+            if (!before.SequenceEqual(after, StringComparer.OrdinalIgnoreCase))
+            {
+                await LogActivityAsync(invoiceId, "recipients_changed",
+                    $"Recipients changed to {InvoiceRecipientList.Describe(after)}"
+                    + (before.Count > 0 ? $" (was {InvoiceRecipientList.Describe(before)})." : "."),
+                    userId);
+            }
+
+            if (savedAsDefault)
+                await LogActivityAsync(invoiceId, "client_default_recipients_saved",
+                    $"Saved {InvoiceRecipientList.Describe(after)} as the client's default recipients "
+                    + "for future invoices.", userId);
+        }
+
+        /// <summary>
+        /// Who mail about this invoice goes to: its own list, or — on an invoice from before
+        /// per-invoice recipients that none could be backfilled for — the one billing address it
+        /// always went to. Empty only when the client has no address at all.
+        /// </summary>
+        public static (List<string> Recipients, bool IsFallback) ResolveRecipients(
+            CommercialInvoice invoice, ContractContact? billingContact)
+        {
+            var own = InvoiceRecipientList.Parse(invoice.RecipientEmailsJson);
+            if (own.Count > 0) return (own, false);
+
+            var fallback = InvoiceRecipientList.Normalize(new[]
+            {
+                !string.IsNullOrWhiteSpace(billingContact?.Email) ? billingContact!.Email : invoice.Client?.NoticeEmail
+            });
+            return (fallback, true);
+        }
+
+        public async Task<List<string>> ResolveRecipientsAsync(CommercialInvoice invoice)
+        {
+            var own = InvoiceRecipientList.Parse(invoice.RecipientEmailsJson);
+            if (own.Count > 0) return own;
+
+            if (invoice.Client == null)
+                invoice.Client = await _context.ContractClients.FindAsync(invoice.ContractClientId);
+
+            return ResolveRecipients(invoice, await ResolveBillingContactAsync(invoice.ContractClientId)).Recipients;
+        }
+
+        /// <summary>
+        /// Replaces an invoice's recipient list — the send and reminder dialogs and the detail
+        /// page's own editor all come through here, so every change is validated identically and
+        /// lands in the activity trail. Allowed on anything that is not Void.
+        /// </summary>
+        public async Task<CommercialInvoice> UpdateRecipientsAsync(
+            int invoiceId, IEnumerable<string?>? rawRecipients, bool saveAsClientDefault, int userId)
+        {
+            var invoice = await _context.CommercialInvoices.FirstOrDefaultAsync(i => i.Id == invoiceId)
+                ?? throw new InvoiceWorkflowException("Invoice not found.");
+
+            if (!InvoiceStatusPolicy.CanEdit(invoice.Status))
+                throw new InvoiceWorkflowException("A voided invoice is read-only.");
+
+            var recipients = ValidateRecipients(rawRecipients);
+            var before = InvoiceRecipientList.Parse(invoice.RecipientEmailsJson);
+
+            invoice.RecipientEmailsJson = InvoiceRecipientList.Serialize(recipients);
+            if (saveAsClientDefault)
+                await SaveClientDefaultRecipientsAsync(invoice.ContractClientId, recipients);
+
+            if (!before.SequenceEqual(recipients, StringComparer.Ordinal) || saveAsClientDefault)
+            {
+                invoice.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+                await LogRecipientChangeAsync(invoice.Id, before, recipients, saveAsClientDefault, userId);
+            }
+
+            return invoice;
+        }
 
         public static string? BuildUserName(Models.User? user) =>
             user == null ? null : $"{user.FirstName} {user.LastName}".Trim();

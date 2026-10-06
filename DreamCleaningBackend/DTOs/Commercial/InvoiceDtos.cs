@@ -88,7 +88,22 @@ namespace DreamCleaningBackend.DTOs.Commercial
         /// </summary>
         public bool SaveTaxRateAsDefault { get; set; }
 
-        public InvoicePaymentMethod PaymentMethod { get; set; } = InvoicePaymentMethod.AchBankTransfer;
+        /// <summary>
+        /// Every method this invoice offers the customer, as a bit set — at least one, validated
+        /// server-side by <c>InvoicePaymentMethodRules</c>. Changeable while the invoice can still
+        /// take money (not once it is Paid or Void).
+        /// </summary>
+        public InvoicePaymentMethods PaymentMethods { get; set; }
+
+        /// <summary>
+        /// Who the invoice is emailed to. At least one valid address; normalised and validated
+        /// server-side by <c>InvoiceRecipientList</c>. Editable on any invoice that is not Void,
+        /// because resends and reminders still need somewhere to go after the amounts lock.
+        /// </summary>
+        public List<string> Recipients { get; set; } = new();
+
+        /// <summary>Also store <see cref="Recipients"/> as the client's default list for future invoices.</summary>
+        public bool SaveRecipientsAsClientDefault { get; set; }
 
         [StringLength(2000)]
         public string? CustomerNote { get; set; }
@@ -140,9 +155,12 @@ namespace DreamCleaningBackend.DTOs.Commercial
 
     public class SendInvoiceDto
     {
-        /// <summary>Overrides the client's billing email for this send only.</summary>
-        [StringLength(255)]
-        public string? RecipientEmail { get; set; }
+        /// <summary>
+        /// The recipient list as the admin left it in the send dialog. When supplied it REPLACES
+        /// the invoice's stored list (and is validated like the form's) before anything is sent,
+        /// so the invoice keeps saying who it went to. Null sends to the stored list unchanged.
+        /// </summary>
+        public List<string>? Recipients { get; set; }
 
         /// <summary>Adds the PDF as an attachment alongside the link.</summary>
         public bool AttachPdf { get; set; } = true;
@@ -153,11 +171,18 @@ namespace DreamCleaningBackend.DTOs.Commercial
 
     public class SendInvoiceReminderDto
     {
-        [StringLength(255)]
-        public string? RecipientEmail { get; set; }
+        /// <summary>Same rule as <see cref="SendInvoiceDto.Recipients"/>.</summary>
+        public List<string>? Recipients { get; set; }
 
         /// <summary>Bypasses the same-day duplicate guard when an admin insists.</summary>
         public bool Force { get; set; }
+    }
+
+    /// <summary>Replaces an invoice's recipient list without touching anything else.</summary>
+    public class SaveInvoiceRecipientsDto
+    {
+        public List<string> Recipients { get; set; } = new();
+        public bool SaveAsClientDefault { get; set; }
     }
 
     // ── Read side ─────────────────────────────────────────────────────────────────────────────
@@ -178,7 +203,7 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public decimal BalanceDue { get; set; }
         public InvoiceStatus Status { get; set; }
         public string StatusLabel { get; set; } = string.Empty;
-        public InvoicePaymentMethod PaymentMethod { get; set; }
+        public InvoicePaymentMethods PaymentMethods { get; set; }
         public DateTime? PaidAt { get; set; }
         public DateTime? LastSentAt { get; set; }
         public bool HasBeenSent { get; set; }
@@ -315,6 +340,9 @@ namespace DreamCleaningBackend.DTOs.Commercial
     public class InvoiceEmailLogDto
     {
         public long Id { get; set; }
+
+        /// <summary>Shared by every row of one send; null on rows from before multi-recipient sending.</summary>
+        public string? SendBatchId { get; set; }
         public InvoiceEmailType EmailType { get; set; }
         public string EmailTypeLabel { get; set; } = string.Empty;
         public string Recipient { get; set; } = string.Empty;
@@ -420,7 +448,29 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public decimal Overpayment { get; set; }
 
         public string Currency { get; set; } = "USD";
-        public InvoicePaymentMethod PaymentMethod { get; set; }
+
+        /// <summary>The methods this invoice offers its customer.</summary>
+        public InvoicePaymentMethods PaymentMethods { get; set; }
+
+        /// <summary>"Online bank payment (ACH), Card" — the same wording the form uses.</summary>
+        public string PaymentMethodsLabel { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Who sending, resending, reminders and receipts go to. The invoice's own list; on an
+        /// invoice that predates per-invoice recipients and has none stored, the client's billing
+        /// address it would fall back to, flagged by <see cref="RecipientsAreFallback"/>.
+        /// </summary>
+        public List<string> Recipients { get; set; } = new();
+
+        public bool RecipientsAreFallback { get; set; }
+
+        /// <summary>
+        /// Set only on the response to a send, reminder or receipt that reached SOME of the
+        /// recipients: who it did not reach, so the admin is told rather than having to spot the
+        /// failed rows in the history. Never stored.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public string? ActionNotice { get; set; }
 
         public string? CustomerNote { get; set; }
         public string? InternalNote { get; set; }
@@ -571,10 +621,9 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public DateTime? PaidAt { get; set; }
         public string? CustomerNote { get; set; }
 
-        public InvoicePaymentMethod PaymentMethod { get; set; }
-
         /// <summary>
-        /// The manual ACH bank block. NULL unless manual ACH is both enabled AND fully configured —
+        /// The manual ACH bank block. NULL unless THIS INVOICE offers manual bank transfer and the
+        /// bank details are fully configured —
         /// partial instructions are worse than none, because the customer only finds out at their
         /// bank. Also null on a void invoice, which must not invite a payment.
         /// </summary>
@@ -595,14 +644,24 @@ namespace DreamCleaningBackend.DTOs.Commercial
     /// </summary>
     public class PublicPaymentOptionsDto
     {
-        /// <summary>"Pay from Bank" — Stripe ACH Direct Debit.</summary>
+        /// <summary>"Pay from Bank" — Stripe ACH Direct Debit, offered when the invoice offers it.</summary>
         public bool StripeAchAvailable { get; set; }
 
-        /// <summary>"Pay by Card" — off by default, an owner's decision to enable.</summary>
+        /// <summary>"Pay by Card" — Stripe Checkout, offered when the invoice offers it. No fee.</summary>
         public bool StripeCardAvailable { get; set; }
 
         /// <summary>The collapsible manual bank-transfer block.</summary>
         public bool ManualAchAvailable { get; set; }
+
+        /// <summary>
+        /// The invoice accepts a cheque or another arrangement made with us. There is nothing to
+        /// click: the page shows <see cref="OtherArrangementNote"/> and our contact details, and
+        /// an admin records the payment when it arrives.
+        /// </summary>
+        public bool OtherArrangementAvailable { get; set; }
+
+        /// <summary>Fixed customer-facing wording for <see cref="OtherArrangementAvailable"/>.</summary>
+        public string? OtherArrangementNote { get; set; }
 
         /// <summary>
         /// True while a Stripe payment for this invoice is authorized or settling. The page shows
@@ -628,6 +687,12 @@ namespace DreamCleaningBackend.DTOs.Commercial
 
         /// <summary>When that payment was started.</summary>
         public DateTime? ProcessingStartedAt { get; set; }
+
+        /// <summary>
+        /// The payment being confirmed is a CARD payment — seconds away from settling, not days —
+        /// so the page must not tell the customer an ACH debit takes several business days.
+        /// </summary>
+        public bool ProcessingIsCard { get; set; }
 
         /// <summary>
         /// True when the customer's last attempt failed and nothing is in flight, so the page can
@@ -807,6 +872,21 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public bool AchCustomerFeeEnabled { get; set; }
         public decimal AchCustomerFeeRatePercent { get; set; }
         public decimal AchCustomerFeeCapAmount { get; set; }
+
+        /// <summary>
+        /// The payment methods a new invoice is pre-ticked with — the Billing Settings toggles
+        /// (<c>InvoicePaymentMethodRules.DefaultsFrom</c>).
+        /// </summary>
+        public InvoicePaymentMethods DefaultPaymentMethods { get; set; }
+
+        /// <summary>
+        /// Whether the bank details are complete enough for an invoice to offer manual transfer.
+        /// The form disables that checkbox otherwise; the server refuses it either way.
+        /// </summary>
+        public bool ManualTransferAvailable { get; set; }
+
+        /// <summary>Field NAMES only — never values — for the form's explanation.</summary>
+        public List<string> MissingManualAchFields { get; set; } = new();
     }
 
     public class SaveBillingSettingsDto
@@ -872,6 +952,16 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public string? BillingEmail { get; set; }
         public string? BillingPhone { get; set; }
         public string? BillingAddress { get; set; }
+
+        /// <summary>
+        /// The recipient list a new invoice for this client starts with: the client's saved
+        /// default list, otherwise <see cref="BillingEmail"/> alone (empty when there is none).
+        /// </summary>
+        public List<string> DefaultInvoiceRecipients { get; set; } = new();
+
+        /// <summary>True when <see cref="DefaultInvoiceRecipients"/> is a list an admin saved.</summary>
+        public bool HasSavedDefaultRecipients { get; set; }
+
         public List<InvoiceLocationOptionDto> Locations { get; set; } = new();
         public List<InvoiceContractOptionDto> Contracts { get; set; } = new();
 
@@ -1097,7 +1187,8 @@ namespace DreamCleaningBackend.DTOs.Commercial
         public bool CanSendReminder { get; set; }
 
         /// <summary>
-        /// Where this invoice would be emailed. Null means it cannot be sent at all yet, which is
+        /// Where this invoice would be emailed — its recipient list, comma-separated. Null means it
+        /// cannot be sent at all yet, which is
         /// worth saying BEFORE somebody presses Send — the same rule the no-account-email warning
         /// on the orders panel follows.
         /// </summary>

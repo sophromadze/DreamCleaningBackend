@@ -2314,6 +2314,133 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("CleanerNotes");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.CleanerPayout", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("CleanerId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CleanerName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("CreatedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<bool>("IsImported")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<DateTime>("PaidOn")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("PaidVia")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reference")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("RevertReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<DateTime?>("RevertedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("RevertedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_CleanerPayouts_IdempotencyKey");
+
+                    b.HasIndex("PaidOn")
+                        .HasDatabaseName("IX_CleanerPayouts_PaidOn");
+
+                    b.HasIndex("RevertedByUserId");
+
+                    b.HasIndex("CleanerId", "PaidOn")
+                        .HasDatabaseName("IX_CleanerPayouts_Cleaner_PaidOn");
+
+                    b.ToTable("CleanerPayouts");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.CleanerPayoutLine", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("CleanerId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CleanerPayoutId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsTopUp")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int?>("OrderCleanerId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("RevertedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("RevertedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("ServiceDate")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CleanerPayoutId");
+
+                    b.HasIndex("OrderId")
+                        .HasDatabaseName("IX_CleanerPayoutLines_OrderId");
+
+                    b.HasIndex("OrderCleanerId", "RevertedAt")
+                        .HasDatabaseName("IX_CleanerPayoutLines_OrderCleaner_Reverted");
+
+                    b.ToTable("CleanerPayoutLines");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.CleanerVacation", b =>
                 {
                     b.Property<int>("Id")
@@ -2636,7 +2763,7 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<DateTime?>("PaidAt")
                         .HasColumnType("datetime(6)");
 
-                    b.Property<int>("PaymentMethod")
+                    b.Property<int>("PaymentMethods")
                         .HasColumnType("int");
 
                     b.Property<string>("PoNumber")
@@ -2647,6 +2774,9 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("varchar(64)");
+
+                    b.Property<string>("RecipientEmailsJson")
+                        .HasColumnType("LONGTEXT");
 
                     b.Property<int?>("RecurringTemplateId")
                         .HasColumnType("int");
@@ -2811,6 +2941,10 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("varchar(255)");
+
+                    b.Property<string>("SendBatchId")
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
 
                     b.Property<DateTime>("SentAt")
                         .HasColumnType("datetime(6)");
@@ -3184,7 +3318,7 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<DateTime>("NextInvoiceDate")
                         .HasColumnType("datetime(6)");
 
-                    b.Property<int>("PaymentMethod")
+                    b.Property<int>("PaymentMethods")
                         .HasColumnType("int");
 
                     b.Property<string>("ServiceAddress")
@@ -3382,6 +3516,9 @@ namespace DreamCleaningBackend.Migrations
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
+
+                    b.Property<string>("DefaultInvoiceRecipientsJson")
+                        .HasColumnType("LONGTEXT");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
@@ -8595,6 +8732,49 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("Order");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.CleanerPayout", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.Cleaner", "Cleaner")
+                        .WithMany()
+                        .HasForeignKey("CleanerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "RevertedByUser")
+                        .WithMany()
+                        .HasForeignKey("RevertedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Cleaner");
+
+                    b.Navigation("CreatedByUser");
+
+                    b.Navigation("RevertedByUser");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.CleanerPayoutLine", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.CleanerPayout", "Payout")
+                        .WithMany("Lines")
+                        .HasForeignKey("CleanerPayoutId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DreamCleaningBackend.Models.OrderCleaner", "OrderCleaner")
+                        .WithMany()
+                        .HasForeignKey("OrderCleanerId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("OrderCleaner");
+
+                    b.Navigation("Payout");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.CleanerVacation", b =>
                 {
                     b.HasOne("DreamCleaningBackend.Models.Cleaner", "Cleaner")
@@ -9878,6 +10058,11 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("Notes");
 
                     b.Navigation("Vacations");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.CleanerPayout", b =>
+                {
+                    b.Navigation("Lines");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.Commercial.CommercialInvoice", b =>

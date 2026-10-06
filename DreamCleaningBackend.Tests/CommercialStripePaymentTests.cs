@@ -525,10 +525,15 @@ namespace DreamCleaningBackend.Tests
             Assert.False(options.ManualAchAvailable);
         }
 
-        // ── Card is off unless switched on ────────────────────────────────────────────────────
+        // ── The INVOICE decides what is offered (2026-10) ─────────────────────────────────────
 
+        /// <summary>
+        /// THE BUG THIS REPLACED: an invoice saved with "Card" offered no card, because only the
+        /// global Billing Settings switch was ever read. Now the invoice's own set is the whole
+        /// answer, and the switch is only the default a new invoice starts from.
+        /// </summary>
         [Fact]
-        public async Task CardIsHiddenUntilTheOwnerEnablesIt()
+        public async Task CardIsOfferedExactlyWhenTheInvoiceOffersIt_WhateverTheGlobalSwitchSays()
         {
             using var context = NewContext();
             var invoice = await SeedInvoiceAsync(context);
@@ -536,21 +541,68 @@ namespace DreamCleaningBackend.Tests
             var billing = new BillingSettingsService(context);
             var settings = await billing.GetOrCreateAsync();
 
-            // The shipped default: ACH on, card off.
-            Assert.True(settings.StripeAchEnabled);
+            // The shipped default: card off globally.
             Assert.False(settings.StripeCardEnabled);
-            Assert.True(settings.ManualAchEnabled);
 
             var invoices = NewInvoiceService(context, billing);
 
-            var before = await invoices.BuildPaymentOptionsAsync(invoice, settings);
-            Assert.False(before.StripeCardAvailable);
+            invoice.PaymentMethods = InvoicePaymentMethods.OnlineBank;
+            Assert.False((await invoices.BuildPaymentOptionsAsync(invoice, settings)).StripeCardAvailable);
 
+            invoice.PaymentMethods = InvoicePaymentMethods.OnlineBank | InvoicePaymentMethods.Card;
+            var withCard = await invoices.BuildPaymentOptionsAsync(invoice, settings);
+            Assert.True(withCard.StripeCardAvailable);
+            Assert.True(withCard.StripeAchAvailable);
+
+            // And the other way round: the switch on does not put card on an invoice without it.
             settings.StripeCardEnabled = true;
-            await context.SaveChangesAsync();
+            invoice.PaymentMethods = InvoicePaymentMethods.ManualBankTransfer;
+            var withoutCard = await invoices.BuildPaymentOptionsAsync(invoice, settings);
+            Assert.False(withoutCard.StripeCardAvailable);
+            Assert.False(withoutCard.StripeAchAvailable);
+        }
 
-            var after = await invoices.BuildPaymentOptionsAsync(invoice, settings);
-            Assert.True(after.StripeCardAvailable);
+        /// <summary>
+        /// The ACH fee belongs to online bank payment alone: an invoice that does not offer it
+        /// quotes no fee anywhere, and card never carries one.
+        /// </summary>
+        [Fact]
+        public async Task TheAchFeeIsQuotedOnlyWhenOnlineBankPaymentIsOffered()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var billing = new BillingSettingsService(context);
+            var settings = await billing.GetOrCreateAsync();
+            var invoices = NewInvoiceService(context, billing);
+
+            invoice.PaymentMethods = InvoicePaymentMethods.OnlineBank | InvoicePaymentMethods.Card;
+            var withBank = await invoices.BuildPaymentOptionsAsync(invoice, settings);
+            Assert.Equal(5.00m, withBank.AchProcessingFee);          // 0.8% of 925.43, capped at $5
+            Assert.Equal(930.43m, withBank.AchTotalWithFee);
+
+            invoice.PaymentMethods = InvoicePaymentMethods.Card;
+            var cardOnly = await invoices.BuildPaymentOptionsAsync(invoice, settings);
+            Assert.Equal(0m, cardOnly.AchProcessingFee);
+            Assert.Equal(0m, AchProcessingFeeCalculator.Resolve(925.43m, settings, InvoicePaymentRecordMethod.Card));
+        }
+
+        [Fact]
+        public async Task OtherIsShownWithItsFixedWordingAndNeedsNoBankDetails()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var billing = new BillingSettingsService(context);
+            var settings = await billing.GetOrCreateAsync();
+            var invoices = NewInvoiceService(context, billing);
+
+            invoice.PaymentMethods = InvoicePaymentMethods.Other;
+            var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);
+
+            Assert.True(options.OtherArrangementAvailable);
+            Assert.Equal(InvoiceService.OtherArrangementNote, options.OtherArrangementNote);
+            Assert.False(options.StripeAchAvailable);
+            Assert.False(options.StripeCardAvailable);
+            Assert.False(options.ManualAchAvailable);
         }
 
         // ── Manual ACH completeness ───────────────────────────────────────────────────────────
@@ -576,7 +628,6 @@ namespace DreamCleaningBackend.Tests
             await context.SaveChangesAsync();
 
             Assert.False(BillingSettingsService.IsManualAchComplete(settings));
-            Assert.False(BillingSettingsService.CanOfferManualAch(settings));
 
             var missing = BillingSettingsService.MissingManualAchFields(settings);
             Assert.Contains("ACH routing number", missing);
@@ -610,6 +661,10 @@ namespace DreamCleaningBackend.Tests
             var invoices = NewInvoiceService(context, billing);
             var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);
             Assert.True(options.ManualAchAvailable);
+
+            // Complete details are necessary, not sufficient: the invoice has to offer it.
+            invoice.PaymentMethods = InvoicePaymentMethods.OnlineBank;
+            Assert.False((await invoices.BuildPaymentOptionsAsync(invoice, settings)).ManualAchAvailable);
         }
 
         /// <summary>
@@ -687,6 +742,84 @@ namespace DreamCleaningBackend.Tests
             var reloadedAttempt = await context.CommercialInvoicePaymentAttempts.FirstAsync();
             Assert.Equal(InvoicePaymentAttemptStatus.Processing, reloadedAttempt.Status);
             Assert.Equal("pi_test_auth", reloadedAttempt.StripePaymentIntentId);
+        }
+
+        // ── Card through the same pipeline (2026-10) ──────────────────────────────────────────
+
+        /// <summary>
+        /// Checkout reports every declined card while the customer is still on its page and free
+        /// to try another card in the SAME session. That is not the end of the attempt: marking it
+        /// Failed told the customer their payment failed while it could still succeed, and left
+        /// the open session out of the "expire before opening another" sweep.
+        /// </summary>
+        [Fact]
+        public async Task ADeclinedCardOnStripesPageLeavesTheSessionOpen_AndALaterSuccessSettles()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var attempt = await SeedAttemptAsync(
+                context, invoice, "pi_test_card", 925.43m, InvoicePaymentAttemptStatus.CheckoutOpen);
+            attempt.PaymentMethod = InvoicePaymentRecordMethod.Card;
+            await context.SaveChangesAsync();
+
+            var service = NewService(context);
+            await service.HandleFailedAsync("pi_test_card", "card_declined", "Your card was declined.", Metadata(invoice));
+
+            var afterDecline = await context.CommercialInvoicePaymentAttempts.SingleAsync();
+            Assert.Equal(InvoicePaymentAttemptStatus.CheckoutOpen, afterDecline.Status);
+            Assert.Equal("card_declined", afterDecline.FailureCode);
+            Assert.Contains(await context.CommercialInvoiceActivityLogs.ToListAsync(), a => a.Action == "stripe_card_declined");
+
+            var result = await service.RecordSucceededAsync("pi_test_card", 92543, "usd", "ch_card", Metadata(invoice), "Visa ••••4242");
+            Assert.True(result.InvoiceBecamePaid);
+
+            var payment = await context.CommercialInvoicePayments.SingleAsync();
+            Assert.Equal(InvoicePaymentRecordMethod.Card, payment.PaymentMethod);
+            // Card carries no processing fee — the same as card on a regular invoice.
+            Assert.Equal(0m, payment.ProcessingFee);
+            Assert.Equal(925.43m, payment.Amount);
+        }
+
+        /// <summary>
+        /// A card payment can settle BEFORE checkout.session.completed arrives. The late event must
+        /// neither drag the attempt back to Processing nor add a line saying the customer is
+        /// "waiting for the funds to settle" — which is untrue of a card that already paid.
+        /// </summary>
+        [Fact]
+        public async Task ALateCheckoutCompletionForASettledCardPaymentChangesAndSaysNothing()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var attempt = await SeedAttemptAsync(
+                context, invoice, "pi_test_card_fast", 925.43m, InvoicePaymentAttemptStatus.Succeeded);
+            attempt.PaymentMethod = InvoicePaymentRecordMethod.Card;
+            await context.SaveChangesAsync();
+
+            await NewService(context).HandleCheckoutCompletedAsync(
+                attempt.StripeCheckoutSessionId!, "pi_test_card_fast", Metadata(invoice));
+
+            Assert.Equal(InvoicePaymentAttemptStatus.Succeeded,
+                (await context.CommercialInvoicePaymentAttempts.SingleAsync()).Status);
+            Assert.DoesNotContain(await context.CommercialInvoiceActivityLogs.ToListAsync(),
+                a => a.Action is "stripe_ach_processing" or "stripe_card_processing");
+        }
+
+        [Fact]
+        public async Task ACardCheckoutCompletionIsDescribedAsACardPayment()
+        {
+            using var context = NewContext();
+            var invoice = await SeedInvoiceAsync(context);
+            var attempt = await SeedAttemptAsync(
+                context, invoice, "pi_test_card_slow", 925.43m, InvoicePaymentAttemptStatus.CheckoutOpen);
+            attempt.PaymentMethod = InvoicePaymentRecordMethod.Card;
+            await context.SaveChangesAsync();
+
+            await NewService(context).HandleCheckoutCompletedAsync(
+                attempt.StripeCheckoutSessionId!, "pi_test_card_slow", Metadata(invoice));
+
+            var entry = Assert.Single(await context.CommercialInvoiceActivityLogs.ToListAsync());
+            Assert.Equal("stripe_card_processing", entry.Action);
+            Assert.DoesNotContain("bank", entry.Description, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>An expired session frees the invoice for another attempt.</summary>
@@ -816,11 +949,13 @@ namespace DreamCleaningBackend.Tests
                 context, invoice, "pi_test_abandoned", 925.43m,
                 InvoicePaymentAttemptStatus.CheckoutOpen);
 
+            // The invoice offers both online methods; that, not the global switches, is what
+            // puts the two buttons on the page.
+            invoice.PaymentMethods = InvoicePaymentMethods.OnlineBank | InvoicePaymentMethods.Card;
+            await context.SaveChangesAsync();
+
             var billing = new BillingSettingsService(context);
             var settings = await billing.GetOrCreateAsync();
-            settings.StripeAchEnabled = true;
-            settings.StripeCardEnabled = true;
-            await context.SaveChangesAsync();
 
             var invoices = NewInvoiceService(context, billing);
             var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);

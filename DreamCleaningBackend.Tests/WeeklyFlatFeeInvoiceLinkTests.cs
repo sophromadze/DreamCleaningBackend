@@ -75,6 +75,7 @@ public class WeeklyFlatFeeInvoiceLinkTests
         public SaveInvoiceDto Draft(IEnumerable<int> orderIds, InvoiceTaxType tax = InvoiceTaxType.Added, int? contractId = WeeklyContract) => new()
         {
             ContractClientId = 1, ContractId = contractId, TaxType = tax, TaxRate = 8.875m,
+            PaymentMethods = InvoicePaymentMethods.OnlineBank, Recipients = new() { "billing@example.com" },
             OrderIds = orderIds.ToList(),
             Items = new() { new() { Description = "placeholder", Quantity = 1, UnitPrice = 1 } }
         };

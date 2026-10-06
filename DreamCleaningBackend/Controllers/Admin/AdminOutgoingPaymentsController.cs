@@ -3,6 +3,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -22,6 +23,7 @@ namespace DreamCleaningBackend.Controllers
     [Route("api/admin/outgoing-payments")]
     [ApiController]
     [Authorize(Roles = "SuperAdmin")]
+    [CleanerPayoutConflictFilter]
     public class AdminOutgoingPaymentsController : AdminControllerBase
     {
         private readonly IOutgoingPaymentService _service;
@@ -361,11 +363,14 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        /// <summary>Undoes a payout marking — for the case where it was ticked by mistake.</summary>
+        /// <summary>
+        /// Undoes a payout marking — for the case where it was ticked by mistake. The payout lines
+        /// behind it are REVERTED, not deleted, so the Paid cleaners history keeps the record.
+        /// </summary>
         [HttpPost("order/{orderId}/cleaner/{orderCleanerId}/unpay")]
         public async Task<ActionResult<OutgoingPaymentOrderDto>> UndoCleanerPayment(int orderId, int orderCleanerId)
         {
-            var order = await _service.UndoCleanerPaymentAsync(orderId, orderCleanerId);
+            var order = await _service.UndoCleanerPaymentAsync(orderId, orderCleanerId, GetCurrentUserId());
 
             if (order == null)
                 return NotFound(new { message = "That cleaner is not assigned to that finished order." });
@@ -375,6 +380,100 @@ namespace DreamCleaningBackend.Controllers
                 orderId, orderCleanerId, GetCurrentUserId());
 
             return Ok(order);
+        }
+
+        // ── Unpaid cleaners / Paid cleaners (2026-10) ─────────────────────────────────
+        //
+        // The same ledger as the per-order endpoints above, read per CLEANER: who is owed across
+        // every finished job, paying several of them at once, and the payout history.
+
+        /// <summary>Every cleaner owed money right now, across all finished orders, with the lines.</summary>
+        [HttpGet("cleaners/unpaid")]
+        public async Task<ActionResult<UnpaidCleanersDto>> GetUnpaidCleaners()
+            => Ok(await _service.GetUnpaidCleanersAsync());
+
+        /// <summary>
+        /// Pays the selected cleaners for exactly the lines and amounts the confirmation showed —
+        /// one payout per cleaner. 409 when any of them moved in the meantime (nothing is paid);
+        /// a repeat of the same request returns the payouts it already made.
+        /// </summary>
+        [HttpPost("cleaners/pay")]
+        public async Task<ActionResult<PayCleanersResultDto>> PayCleaners([FromBody] PayCleanersDto dto)
+        {
+            try
+            {
+                var result = await _service.PayCleanersAsync(dto, GetCurrentUserId());
+
+                _logger.LogInformation(
+                    "Cleaner payouts recorded: {Count} cleaner(s), {Total} in total, payouts {PayoutIds}, by user {UserId} (repeat: {Repeat})",
+                    result.CleanerCount, result.TotalPaid, string.Join(",", result.PayoutIds), GetCurrentUserId(), result.AlreadyRecorded);
+
+                return Ok(result);
+            }
+            catch (CleanerPayoutConflictException ex)
+            {
+                return Conflict(new { message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>Payout history, newest first, filterable by the day paid and by cleaner.</summary>
+        [HttpGet("payouts")]
+        public async Task<ActionResult<CleanerPayoutHistoryDto>> GetPayouts(
+            [FromQuery] DateTime? from = null,
+            [FromQuery] DateTime? to = null,
+            [FromQuery] int? cleanerId = null,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20)
+            => Ok(await _service.GetPayoutHistoryAsync(new CleanerPayoutHistoryQuery
+            {
+                From = from,
+                To = to,
+                CleanerId = cleanerId,
+                Page = page,
+                PageSize = pageSize
+            }));
+
+        /// <summary>
+        /// Reverts a whole payout: its amounts move back to unpaid and the record stays in the
+        /// history, marked reverted, with who did it and why. SuperAdmin-only like the whole page,
+        /// and audit-logged per order line.
+        /// </summary>
+        [HttpPost("payouts/{payoutId:int}/revert")]
+        public async Task<ActionResult<CleanerPayoutDto>> RevertPayout(int payoutId, [FromBody] RevertCleanerPayoutDto dto)
+        {
+            try
+            {
+                var payout = await _service.RevertPayoutAsync(payoutId, dto?.Reason ?? string.Empty, GetCurrentUserId());
+                if (payout == null) return NotFound(new { message = "That payout was not found." });
+
+                _logger.LogInformation(
+                    "Cleaner payout {PayoutId} REVERTED by user {UserId}", payoutId, GetCurrentUserId());
+
+                return Ok(payout);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+    }
+
+    /// <summary>
+    /// Any payout write on this controller that loses a race for the same orders — the order lock
+    /// refused it, or the lines it was paying moved — answers 409 with the reason, never a 500.
+    /// Nothing was written in that case, so the page refreshes and the admin decides again.
+    /// </summary>
+    public sealed class CleanerPayoutConflictFilterAttribute : ExceptionFilterAttribute
+    {
+        public override void OnException(ExceptionContext context)
+        {
+            if (context.Exception is not CleanerPayoutConflictException conflict) return;
+            context.Result = new ConflictObjectResult(new { message = conflict.Message });
+            context.ExceptionHandled = true;
         }
     }
 }

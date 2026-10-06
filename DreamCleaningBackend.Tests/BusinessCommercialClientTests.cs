@@ -450,6 +450,7 @@ namespace DreamCleaningBackend.Tests
                 ContractClientId = client.Id,
                 ContractId = null,
                 InvoiceDate = new DateTime(2026, 9, 8),
+                PaymentMethods = InvoicePaymentMethods.OnlineBank, Recipients = new() { "billing@example.com" },
                 Items = { new SaveInvoiceItemDto { Description = "September", Quantity = 1m, UnitPrice = 500m } }
             }, AdminId);
 

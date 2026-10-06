@@ -196,6 +196,16 @@ namespace DreamCleaningBackend.Models.Contracts
         [StringLength(255)]
         public string? StripeCustomerId { get; set; }
 
+        /// <summary>
+        /// The addresses a NEW invoice for this client is pre-addressed to, as a JSON array
+        /// (2026-10). Written only when an admin ticks "Save as default recipients for this
+        /// client" on the invoice form. Null means "never saved", and the form then falls back to
+        /// the billing contact's email (or the notice email) exactly as before — see
+        /// <c>InvoiceRecipientList.DefaultsFor</c>. Never applied to an invoice that already exists.
+        /// </summary>
+        [Column(TypeName = "LONGTEXT")]
+        public string? DefaultInvoiceRecipientsJson { get; set; }
+
         public bool IsActive { get; set; } = true;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

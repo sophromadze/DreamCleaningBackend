@@ -81,15 +81,26 @@ namespace DreamCleaningBackend.Services.Commercial
             // Only advance a still-open attempt. A card payment can deliver
             // payment_intent.succeeded BEFORE checkout.session.completed, and this event must not
             // drag a settled attempt back into Processing.
-            if (attempt.Status == InvoicePaymentAttemptStatus.CheckoutOpen)
+            var advanced = attempt.Status == InvoicePaymentAttemptStatus.CheckoutOpen;
+            if (advanced)
                 attempt.Status = InvoicePaymentAttemptStatus.Processing;
 
             attempt.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
-            await _invoices.LogActivityAsync(attempt.CommercialInvoiceId, "stripe_ach_processing",
-                "Customer authorized the bank payment. Waiting for the funds to settle.",
-                null, "Stripe");
+            // Said only when something actually moved — a card payment that already settled has
+            // its own "Stripe confirmed" entry, and a second line claiming it is waiting would be
+            // false. The wording follows the method: a card has no funds days away from settling.
+            if (!advanced) return;
+
+            if (attempt.PaymentMethod == InvoicePaymentRecordMethod.Card)
+                await _invoices.LogActivityAsync(attempt.CommercialInvoiceId, "stripe_card_processing",
+                    "Customer completed the card payment. Waiting for Stripe to confirm it.",
+                    null, "Stripe");
+            else
+                await _invoices.LogActivityAsync(attempt.CommercialInvoiceId, "stripe_ach_processing",
+                    "Customer authorized the bank payment. Waiting for the funds to settle.",
+                    null, "Stripe");
         }
 
         // ── payment_intent.processing ─────────────────────────────────────────────────────────
@@ -382,6 +393,29 @@ namespace DreamCleaningBackend.Services.Commercial
             var attempt = await FindAttemptAsync(null, paymentIntentId, metadata);
             if (attempt == null) return;
 
+            // A DECLINED CARD ON STRIPE'S PAGE IS NOT THE END OF THE ATTEMPT. Checkout reports
+            // every decline as payment_intent.payment_failed while the customer is still on the
+            // page and free to try another card in the SAME session. Marking it Failed was wrong
+            // twice over: the page would say the payment failed while it could still succeed, and
+            // a Failed attempt is not expired when a new checkout opens — so the old tab could
+            // still be completed alongside a new one. The session stays open; its expiry, a new
+            // checkout or the payment succeeding is what closes it.
+            if (attempt.PaymentMethod == InvoicePaymentRecordMethod.Card
+                && attempt.Status == InvoicePaymentAttemptStatus.CheckoutOpen)
+            {
+                attempt.FailureCode = Truncate(failureCode, 100);
+                attempt.FailureMessage = Truncate(failureMessage, 500);
+                attempt.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync();
+
+                await _invoices.LogActivityAsync(attempt.CommercialInvoiceId, "stripe_card_declined",
+                    "A card was declined on the payment page"
+                    + (string.IsNullOrWhiteSpace(failureCode) ? "." : $" ({failureCode}).")
+                    + " The customer can try another card.",
+                    null, "Stripe");
+                return;
+            }
+
             attempt.Status = InvoicePaymentAttemptStatus.Failed;
             attempt.FailureCode = Truncate(failureCode, 100);
             // Stored for admins only. The customer sees fixed wording — a processor's internal
@@ -392,10 +426,12 @@ namespace DreamCleaningBackend.Services.Commercial
 
             await _context.SaveChangesAsync();
 
-            await _invoices.LogActivityAsync(attempt.CommercialInvoiceId, "stripe_ach_failed",
-                $"The customer's bank payment of {attempt.Amount:C} was unsuccessful"
+            await _invoices.LogActivityAsync(attempt.CommercialInvoiceId,
+                attempt.PaymentMethod == InvoicePaymentRecordMethod.Card ? "stripe_card_failed" : "stripe_ach_failed",
+                $"The customer's {InvoiceCheckoutService.MethodLabel(attempt.PaymentMethod)} payment of "
+                + $"{attempt.Amount:C} was unsuccessful"
                 + (string.IsNullOrWhiteSpace(failureCode) ? "." : $" ({failureCode}).")
-                + " They can try again or pay by manual transfer.",
+                + " They can try again or use another payment method.",
                 null, "Stripe");
         }
 

@@ -190,8 +190,13 @@ namespace DreamCleaningBackend.Services.Commercial
 
                 // Void invoices print no payment section at all: they are not collectable, and
                 // inviting a payment nobody can apply is worse than saying nothing.
+                // Every route the invoice offers counts — a card-only invoice used to print no
+                // payment section at all, because only bank payment and manual transfer were tested.
                 if (invoice.Status != InvoiceStatus.Void
-                    && (invoice.PaymentInstructions != null || invoice.PaymentOptions.StripeAchAvailable))
+                    && (invoice.PaymentInstructions != null
+                        || invoice.PaymentOptions.StripeAchAvailable
+                        || invoice.PaymentOptions.StripeCardAvailable
+                        || invoice.PaymentOptions.OtherArrangementAvailable))
                 {
                     column.Item().PaddingTop(16).Element(e => ComposePaymentInstructions(e, invoice, publicUrl));
                 }
@@ -391,11 +396,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 {
                     col.Item().PaddingTop(5).Text("Online payment").FontSize(10f).SemiBold();
 
-                    col.Item().PaddingTop(2).Text(
-                            invoice.PaymentOptions.StripeAchAvailable
-                                ? "Pay securely from your bank account using the online invoice link. "
-                                  + "Open the invoice and choose \"Pay from Bank\"."
-                                : "Pay securely using the online invoice link.")
+                    col.Item().PaddingTop(2).Text(DescribeOnlineRoutes(invoice.PaymentOptions))
                         .FontSize(8.5f);
 
                     // A printed PDF has no clickable button, so the URL is spelled out — it is the
@@ -452,6 +453,19 @@ namespace DreamCleaningBackend.Services.Commercial
                         col.Item().Text(pay.WireInstructions!).FontSize(8f).FontColor(MutedInk);
                     }
                 }
+
+                // ── A cheque or another arrangement ──
+                if (invoice.PaymentOptions.OtherArrangementAvailable)
+                {
+                    var first = !online && pay == null;
+                    if (!first)
+                        col.Item().PaddingTop(9).Height(0.5f).Background(RowRule);
+
+                    col.Item().PaddingTop(first ? 5 : 9)
+                        .Text("Check or other arrangement").FontSize(10f).SemiBold();
+                    col.Item().PaddingTop(2)
+                        .Text(invoice.PaymentOptions.OtherArrangementNote ?? string.Empty).FontSize(8.5f);
+                }
             });
 
             static void Field(ColumnDescriptor col, string label, string? value)
@@ -463,6 +477,33 @@ namespace DreamCleaningBackend.Services.Commercial
                     c.Item().Text(value!).FontSize(9f).SemiBold();
                 });
             }
+        }
+
+        /// <summary>
+        /// The online line, naming the buttons the invoice page will actually show and the one
+        /// fee that applies: the ACH processing fee on Pay from Bank. Card carries none.
+        /// </summary>
+        private static string DescribeOnlineRoutes(PublicPaymentOptionsDto options)
+        {
+            var ach = options.StripeAchAvailable;
+            var card = options.StripeCardAvailable;
+
+            var text = ach && card
+                ? "Pay securely online using the invoice link: choose \"Pay from Bank\" to pay from your "
+                  + "bank account, or \"Pay by Card\"."
+                : ach
+                    ? "Pay securely from your bank account using the online invoice link. "
+                      + "Open the invoice and choose \"Pay from Bank\"."
+                    : "Pay securely by card using the online invoice link. Open the invoice and choose \"Pay by Card\".";
+
+            if (ach && options.AchProcessingFee > 0m)
+                text += $" Bank payments made online carry an {options.AchProcessingFeeLabel} of "
+                        + $"{options.AchProcessingFee.ToString("C2", System.Globalization.CultureInfo.GetCultureInfo("en-US"))}, "
+                        + "shown before you confirm.";
+            if (card)
+                text += " Card payments carry no processing fee.";
+
+            return text;
         }
 
         private static void ComposeFooter(IContainer container, PublicInvoiceDto invoice)

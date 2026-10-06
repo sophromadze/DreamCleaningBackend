@@ -941,14 +941,16 @@ namespace DreamCleaningBackend.Services.Commercial
 
             var clientIds = invoices.Select(i => i.ContractClientId).Distinct().ToList();
 
-            // The billing contact's address wins over the client's notice address — the same
-            // precedence InvoiceService and the Clients screen use, so the panel names the address
-            // the mail would actually go to rather than a second-best guess.
+            // Only consulted for an invoice that predates per-invoice recipients: the billing
+            // contact's address then wins over the client's notice address, in the same order
+            // InvoiceService.ResolveBillingContactAsync resolves by (primary-billing flag first).
             var contacts = await _context.ContractContacts
                 .Where(c => c.ContractClientId != null
                             && clientIds.Contains(c.ContractClientId!.Value)
                             && c.IsActive)
-                .OrderBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1).ThenBy(c => c.Id)
+                .OrderBy(c => c.IsPrimaryBillingContact ? 0 : 1)
+                .ThenBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1)
+                .ThenBy(c => c.Id)
                 .AsNoTracking()
                 .ToListAsync();
 
@@ -984,13 +986,17 @@ namespace DreamCleaningBackend.Services.Commercial
                     PaidAt = invoice.PaidAt,
                     CanSend = InvoiceStatusPolicy.CanSend(invoice.Status),
                     CanSendReminder = InvoiceStatusPolicy.CanSendReminder(invoice.Status),
-                    BillingEmail = contact?.Email ?? invoice.Client?.NoticeEmail,
+                    // Who the mail actually goes to: the invoice's own recipient list.
+                    BillingEmail = DescribeRecipients(InvoiceService.ResolveRecipients(invoice, contact).Recipients),
                     CoveredOrderCount = links.Count(l => l.CommercialInvoiceId == invoice.Id),
                     AllocatedAmount = mine?.AllocatedAmount,
                     AllocationIsProposal = mine == null ? null : mine.CommittedAt == null
                 };
             }).ToList();
         }
+
+        private static string? DescribeRecipients(List<string> recipients) =>
+            recipients.Count == 0 ? null : Helpers.Commercial.InvoiceRecipientList.Describe(recipients);
 
         // ── Detail projection ─────────────────────────────────────────────────────────────────
 

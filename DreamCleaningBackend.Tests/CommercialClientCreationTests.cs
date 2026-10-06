@@ -275,7 +275,7 @@ namespace DreamCleaningBackend.Tests
             InvoiceDate = DateTime.UtcNow.Date,
             DueTerms = InvoiceDueTerms.Net15,
             TaxType = InvoiceTaxType.Exempt,
-            PaymentMethod = InvoicePaymentMethod.AchBankTransfer,
+            PaymentMethods = InvoicePaymentMethods.OnlineBank, Recipients = new() { "billing@example.com" },
             Items =
             {
                 new SaveInvoiceItemDto

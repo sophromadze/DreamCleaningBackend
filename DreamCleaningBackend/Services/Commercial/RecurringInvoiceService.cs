@@ -168,6 +168,10 @@ namespace DreamCleaningBackend.Services.Commercial
             if (previous != null) CloneFrom(previous, invoice);
             else ApplyContractPricing(snapshot, settings, invoice, result);
 
+            // Addressed like a form-made invoice: the client's saved default list wins, then the
+            // list the previous invoice went to, then the billing contact.
+            invoice.RecipientEmailsJson = await ResolveGeneratedRecipientsAsync(contract.ContractClient, previous);
+
             InvoiceService.RecomputeTotalsFromRows(invoice);
 
             // Allocated last, and retried on the unique index like every other create path - the
@@ -373,13 +377,28 @@ namespace DreamCleaningBackend.Services.Commercial
         /// recorded the rate it was issued under, and re-reading today's default would silently
         /// re-rate a recurring bill the client has been paying for a year.
         /// </summary>
+        private async Task<string?> ResolveGeneratedRecipientsAsync(
+            Models.Contracts.ContractClient? client, CommercialInvoice? previous)
+        {
+            var saved = InvoiceRecipientList.Parse(client?.DefaultInvoiceRecipientsJson);
+            if (saved.Count > 0) return InvoiceRecipientList.Serialize(saved);
+
+            var previousList = InvoiceRecipientList.Parse(previous?.RecipientEmailsJson);
+            if (previousList.Count > 0) return InvoiceRecipientList.Serialize(previousList);
+
+            if (client == null) return null;
+            var contact = await InvoiceService.BillingContactQuery(_context, client.Id).FirstOrDefaultAsync();
+            return InvoiceRecipientList.Serialize(
+                InvoiceRecipientList.DefaultsFor(null, contact?.Email, client.NoticeEmail));
+        }
+
         private static void CloneFrom(CommercialInvoice source, CommercialInvoice target)
         {
             target.DiscountType = source.DiscountType;
             target.DiscountValue = source.DiscountValue;
             target.TaxType = source.TaxType;
             target.TaxRate = source.TaxRate;
-            target.PaymentMethod = source.PaymentMethod;
+            target.PaymentMethods = source.PaymentMethods;
             target.CustomerNote = source.CustomerNote;
             target.PoNumber = source.PoNumber;
             target.ClientReference = source.ClientReference;
@@ -427,7 +446,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 ? pricing.SalesTaxRatePercent
                 : settings.DefaultTaxRate;
             invoice.DiscountType = InvoiceDiscountType.None;
-            invoice.PaymentMethod = InvoicePaymentMethod.AchBankTransfer;
+            invoice.PaymentMethods = InvoicePaymentMethodRules.DefaultsForGeneratedInvoice(settings);
             invoice.CustomerNote = settings.DefaultCustomerNote;
 
             // Tax-inclusive lines carry the total; tax-added lines carry the pre-tax fee. Either

@@ -99,19 +99,18 @@ namespace DreamCleaningBackend.Services.Commercial
             if (!string.Equals(invoice.Currency, "USD", StringComparison.OrdinalIgnoreCase))
                 throw new InvoiceWorkflowException("Online payment is only available for USD invoices.");
 
-            // ── The method must actually be switched on ──
-            var methodEnabled = method switch
-            {
-                InvoicePaymentRecordMethod.AchBankTransfer => settings.StripeAchEnabled,
-                InvoicePaymentRecordMethod.Card => settings.StripeCardEnabled,
-                _ => false
-            };
-
-            // Enforced HERE, not only in the UI. Hiding a button is presentation; a hand-rolled
-            // POST would otherwise still open a card session on an ACH-only invoice.
-            if (!methodEnabled)
+            // ── The INVOICE must offer the method ──
+            //
+            // The invoice's own set is the authority (2026-10); the Billing Settings toggles only
+            // pre-tick new invoices. Enforced HERE, not only in the UI: hiding a button is
+            // presentation, and a hand-rolled POST would otherwise still open a card session on an
+            // invoice that offers bank payment only.
+            var required = InvoicePaymentMethodRules.OnlineMethodFor(method);
+            if (required == null || !InvoicePaymentMethodRules.Offers(invoice.PaymentMethods, required.Value))
                 throw new InvoiceCheckoutUnavailableException(
-                    "Online bank payment is temporarily unavailable. Please use the alternative payment method.");
+                    method == InvoicePaymentRecordMethod.Card
+                        ? "Card payment is not available for this invoice. Please use another payment method."
+                        : "Online bank payment is not available for this invoice. Please use another payment method.");
 
             if (method == InvoicePaymentRecordMethod.AchBankTransfer && invoice.BalanceDue > MaxAchAmount)
                 throw new InvoiceCheckoutUnavailableException(
@@ -190,7 +189,7 @@ namespace DreamCleaningBackend.Services.Commercial
                 if (string.IsNullOrWhiteSpace(session.Url))
                 {
                     throw new InvoiceCheckoutUnavailableException(
-                        "Online bank payment is temporarily unavailable. Please use the alternative payment method.");
+                        UnavailableMessage(method));
                 }
 
                 return (attempt, session.Url);
@@ -212,7 +211,7 @@ namespace DreamCleaningBackend.Services.Commercial
                     invoice.InvoiceNumber, ex.StripeError?.Code, ex.Message);
 
                 throw new InvoiceCheckoutUnavailableException(
-                    "Online bank payment is temporarily unavailable. Please use the alternative payment method.");
+                    UnavailableMessage(method));
             }
         }
 
@@ -314,9 +313,16 @@ namespace DreamCleaningBackend.Services.Commercial
             };
 
             if (!string.IsNullOrEmpty(customerId))
+            {
                 options.Customer = customerId;
-            else if (!string.IsNullOrWhiteSpace(invoice.Client?.NoticeEmail))
-                options.CustomerEmail = invoice.Client!.NoticeEmail;
+            }
+            else
+            {
+                // No Stripe Customer could be made: prefill the address the invoice itself is sent
+                // to, so Stripe's receipt (if the customer asks for one) goes where ours do.
+                var email = (await _invoices.ResolveRecipientsAsync(invoice)).FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(email)) options.CustomerEmail = email;
+            }
 
             var service = new SessionService();
             return await service.CreateAsync(options);
@@ -489,6 +495,15 @@ namespace DreamCleaningBackend.Services.Commercial
 
             await _context.SaveChangesAsync();
         }
+
+        /// <summary>
+        /// The calm "try another way" wording for a Stripe outage, naming the method the customer
+        /// actually chose — a card payer used to be told online BANK payment was unavailable.
+        /// </summary>
+        public static string UnavailableMessage(InvoicePaymentRecordMethod method) =>
+            method == InvoicePaymentRecordMethod.Card
+                ? "Card payment is temporarily unavailable. Please use another payment method."
+                : "Online bank payment is temporarily unavailable. Please use the alternative payment method.";
 
         public static string MethodLabel(InvoicePaymentRecordMethod method) => method switch
         {

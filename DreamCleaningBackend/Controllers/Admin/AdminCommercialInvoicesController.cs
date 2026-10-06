@@ -87,7 +87,7 @@ namespace DreamCleaningBackend.Controllers.Admin
             [FromQuery] string? search = null,
             [FromQuery] InvoiceStatus? status = null,
             [FromQuery] int? clientId = null,
-            [FromQuery] InvoicePaymentMethod? paymentMethod = null,
+            [FromQuery] InvoicePaymentMethods? paymentMethod = null,
             [FromQuery] DateTime? fromDate = null,
             [FromQuery] DateTime? toDate = null,
             [FromQuery] bool archived = false,
@@ -107,7 +107,12 @@ namespace DreamCleaningBackend.Controllers.Admin
 
             if (status.HasValue) query = query.Where(i => i.Status == status.Value);
             if (clientId is > 0) query = query.Where(i => i.ContractClientId == clientId.Value);
-            if (paymentMethod.HasValue) query = query.Where(i => i.PaymentMethod == paymentMethod.Value);
+            // "Offers this method" — an invoice offers a SET, so the filter is membership, not equality.
+            if (paymentMethod is { } method && method != InvoicePaymentMethods.None)
+            {
+                var bits = (int)method;
+                query = query.Where(i => ((int)i.PaymentMethods & bits) == bits);
+            }
             if (fromDate.HasValue) query = query.Where(i => i.InvoiceDate >= fromDate.Value.Date);
             if (toDate.HasValue) query = query.Where(i => i.InvoiceDate <= toDate.Value.Date);
 
@@ -124,6 +129,7 @@ namespace DreamCleaningBackend.Controllers.Admin
                     || (i.ServiceAddress != null && i.ServiceAddress.Contains(term))
                     || (i.Contract != null && i.Contract.ContractNumber.Contains(term))
                     || (i.PoNumber != null && i.PoNumber.Contains(term))
+                    || (i.RecipientEmailsJson != null && i.RecipientEmailsJson.Contains(term))
                     || _context.ContractContacts.Any(c =>
                         c.ContractClientId == i.ContractClientId
                         && ((c.FirstName + " " + c.LastName).Contains(term)
@@ -154,7 +160,7 @@ namespace DreamCleaningBackend.Controllers.Admin
                     AmountPaid = i.AmountPaid,
                     BalanceDue = i.BalanceDue,
                     Status = i.Status,
-                    PaymentMethod = i.PaymentMethod,
+                    PaymentMethods = i.PaymentMethods,
                     PaidAt = i.PaidAt,
                     LastSentAt = i.LastSentAt,
                     HasBeenSent = i.FirstSentAt != null,
@@ -282,22 +288,22 @@ namespace DreamCleaningBackend.Controllers.Admin
             // Doing it before the mail means the client's copy can never quote a price the
             // bookings do not carry; a failed send afterwards leaves an invoice that is correct
             // and simply has not gone out yet, which is the recoverable half of the pair.
+            //
+            // Who it goes to is settled BEFORE that commit for the same reason: a recipient list
+            // the send would refuse must not leave the prices committed on an invoice nobody got.
+            dto ??= new SendInvoiceDto();
+            var invoice = await _context.CommercialInvoices.Include(i => i.Client).FirstOrDefaultAsync(i => i.Id == id);
+            if (invoice == null) return NotFound(new { message = "Invoice not found." });
+
+            if (dto.Recipients != null)
+                InvoiceService.ValidateRecipients(dto.Recipients);
+            else if ((await _invoices.ResolveRecipientsAsync(invoice)).Count == 0)
+                return BadRequest(new { message = "This invoice has no recipients. Add at least one email address to send it to." });
+
             await _orderLinks.CommitAllocationsAsync(id, CurrentUserId);
 
-            var log = await _emails.SendInvoiceAsync(id, dto ?? new SendInvoiceDto(), CurrentUserId);
-
-            if (log.Status == InvoiceEmailStatus.Failed)
-            {
-                // 502, not 500: the invoice is fine, the mail transport is not, and the failure is
-                // already recorded in the invoice's email history for the admin to see.
-                return StatusCode(502, new
-                {
-                    message = "The invoice could not be emailed. " + (log.FailureReason ?? "Please try again."),
-                    invoice = await _invoices.GetDetailAsync(id)
-                });
-            }
-
-            return Ok(await _invoices.GetDetailAsync(id));
+            var outcome = await _emails.SendInvoiceAsync(id, dto, CurrentUserId);
+            return await RespondToSendAsync(id, outcome, "The invoice could not be emailed.", includeInvoiceOnFailure: true);
         }
 
         [HttpPost("{id:int}/reminder")]
@@ -305,30 +311,55 @@ namespace DreamCleaningBackend.Controllers.Admin
         public async Task<ActionResult<InvoiceDetailDto>> SendReminder(
             int id, [FromBody] SendInvoiceReminderDto dto)
         {
-            var log = await _emails.SendReminderAsync(id, dto ?? new SendInvoiceReminderDto(), CurrentUserId);
-
-            if (log.Status == InvoiceEmailStatus.Failed)
-                return StatusCode(502, new
-                {
-                    message = "The reminder could not be sent. " + (log.FailureReason ?? "Please try again.")
-                });
-
-            return Ok(await _invoices.GetDetailAsync(id));
+            var outcome = await _emails.SendReminderAsync(id, dto ?? new SendInvoiceReminderDto(), CurrentUserId);
+            return await RespondToSendAsync(id, outcome, "The reminder could not be sent.", includeInvoiceOnFailure: false);
         }
 
         [HttpPost("{id:int}/receipt")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult<InvoiceDetailDto>> SendReceipt(int id)
         {
-            var log = await _emails.SendPaymentReceiptAsync(id, CurrentUserId);
+            var outcome = await _emails.SendPaymentReceiptAsync(id, CurrentUserId);
+            return await RespondToSendAsync(id, outcome, "The receipt could not be sent.", includeInvoiceOnFailure: false);
+        }
 
-            if (log.Status == InvoiceEmailStatus.Failed)
-                return StatusCode(502, new
-                {
-                    message = "The receipt could not be sent. " + (log.FailureReason ?? "Please try again.")
-                });
-
+        /// <summary>
+        /// Replaces who the invoice is emailed to, without touching anything else — the detail
+        /// page's recipients editor. Allowed on any invoice that is not Void: amounts lock once an
+        /// invoice is paid, but a receipt still has to go somewhere.
+        /// </summary>
+        [HttpPut("{id:int}/recipients")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<InvoiceDetailDto>> UpdateRecipients(int id, [FromBody] SaveInvoiceRecipientsDto dto)
+        {
+            await _invoices.UpdateRecipientsAsync(id, dto?.Recipients, dto?.SaveAsClientDefault ?? false, CurrentUserId);
             return Ok(await _invoices.GetDetailAsync(id));
+        }
+
+        /// <summary>
+        /// The shared answer to a send that went to several addresses. Every address failing is a
+        /// 502 — the invoice is fine, the mail transport is not, and each failure is already in the
+        /// email history. SOME failing is a success that says who was missed, because the invoice
+        /// did reach the client and calling that an error would invite a duplicate resend.
+        /// </summary>
+        private async Task<ActionResult<InvoiceDetailDto>> RespondToSendAsync(
+            int id, InvoiceSendOutcome outcome, string allFailedMessage, bool includeInvoiceOnFailure)
+        {
+            if (outcome.AllFailed)
+            {
+                var message = $"{allFailedMessage} {outcome.DescribeFailures() ?? "Please try again."}";
+                return includeInvoiceOnFailure
+                    ? StatusCode(502, new { message, invoice = await _invoices.GetDetailAsync(id) })
+                    : StatusCode(502, new { message });
+            }
+
+            var detail = await _invoices.GetDetailAsync(id);
+            var failures = outcome.DescribeFailures();
+            if (failures != null && detail != null)
+                detail.ActionNotice =
+                    $"Sent to {InvoiceRecipientList.Describe(outcome.SentTo)}, but it could not be sent to {failures}.";
+
+            return Ok(detail);
         }
 
         /// <summary>
@@ -741,7 +772,12 @@ namespace DreamCleaningBackend.Controllers.Admin
 
             var contacts = await _context.ContractContacts
                 .Where(c => c.ContractClientId != null && clientIds.Contains(c.ContractClientId.Value) && c.IsActive)
-                .OrderBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1).ThenBy(c => c.Id)
+                // The SAME order InvoiceService.ResolveBillingContactAsync resolves by — the
+                // primary-billing flag first. Without it this screen could name one contact while
+                // the invoice was addressed to another.
+                .OrderBy(c => c.IsPrimaryBillingContact ? 0 : 1)
+                .ThenBy(c => c.Role == ContractContactRole.ClientSigner ? 0 : 1)
+                .ThenBy(c => c.Id)
                 .ToListAsync();
 
             // Hidden contracts are excluded: a deleted agreement must not be offered as something
@@ -773,6 +809,10 @@ namespace DreamCleaningBackend.Controllers.Admin
                     BillingEmail = contact?.Email ?? client.NoticeEmail,
                     BillingPhone = contact?.Phone ?? client.Phone,
                     BillingAddress = InvoiceService.BuildClientAddress(client),
+                    DefaultInvoiceRecipients = InvoiceRecipientList.DefaultsFor(
+                        client.DefaultInvoiceRecipientsJson, contact?.Email, client.NoticeEmail),
+                    HasSavedDefaultRecipients =
+                        InvoiceRecipientList.Parse(client.DefaultInvoiceRecipientsJson).Count > 0,
 
                     IsActive = client.IsActive,
                     SourceUserId = client.SourceUserId,

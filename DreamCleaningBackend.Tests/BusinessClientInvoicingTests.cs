@@ -80,7 +80,8 @@ public class BusinessClientInvoicingTests
             {
                 ContractClientId = 1,
                 TaxType = InvoiceTaxType.Included,
-                TaxRate = 8.875m
+                TaxRate = 8.875m,
+                PaymentMethods = InvoicePaymentMethods.OnlineBank, Recipients = new() { "billing@example.com" }
             }, 9);
 
         public void Dispose() => Db.Dispose();
