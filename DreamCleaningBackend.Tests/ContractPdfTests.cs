@@ -240,7 +240,7 @@ namespace DreamCleaningBackend.Tests
                 foreach (var page in doc.GetPages())
                 {
                     Assert.Contains("MASTER SERVICE AGREEMENT",
-                        string.Concat(page.Letters.Where(l => l.GlyphRectangle.Bottom > 740).Select(l => l.Value)));
+                        string.Concat(page.Letters.Where(l => l.BoundingBox.Bottom > 740).Select(l => l.Value)));
                 }
             }
 

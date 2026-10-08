@@ -34,11 +34,11 @@ namespace DreamCleaningBackend.Tests
             // trusted browser without being challenged.
             var (service, context) = NewService();
             context.TrustedDevices.AddRange(Device(1, userId: 7), Device(2, userId: 7), Device(3, userId: 7), Device(4, userId: 8));
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await service.RevokeAllTrustedDevicesExceptAsync(7, new[] { 2 });
 
-            var rows = await context.TrustedDevices.AsNoTracking().ToDictionaryAsync(d => d.Id);
+            var rows = await context.TrustedDevices.AsNoTracking().ToDictionaryAsync(d => d.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.NotNull(rows[1].RevokedAt);
             Assert.Null(rows[2].RevokedAt);   // the device making the request
             Assert.NotNull(rows[3].RevokedAt);
@@ -53,10 +53,10 @@ namespace DreamCleaningBackend.Tests
             // touch their row.
             var (service, context) = NewService();
             context.TrustedDevices.Add(Device(1, userId: 8));
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.False(await service.RevokeTrustedDeviceAsync(7, 1));
-            Assert.Null((await context.TrustedDevices.AsNoTracking().SingleAsync()).RevokedAt);
+            Assert.Null((await context.TrustedDevices.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).RevokedAt);
         }
 
         [Fact]
@@ -64,10 +64,10 @@ namespace DreamCleaningBackend.Tests
         {
             var (service, context) = NewService();
             context.TrustedDevices.Add(Device(1, userId: 7));
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.True(await service.RevokeTrustedDeviceAsync(7, 1));
-            Assert.NotNull((await context.TrustedDevices.AsNoTracking().SingleAsync()).RevokedAt);
+            Assert.NotNull((await context.TrustedDevices.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).RevokedAt);
         }
 
         // -- AuthController wiring -----------------------------------------------------------

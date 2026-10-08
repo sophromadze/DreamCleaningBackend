@@ -54,8 +54,8 @@ namespace DreamCleaningBackend.Tests
             var invoice = ReferenceNumberGenerator.NewInvoiceNumber(2026);
 
             Assert.NotEqual(contract[..3], invoice[..3]);
-            Assert.False(InvoiceFormat.IsMatch(contract));
-            Assert.False(ContractFormat.IsMatch(invoice));
+            Assert.DoesNotMatch(InvoiceFormat, contract);
+            Assert.DoesNotMatch(ContractFormat, invoice);
         }
 
         /// <summary>

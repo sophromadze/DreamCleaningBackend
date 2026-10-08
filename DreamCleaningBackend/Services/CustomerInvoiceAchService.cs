@@ -300,7 +300,7 @@ namespace DreamCleaningBackend.Services
             var options = new SessionCreateOptions
             {
                 Mode = "payment",
-                PaymentMethodTypes = new List<string> { "us_bank_account" },
+                AllowedPaymentMethodTypes = new List<string> { "us_bank_account" },
                 LineItems = lineItems,
                 // ?payment=processing is a hint for the page, never a claim: it re-reads the
                 // invoice from the server, and nothing is marked paid from a redirect.

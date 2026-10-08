@@ -25,7 +25,7 @@ namespace DreamCleaningBackend.Tests
     {
         private PrivateFileTestHost _host = null!;
 
-        public async Task InitializeAsync()
+        public async ValueTask InitializeAsync()
         {
             _host = await PrivateFileTestHost.StartAsync(
                 new[] { typeof(AdminGiftCardsController) },
@@ -33,7 +33,7 @@ namespace DreamCleaningBackend.Tests
                 (app, root) => PublicUploadStaticFiles.Use(app, root));
         }
 
-        public async Task DisposeAsync() => await _host.DisposeAsync();
+        public async ValueTask DisposeAsync() => await _host.DisposeAsync();
 
         // ── The resolution rule ──────────────────────────────────────────────────
 
@@ -117,9 +117,9 @@ namespace DreamCleaningBackend.Tests
             var request = new HttpRequestMessage(HttpMethod.Post, "/api/admin/upload-gift-card-background") { Content = form };
             request.Headers.Add("Cookie", "access_token=" + PrivateFileTestHost.TokenFor(1, UserRole.Admin));
 
-            var response = await _host.Client.SendAsync(request);
+            var response = await _host.Client.SendAsync(request, TestContext.Current.CancellationToken);
             HttpStatusAssert.Is(HttpStatusCode.OK, response, "admin upload");
-            var imagePath = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("imagePath").GetString()!;
+            var imagePath = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement.GetProperty("imagePath").GetString()!;
 
             Assert.Matches(@"^/uploads/gift-cards/gift-card-bg-[0-9a-f]{32}\.webp$", imagePath);
             Assert.True(File.Exists(Path.Combine(_host.UploadRoot, "public", "gift-cards", Path.GetFileName(imagePath))));

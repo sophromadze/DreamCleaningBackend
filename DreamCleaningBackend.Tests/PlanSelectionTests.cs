@@ -123,7 +123,7 @@ public class PlanSelectionTests
             // The profile choice - and nothing else. No SubscriptionId, no expiry.
             PreferredSubscriptionId = 2, PreferredSubscriptionSelectedAt = DateTime.UtcNow
         });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var svc = new BookingCreationService(db, null!, null!, NullLogger<BookingCreationService>.Instance);
 
@@ -149,7 +149,7 @@ public class PlanSelectionTests
             SubscriptionId = 2,                                   // written by ISubscriptionService
             SubscriptionExpiryDate = DateTime.UtcNow.AddDays(5)
         });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var svc = new BookingCreationService(db, null!, null!, NullLogger<BookingCreationService>.Instance);
 
@@ -175,7 +175,7 @@ public class PlanSelectionTests
             SubscriptionId = 3,                                   // actually holds Bi-Weekly
             SubscriptionExpiryDate = DateTime.UtcNow.AddDays(5)
         });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var svc = new BookingCreationService(db, null!, null!, NullLogger<BookingCreationService>.Instance);
 

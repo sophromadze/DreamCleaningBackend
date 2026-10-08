@@ -13,7 +13,7 @@ namespace DreamCleaningBackend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
     [Migration("20250703181233_ddasonditionoxtraervice")]
-    partial class ddasonditionoxtraervice
+    partial class AddExtraServiceHasCondition
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)

@@ -287,7 +287,7 @@ namespace DreamCleaningBackend.Services.Commercial
             var options = new SessionCreateOptions
             {
                 Mode = "payment",
-                PaymentMethodTypes = new List<string>
+                AllowedPaymentMethodTypes = new List<string>
                 {
                     method == InvoicePaymentRecordMethod.Card ? "card" : "us_bank_account"
                 },
@@ -378,9 +378,8 @@ namespace DreamCleaningBackend.Services.Commercial
             {
                 var contact = await _invoices.ResolveBillingContactAsync(client.Id);
 
-                var customer = await customerService.CreateAsync(new CustomerCreateOptions
+                var customerOptions = new CustomerCreateOptions
                 {
-                    Email = contact?.Email ?? client.NoticeEmail,
                     Name = client.LegalEntityName,
                     Description = $"Commercial client #{client.Id}",
                     Metadata = new Dictionary<string, string>
@@ -388,7 +387,14 @@ namespace DreamCleaningBackend.Services.Commercial
                         ["type"] = "commercial_client",
                         ["commercial_client_id"] = client.Id.ToString()
                     }
-                });
+                };
+
+                // Left out rather than assigned null, which Stripe.net sends as "email=".
+                var email = contact?.Email ?? client.NoticeEmail;
+                if (!string.IsNullOrWhiteSpace(email))
+                    customerOptions.Email = email;
+
+                var customer = await customerService.CreateAsync(customerOptions);
 
                 client.StripeCustomerId = customer.Id;
                 await _context.SaveChangesAsync();

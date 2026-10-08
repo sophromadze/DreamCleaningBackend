@@ -1345,8 +1345,8 @@ namespace DreamCleaningBackend.Tests
 
             Assert.DoesNotContain("refill", rendered.PlainText, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("replenish", rendered.PlainText, StringComparison.OrdinalIgnoreCase);
-            Assert.Equal(0, Regex.Matches(rendered.PlainText, "soap", RegexOptions.IgnoreCase).Count);
-            Assert.Equal(0, Regex.Matches(ContractTemplateSeed.BodyText, "soap", RegexOptions.IgnoreCase).Count);
+            Assert.Empty(Regex.Matches(rendered.PlainText, "soap", RegexOptions.IgnoreCase));
+            Assert.Empty(Regex.Matches(ContractTemplateSeed.BodyText, "soap", RegexOptions.IgnoreCase));
         }
 
         // ── supplies, equipment and consumables (template v2.7) ─────────────────

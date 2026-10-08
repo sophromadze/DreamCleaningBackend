@@ -78,10 +78,10 @@ namespace DreamCleaningBackend.Tests
         {
             AddUser(1, 500);
             var order = AddOrder(10, 1, 200m, earned: 100, streak: 20);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Refund(order, 200m, 200m);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(380, Balance(1));
             var row = Assert.Single(Reversals(10));
@@ -97,15 +97,15 @@ namespace DreamCleaningBackend.Tests
         {
             AddUser(1, 500);
             var order = AddOrder(10, 1, 200m, earned: 120);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            await Refund(order, 200m, 50m);  await _db.SaveChangesAsync();   // a quarter
+            await Refund(order, 200m, 50m);  await _db.SaveChangesAsync(TestContext.Current.CancellationToken);   // a quarter
             Assert.Equal(470, Balance(1));
-            await Refund(order, 200m, 100m); await _db.SaveChangesAsync();   // half in total: only the second quarter
+            await Refund(order, 200m, 100m); await _db.SaveChangesAsync(TestContext.Current.CancellationToken);   // half in total: only the second quarter
             Assert.Equal(440, Balance(1));
-            await Refund(order, 200m, 100m); await _db.SaveChangesAsync();   // the same total again (Stripe sync re-run)
+            await Refund(order, 200m, 100m); await _db.SaveChangesAsync(TestContext.Current.CancellationToken);   // the same total again (Stripe sync re-run)
             Assert.Equal(440, Balance(1));
-            await Refund(order, 200m, 200m); await _db.SaveChangesAsync();   // the rest
+            await Refund(order, 200m, 200m); await _db.SaveChangesAsync(TestContext.Current.CancellationToken);   // the rest
             Assert.Equal(380, Balance(1));
             Assert.Equal(-120, Reversals(10).Sum(r => r.Points));
         }
@@ -115,10 +115,10 @@ namespace DreamCleaningBackend.Tests
         {
             AddUser(1, 40);
             var order = AddOrder(10, 1, 200m, earned: 120);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Refund(order, 200m, 200m);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(0, Balance(1));
             var row = Assert.Single(Reversals(10));
@@ -137,9 +137,9 @@ namespace DreamCleaningBackend.Tests
         {
             AddUser(1, 500);
             var order = AddOrder(10, 1, 200m, earned: 120);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await Refund(order, 200m, 200m);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var customer = (await Points().GetHistory(1, 1, 50)).Items;
             var adjustment = Assert.Single(customer, h => h.Points < 0);
@@ -162,9 +162,9 @@ namespace DreamCleaningBackend.Tests
         {
             AddUser(1, 500);
             var order = AddOrder(10, 1, 200m, earned: 120);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
             await Refund(order, 200m, 50m);              // 30 back
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
             Assert.Equal(470, Balance(1));
 
             await Points().ReverseOrderCompletion(10);   // admin moves it out of Done
@@ -245,7 +245,7 @@ namespace DreamCleaningBackend.Tests
 
             // The customer earned more points after the dry run was reviewed.
             _db.Users.Single(u => u.Id == 2).BubblePoints = 75;
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Null(await RefundPointsReversal.ApplyCorrectionPlanAsync(_db, NullLogger.Instance, plan.PlanId, "the test"));
             Assert.Equal(1000, Balance(1));
@@ -257,7 +257,7 @@ namespace DreamCleaningBackend.Tests
         {
             AddUser(1, 0);
             AddOrder(10, 1, 200m, status: "Refunded", refunded: 200m, earned: 120);
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var plan = await RefundPointsReversal.BuildCorrectionPlanAsync(_db);
             await RefundPointsReversal.ApplyCorrectionPlanAsync(_db, NullLogger.Instance, plan.PlanId, "the test");

@@ -79,15 +79,15 @@ public class RecurringRefinementTests
         var series = await service.CreateAsync(1, new SaveRecurringSeriesDto { IsActive = false }, 5);
         Assert.Equal(0, (await service.GenerateAsync(series.Id)).CreatedCount);
         await service.SetStateAsync(series.Id, "resume", 5);
-        var count = await db.Orders.CountAsync(); Assert.True(count > 1);
+        var count = await db.Orders.CountAsync(cancellationToken: TestContext.Current.CancellationToken); Assert.True(count > 1);
         await service.SetStateAsync(series.Id, "resume", 5);
-        Assert.Equal(count, await db.Orders.CountAsync());
+        Assert.Equal(count, await db.Orders.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
         await service.SetStateAsync(series.Id, "pause", 5);
         Assert.Equal(0, (await service.GenerateAsync(series.Id)).CreatedCount);
         await service.SetStateAsync(series.Id, "stop", 5);
         Assert.Equal(0, (await service.GenerateAsync(series.Id)).CreatedCount);
         await Assert.ThrowsAsync<RecurringSeriesException>(() => service.SetStateAsync(series.Id, "resume", 5));
-        Assert.Equal(count, await db.Orders.CountAsync());
+        Assert.Equal(count, await db.Orders.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -96,24 +96,24 @@ public class RecurringRefinementTests
         using var db = Db(); var service = await SeriesService(db);
         var first = await service.CreateAsync(1, new SaveRecurringSeriesDto(), 5);
         await service.SetStateAsync(first.Id, "stop", 5);
-        var stoppedAt = (await db.RecurringOrderSeries.FindAsync(first.Id))!.StoppedAt;
-        db.Orders.RemoveRange(await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).ToListAsync());
+        var stoppedAt = (await db.RecurringOrderSeries.FindAsync(new object?[] { first.Id }, TestContext.Current.CancellationToken))!.StoppedAt;
+        db.Orders.RemoveRange(await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         var past = Order(0, NyTimeHelper.NowNy.Date.AddDays(-7));
         past.RecurringSeriesId = first.Id; past.IsGeneratedByRecurringSeries = true; past.IsPaid = true;
-        db.Orders.Add(past); await db.SaveChangesAsync();
-        var source = (await db.Orders.FindAsync(1))!;
+        db.Orders.Add(past); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var source = (await db.Orders.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!;
         var total = source.Total;
         var replacement = await service.CreateAsync(1, new SaveRecurringSeriesDto { IntervalValue = 2 }, 5);
         Assert.NotEqual(first.Id, replacement.Id);
         Assert.Equal(replacement.Id, (await service.GetForOrderAsync(1))!.Id);
         Assert.Equal(total, source.Total);
-        Assert.Equal(stoppedAt, (await db.RecurringOrderSeries.FindAsync(first.Id))!.StoppedAt);
-        Assert.False((await db.RecurringOrderSeries.FindAsync(first.Id))!.IsActive);
+        Assert.Equal(stoppedAt, (await db.RecurringOrderSeries.FindAsync(new object?[] { first.Id }, TestContext.Current.CancellationToken))!.StoppedAt);
+        Assert.False((await db.RecurringOrderSeries.FindAsync(new object?[] { first.Id }, TestContext.Current.CancellationToken))!.IsActive);
         Assert.Equal(first.Id, past.RecurringSeriesId); Assert.True(past.IsPaid);
         Assert.Contains(replacement.Occurrences, o => o.WasGenerated);
         Assert.Equal(0, (await service.GenerateAsync(first.Id)).CreatedCount);
         await Assert.ThrowsAsync<RecurringSeriesException>(() => service.CreateAsync(1, new SaveRecurringSeriesDto(), 5));
-        Assert.Equal(2, await db.RecurringOrderSeries.CountAsync());
+        Assert.Equal(2, await db.RecurringOrderSeries.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Theory]
@@ -125,10 +125,10 @@ public class RecurringRefinementTests
         var first = await service.CreateAsync(1, new SaveRecurringSeriesDto(), 5);
         await service.SetStateAsync(first.Id, state, 5);
         await Assert.ThrowsAsync<RecurringSeriesException>(() => service.CreateAsync(1, new SaveRecurringSeriesDto(), 5));
-        var generated = await db.Orders.FirstAsync(o => o.IsGeneratedByRecurringSeries);
+        var generated = await db.Orders.FirstAsync(o => o.IsGeneratedByRecurringSeries, cancellationToken: TestContext.Current.CancellationToken);
         await Assert.ThrowsAsync<RecurringSeriesException>(() => service.CreateAsync(generated.Id, new SaveRecurringSeriesDto(), 5));
-        Assert.Single(await db.RecurringOrderSeries.ToListAsync());
-        Assert.Equal(first.Id, (await db.Orders.FindAsync(1))!.RecurringSeriesId);
+        Assert.Single(await db.RecurringOrderSeries.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
+        Assert.Equal(first.Id, (await db.Orders.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.RecurringSeriesId);
     }
 
     [Fact]
@@ -136,7 +136,7 @@ public class RecurringRefinementTests
     {
         using var db = Db(); var service = await SeriesService(db);
         var series = await service.CreateAsync(1, new SaveRecurringSeriesDto { IntervalValue = 2 }, 5);
-        var future = await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync();
+        var future = await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
         var first = future.First(); var date = first.RecurrenceOccurrenceDate;
         var later = future.Last().ServiceDate;
         await service.SkipAsync(series.Id, first.Id, 5);
@@ -145,7 +145,7 @@ public class RecurringRefinementTests
         Assert.Equal(date, first.RecurrenceOccurrenceDate);
         Assert.Equal(later, future.Last().ServiceDate);
         Assert.Equal(series.AnchorDate, (await service.GetAsync(series.Id))!.AnchorDate);
-        Assert.Single(await db.Orders.Where(o => o.RecurringSeriesId == series.Id && o.RecurrenceOccurrenceDate == date).ToListAsync());
+        Assert.Single(await db.Orders.Where(o => o.RecurringSeriesId == series.Id && o.RecurrenceOccurrenceDate == date).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Theory]
@@ -155,14 +155,14 @@ public class RecurringRefinementTests
     {
         using var db = Db(); var service = await SeriesService(db);
         var series = await service.CreateAsync(1, new SaveRecurringSeriesDto { IntervalValue = 1 }, 5);
-        var old = await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync();
+        var old = await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
         var edit = new SaveRecurringSeriesDto { IntervalValue = 2 };
         await Assert.ThrowsAsync<RecurringSeriesException>(() => service.UpdateAsync(series.Id, edit, 5));
         edit.FutureOrdersAction = choice;
         await service.UpdateAsync(series.Id, edit, 5);
-        Assert.Equal(old.Count + 1, await db.Orders.CountAsync(o => old.Select(x => x.Id).Contains(o.Id) || o.Id == 1));
+        Assert.Equal(old.Count + 1, await db.Orders.CountAsync(o => old.Select(x => x.Id).Contains(o.Id) || o.Id == 1, cancellationToken: TestContext.Current.CancellationToken));
         Assert.All(old, o => Assert.Equal(choice == "Keep" ? OrderStatuses.Pending : OrderStatuses.Cancelled, o.Status));
-        if (choice == "Keep") Assert.Equal(old.Last().ServiceDate, (await db.RecurringOrderSeries.FindAsync(series.Id))!.GenerateAfterDate);
+        if (choice == "Keep") Assert.Equal(old.Last().ServiceDate, (await db.RecurringOrderSeries.FindAsync(new object?[] { series.Id }, TestContext.Current.CancellationToken))!.GenerateAfterDate);
     }
 
     [Fact]
@@ -170,15 +170,15 @@ public class RecurringRefinementTests
     {
         using var db = Db(); var audit = new RecordingAuditService(); var service = await SeriesService(db, audit);
         var series = await service.CreateAsync(1, new SaveRecurringSeriesDto(), 5);
-        var future = await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync();
-        var paid = future[1]; paid.IsPaid = true; await db.SaveChangesAsync();
+        var future = await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
+        var paid = future[1]; paid.IsPaid = true; await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         await service.UpdateAsync(series.Id, new SaveRecurringSeriesDto { IntervalValue = 2, FutureOrdersAction = "Regenerate" }, 5);
         Assert.Equal(OrderStatuses.Pending, paid.Status); Assert.True(paid.IsPaid);
         Assert.NotNull(paid.RecurrenceOccurrenceDate);
-        Assert.Equal(paid.ServiceDate, (await db.RecurringOrderSeries.FindAsync(series.Id))!.GenerateAfterDate);
+        Assert.Equal(paid.ServiceDate, (await db.RecurringOrderSeries.FindAsync(new object?[] { series.Id }, TestContext.Current.CancellationToken))!.GenerateAfterDate);
         Assert.All(future.Where(o => o.Id != paid.Id), o => Assert.Equal(OrderStatuses.Cancelled, o.Status));
         Assert.Contains(audit.Actions, a => a.Action == "RecurringOccurrenceReplaced");
-        var next = await db.Orders.FirstAsync(o => o.IsGeneratedByRecurringSeries && o.Status == OrderStatuses.Pending && !o.IsPaid);
+        var next = await db.Orders.FirstAsync(o => o.IsGeneratedByRecurringSeries && o.Status == OrderStatuses.Pending && !o.IsPaid, cancellationToken: TestContext.Current.CancellationToken);
         await service.SkipAsync(series.Id, next.Id, 5);
         Assert.Contains(audit.Actions, a => a.Action == "RecurringOccurrenceSkipped" && a.ActingUserId == 5);
         Assert.True((await service.GetAsync(series.Id))!.Occurrences.Single(o => o.OrderId == next.Id).IsSkipped);
@@ -198,19 +198,19 @@ public class RecurringRefinementTests
         });
         var service = await SeriesService(db, stripe: stripe);
         var series = await service.CreateAsync(1, new SaveRecurringSeriesDto(), 5);
-        var old = await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).ToListAsync();
+        var old = await db.Orders.Where(o => o.IsGeneratedByRecurringSeries).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
         var batch = new OrderPaymentBatch { UserId = 1, Status = OrderPaymentBatchStatus.Pending, PaymentIntentId = intent.Id };
         foreach (var order in old)
         {
             batch.Items.Add(new OrderPaymentBatchItem { OrderId = order.Id, Amount = order.Total });
             db.OrderCleaners.Add(new OrderCleaner { OrderId = order.Id, AutoAssignedFromSeriesId = series.Id });
         }
-        db.OrderPaymentBatches.Add(batch); await db.SaveChangesAsync();
+        db.OrderPaymentBatches.Add(batch); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         await service.UpdateAsync(series.Id, new SaveRecurringSeriesDto { IntervalValue = 2, FutureOrdersAction = "Regenerate" }, 5);
         Assert.Equal(1, cancellations); Assert.Equal(OrderPaymentBatchStatus.Canceled, batch.Status);
         Assert.All(old, order => { Assert.Equal(OrderStatuses.Cancelled, order.Status); Assert.Null(order.RecurrenceOccurrenceDate); });
-        Assert.True(await db.Orders.AnyAsync(o => o.IsGeneratedByRecurringSeries && o.Status == OrderStatuses.Pending));
-        Assert.Equal(old.Count, await db.OrderPaymentBatchItems.CountAsync());
+        Assert.True(await db.Orders.AnyAsync(o => o.IsGeneratedByRecurringSeries && o.Status == OrderStatuses.Pending, cancellationToken: TestContext.Current.CancellationToken));
+        Assert.Equal(old.Count, await db.OrderPaymentBatchItems.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -251,13 +251,13 @@ public class RecurringRefinementTests
     {
         using var db = Db(); var service = await SeriesService(db);
         var series = await service.CreateAsync(1, new SaveRecurringSeriesDto(), 5);
-        var o = await db.Orders.FirstAsync(o => o.IsGeneratedByRecurringSeries);
+        var o = await db.Orders.FirstAsync(o => o.IsGeneratedByRecurringSeries, cancellationToken: TestContext.Current.CancellationToken);
         if (kind == "paid") o.IsPaid = true;
         if (kind == "active") o.Status = OrderStatuses.Active;
         if (kind == "notified") db.OrderCleaners.Add(new OrderCleaner { OrderId = o.Id, AssignmentNotificationSentAt = DateTime.UtcNow });
         if (kind == "invoice") db.CommercialInvoiceOrders.Add(new CommercialInvoiceOrder { OrderId = o.Id,
             Invoice = new CommercialInvoice { Status = InvoiceStatus.Draft } });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         await Assert.ThrowsAsync<RecurringSeriesException>(() => service.SkipAsync(series.Id, o.Id, 5));
         Assert.NotEqual(OrderStatuses.Cancelled, o.Status);
     }
@@ -271,7 +271,7 @@ public class RecurringRefinementTests
         var methods = new[] { PaymentMethod.Normal, PaymentMethod.Normal, PaymentMethod.Cash, PaymentMethod.Invoice, PaymentMethod.Normal };
         for (int i = 0; i < methods.Length; i++) { var o = Order(i + 1, date.AddDays(i), methods[i]); o.RecurringSeriesId = 1; db.Orders.Add(o); }
         db.OrderPaymentBatchItems.Add(new OrderPaymentBatchItem { OrderId = 5, Batch = new OrderPaymentBatch { Status = OrderPaymentBatchStatus.Processing } });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         decimal charged = 0;
         var stripe = Stub<IStripeService>((m,a) => {
             if (m.Name == "GetPaymentIntentAsync") return Task.FromResult(new Stripe.PaymentIntent { Id = "pi_refinement_fake", Status = "processing" });
@@ -283,14 +283,14 @@ public class RecurringRefinementTests
         Assert.Equal(1850.86m, upcoming.PayAllTotal); Assert.Equal(2, upcoming.PayAllCount);
         Assert.Equal(new[] { 1, 2 }, upcoming.Orders.Where(o => o.IncludedInPayAll).Select(o => o.OrderId));
         Assert.True(upcoming.Orders[0].IsPayable); Assert.False(upcoming.Orders[1].IsPayable);
-        (await db.Orders.FindAsync(1))!.IsPaid = true; await db.SaveChangesAsync();
+        (await db.Orders.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.IsPaid = true; await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         Assert.True((await service.GetUpcomingAsync(1)).Orders.Single(o => o.OrderId == 2).IsPayable);
         await service.StartCombinedPaymentAsync(1, new StartCombinedPaymentDto());
         Assert.Equal(925.43m, charged);
-        var batch = await db.OrderPaymentBatches.Include(b => b.Items).SingleAsync(b => b.PaymentIntentId == "pi_refinement_fake");
+        var batch = await db.OrderPaymentBatches.Include(b => b.Items).SingleAsync(b => b.PaymentIntentId == "pi_refinement_fake", cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(new[] { 2 }, batch.Items.Select(i => i.OrderId));
         await Assert.ThrowsAsync<CombinedPaymentException>(() => service.StartCombinedPaymentAsync(1, new StartCombinedPaymentDto()));
-        Assert.Equal(methods, await db.Orders.OrderBy(o => o.Id).Select(o => o.PaymentMethod).ToArrayAsync());
+        Assert.Equal(methods, await db.Orders.OrderBy(o => o.Id).Select(o => o.PaymentMethod).ToArrayAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -300,7 +300,7 @@ public class RecurringRefinementTests
         o.MaidsCount = 2; o.CleanerHourlyRate = 23; o.CleanerTotalSalary = 230;
         var line = new OrderCleaner { Id = 1, OrderId = 1, CleanerId = 1, SalaryHourlyRate = 25,
             SalaryBillableMinutes = 300, IsPaid = true, PaidAmount = 135, PaidAt = DateTime.UtcNow };
-        db.Orders.Add(o); db.OrderCleaners.Add(line); await db.SaveChangesAsync();
+        db.Orders.Add(o); db.OrderCleaners.Add(line); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var before = System.Text.Json.JsonSerializer.Serialize(CleanerPayrollCalculator.Build(o, false, new[] { line }));
         var service = new OrderInvoiceAllocationService(db, new RecordingAuditService(), NullLogger<OrderInvoiceAllocationService>.Instance);
         var snapshot = await service.ApplyAllocatedTotalAsync(1, 875, 7, 1, "DCI-2026-12345678", 5);
@@ -324,7 +324,7 @@ public class RecurringRefinementTests
             TaxAmount = 75.44m, TaxRate = 8.875m, Status = InvoiceStatus.Paid, FirstSentAt = date,
             PaidAt = date, AmountPaid = 925.43m };
         invoice.Payments.Add(new CommercialInvoicePayment { Amount = 925.43m, PaymentDate = date, Provider = provider });
-        db.CommercialInvoices.Add(invoice); await db.SaveChangesAsync();
+        db.CommercialInvoices.Add(invoice); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var controller = new AdminStatisticsController(db, new ConfigurationBuilder().Build(),
             Stub<IExpenseService>(), Stub<IFinancialRateService>(), new RecordingAuditService(), Stub<IAdminBonusService>());
         for (var linked = 0; linked < 2; linked++)
@@ -339,7 +339,7 @@ public class RecurringRefinementTests
             if (linked == 0) {
                 var o = Order(1, date, PaymentMethod.Invoice); o.Status = OrderStatuses.Done; o.InvoicePaidAt = date;
                 db.Orders.Add(o); db.CommercialInvoiceOrders.Add(new CommercialInvoiceOrder { CommercialInvoiceId = 1, OrderId = 1, AllocatedAmount = 925.43m });
-                await db.SaveChangesAsync();
+                await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             }
         }
     }
@@ -352,12 +352,12 @@ public class RecurringRefinementTests
             new CommercialInvoice { Id = 1, ContractId = 1, Status = InvoiceStatus.Draft, ServiceStartDate = october, ServiceEndDate = october.AddDays(14) },
             new CommercialInvoice { Id = 2, ContractId = 1, Status = InvoiceStatus.Draft, ServiceStartDate = october.AddMonths(-1), ServiceEndDate = october.AddDays(-1) },
             new CommercialInvoice { Id = 3, ContractId = 1, Status = InvoiceStatus.Draft });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var service = new RecurringInvoiceService(db, null!, null!, null!, NullLogger<RecurringInvoiceService>.Instance);
         Assert.Equal(1, (await service.FindOpenDraftAsync(1, october.AddDays(10), october.AddDays(30)))!.Id);
         Assert.Null(await service.FindOpenDraftAsync(1, october.AddMonths(1), october.AddMonths(2)));
         Assert.Equal(3, (await service.FindUndatedDraftAsync(1))!.Id);
-        Assert.True(ExistingDraftInvoiceException.For((await db.CommercialInvoices.FindAsync(3))!, true).Draft.IsUndated);
+        Assert.True(ExistingDraftInvoiceException.For((await db.CommercialInvoices.FindAsync(new object?[] { 3 }, TestContext.Current.CancellationToken))!, true).Draft.IsUndated);
     }
 
     [Theory]
@@ -367,11 +367,11 @@ public class RecurringRefinementTests
     {
         using var db = Db(); var o = Order(1, DateTime.Today, method); o.ContractClientId = client;
         o.LoyaltyDiscountAmount = 15; o.LoyaltyDiscountPercentage = 15;
-        db.Users.Add(new User { Id = 1, LoyaltyDiscountPercentage = 15 }); db.Orders.Add(o); await db.SaveChangesAsync();
+        db.Users.Add(new User { Id = 1, LoyaltyDiscountPercentage = 15 }); db.Orders.Add(o); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         Assert.False(ResidentialLoyaltyPolicy.AppliesTo(o));
         var service = new LoyaltyDiscountService(db, new RecordingAuditService(), NullLogger<LoyaltyDiscountService>.Instance);
         await service.ApplyToOrderAsync(1);
-        Assert.Equal(15, (await db.Users.FindAsync(1))!.LoyaltyDiscountPercentage);
+        Assert.Equal(15, (await db.Users.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.LoyaltyDiscountPercentage);
         Assert.True(ResidentialLoyaltyPolicy.AppliesTo(Order(2, DateTime.Today)));
     }
 
@@ -385,15 +385,15 @@ public class RecurringRefinementTests
         using var db = Db();
         db.ServiceTypes.Add(new ServiceType { Id = 1, Name = "Residential", BasePrice = 100, TimeDuration = 120 });
         db.Users.Add(new User { Id = 1, LoyaltyDiscountPercentage = 15, LoyaltyDiscountIsLifetime = lifetime });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var loyalty = new LoyaltyDiscountService(db, new RecordingAuditService(), NullLogger<LoyaltyDiscountService>.Instance);
         var service = new BookingCreationService(db, loyalty, Stub<IGiftCardService>(), NullLogger<BookingCreationService>.Instance);
         var dto = new CreateBookingDto { ServiceTypeId = 1, ServiceDate = DateTime.Today.AddDays(7), ServiceTime = "09:00", MaidsCount = 1 };
         var order = await service.CreateOrderAsync(dto, 1, false, new BookingCreationOptions { PaymentMethod = method, ContractClientId = client });
         Assert.Equal(method == PaymentMethod.Normal && client == null ? 15 : 0, order.LoyaltyDiscountPercentage);
         Assert.Equal(method == PaymentMethod.Normal && client == null ? order.SubTotal * .15m : 0, order.LoyaltyDiscountAmount);
-        Assert.Equal(15, (await db.Users.FindAsync(1))!.LoyaltyDiscountPercentage);
-        Assert.Equal(lifetime, (await db.Users.FindAsync(1))!.LoyaltyDiscountIsLifetime);
+        Assert.Equal(15, (await db.Users.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.LoyaltyDiscountPercentage);
+        Assert.Equal(lifetime, (await db.Users.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.LoyaltyDiscountIsLifetime);
     }
 
     [Fact]
@@ -409,7 +409,7 @@ public class RecurringRefinementTests
         db.CommercialInvoiceOrders.Add(new CommercialInvoiceOrder { OrderId = 2 });
         // A mixed customer's future commercial appointment must not suppress residential eligibility.
         var future = Order(4, DateTime.UtcNow.AddDays(7), PaymentMethod.Invoice); future.UserId = 3; db.Orders.Add(future);
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var settings = Stub<IBubbleRewardsSettingsService>((m, args) => typeof(Task).GetMethod(nameof(Task.FromResult))!
             .MakeGenericMethod(m.ReturnType.GetGenericArguments()[0]).Invoke(null, new[] { args![1] }));
         using var provider = new ServiceCollection().AddSingleton(db).AddSingleton(settings)
@@ -421,10 +421,10 @@ public class RecurringRefinementTests
         using var worker = new LoyaltyReengagementService(provider, NullLogger<LoyaltyReengagementService>.Instance, environment, config);
         await (Task)typeof(LoyaltyReengagementService).GetMethod("RunCycleAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
             .Invoke(worker, new object[] { CancellationToken.None })!;
-        Assert.Equal(0, (await db.Users.FindAsync(1))!.LoyaltyDiscountPercentage);
-        Assert.Equal(0, (await db.Users.FindAsync(2))!.LoyaltyDiscountPercentage);
-        Assert.Equal(10, (await db.Users.FindAsync(3))!.LoyaltyDiscountPercentage);
-        Assert.Empty(await db.NotificationLogs.Where(n => n.CustomerId == 1 || n.CustomerId == 2).ToListAsync());
+        Assert.Equal(0, (await db.Users.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.LoyaltyDiscountPercentage);
+        Assert.Equal(0, (await db.Users.FindAsync(new object?[] { 2 }, TestContext.Current.CancellationToken))!.LoyaltyDiscountPercentage);
+        Assert.Equal(10, (await db.Users.FindAsync(new object?[] { 3 }, TestContext.Current.CancellationToken))!.LoyaltyDiscountPercentage);
+        Assert.Empty(await db.NotificationLogs.Where(n => n.CustomerId == 1 || n.CustomerId == 2).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -434,7 +434,7 @@ public class RecurringRefinementTests
         db.ContractClients.Add(new ContractClient { Id = 1, LegalEntityName = "Test business" });
         db.CommercialInvoices.Add(new CommercialInvoice { Id = 1, ContractClientId = 1, Status = InvoiceStatus.Draft,
             DraftWarningsJson = "[\"Current contract pricing differs.\",\"Current contract tax rate differs.\"]" });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var service = new InvoiceService(db, new InvoiceNumberService(db, NullLogger<InvoiceNumberService>.Instance),
             new BillingSettingsService(db), new ConfigurationBuilder().Build(), NullLogger<InvoiceService>.Instance);
         var dto = new SaveInvoiceDto { ContractClientId = 1, TaxType = InvoiceTaxType.Included, TaxRate = 8.875m,
@@ -448,9 +448,9 @@ public class RecurringRefinementTests
         dto.DraftDriftChoices = new() { "CurrentTax" }; dto.TaxRate = 9;
         saved = await service.UpdateAsync(1, dto, 5);
         Assert.Null(saved.DraftWarningsJson); Assert.Equal(925.43m, saved.Total); Assert.Equal(76.41m, saved.TaxAmount);
-        Assert.Equal(2, await db.CommercialInvoiceActivityLogs.CountAsync(a => a.Action == "invoice_drift_choice"));
+        Assert.Equal(2, await db.CommercialInvoiceActivityLogs.CountAsync(a => a.Action == "invoice_drift_choice", cancellationToken: TestContext.Current.CancellationToken));
         Assert.Null(saved.FirstSentAt); Assert.Equal(InvoiceStatus.Draft, saved.Status);
-        saved.Status = InvoiceStatus.Paid; saved.FirstSentAt = DateTime.UtcNow; await db.SaveChangesAsync();
+        saved.Status = InvoiceStatus.Paid; saved.FirstSentAt = DateTime.UtcNow; await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         await Assert.ThrowsAsync<InvoiceWorkflowException>(() => service.UpdateAsync(1, dto, 5));
         Assert.Equal(925.43m, saved.Total);
     }

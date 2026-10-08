@@ -21,7 +21,7 @@ public class AuditPrivacyRegressionTests
         await audit.LogUpdateAsync(new User { Id = 1, Email = null, PasswordResetToken = "before" },
             new User { Id = 1, Email = "", PasswordResetToken = "after" });
         await audit.LogActionAsync("User", 1, "Update", new { LoginOtpCode = "before" }, new { LoginOtpCode = "after" });
-        Assert.Empty(await db.AuditLogs.ToListAsync());
+        Assert.Empty(await db.AuditLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -31,7 +31,7 @@ public class AuditPrivacyRegressionTests
         Assert.Equal(128, db.Model.FindEntityType(typeof(AuditLog))!.FindProperty(nameof(AuditLog.Action))!.GetMaxLength());
         await Audit(db).LogCreateAsync(new Order { Id = 7, UserId = 4, Total = 125.55m, PaymentAccessToken = "do-not-store",
             User = new User { FirstName = "Nested", PasswordResetToken = "nested-secret" } });
-        var row = await db.AuditLogs.SingleAsync();
+        var row = await db.AuditLogs.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         var snapshot = JObject.Parse(row.NewValues!);
         Assert.Null(row.ChangedFields); Assert.Equal(125.55m, (decimal)snapshot["Total"]!);
         foreach (var field in new[] { "PaymentAccessToken", "User", "Apartment", "OrderServices", "OrderCleaners" }) Assert.Null(snapshot[field]);
@@ -61,7 +61,7 @@ public class AuditPrivacyRegressionTests
         var payload = new JObject { [field] = "secret-sentinel", ["Nested"] = new JObject { [field] = "secret-sentinel" }, ["Total"] = 75 };
         var raw = payload.ToString();
         var row = new AuditLog { Id = 1, EntityType = "Order", Action = "Create", NewValues = raw };
-        db.AuditLogs.Add(row); await db.SaveChangesAsync();
+        db.AuditLogs.Add(row); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         Assert.DoesNotContain("secret-sentinel", row.NewValues!);
         var legacy = new AuditLog { Id = 2, EntityType = "Order", NewValues = raw };
         var display = (await AuditDisplayProjection.BuildAsync(db, new[] { legacy }))[2];
@@ -85,13 +85,13 @@ public class AuditPrivacyRegressionTests
             ServiceAddress = "Business address", PaymentMethod = PaymentMethod.Zelle, IsPaid = true,
             CleanerTotalSalary = 42, ServiceDate = new DateTime(2026, 9, 9), PaymentAccessToken = "expired-link-secret" };
         await audit.LogDeleteAsync(order);
-        var log = await db.AuditLogs.SingleAsync();
+        var log = await db.AuditLogs.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         await audit.UndoAsync(log.Id);
-        var restored = (await db.Orders.FindAsync(8))!;
+        var restored = (await db.Orders.FindAsync(new object?[] { 8 }, TestContext.Current.CancellationToken))!;
         Assert.Equal(order.Total, restored.Total); Assert.Equal(order.Tax, restored.Tax); Assert.Equal(order.Tips, restored.Tips);
         Assert.Equal(order.CleanerTotalSalary, restored.CleanerTotalSalary); Assert.Equal(order.ServiceAddress, restored.ServiceAddress);
         Assert.Equal(order.PaymentMethod, restored.PaymentMethod); Assert.True(restored.IsPaid); Assert.Null(restored.PaymentAccessToken);
-        await audit.RedoAsync(log.Id); Assert.Null(await db.Orders.FindAsync(8));
+        await audit.RedoAsync(log.Id); Assert.Null(await db.Orders.FindAsync(new object?[] { 8 }, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -100,8 +100,8 @@ public class AuditPrivacyRegressionTests
         using var db = RecurringDiscountRegressionTests.Db(); var audit = Audit(db);
         await audit.LogDeleteAsync(new User { Id = 9, FirstName = "Existing", LastName = "Customer", Email = "test@example.invalid",
             IsActive = true, PasswordResetToken = "reset-secret", LoginOtpCode = "otp-secret", TwoFactorPinHash = "pin-secret" });
-        var log = await db.AuditLogs.SingleAsync(); await audit.UndoAsync(log.Id);
-        var restored = (await db.Users.FindAsync(9))!;
+        var log = await db.AuditLogs.SingleAsync(cancellationToken: TestContext.Current.CancellationToken); await audit.UndoAsync(log.Id);
+        var restored = (await db.Users.FindAsync(new object?[] { 9 }, TestContext.Current.CancellationToken))!;
         Assert.Equal("Existing", restored.FirstName); Assert.False(restored.IsActive);
         Assert.Null(restored.PasswordResetToken); Assert.Null(restored.LoginOtpCode); Assert.Null(restored.TwoFactorPinHash);
     }
@@ -114,11 +114,11 @@ public class AuditPrivacyRegressionTests
         var log = new AuditLog { EntityType = "User", EntityId = 9, Action = "Update",
             OldValues = "{\"Id\":9,\"FirstName\":\"Before\",\"PasswordResetToken\":\"old-secret\"}",
             NewValues = "{\"Id\":9,\"FirstName\":\"After\"}", ChangedFields = "[\"FirstName\",\"PasswordResetToken\"]" };
-        db.AuditLogs.Add(log); await db.SaveChangesAsync();
+        db.AuditLogs.Add(log); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         // Simulate the legacy persisted snapshot, before the new write policy existed.
         log.OldValues = "{\"Id\":9,\"FirstName\":\"Before\",\"PasswordResetToken\":\"old-secret\"}";
         await audit.UndoAsync(log.Id);
-        var user = (await db.Users.FindAsync(9))!;
+        var user = (await db.Users.FindAsync(new object?[] { 9 }, TestContext.Current.CancellationToken))!;
         Assert.Equal("Before", user.FirstName); Assert.Equal("Keep", user.LastName); Assert.Equal("current-secret", user.PasswordResetToken);
         await audit.RedoAsync(log.Id); Assert.Equal("After", user.FirstName); Assert.Equal("current-secret", user.PasswordResetToken);
     }
@@ -128,7 +128,7 @@ public class AuditPrivacyRegressionTests
     {
         using var db = RecurringDiscountRegressionTests.Db();
         db.Users.Add(new User { Id = 4, FirstName = "Ada", LastName = "Client" });
-        db.ServiceTypes.Add(new ServiceType { Id = 3, Name = "Deep Cleaning" }); await db.SaveChangesAsync();
+        db.ServiceTypes.Add(new ServiceType { Id = 3, Name = "Deep Cleaning" }); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var log = new AuditLog { Id = 1, NewValues = "{\"UserId\":4,\"ServiceTypeId\":3}" };
         var display = (await AuditDisplayProjection.BuildAsync(db, new[] { log }))[1];
         Assert.Contains("Ada Client (#4)", display.NewValues!); Assert.Contains("Deep Cleaning (#3)", display.NewValues!);

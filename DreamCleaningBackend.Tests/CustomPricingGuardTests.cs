@@ -395,7 +395,7 @@ namespace DreamCleaningBackend.Tests
             // The invariant: charged and persisted come from one decision.
             Assert.Equal(chargedTotal, order.Total);
 
-            var persisted = await _context.Orders.AsNoTracking().FirstAsync(o => o.Id == order.Id);
+            var persisted = await _context.Orders.AsNoTracking().FirstAsync(o => o.Id == order.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(order.Total, persisted.Total);
         }
 
@@ -414,7 +414,7 @@ namespace DreamCleaningBackend.Tests
 
             // create-for-user resolves allow from the ADMIN's DB role.
             var adminRole = await _context.Users.AsNoTracking()
-                .Where(u => u.Id == AdminUserId).Select(u => u.Role).FirstAsync();
+                .Where(u => u.Id == AdminUserId).Select(u => u.Role).FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             var allowCustomPricing = adminRole is UserRole.Admin or UserRole.SuperAdmin;
             Assert.True(allowCustomPricing);
 
@@ -434,7 +434,7 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(2, order.MaidsCount);
             Assert.Equal("Deep", order.CustomServiceDisplayName);
 
-            var persisted = await _context.Orders.AsNoTracking().FirstAsync(o => o.Id == order.Id);
+            var persisted = await _context.Orders.AsNoTracking().FirstAsync(o => o.Id == order.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(typedAmount, persisted.Total);
         }
 
@@ -450,7 +450,7 @@ namespace DreamCleaningBackend.Tests
             var dto = CustomPricingDto(CustomTypeId, AttemptedCustomAmount);
 
             var moderatorRole = await _context.Users.AsNoTracking()
-                .Where(u => u.Id == ModeratorUserId).Select(u => u.Role).FirstAsync();
+                .Where(u => u.Id == ModeratorUserId).Select(u => u.Role).FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             var allowCustomPricing = moderatorRole is UserRole.Admin or UserRole.SuperAdmin;
             Assert.False(allowCustomPricing);
 
@@ -583,7 +583,7 @@ namespace DreamCleaningBackend.Tests
             foreach (var line in order.OrderExtraServices)
             {
                 line.ExtraService = await _context.ExtraServices
-                    .FirstAsync(e => e.Id == line.ExtraServiceId);
+                    .FirstAsync(e => e.Id == line.ExtraServiceId, cancellationToken: TestContext.Current.CancellationToken);
             }
 
             // What the cleaner is told: load the car with both.

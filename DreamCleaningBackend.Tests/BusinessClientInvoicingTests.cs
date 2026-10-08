@@ -184,7 +184,7 @@ public class BusinessClientInvoicingTests
         // Adopted, NOT settled — the client has not paid the invoice yet.
         Assert.False(OrderPaymentFilter.IsSettledInMemory(order));
 
-        var link = await f.Db.CommercialInvoiceOrders.SingleAsync();
+        var link = await f.Db.CommercialInvoiceOrders.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal((int)PaymentMethod.Normal, link.OriginalPaymentMethod);
         Assert.Null(link.OriginalContractClientId);
         Assert.Equal(925.43m, link.OriginalOrderTotal);
@@ -217,7 +217,7 @@ public class BusinessClientInvoicingTests
             CommittedAt = DateTime.UtcNow,
             OriginalPaymentMethod = null       // the legacy shape
         });
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         await f.Links.RevertAllocationsAsync(invoice.Id, 9);
 
@@ -269,7 +269,7 @@ public class BusinessClientInvoicingTests
         {
             CommercialInvoiceId = invoice.Id, OrderId = 1, AllocatedAmount = 925.43m
         });
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         // The business account owns it because the invoice is addressed to its client.
         var business = await f.Links.GetUserInvoicesAsync(1);

@@ -231,7 +231,7 @@ namespace DreamCleaningBackend.Tests
             // Cleaner #1 was released with no separate admin action, so the row that caused it is
             // the only place that can explain the absence.
             Assert.Equal("1", payload["ReleasedCleanerIds"]!.Value<string>());
-            Assert.Null((await _context.Cleaners.FindAsync(1))!.UserId);
+            Assert.Null((await _context.Cleaners.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.UserId);
         }
 
         [Fact]
@@ -253,7 +253,7 @@ namespace DreamCleaningBackend.Tests
             // person's contact details - so the record keeps its address and the row says so.
             Assert.Equal("nino.login@example.com", payload["CleanerEmailKept"]!.Value<string>());
 
-            Assert.Null((await _context.Cleaners.FindAsync(1))!.UserId);
+            Assert.Null((await _context.Cleaners.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.UserId);
         }
 
         [Fact]
@@ -269,7 +269,7 @@ namespace DreamCleaningBackend.Tests
             // which login access to whose schedule. Neither answers the other question.
             var cleanerRows = await _context.AuditLogs
                 .Where(a => a.EntityType == nameof(Cleaner) && a.EntityId == 1)
-                .ToListAsync();
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.NotEmpty(cleanerRows);
             var changed = JsonConvert.DeserializeObject<List<string>>(cleanerRows[0].ChangedFields ?? "[]")!;
@@ -362,7 +362,7 @@ namespace DreamCleaningBackend.Tests
             // The message has to say where the change actually belongs.
             Assert.Contains("nino.login@example.com", ex.Message);
             Assert.Contains("account", ex.Message);
-            Assert.Equal("nino.login@example.com", (await _context.Cleaners.FindAsync(1))!.Email);
+            Assert.Equal("nino.login@example.com", (await _context.Cleaners.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.Email);
         }
 
         [Fact]
@@ -433,7 +433,7 @@ namespace DreamCleaningBackend.Tests
             var result = await _controller.LinkCleaner(11, new LinkCleanerAccountDto { CleanerId = 1 });
 
             Assert.IsType<BadRequestObjectResult>(result.Result);
-            Assert.Equal(12, (await _context.Cleaners.FindAsync(1))!.UserId);
+            Assert.Equal(12, (await _context.Cleaners.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.UserId);
         }
     }
 }

@@ -122,7 +122,7 @@ namespace DreamCleaningBackend.Tests
         public async Task TheEmailLabelFollowsTheKey_NotTheName()
         {
             _context.SpecialOffers.Add(ProductionFirstTime(name: "Welcome Discount"));
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal("10%", await _offers.GetFirstTimeDiscountLabel());
         }
@@ -133,7 +133,7 @@ namespace DreamCleaningBackend.Tests
         public async Task TheKeyedFirstTimeOfferCannotBeDeleted_EvenThoughItsTypeIsCustom()
         {
             _context.SpecialOffers.Add(ProductionFirstTime());
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var ex = await Assert.ThrowsAsync<Exception>(() => _offers.DeleteSpecialOffer(1));
             Assert.Contains("first-time", ex.Message);
@@ -146,7 +146,7 @@ namespace DreamCleaningBackend.Tests
             _context.SpecialOffers.AddRange(
                 new SpecialOffer { Id = 3, Name = "Legacy", Description = "", Type = OfferType.FirstTime, CreatedAt = DateTime.UtcNow },
                 new SpecialOffer { Id = 4, Name = "Holiday", Description = "", Type = OfferType.Holiday, CreatedAt = DateTime.UtcNow });
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<Exception>(() => _offers.DeleteSpecialOffer(3));
             Assert.True(await _offers.DeleteSpecialOffer(4));
@@ -158,7 +158,7 @@ namespace DreamCleaningBackend.Tests
         public async Task AMalformedOrDuplicateKeyIsRefusedWithTheReason()
         {
             _context.SpecialOffers.Add(ProductionFirstTime());
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
             var admin = AdminController("SuperAdmin");
 
             var bad = await admin.CreateSpecialOffer(new CreateSpecialOfferDto
@@ -177,7 +177,7 @@ namespace DreamCleaningBackend.Tests
         public async Task AbsentKeyKeepsTheStoredOne_ExplicitNullOrBlankClearsIt()
         {
             _context.SpecialOffers.Add(ProductionFirstTime());
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
             var admin = AdminController("SuperAdmin");
             var offer = _context.SpecialOffers.Single();
 
@@ -209,7 +209,7 @@ namespace DreamCleaningBackend.Tests
         public async Task OnlyASuperAdminChangesAKey_ButAnAdminCanSaveTheOfferUnchanged()
         {
             _context.SpecialOffers.Add(ProductionFirstTime());
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
             var admin = AdminController("Admin");
             var offer = _context.SpecialOffers.AsNoTracking().Single();
 
@@ -235,7 +235,7 @@ namespace DreamCleaningBackend.Tests
         {
             _context.SpecialOffers.Add(ProductionFirstTime(name: "Renamed"));
             _context.UserSpecialOffers.Add(new UserSpecialOffer { Id = 1, UserId = 7, SpecialOfferId = 1, GrantedAt = DateTime.UtcNow });
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var mine = await _offers.GetUserAvailableOffers(7);
             Assert.Equal("first-time", Assert.Single(mine).OfferKey);

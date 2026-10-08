@@ -33,7 +33,7 @@ public class BookingNotificationLoggingTests
         var serviceType = new ServiceType { Id = 1, Name = "Residential", BasePrice = 100, TimeDuration = 120 };
         db.ServiceTypes.Add(serviceType);
         db.Users.Add(new User { Id = 1 });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var logger = new RecordingLogger<BookingCreationService>();
         var loyalty = new LoyaltyDiscountService(db, new RecordingAuditService(), NullLogger<LoyaltyDiscountService>.Instance);
         var service = new BookingCreationService(db, loyalty, Stub<IGiftCardService>(), logger);
@@ -69,7 +69,7 @@ public class BookingNotificationLoggingTests
             PaymentMethod = PaymentMethod.Normal, Total = 100, ContactFirstName = "Test",
             ContactPhone = "1234567890", ContactEmail = "test@example.invalid"
         });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var smsAttempts = 0;
         var sms = Stub<ISmsService>((method, args) =>
         {
@@ -85,10 +85,10 @@ public class BookingNotificationLoggingTests
             .AddSingleton(Stub<IEmailService>()).AddSingleton(sms).BuildServiceProvider();
         using var worker = new RecurringOrderGenerationService(provider, logger, new ConfigurationBuilder().Build());
 
-        await worker.SweepAsync();
+        await worker.SweepAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(1, smsAttempts);
-        Assert.Equal(emailSucceeds ? 1 : 0, await db.NotificationLogs.CountAsync());
+        Assert.Equal(emailSucceeds ? 1 : 0, await db.NotificationLogs.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
         Assert.Equal(unexpectedFailure, logger.Entries.Any(e => e.Level >= LogLevel.Warning));
     }
 

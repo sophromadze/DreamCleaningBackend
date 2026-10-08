@@ -102,19 +102,19 @@ namespace DreamCleaningBackend.Tests
         {
             var created = await CreateOk(New("Pets", "   ", Residential));
             Assert.Null(created.ExtraServiceKey);
-            Assert.Null((await _context.ExtraServices.SingleAsync()).ExtraServiceKey);
+            Assert.Null((await _context.ExtraServices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).ExtraServiceKey);
         }
 
         [Fact]
         public async Task RenamingKeepsTheKey_WhenTheFormDoesNotSendIt()
         {
             var created = await CreateOk(New("Vacuum Cleaner", "vacuum-cleaner"));
-            var row = await _context.ExtraServices.SingleAsync(e => e.Id == created.Id);
+            var row = await _context.ExtraServices.SingleAsync(e => e.Id == created.Id, cancellationToken: TestContext.Current.CancellationToken);
 
             var result = await _controller.UpdateExtraService(row.Id, Update(row, "We Bring a Hoover"));
             Assert.IsType<OkObjectResult>(result.Result);
 
-            var saved = await _context.ExtraServices.SingleAsync(e => e.Id == created.Id);
+            var saved = await _context.ExtraServices.SingleAsync(e => e.Id == created.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("We Bring a Hoover", saved.Name);
             Assert.Equal("vacuum-cleaner", saved.ExtraServiceKey);
         }
@@ -123,17 +123,17 @@ namespace DreamCleaningBackend.Tests
         public async Task TheFormCanSetChangeAndClearTheKey()
         {
             var created = await CreateOk(New("Oven", null, Residential));
-            var row = await _context.ExtraServices.SingleAsync(e => e.Id == created.Id);
+            var row = await _context.ExtraServices.SingleAsync(e => e.Id == created.Id, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.IsType<OkObjectResult>((await _controller.UpdateExtraService(row.Id, Update(row, "Oven", true, "oven"))).Result);
-            Assert.Equal("oven", (await _context.ExtraServices.SingleAsync()).ExtraServiceKey);
+            Assert.Equal("oven", (await _context.ExtraServices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).ExtraServiceKey);
 
             var bad = await _controller.UpdateExtraService(row.Id, Update(row, "Oven", true, "Oven Inside"));
             Assert.NotNull(Message(bad.Result));
-            Assert.Equal("oven", (await _context.ExtraServices.SingleAsync()).ExtraServiceKey);
+            Assert.Equal("oven", (await _context.ExtraServices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).ExtraServiceKey);
 
             Assert.IsType<OkObjectResult>((await _controller.UpdateExtraService(row.Id, Update(row, "Oven", true, ""))).Result);
-            Assert.Null((await _context.ExtraServices.SingleAsync()).ExtraServiceKey);
+            Assert.Null((await _context.ExtraServices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).ExtraServiceKey);
         }
 
         [Fact]

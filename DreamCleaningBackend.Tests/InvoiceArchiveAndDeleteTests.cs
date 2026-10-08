@@ -79,20 +79,20 @@ namespace DreamCleaningBackend.Tests
             var active = NewInvoice(clientId, "DCI-2026-00000001");
             var filed = NewInvoice(clientId, "DCI-2026-00000002");
             context.CommercialInvoices.AddRange(active, filed);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            Assert.Equal(2, await ListQuery(context, archived: false).CountAsync());
-            Assert.Empty(await ListQuery(context, archived: true).ToListAsync());
+            Assert.Equal(2, await ListQuery(context, archived: false).CountAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Empty(await ListQuery(context, archived: true).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
             filed.IsArchived = true;
             filed.ArchivedAt = DateTime.UtcNow;
             filed.ArchivedByUserId = 1;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            var remaining = await ListQuery(context, archived: false).SingleAsync();
+            var remaining = await ListQuery(context, archived: false).SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("DCI-2026-00000001", remaining.InvoiceNumber);
 
-            var archived = await ListQuery(context, archived: true).SingleAsync();
+            var archived = await ListQuery(context, archived: true).SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("DCI-2026-00000002", archived.InvoiceNumber);
         }
 
@@ -112,13 +112,13 @@ namespace DreamCleaningBackend.Tests
             invoice.AmountPaid = 500m;
             invoice.PaidAt = DateTime.UtcNow;
             context.CommercialInvoices.Add(invoice);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             invoice.IsArchived = true;
             invoice.ArchivedAt = DateTime.UtcNow;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            var reloaded = await context.CommercialInvoices.SingleAsync();
+            var reloaded = await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.True(reloaded.IsArchived);
             Assert.Equal(InvoiceStatus.Paid, reloaded.Status);
             Assert.Equal(500m, reloaded.AmountPaid);
@@ -141,17 +141,17 @@ namespace DreamCleaningBackend.Tests
             invoice.ArchivedAt = DateTime.UtcNow;
             invoice.ArchivedByUserId = 7;
             context.CommercialInvoices.Add(invoice);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             invoice.IsArchived = false;
             invoice.ArchivedAt = null;
             invoice.ArchivedByUserId = null;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            Assert.Single(await ListQuery(context, archived: false).ToListAsync());
-            Assert.Empty(await ListQuery(context, archived: true).ToListAsync());
+            Assert.Single(await ListQuery(context, archived: false).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Empty(await ListQuery(context, archived: true).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
-            var reloaded = await context.CommercialInvoices.SingleAsync();
+            var reloaded = await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Null(reloaded.ArchivedAt);
             Assert.Null(reloaded.ArchivedByUserId);
         }
@@ -170,7 +170,7 @@ namespace DreamCleaningBackend.Tests
 
             var invoice = NewInvoice(clientId, "DCI-2026-00000005");
             context.CommercialInvoices.Add(invoice);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             context.CommercialInvoicePayments.Add(new CommercialInvoicePayment
             {
@@ -179,10 +179,10 @@ namespace DreamCleaningBackend.Tests
                 PaymentDate = DateTime.UtcNow.Date,
                 RecordedByUserId = 1
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(1, await context.CommercialInvoicePayments
-                .CountAsync(p => p.CommercialInvoiceId == invoice.Id));
+                .CountAsync(p => p.CommercialInvoiceId == invoice.Id, cancellationToken: TestContext.Current.CancellationToken));
         }
 
         /// <summary>
@@ -200,7 +200,7 @@ namespace DreamCleaningBackend.Tests
 
             var invoice = NewInvoice(clientId, "DCI-2026-00000006");
             context.CommercialInvoices.Add(invoice);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             context.CommercialInvoicePaymentAttempts.Add(new CommercialInvoicePaymentAttempt
             {
@@ -208,20 +208,20 @@ namespace DreamCleaningBackend.Tests
                 Amount = 500m,
                 Status = InvoicePaymentAttemptStatus.Created
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var external = await context.CommercialInvoicePaymentAttempts
                 .CountAsync(a => a.CommercialInvoiceId == invoice.Id
-                                 && (a.StripeCheckoutSessionId != null || a.StripePaymentIntentId != null));
+                                 && (a.StripeCheckoutSessionId != null || a.StripePaymentIntentId != null), cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(0, external);
 
-            var abandoned = await context.CommercialInvoicePaymentAttempts.SingleAsync();
+            var abandoned = await context.CommercialInvoicePaymentAttempts.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             abandoned.StripeCheckoutSessionId = "cs_test_123";
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             external = await context.CommercialInvoicePaymentAttempts
                 .CountAsync(a => a.CommercialInvoiceId == invoice.Id
-                                 && (a.StripeCheckoutSessionId != null || a.StripePaymentIntentId != null));
+                                 && (a.StripeCheckoutSessionId != null || a.StripePaymentIntentId != null), cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(1, external);
         }
 
@@ -249,12 +249,12 @@ namespace DreamCleaningBackend.Tests
                 CreatedByAdminId = 1
             };
             context.Contracts.Add(contract);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var doomed = NewInvoice(clientId, "DCI-2026-00000007", contract.Id);
             var keeper = NewInvoice(clientId, "DCI-2026-00000008", contract.Id);
             context.CommercialInvoices.AddRange(doomed, keeper);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             context.CommercialInvoiceItems.Add(new CommercialInvoiceItem
             {
@@ -264,25 +264,25 @@ namespace DreamCleaningBackend.Tests
                 UnitPrice = 500m,
                 Amount = 500m
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             // Loaded so the in-memory provider cascades to the items the way MySQL's FK does.
             var toDelete = await context.CommercialInvoices
                 .Include(i => i.Items)
-                .FirstAsync(i => i.Id == doomed.Id);
+                .FirstAsync(i => i.Id == doomed.Id, cancellationToken: TestContext.Current.CancellationToken);
             context.CommercialInvoices.Remove(toDelete);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             // The invoice and its OWN line items are gone.
-            Assert.Null(await context.CommercialInvoices.FindAsync(doomed.Id));
+            Assert.Null(await context.CommercialInvoices.FindAsync(new object?[] { doomed.Id }, TestContext.Current.CancellationToken));
             Assert.Empty(await context.CommercialInvoiceItems
-                .Where(i => i.CommercialInvoiceId == doomed.Id).ToListAsync());
+                .Where(i => i.CommercialInvoiceId == doomed.Id).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
             // Everything shared is untouched.
-            Assert.NotNull(await context.ContractClients.FindAsync(clientId));
-            Assert.NotNull(await context.Contracts.FindAsync(contract.Id));
+            Assert.NotNull(await context.ContractClients.FindAsync(new object?[] { clientId }, TestContext.Current.CancellationToken));
+            Assert.NotNull(await context.Contracts.FindAsync(new object?[] { contract.Id }, TestContext.Current.CancellationToken));
 
-            var surviving = await context.CommercialInvoices.SingleAsync();
+            var surviving = await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("DCI-2026-00000008", surviving.InvoiceNumber);
             Assert.Equal(contract.Id, surviving.ContractId);
         }
@@ -306,13 +306,13 @@ namespace DreamCleaningBackend.Tests
             invoice.VoidReason = "Issued in error";
             invoice.VoidedByUserId = 1;
             context.CommercialInvoices.Add(invoice);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             invoice.IsArchived = true;
             invoice.ArchivedAt = DateTime.UtcNow;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            var reloaded = await context.CommercialInvoices.SingleAsync();
+            var reloaded = await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoiceStatus.Void, reloaded.Status);
             Assert.Equal("Issued in error", reloaded.VoidReason);
             Assert.NotNull(reloaded.VoidedAt);

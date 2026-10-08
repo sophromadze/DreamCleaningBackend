@@ -93,7 +93,7 @@ public class PendingUpdatePaymentGuardTests
         var f = new Fixture();
         var order = f.AddOrder(isPaid: true, total: 650m, initialTotal: 0m);   // pre-snapshot legacy order
 
-        Assert.Equal(0m, await OrderAdditionalCharge.OutstandingAsync(f.Db, order));
+        Assert.Equal(0m, await OrderAdditionalCharge.OutstandingAsync(f.Db, order, TestContext.Current.CancellationToken));
         var result = await f.Controller.CreatePendingUpdatePaymentIntent(500);
 
         Assert.IsType<BadRequestObjectResult>(result);

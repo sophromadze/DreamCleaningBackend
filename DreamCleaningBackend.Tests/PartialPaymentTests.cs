@@ -182,7 +182,7 @@ public class PartialPaymentTests
     {
         var (db, service, audit) = await ServiceWith(Order());
 
-        var row = await service.CreateRequestAsync(1, 1000m, "deposit agreed on the phone", adminUserId: 5);
+        var row = await service.CreateRequestAsync(1, 1000m, "deposit agreed on the phone", adminUserId: 5, ct: TestContext.Current.CancellationToken);
 
         Assert.Equal(1000m, row.RequestedAmount);
         Assert.Equal(OrderPartialPaymentStatus.Pending, row.Status);
@@ -191,7 +191,7 @@ public class PartialPaymentTests
         Assert.Equal(5, row.RequestedByUserId);
 
         // Asking for money moves none: the order is exactly as unpaid as it was.
-        var order = await db.Orders.FirstAsync();
+        var order = await db.Orders.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.False(order.IsPaid);
         Assert.Equal(0m, order.AmountPaid);
         Assert.Equal(OrderStatuses.Pending, order.Status);
@@ -205,10 +205,10 @@ public class PartialPaymentTests
         // Two live requests would let the same money be charged twice from two open tabs, and
         // nothing would tell the payment page which to charge first.
         var (_, service, _) = await ServiceWith(Order());
-        await service.CreateRequestAsync(1, 1000m, null, adminUserId: 5);
+        await service.CreateRequestAsync(1, 1000m, null, adminUserId: 5, ct: TestContext.Current.CancellationToken);
 
         var ex = await Assert.ThrowsAsync<PartialPaymentException>(
-            () => service.CreateRequestAsync(1, 500m, null, adminUserId: 5));
+            () => service.CreateRequestAsync(1, 500m, null, adminUserId: 5, ct: TestContext.Current.CancellationToken));
         Assert.Contains("already a payment request", ex.Message);
     }
 
@@ -218,7 +218,7 @@ public class PartialPaymentTests
         var (_, service, _) = await ServiceWith(Order(amountPaid: 1000m));
 
         var ex = await Assert.ThrowsAsync<PartialPaymentException>(
-            () => service.CreateRequestAsync(1, 2000m, null, adminUserId: 5));
+            () => service.CreateRequestAsync(1, 2000m, null, adminUserId: 5, ct: TestContext.Current.CancellationToken));
         Assert.Contains("1743.65", ex.Message);
     }
 
@@ -230,7 +230,7 @@ public class PartialPaymentTests
         var (_, service, _) = await ServiceWith(Order(total: 100m));
 
         var ex = await Assert.ThrowsAsync<PartialPaymentException>(
-            () => service.CreateRequestAsync(1, 99.70m, null, adminUserId: 5));
+            () => service.CreateRequestAsync(1, 99.70m, null, adminUserId: 5, ct: TestContext.Current.CancellationToken));
         Assert.Contains("0.30", ex.Message);
         Assert.Contains("100.00", ex.Message);
     }
@@ -240,7 +240,7 @@ public class PartialPaymentTests
     {
         var (_, service, _) = await ServiceWith(Order());
         await Assert.ThrowsAsync<PartialPaymentException>(
-            () => service.CreateRequestAsync(1, 0.25m, null, adminUserId: 5));
+            () => service.CreateRequestAsync(1, 0.25m, null, adminUserId: 5, ct: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -248,11 +248,11 @@ public class PartialPaymentTests
     {
         // An amount that was asked for and dropped is part of the conversation with the customer.
         var (_, service, audit) = await ServiceWith(Order());
-        var row = await service.CreateRequestAsync(1, 1000m, null, adminUserId: 5);
+        var row = await service.CreateRequestAsync(1, 1000m, null, adminUserId: 5, ct: TestContext.Current.CancellationToken);
 
-        await service.CancelRequestAsync(1, row.Id, adminUserId: 5);
+        await service.CancelRequestAsync(1, row.Id, adminUserId: 5, ct: TestContext.Current.CancellationToken);
 
-        var balance = await service.GetBalanceAsync(1);
+        var balance = await service.GetBalanceAsync(1, TestContext.Current.CancellationToken);
         Assert.Null(balance.PendingRequest);
         Assert.Single(balance.History);
         Assert.Equal("Cancelled", balance.History[0].Status);
@@ -266,9 +266,9 @@ public class PartialPaymentTests
     public async Task ALiveRequestBlocksTheNextOneAndSaysSo()
     {
         var (_, service, _) = await ServiceWith(Order());
-        await service.CreateRequestAsync(1, 1000m, null, adminUserId: 5);
+        await service.CreateRequestAsync(1, 1000m, null, adminUserId: 5, ct: TestContext.Current.CancellationToken);
 
-        var balance = await service.GetBalanceAsync(1);
+        var balance = await service.GetBalanceAsync(1, TestContext.Current.CancellationToken);
         Assert.NotNull(balance.PendingRequest);
         Assert.Equal(1000m, balance.PendingRequest!.RequestedAmount);
         Assert.False(balance.CanRequestPartialPayment);
@@ -280,7 +280,7 @@ public class PartialPaymentTests
     {
         var (_, service, _) = await ServiceWith(Order(amountPaid: 1000m));
 
-        var balance = await service.GetBalanceAsync(1);
+        var balance = await service.GetBalanceAsync(1, TestContext.Current.CancellationToken);
         Assert.Equal(2743.65m, balance.Total);
         Assert.Equal(1000m, balance.AmountPaid);
         Assert.Equal(1743.65m, balance.AmountDue);
@@ -303,9 +303,9 @@ public class PartialPaymentTests
             OrderId = 1, UpdatedByUserId = 5, UpdatedAt = DateTime.UtcNow,
             OriginalTotal = 141.54m, NewTotal = 241.54m, AdditionalAmount = 100m, IsPaid = false
         });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        var balance = await service.GetBalanceAsync(1);
+        var balance = await service.GetBalanceAsync(1, TestContext.Current.CancellationToken);
         Assert.Equal(100m, balance.AdditionalAmountDue);
         Assert.Equal(141.54m, balance.AmountPaid);
         Assert.Null(balance.CannotRequestReason);

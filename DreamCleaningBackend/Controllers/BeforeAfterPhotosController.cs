@@ -148,8 +148,10 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         [RequestSizeLimit(25 * 1024 * 1024)] // two ~10MB images + metadata
         public async Task<ActionResult<BeforeAfterPhotoDto>> Create(
-            [FromForm] IFormFile beforeFile,
-            [FromForm] IFormFile afterFile,
+            // IFormFile binds from the form on its own under [ApiController]; Swashbuckle 10
+            // refuses an explicit [FromForm] on it (form-file parameters are described from the type).
+            IFormFile beforeFile,
+            IFormFile afterFile,
             [FromForm, Required] string title,
             [FromForm] string? subtitle,
             [FromForm] string? linkUrl,

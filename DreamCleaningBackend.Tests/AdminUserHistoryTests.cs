@@ -119,7 +119,7 @@ namespace DreamCleaningBackend.Tests
                 ContactEmail = "casey@example.invalid", ContactFirstName = "Casey", ContactLastName = "Client",
                 OrderDate = DateTime.UtcNow.AddMinutes(5), CreatedAt = DateTime.UtcNow
             });
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var result = await Controller().GetUserProfile(7);
             var detail = Assert.IsType<UserDetailDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
@@ -144,7 +144,7 @@ namespace DreamCleaningBackend.Tests
                 OrderDate = DateTime.UtcNow.AddMinutes(id), CreatedAt = DateTime.UtcNow
             };
             _db.Orders.AddRange(Make(11, "Done", 0m), Make(12, "Refunded", 659.70m));
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var result = await Controller().GetUserProfile(8);
             var detail = Assert.IsType<UserDetailDto>(Assert.IsType<OkObjectResult>(result.Result).Value);

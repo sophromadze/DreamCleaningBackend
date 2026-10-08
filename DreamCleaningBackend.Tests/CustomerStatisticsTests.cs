@@ -194,9 +194,9 @@ namespace DreamCleaningBackend.Tests
                 Total = 500m, SubTotal = 500m, ContactFirstName = "Test", ContactLastName = "Customer",
                 ContactEmail = "user2@example.com", ServiceAddress = "1 Test St", City = "Brooklyn", State = "New York", ZipCode = "11201"
             });
-            var carols = await _context.Orders.Where(o => o.UserId == Carol && o.ServiceDate >= WindowFrom).ToListAsync();
+            var carols = await _context.Orders.Where(o => o.UserId == Carol && o.ServiceDate >= WindowFrom).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             carols.Single().TotalRefundedAmount = 10m;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var stats = await Load();
 

@@ -102,10 +102,10 @@ public class WeeklyFlatFeeInvoiceLinkTests
         Assert.Equal(952.66m, invoice.Total);
 
         // The internal allocation adds up to the invoice — it is not six weekly fees.
-        var links = await f.Db.CommercialInvoiceOrders.Where(l => l.CommercialInvoiceId == invoice.Id).ToListAsync();
+        var links = await f.Db.CommercialInvoiceOrders.Where(l => l.CommercialInvoiceId == invoice.Id).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(6, links.Count);
         Assert.Equal(952.66m, links.Sum(l => l.AllocatedAmount));
-        Assert.All(await f.Db.Orders.ToListAsync(), o => Assert.Equal(952.66m, o.Total)); // draft touches no order
+        Assert.All(await f.Db.Orders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken), o => Assert.Equal(952.66m, o.Total)); // draft touches no order
     }
 
     [Fact]
@@ -157,9 +157,9 @@ public class WeeklyFlatFeeInvoiceLinkTests
     public async Task AMovedVisit_StillSettlesTheWeekItWasScheduledIn()
     {
         using var f = new Fixture();
-        var friday = await f.Db.Orders.FindAsync(6);
+        var friday = await f.Db.Orders.FindAsync(new object?[] { 6 }, TestContext.Current.CancellationToken);
         friday!.ServiceDate = new DateTime(2026, 10, 12); // moved into the next week by an admin
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var preview = await f.Invoices.PreviewLinkedOrdersAsync(f.Draft(Week1), null);
         Assert.Equal(1, preview.ServiceWeekCount);
@@ -169,12 +169,12 @@ public class WeeklyFlatFeeInvoiceLinkTests
     public async Task PerVisitContracts_KeepBillingEachCleaning()
     {
         using var f = new Fixture();
-        foreach (var order in await f.Db.Orders.Where(o => o.Id <= 3).ToListAsync())
+        foreach (var order in await f.Db.Orders.Where(o => o.Id <= 3).ToListAsync(cancellationToken: TestContext.Current.CancellationToken))
         {
             order.ContractId = PerVisitContract;
             order.Total = 100m;
         }
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var preview = await f.Invoices.PreviewLinkedOrdersAsync(
             f.Draft(new[] { 1, 2, 3 }, InvoiceTaxType.Included, PerVisitContract), null);
@@ -192,25 +192,25 @@ public class WeeklyFlatFeeInvoiceLinkTests
     public async Task CleaningsOfAnotherCustomerOrContract_CannotBeLinked(string reason)
     {
         using var f = new Fixture();
-        var order = (await f.Db.Orders.FindAsync(1))!;
+        var order = (await f.Db.Orders.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!;
         var dto = f.Draft(Week1);
 
         if (reason == "other client") { order.ContractClientId = 2; order.ContractId = OtherClientContract; }
         if (reason == "other contract") order.ContractId = PerVisitContract;
         if (reason == "no contract on invoice") dto.ContractId = null;
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<InvoiceWorkflowException>(() => f.Invoices.CreateAsync(dto, 1));
-        Assert.Empty(await f.Db.CommercialInvoices.ToListAsync());
+        Assert.Empty(await f.Db.CommercialInvoices.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task ThePickerListsAnotherContractsCleaningWithItsReason()
     {
         using var f = new Fixture();
-        var order = (await f.Db.Orders.FindAsync(1))!;
+        var order = (await f.Db.Orders.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!;
         order.ContractId = PerVisitContract;
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var eligible = await f.Links.GetEligibleOrdersAsync(1, null, null, null, WeeklyContract);
 
@@ -236,16 +236,16 @@ public class WeeklyFlatFeeInvoiceLinkTests
             }
         };
         f.Db.CommercialInvoices.Add(sent);
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<InvoiceWorkflowException>(() => f.Invoices.UpdateAsync(sent.Id, f.Draft(Week1), 1));
         await Assert.ThrowsAsync<InvoiceWorkflowException>(() => f.Invoices.PreviewLinkedOrdersAsync(f.Draft(Week1), sent.Id));
 
         f.Db.ChangeTracker.Clear();
-        var reloaded = await f.Db.CommercialInvoices.Include(i => i.Items).SingleAsync(i => i.Id == sent.Id);
+        var reloaded = await f.Db.CommercialInvoices.Include(i => i.Items).SingleAsync(i => i.Id == sent.Id, cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(5715.94m, reloaded.Total);
         Assert.Equal(6m, Assert.Single(reloaded.Items).Quantity);
-        Assert.Empty(await f.Db.CommercialInvoiceOrders.ToListAsync());
+        Assert.Empty(await f.Db.CommercialInvoiceOrders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -254,15 +254,15 @@ public class WeeklyFlatFeeInvoiceLinkTests
         // Generated weekly-flat-fee visits are $0 operational records (2026-10). Their own total is
         // irrelevant: the invoice prices the WEEK from the contract.
         using var f = new Fixture();
-        foreach (var order in await f.Db.Orders.ToListAsync()) { order.Total = 0m; order.SubTotal = 0m; order.Tax = 0m; }
-        await f.Db.SaveChangesAsync();
+        foreach (var order in await f.Db.Orders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken)) { order.Total = 0m; order.SubTotal = 0m; order.Tax = 0m; }
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var invoice = await f.Invoices.CreateAsync(f.Draft(Week1), 1);
 
         Assert.Single(invoice.Items);
         Assert.Equal(875.00m, invoice.Total - invoice.TaxAmount);
         Assert.Equal(952.66m, invoice.Total);
-        var links = await f.Db.CommercialInvoiceOrders.Where(l => l.CommercialInvoiceId == invoice.Id).ToListAsync();
+        var links = await f.Db.CommercialInvoiceOrders.Where(l => l.CommercialInvoiceId == invoice.Id).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(952.66m, links.Sum(l => l.AllocatedAmount));
         Assert.All(links, l => Assert.Equal(0m, l.OriginalOrderTotal)); // voiding hands back $0, not a price
     }

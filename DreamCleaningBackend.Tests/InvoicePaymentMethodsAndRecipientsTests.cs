@@ -211,7 +211,7 @@ namespace DreamCleaningBackend.Tests
             var ex = await Assert.ThrowsAsync<InvoiceWorkflowException>(() => service.CreateAsync(badAddress, AdminId));
             Assert.Contains("ap.client.example", ex.Message);
 
-            Assert.Empty(await context.CommercialInvoices.ToListAsync());
+            Assert.Empty(await context.CommercialInvoices.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -239,7 +239,7 @@ namespace DreamCleaningBackend.Tests
             dto.SaveRecipientsAsClientDefault = true;
             await NewInvoiceService(context).CreateAsync(dto, AdminId);
 
-            var saved = await context.ContractClients.SingleAsync();
+            var saved = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(new[] { "ap@client.example", "cfo@client.example" },
                 InvoiceRecipientList.DefaultsFor(saved.DefaultInvoiceRecipientsJson, "someone@else.example", saved.NoticeEmail));
         }
@@ -255,14 +255,14 @@ namespace DreamCleaningBackend.Tests
             invoice.Status = InvoiceStatus.Paid;
             invoice.AmountPaid = invoice.Total;
             invoice.BalanceDue = 0m;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var edit = Dto(client.Id, InvoicePaymentMethods.Card, "receipts@client.example");
             var updated = await service.UpdateAsync(invoice.Id, edit, AdminId);
 
             Assert.Equal(InvoicePaymentMethods.OnlineBank, updated.PaymentMethods);
             Assert.Equal(new[] { "receipts@client.example" }, InvoiceRecipientList.Parse(updated.RecipientEmailsJson));
-            Assert.Contains(await context.CommercialInvoiceActivityLogs.ToListAsync(), a => a.Action == "recipients_changed");
+            Assert.Contains(await context.CommercialInvoiceActivityLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken), a => a.Action == "recipients_changed");
         }
 
         [Fact]
@@ -276,7 +276,7 @@ namespace DreamCleaningBackend.Tests
             await service.UpdateAsync(invoice.Id, Dto(client.Id, InvoicePaymentMethods.OnlineBank | InvoicePaymentMethods.Card), AdminId);
 
             var entry = Assert.Single(await context.CommercialInvoiceActivityLogs
-                .Where(a => a.Action == "payment_methods_changed").ToListAsync());
+                .Where(a => a.Action == "payment_methods_changed").ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
             Assert.Contains("Online bank payment (ACH), Card", entry.Description);
         }
 
@@ -288,7 +288,7 @@ namespace DreamCleaningBackend.Tests
             var service = NewInvoiceService(context);
             var invoice = await service.CreateAsync(Dto(client.Id), AdminId);
             invoice.Status = InvoiceStatus.Void;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<InvoiceWorkflowException>(() =>
                 service.UpdateRecipientsAsync(invoice.Id, new[] { "x@client.example" }, false, AdminId));
@@ -309,7 +309,7 @@ namespace DreamCleaningBackend.Tests
                 CreatedByUserId = AdminId
             };
             context.CommercialInvoices.Add(invoice);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(new[] { "notices@client.example" }, await NewInvoiceService(context).ResolveRecipientsAsync(invoice));
         }
@@ -324,11 +324,11 @@ namespace DreamCleaningBackend.Tests
             var invoices = NewInvoiceService(context);
             var invoice = await invoices.CreateAsync(Dto(client.Id, InvoicePaymentMethods.OnlineBank), AdminId);
             invoice.Status = InvoiceStatus.Sent;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var billing = new BillingSettingsService(context);
-            (await billing.GetOrCreateAsync()).StripeCardEnabled = true;
-            await context.SaveChangesAsync();
+            (await billing.GetOrCreateAsync(TestContext.Current.CancellationToken)).StripeCardEnabled = true;
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var checkout = new InvoiceCheckoutService(context, invoices, billing,
                 new ConfigurationBuilder().Build(), NullLogger<InvoiceCheckoutService>.Instance);
@@ -338,7 +338,7 @@ namespace DreamCleaningBackend.Tests
             Assert.Contains("Card payment is not available", ex.Message);
 
             // Refused before anything was written or sent to Stripe.
-            Assert.Empty(await context.CommercialInvoicePaymentAttempts.ToListAsync());
+            Assert.Empty(await context.CommercialInvoicePaymentAttempts.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         // ── Sending goes to the invoice's own list ────────────────────────────────────────────
@@ -379,14 +379,14 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(new[] { "ap@client.example", "cfo@client.example" }, email.To);
             Assert.True(outcome.AnySent);
 
-            var logs = await context.CommercialInvoiceEmailLogs.ToListAsync();
+            var logs = await context.CommercialInvoiceEmailLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(2, logs.Count);
             Assert.Single(logs.Select(l => l.SendBatchId).Distinct());
             Assert.NotNull(logs[0].SendBatchId);
 
             // Never the client's notice address: the invoice's own list is the whole answer.
             Assert.DoesNotContain("notices@client.example", email.To);
-            Assert.Equal(InvoiceStatus.Sent, (await context.CommercialInvoices.SingleAsync()).Status);
+            Assert.Equal(InvoiceStatus.Sent, (await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
         }
 
         [Fact]
@@ -422,7 +422,7 @@ namespace DreamCleaningBackend.Tests
 
             Assert.Equal(new[] { "new-ap@client.example" }, email.To);
             Assert.Equal(new[] { "new-ap@client.example" },
-                InvoiceRecipientList.Parse((await context.CommercialInvoices.SingleAsync()).RecipientEmailsJson));
+                InvoiceRecipientList.Parse((await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).RecipientEmailsJson));
         }
 
         [Fact]
@@ -434,14 +434,14 @@ namespace DreamCleaningBackend.Tests
                 Dto(client.Id, InvoicePaymentMethods.OnlineBank, "ap@client.example", "cfo@client.example"), AdminId);
             invoice.Status = InvoiceStatus.Sent;
             invoice.FirstSentAt = DateTime.UtcNow;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var email = new RecordingEmail();
             await NewEmailService(context, email).SendReminderAsync(invoice.Id, new SendInvoiceReminderDto(), AdminId);
 
             Assert.Equal(2, email.To.Count);
             Assert.Equal(new[] { "ap@client.example", "cfo@client.example" },
-                (await context.CommercialInvoiceReminders.OrderBy(r => r.Id).ToListAsync()).Select(r => r.Recipient));
+                (await context.CommercialInvoiceReminders.OrderBy(r => r.Id).ToListAsync(cancellationToken: TestContext.Current.CancellationToken)).Select(r => r.Recipient));
         }
     }
 }

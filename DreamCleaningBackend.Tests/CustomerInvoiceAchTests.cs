@@ -92,9 +92,9 @@ public class CustomerInvoiceAchTests
     {
         var (db, ach, partial, _) = await Setup();
         db.CustomerInvoicePaymentAttempts.Add(Attempt(CustomerInvoicePaymentAttemptStatus.Processing));
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        var result = await ach.RecordSucceededAsync("pi_ach", Metadata());
+        var result = await ach.RecordSucceededAsync("pi_ach", Metadata(), TestContext.Current.CancellationToken);
 
         Assert.NotNull(result);
         Assert.True(result!.Applied);
@@ -103,8 +103,8 @@ public class CustomerInvoiceAchTests
         Assert.Equal("pi_ach", intentId);
         Assert.Equal(925.43m, amount); // not the $930.43 debited
         // The request now names the ACH intent, so SettleAsync claims exactly this row.
-        Assert.Equal("pi_ach", (await db.OrderPartialPayments.SingleAsync()).PaymentIntentId);
-        Assert.Equal(CustomerInvoicePaymentAttemptStatus.Succeeded, (await db.CustomerInvoicePaymentAttempts.SingleAsync()).Status);
+        Assert.Equal("pi_ach", (await db.OrderPartialPayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).PaymentIntentId);
+        Assert.Equal(CustomerInvoicePaymentAttemptStatus.Succeeded, (await db.CustomerInvoicePaymentAttempts.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
     }
 
     [Fact]
@@ -112,10 +112,10 @@ public class CustomerInvoiceAchTests
     {
         var (db, ach, partial, _) = await Setup();
         db.CustomerInvoicePaymentAttempts.Add(Attempt(CustomerInvoicePaymentAttemptStatus.Processing));
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        await ach.RecordSucceededAsync("pi_ach", Metadata());
-        var second = await ach.RecordSucceededAsync("pi_ach", Metadata());
+        await ach.RecordSucceededAsync("pi_ach", Metadata(), TestContext.Current.CancellationToken);
+        var second = await ach.RecordSucceededAsync("pi_ach", Metadata(), TestContext.Current.CancellationToken);
 
         Assert.False(second!.Applied);
         Assert.Single(partial.Settled);
@@ -126,12 +126,12 @@ public class CustomerInvoiceAchTests
     {
         var (db, ach, _, _) = await Setup();
         db.CustomerInvoicePaymentAttempts.Add(Attempt(CustomerInvoicePaymentAttemptStatus.Succeeded));
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        await ach.HandleFailedAsync("cs_1", "pi_ach", "x", "late", Metadata());
-        await ach.HandleAuthorizedAsync("cs_1", "pi_ach", Metadata());
+        await ach.HandleFailedAsync("cs_1", "pi_ach", "x", "late", Metadata(), TestContext.Current.CancellationToken);
+        await ach.HandleAuthorizedAsync("cs_1", "pi_ach", Metadata(), TestContext.Current.CancellationToken);
 
-        Assert.Equal(CustomerInvoicePaymentAttemptStatus.Succeeded, (await db.CustomerInvoicePaymentAttempts.SingleAsync()).Status);
+        Assert.Equal(CustomerInvoicePaymentAttemptStatus.Succeeded, (await db.CustomerInvoicePaymentAttempts.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
     }
 
     [Fact]
@@ -139,15 +139,15 @@ public class CustomerInvoiceAchTests
     {
         var (db, ach, partial, _) = await Setup();
         db.CustomerInvoicePaymentAttempts.Add(Attempt(CustomerInvoicePaymentAttemptStatus.CheckoutOpen));
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        await ach.HandleAuthorizedAsync("cs_1", "pi_ach", Metadata());
+        await ach.HandleAuthorizedAsync("cs_1", "pi_ach", Metadata(), TestContext.Current.CancellationToken);
 
-        var attempt = await db.CustomerInvoicePaymentAttempts.SingleAsync();
+        var attempt = await db.CustomerInvoicePaymentAttempts.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(CustomerInvoicePaymentAttemptStatus.Processing, attempt.Status);
         Assert.Equal("pi_ach", attempt.StripePaymentIntentId);
         Assert.Empty(partial.Settled);
-        Assert.True(await ach.IsProcessingForRequestAsync(7));
+        Assert.True(await ach.IsProcessingForRequestAsync(7, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public class CustomerInvoiceAchTests
         var (db, _, _, invoice) = await Setup();
         var settings = new BillingSettings { AchCustomerFeeEnabled = true };
 
-        var state = await CustomerInvoiceAchService.ComputeStateAsync(db, invoice, 925.43m, payable: true, settings);
+        var state = await CustomerInvoiceAchService.ComputeStateAsync(db, invoice, 925.43m, payable: true, settings, ct: TestContext.Current.CancellationToken);
         Assert.True(state.Available);
         Assert.Equal(0m, state.ProcessingFee);
         Assert.Equal(925.43m, state.TotalCharge);
@@ -181,18 +181,18 @@ public class CustomerInvoiceAchTests
         var settings = new BillingSettings();
 
         settings.StripeAchEnabled = false;
-        Assert.False((await CustomerInvoiceAchService.ComputeStateAsync(db, invoice, 100m, true, settings)).Available);
+        Assert.False((await CustomerInvoiceAchService.ComputeStateAsync(db, invoice, 100m, true, settings, TestContext.Current.CancellationToken)).Available);
         settings.StripeAchEnabled = true;
 
-        Assert.False((await CustomerInvoiceAchService.ComputeStateAsync(db, invoice, 100m, payable: false, settings)).Available);
+        Assert.False((await CustomerInvoiceAchService.ComputeStateAsync(db, invoice, 100m, payable: false, settings, ct: TestContext.Current.CancellationToken)).Available);
 
         db.CustomerInvoicePaymentAttempts.Add(Attempt(CustomerInvoicePaymentAttemptStatus.Processing));
-        await db.SaveChangesAsync();
-        var settling = await CustomerInvoiceAchService.ComputeStateAsync(db, invoice, 100m, true, settings);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var settling = await CustomerInvoiceAchService.ComputeStateAsync(db, invoice, 100m, true, settings, TestContext.Current.CancellationToken);
         Assert.True(settling.Processing);
         Assert.False(settling.Available);
 
         var (db2, _, _, additional) = await Setup(CustomerInvoiceKind.Additional);
-        Assert.False((await CustomerInvoiceAchService.ComputeStateAsync(db2, additional, 100m, true, settings)).Available);
+        Assert.False((await CustomerInvoiceAchService.ComputeStateAsync(db2, additional, 100m, true, settings, TestContext.Current.CancellationToken)).Available);
     }
 }

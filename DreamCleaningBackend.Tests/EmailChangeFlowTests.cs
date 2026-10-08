@@ -194,7 +194,7 @@ public class EmailChangeFlowTests
 
         // Expire it and try the real one.
         user.EmailChangeTokenExpiry = DateTime.UtcNow.AddMinutes(-1);
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("Invalid or expired email change token", await Fails(() => svc.ConfirmEmailChange(user.EmailChangeToken!)));
         Assert.Equal("old@example.com", user.Email);
@@ -276,7 +276,7 @@ public class EmailChangeFlowTests
         using var db = Db();
         Seed(db);
         db.Users.Add(new User { Id = 2, FirstName = "Other", LastName = "Person", Email = "taken@example.com", IsActive = true });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("This email address is already in use",
             await Fails(() => Service(db, new MailSpy()).InitiateEmailChange(1,
@@ -376,7 +376,7 @@ public class EmailChangeFlowTests
             new InitiateEmailChangeDto { NewEmail = "contested@example.com", CurrentPassword = "Correct1horse" });
 
         db.Users.Add(new User { Id = 2, FirstName = "Fast", LastName = "Mover", Email = "contested@example.com", IsActive = true });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("This email address is no longer available",
             await Fails(() => svc.ConfirmEmailChange(user.EmailChangeToken!)));

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models.Billing;
 using DreamCleaningBackend.Services;
@@ -15,7 +16,11 @@ namespace DreamCleaningBackend.Tests.Billing;
 /// <summary>Runs only with a Stripe TEST secret key in DC_STRIPE_TEST_KEY. Refuses anything else.</summary>
 public sealed class StripeTestModeFactAttribute : FactAttribute
 {
-    public StripeTestModeFactAttribute()
+    // xUnit v3 records where each test is declared through the attribute's caller info.
+    public StripeTestModeFactAttribute(
+        [CallerFilePath] string? sourceFilePath = null,
+        [CallerLineNumber] int sourceLineNumber = -1)
+        : base(sourceFilePath, sourceLineNumber)
     {
         var key = Environment.GetEnvironmentVariable("DC_STRIPE_TEST_KEY");
         if (string.IsNullOrWhiteSpace(key))
@@ -28,7 +33,11 @@ public sealed class StripeTestModeFactAttribute : FactAttribute
 /// <summary>Needs both a test-mode Stripe key and a local MariaDB.</summary>
 public sealed class StripeAndMariaDbFactAttribute : FactAttribute
 {
-    public StripeAndMariaDbFactAttribute()
+    // xUnit v3 records where each test is declared through the attribute's caller info.
+    public StripeAndMariaDbFactAttribute(
+        [CallerFilePath] string? sourceFilePath = null,
+        [CallerLineNumber] int sourceLineNumber = -1)
+        : base(sourceFilePath, sourceLineNumber)
     {
         var key = Environment.GetEnvironmentVariable("DC_STRIPE_TEST_KEY");
         if (string.IsNullOrWhiteSpace(key) || !key.StartsWith("sk_test_", StringComparison.Ordinal))

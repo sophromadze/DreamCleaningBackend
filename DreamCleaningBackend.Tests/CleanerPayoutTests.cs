@@ -131,7 +131,7 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(189.00m, result.TotalPaid);
             Assert.False(result.AlreadyRecorded);
 
-            var payouts = await _context.CleanerPayouts.Include(p => p.Lines).OrderBy(p => p.CleanerId).ToListAsync();
+            var payouts = await _context.CleanerPayouts.Include(p => p.Lines).OrderBy(p => p.CleanerId).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(2, payouts.Count);
 
             var ana = payouts[0];
@@ -165,7 +165,7 @@ namespace DreamCleaningBackend.Tests
             var again = await service.PayCleanersAsync(dto, AdminId);
 
             Assert.True(again.AlreadyRecorded);
-            Assert.Equal(2, await _context.CleanerPayouts.CountAsync());
+            Assert.Equal(2, await _context.CleanerPayouts.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -182,8 +182,8 @@ namespace DreamCleaningBackend.Tests
             await Assert.ThrowsAsync<CleanerPayoutConflictException>(() => service.PayCleanersAsync(stale, AdminId));
 
             // Only the Orders-tab payment exists; Ben was not paid either — all or nothing.
-            Assert.Single(await _context.CleanerPayouts.ToListAsync());
-            Assert.False((await _context.OrderCleaners.SingleAsync(oc => oc.Id == 12)).IsPaid);
+            Assert.Single(await _context.CleanerPayouts.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.False((await _context.OrderCleaners.SingleAsync(oc => oc.Id == 12, cancellationToken: TestContext.Current.CancellationToken)).IsPaid);
         }
 
         [Fact]
@@ -195,7 +195,7 @@ namespace DreamCleaningBackend.Tests
             dto.Cleaners[0].Lines[0].Amount = 40.00m;
 
             await Assert.ThrowsAsync<CleanerPayoutConflictException>(() => service.PayCleanersAsync(dto, AdminId));
-            Assert.Empty(await _context.CleanerPayouts.ToListAsync());
+            Assert.Empty(await _context.CleanerPayouts.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -238,9 +238,9 @@ namespace DreamCleaningBackend.Tests
             await service.PayCleanersAsync(PayAll(await service.GetUnpaidCleanersAsync()), AdminId);
 
             // Ana reports a longer job on 900: 5h → 6h. Only the hour is owed now.
-            var order = await _context.Orders.SingleAsync(o => o.Id == 900);
+            var order = await _context.Orders.SingleAsync(o => o.Id == 900, cancellationToken: TestContext.Current.CancellationToken);
             order.TotalDuration = 360;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var unpaid = await service.GetUnpaidCleanersAsync();
             var ana = Assert.Single(unpaid.Cleaners);
@@ -250,10 +250,10 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(21.00m, line.Outstanding);
 
             await service.PayCleanersAsync(PayAll(unpaid, key: "top-up-key-0001"), AdminId);
-            var topUp = await _context.CleanerPayouts.Include(p => p.Lines).OrderByDescending(p => p.Id).FirstAsync();
+            var topUp = await _context.CleanerPayouts.Include(p => p.Lines).OrderByDescending(p => p.Id).FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(21.00m, topUp.Amount);
             Assert.True(Assert.Single(topUp.Lines).IsTopUp);
-            Assert.Equal(126.00m, (await _context.OrderCleaners.SingleAsync(oc => oc.Id == 10)).PaidAmount);
+            Assert.Equal(126.00m, (await _context.OrderCleaners.SingleAsync(oc => oc.Id == 10, cancellationToken: TestContext.Current.CancellationToken)).PaidAmount);
         }
 
         // ── Reverting ─────────────────────────────────────────────────────────────────────────
@@ -264,7 +264,7 @@ namespace DreamCleaningBackend.Tests
             await SeedAsync();
             var service = Service();
             await service.PayCleanersAsync(PayAll(await service.GetUnpaidCleanersAsync()), AdminId);
-            var anaPayout = await _context.CleanerPayouts.SingleAsync(p => p.CleanerId == 418);
+            var anaPayout = await _context.CleanerPayouts.SingleAsync(p => p.CleanerId == 418, cancellationToken: TestContext.Current.CancellationToken);
 
             var reverted = await service.RevertPayoutAsync(anaPayout.Id, "Sent to the wrong account", AdminId);
 
@@ -278,12 +278,12 @@ namespace DreamCleaningBackend.Tests
             // Back on Unpaid, and the Orders tab agrees.
             var ana = Assert.Single((await service.GetUnpaidCleanersAsync()).Cleaners);
             Assert.Equal(147.00m, ana.TotalOutstanding);
-            var assignment = await _context.OrderCleaners.SingleAsync(oc => oc.Id == 10);
+            var assignment = await _context.OrderCleaners.SingleAsync(oc => oc.Id == 10, cancellationToken: TestContext.Current.CancellationToken);
             Assert.False(assignment.IsPaid);
             Assert.Null(assignment.PaidAmount);
 
             // Never deleted.
-            Assert.Equal(2, await _context.CleanerPayouts.CountAsync());
+            Assert.Equal(2, await _context.CleanerPayouts.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
             Assert.Equal(2, _audit.Actions.Count(a => a.Action == "PayoutReversed"));
             Assert.All(_audit.Actions.Where(a => a.Action == "PayoutReversed"), a => Assert.Equal(AdminId, a.ActingUserId));
 
@@ -297,7 +297,7 @@ namespace DreamCleaningBackend.Tests
             await SeedAsync();
             var service = Service();
             await service.PayCleanersAsync(PayAll(await service.GetUnpaidCleanersAsync()), AdminId);
-            var payout = await _context.CleanerPayouts.FirstAsync();
+            var payout = await _context.CleanerPayouts.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => service.RevertPayoutAsync(payout.Id, "  ", AdminId));
         }
@@ -359,30 +359,30 @@ namespace DreamCleaningBackend.Tests
             await SeedAsync();
 
             // Order 900: marked paid by the August 2026 migration — no amount on record.
-            var legacy = await _context.OrderCleaners.SingleAsync(oc => oc.Id == 10);
+            var legacy = await _context.OrderCleaners.SingleAsync(oc => oc.Id == 10, cancellationToken: TestContext.Current.CancellationToken);
             legacy.IsPaid = true;
             legacy.PaymentNote = CleanerPayoutBackfill.LegacyNote;
 
             // Order 901, Ben: paid through the page before payout records, $42.00 on 2026-09-02.
-            var recorded = await _context.OrderCleaners.SingleAsync(oc => oc.Id == 12);
+            var recorded = await _context.OrderCleaners.SingleAsync(oc => oc.Id == 12, cancellationToken: TestContext.Current.CancellationToken);
             recorded.IsPaid = true;
             recorded.PaidAmount = 42.00m;
             recorded.PaidAt = new DateTime(2026, 9, 2, 15, 0, 0, DateTimeKind.Utc);
             recorded.PaidByUserId = AdminId;
             recorded.PaidVia = CleanerPaymentMethod.Cash;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            var imported = await CleanerPayoutBackfill.RunAsync(_context);
+            var imported = await CleanerPayoutBackfill.RunAsync(_context, TestContext.Current.CancellationToken);
             Assert.Equal(2, imported);
 
-            var payouts = await _context.CleanerPayouts.Include(p => p.Lines).OrderBy(p => p.CleanerId).ToListAsync();
+            var payouts = await _context.CleanerPayouts.Include(p => p.Lines).OrderBy(p => p.CleanerId).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.All(payouts, p => Assert.True(p.IsImported));
 
             // The August line is settled at what the payroll calculator says it was worth.
             Assert.Equal(105.00m, payouts[0].Amount);
             Assert.Equal(CleanerPayoutBackfill.LegacyNote, payouts[0].Note);
             Assert.Equal(new DateTime(2026, 8, 14), payouts[0].PaidOn);
-            Assert.Equal(105.00m, (await _context.OrderCleaners.SingleAsync(oc => oc.Id == 10)).PaidAmount);
+            Assert.Equal(105.00m, (await _context.OrderCleaners.SingleAsync(oc => oc.Id == 10, cancellationToken: TestContext.Current.CancellationToken)).PaidAmount);
 
             Assert.Equal(42.00m, payouts[1].Amount);
             Assert.Equal(new DateTime(2026, 9, 2), payouts[1].PaidOn);
@@ -395,7 +395,7 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(901, Assert.Single(ana.Lines).OrderId);
 
             // Idempotent.
-            Assert.Equal(0, await CleanerPayoutBackfill.RunAsync(_context));
+            Assert.Equal(0, await CleanerPayoutBackfill.RunAsync(_context, TestContext.Current.CancellationToken));
         }
     }
 }

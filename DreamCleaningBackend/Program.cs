@@ -12,11 +12,11 @@ using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Repositories.Interfaces;
 using DreamCleaningBackend.Repositories;
 using DreamCleaningBackend.Hubs;
-using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
+using Microting.EntityFrameworkCore.MySql.Infrastructure;
 using MySqlConnector;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Extensions.FileProviders;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -60,19 +60,10 @@ builder.Services.AddSwaggerGen(options =>
                       "Example: \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\""
     });
 
-    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    // Microsoft.OpenApi 2.x: a requirement names its scheme through a document-bound reference.
+    options.AddSecurityRequirement(document => new OpenApiSecurityRequirement
     {
-        {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            new string[] {}
-        }
+        [new OpenApiSecuritySchemeReference("Bearer", document)] = []
     });
 });
 

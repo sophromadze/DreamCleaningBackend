@@ -105,11 +105,14 @@ namespace DreamCleaningBackend.Tests
         /// PURPOSE: bumping Stripe.net moves the pin, and the only way anyone learns that the live
         /// destination now needs reconfiguring is this test failing. Do not "fix" it by reading the
         /// value back off Stripe.net — that is the check.
+        ///
+        /// 2026-10: Stripe.net 48.3.0 -> 53.0.0 moved it from 2025-06-30.basil. The live destination
+        /// moves with the deploy (a new endpoint on this version; see the .NET 10 deploy notes).
         /// </summary>
         [Fact]
         public void PinnedApiVersion_IsWhatTheProductionWebhookDestinationIsConfiguredWith()
         {
-            Assert.Equal("2025-06-30.basil", StripeWebhookEventParser.ExpectedApiVersion);
+            Assert.Equal("2026-09-30.endive", StripeWebhookEventParser.ExpectedApiVersion);
         }
 
         // ── Who tolerates a mismatch ──────────────────────────────────────────────────────────
@@ -258,7 +261,7 @@ namespace DreamCleaningBackend.Tests
             var development = await PostAsync(Environments.Development, payload, Sign(payload));
 
             var warning = Assert.Single(development.Logger.Entries
-                .Where(e => e.Level == LogLevel.Warning && e.Message.Contains("API version")));
+, e => e.Level == LogLevel.Warning && e.Message.Contains("API version"));
 
             Assert.Contains(StripeCliApiVersion, warning.Message);
             Assert.Contains(StripeWebhookEventParser.ExpectedApiVersion, warning.Message);
@@ -285,6 +288,21 @@ namespace DreamCleaningBackend.Tests
             var development = await PostAsync(Environments.Development, payload, forged);
 
             Assert.IsType<BadRequestObjectResult>(development.Result);
+        }
+
+        /// <summary>
+        /// Stripe.net deserializes with System.Text.Json since v51, and so does the controller's
+        /// JsonException catch: a correctly signed body that is not an event must still be a 400,
+        /// never a 500 Stripe would keep retrying.
+        /// </summary>
+        [Fact]
+        public async Task Endpoint_RejectsASignedPayloadThatIsNotJson()
+        {
+            const string payload = "{ this is not an event";
+
+            var production = await PostAsync(Environments.Production, payload, Sign(payload));
+
+            Assert.IsType<BadRequestObjectResult>(production.Result);
         }
 
         // ── Endpoint harness ──────────────────────────────────────────────────────────────────

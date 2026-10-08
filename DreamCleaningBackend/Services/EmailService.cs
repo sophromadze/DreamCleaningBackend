@@ -248,10 +248,7 @@ namespace DreamCleaningBackend.Services
             try
             {
                 var email = new MimeMessage();
-                email.From.Add(new MailboxAddress(
-                    _configuration["Email:FromName"],
-                    _configuration["Email:FromAddress"]
-                ));
+                email.From.Add(SenderMailbox());
                 email.To.Add(MailboxAddress.Parse(to));
                 email.Subject = subject;
                 email.Body = new TextPart(TextFormat.Html) { Text = html };
@@ -267,20 +264,11 @@ namespace DreamCleaningBackend.Services
 
                 _logger.LogInformation($"Connecting to SMTP server: {_configuration["Email:SmtpHost"]}:{_configuration["Email:SmtpPort"]}");
 
-                await smtp.ConnectAsync(
-                    _configuration["Email:SmtpHost"],
-                    int.Parse(_configuration["Email:SmtpPort"]),
-                    SecureSocketOptions.StartTls,
-                    cts.Token
-                );
+                await ConnectSmtpAsync(smtp, cts.Token);
 
                 _logger.LogInformation("SMTP connection established, authenticating...");
 
-                await smtp.AuthenticateAsync(
-                    _configuration["Email:SmtpUser"],
-                    _configuration["Email:SmtpPassword"],
-                    cts.Token
-                );
+                await AuthenticateSmtpAsync(smtp, cts.Token);
 
                 _logger.LogInformation("SMTP authentication successful, sending email...");
 
@@ -324,10 +312,7 @@ namespace DreamCleaningBackend.Services
             try
             {
                 var email = new MimeMessage();
-                email.From.Add(new MailboxAddress(
-                    _configuration["Email:FromName"],
-                    _configuration["Email:FromAddress"]
-                ));
+                email.From.Add(SenderMailbox());
                 email.To.Add(MailboxAddress.Parse(to));
                 email.Subject = subject;
 
@@ -346,17 +331,8 @@ namespace DreamCleaningBackend.Services
                 smtp.Timeout = timeoutMs;
                 using var cts = new CancellationTokenSource(timeoutMs);
 
-                await smtp.ConnectAsync(
-                    _configuration["Email:SmtpHost"],
-                    int.Parse(_configuration["Email:SmtpPort"]),
-                    SecureSocketOptions.StartTls,
-                    cts.Token
-                );
-                await smtp.AuthenticateAsync(
-                    _configuration["Email:SmtpUser"],
-                    _configuration["Email:SmtpPassword"],
-                    cts.Token
-                );
+                await ConnectSmtpAsync(smtp, cts.Token);
+                await AuthenticateSmtpAsync(smtp, cts.Token);
                 await smtp.SendAsync(email, cts.Token);
                 await smtp.DisconnectAsync(true, cts.Token);
 
@@ -732,10 +708,7 @@ namespace DreamCleaningBackend.Services
             try
             {
                 var email = new MimeMessage();
-                email.From.Add(new MailboxAddress(
-                    _configuration["Email:FromName"],
-                    _configuration["Email:FromAddress"]
-                ));
+                email.From.Add(SenderMailbox());
                 email.To.Add(MailboxAddress.Parse(to));
                 email.Subject = subject;
 
@@ -781,18 +754,9 @@ namespace DreamCleaningBackend.Services
                 smtp.Timeout = timeoutMs;
                 using var cts = new CancellationTokenSource(timeoutMs);
 
-                await smtp.ConnectAsync(
-                    _configuration["Email:SmtpHost"],
-                    int.Parse(_configuration["Email:SmtpPort"]),
-                    SecureSocketOptions.StartTls,
-                    cts.Token
-                );
+                await ConnectSmtpAsync(smtp, cts.Token);
 
-                await smtp.AuthenticateAsync(
-                    _configuration["Email:SmtpUser"],
-                    _configuration["Email:SmtpPassword"],
-                    cts.Token
-                );
+                await AuthenticateSmtpAsync(smtp, cts.Token);
 
                 await smtp.SendAsync(email, cts.Token);
                 await smtp.DisconnectAsync(true, cts.Token);
@@ -2107,6 +2071,31 @@ namespace DreamCleaningBackend.Services
         </div>";
         }
 
+        // ── SMTP plumbing shared by every send path ──────────────────────────────────────────────
+        // One place reads the Email:* settings, so a missing value fails with its name instead of an
+        // ArgumentNullException from deep inside MailKit.
+
+        private MailboxAddress SenderMailbox() =>
+            new(_configuration["Email:FromName"], RequiredEmailSetting("Email:FromAddress"));
+
+        private Task ConnectSmtpAsync(SmtpClient smtp, CancellationToken cancellationToken) =>
+            smtp.ConnectAsync(
+                RequiredEmailSetting("Email:SmtpHost"),
+                int.Parse(RequiredEmailSetting("Email:SmtpPort"), System.Globalization.CultureInfo.InvariantCulture),
+                SecureSocketOptions.StartTls,
+                cancellationToken);
+
+        private Task AuthenticateSmtpAsync(SmtpClient smtp, CancellationToken cancellationToken) =>
+            smtp.AuthenticateAsync(
+                RequiredEmailSetting("Email:SmtpUser"),
+                RequiredEmailSetting("Email:SmtpPassword"),
+                cancellationToken);
+
+        private string RequiredEmailSetting(string key) =>
+            _configuration[key] is { Length: > 0 } value
+                ? value
+                : throw new InvalidOperationException($"Email setting '{key}' is not configured.");
+
         private void AddPhotoAttachments(MimeMessage email, List<PhotoUploadDto> photos)
         {
             if (photos == null || !photos.Any()) return;
@@ -2114,7 +2103,8 @@ namespace DreamCleaningBackend.Services
             var multipart = new Multipart("mixed");
 
             // Add the HTML body first
-            var bodyPart = (MimePart)email.Body;
+            var bodyPart = email.Body
+                ?? throw new InvalidOperationException("The message body must be set before photos are attached.");
             multipart.Add(bodyPart);
 
             // Add photo attachments
@@ -2147,7 +2137,7 @@ namespace DreamCleaningBackend.Services
             string serviceTime, string serviceTypeName, string serviceAddress, string aptSuite, string city, string state, string zipCode,
             int orderId, bool isCustomServiceType, string? serviceDescription, List<PhotoUploadDto> uploadedPhotos = null)
         {
-            var companyEmail = _configuration["Email:CompanyEmail"] ?? _configuration["Email:FromAddress"];
+            var companyEmail = _configuration["Email:CompanyEmail"] ?? RequiredEmailSetting("Email:FromAddress");
             var subject = $"New Booking Order #{orderId} - {contactFirstName} {contactLastName}";
 
             var photoInfo = "";
@@ -2195,10 +2185,7 @@ namespace DreamCleaningBackend.Services
 
             // Create the email message
             var mimeMessage = new MimeMessage();
-            mimeMessage.From.Add(new MailboxAddress(
-                _configuration["Email:FromName"],
-                _configuration["Email:FromAddress"]
-            ));
+            mimeMessage.From.Add(SenderMailbox());
             mimeMessage.To.Add(MailboxAddress.Parse(companyEmail));
             mimeMessage.Subject = subject;
             mimeMessage.Body = new TextPart(TextFormat.Html) { Text = body };
@@ -2215,18 +2202,9 @@ namespace DreamCleaningBackend.Services
             smtp.Timeout = timeoutMs;
             using var cts = new CancellationTokenSource(timeoutMs);
 
-            await smtp.ConnectAsync(
-                _configuration["Email:SmtpHost"],
-                int.Parse(_configuration["Email:SmtpPort"]),
-                SecureSocketOptions.StartTls,
-                cts.Token
-            );
+            await ConnectSmtpAsync(smtp, cts.Token);
 
-            await smtp.AuthenticateAsync(
-                _configuration["Email:SmtpUser"],
-                _configuration["Email:SmtpPassword"],
-                cts.Token
-            );
+            await AuthenticateSmtpAsync(smtp, cts.Token);
 
             await smtp.SendAsync(mimeMessage, cts.Token);
             await smtp.DisconnectAsync(true, cts.Token);
@@ -2245,10 +2223,7 @@ namespace DreamCleaningBackend.Services
             try
             {
                 var email = new MimeMessage();
-                email.From.Add(new MailboxAddress(
-                    _configuration["Email:FromName"],
-                    _configuration["Email:FromAddress"]
-                ));
+                email.From.Add(SenderMailbox());
                 email.To.Add(MailboxAddress.Parse(toEmail));
                 email.Subject = subject;
                 email.Body = new TextPart(TextFormat.Html) { Text = htmlBody };
@@ -2265,18 +2240,9 @@ namespace DreamCleaningBackend.Services
                 smtp.Timeout = timeoutMs;
                 using var cts = new CancellationTokenSource(timeoutMs);
 
-                await smtp.ConnectAsync(
-                    _configuration["Email:SmtpHost"],
-                    int.Parse(_configuration["Email:SmtpPort"]),
-                    SecureSocketOptions.StartTls,
-                    cts.Token
-                );
+                await ConnectSmtpAsync(smtp, cts.Token);
 
-                await smtp.AuthenticateAsync(
-                    _configuration["Email:SmtpUser"],
-                    _configuration["Email:SmtpPassword"],
-                    cts.Token
-                );
+                await AuthenticateSmtpAsync(smtp, cts.Token);
 
                 await smtp.SendAsync(email, cts.Token);
                 await smtp.DisconnectAsync(true, cts.Token);

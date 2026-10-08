@@ -170,11 +170,11 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             var user = await SeedBusinessAccountAsync(context);
 
-            var created = await NewService(context).BackfillAsync();
+            var created = await NewService(context).BackfillAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(1, created);
 
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(user.Id, client.SourceUserId);
             Assert.True(client.IsActive);
 
@@ -199,7 +199,7 @@ namespace DreamCleaningBackend.Tests
 
             // The account holder seeds the CONTACT instead — name, email and phone, with no title,
             // because ticking a business flag says nothing about whether they are the Owner.
-            var contact = await context.ContractContacts.SingleAsync(c => c.ContractClientId == client.Id);
+            var contact = await context.ContractContacts.SingleAsync(c => c.ContractClientId == client.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("Casey", contact.FirstName);
             Assert.Equal("Client", contact.LastName);
             Assert.Equal("casey55@chicktastic.invalid", contact.Email);
@@ -214,9 +214,9 @@ namespace DreamCleaningBackend.Tests
             await SeedBusinessAccountAsync(context);
             var service = NewService(context);
 
-            Assert.Equal(1, await service.BackfillAsync());
-            Assert.Equal(0, await service.BackfillAsync());
-            Assert.Equal(0, await service.BackfillAsync());
+            Assert.Equal(1, await service.BackfillAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(0, await service.BackfillAsync(TestContext.Current.CancellationToken));
+            Assert.Equal(0, await service.BackfillAsync(TestContext.Current.CancellationToken));
 
             Assert.Single(context.ContractClients);
         }
@@ -234,9 +234,9 @@ namespace DreamCleaningBackend.Tests
                     Email = "staff@example.invalid", PasswordHash = "x", PasswordSalt = "x",
                     Role = UserRole.Admin, IsBusiness = true, IsActive = true
                 });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            Assert.Equal(0, await NewService(context).BackfillAsync());
+            Assert.Equal(0, await NewService(context).BackfillAsync(TestContext.Current.CancellationToken));
             Assert.Empty(context.ContractClients);
         }
 
@@ -258,11 +258,11 @@ namespace DreamCleaningBackend.Tests
                 NoticeEmail = user.Email,
                 SourceUserId = null
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            Assert.Equal(1, await NewService(context).BackfillAsync());
+            Assert.Equal(1, await NewService(context).BackfillAsync(TestContext.Current.CancellationToken));
 
-            var clients = await context.ContractClients.OrderBy(c => c.Id).ToListAsync();
+            var clients = await context.ContractClients.OrderBy(c => c.Id).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(2, clients.Count);
             Assert.Null(clients[0].SourceUserId);            // the manual one, left alone
             Assert.Equal(user.Id, clients[1].SourceUserId);  // a new, separately linked one
@@ -282,7 +282,7 @@ namespace DreamCleaningBackend.Tests
             await service.ApplyBusinessFlagAsync(user, true, AdminId);
             await service.ApplyBusinessFlagAsync(user, true, AdminId);
             await service.EnsureLinkedClientAsync(user);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Single(context.ContractClients);
         }
@@ -318,7 +318,7 @@ namespace DreamCleaningBackend.Tests
             await directory.CreateClient(StandaloneDto("Second Ltd"));
             await directory.CreateClient(StandaloneDto("Third Ltd"));
 
-            var clients = await context.ContractClients.ToListAsync();
+            var clients = await context.ContractClients.ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(3, clients.Count);
             Assert.All(clients, c => Assert.Null(c.SourceUserId));
         }
@@ -333,12 +333,12 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             var user = await SeedBusinessAccountAsync(context);
             user.IsBusiness = false;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var outcome = await NewService(context).ApplyBusinessFlagAsync(user, true, AdminId);
 
             Assert.Equal(BusinessClientService.LinkOutcome.Created, outcome);
-            Assert.True((await context.ContractClients.SingleAsync()).IsActive);
+            Assert.True((await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).IsActive);
             Assert.True(user.IsBusiness);
         }
 
@@ -354,7 +354,7 @@ namespace DreamCleaningBackend.Tests
 
             Assert.Equal(BusinessClientService.LinkOutcome.Deactivated, outcome);
 
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.False(client.IsActive);
             Assert.Equal(user.Id, client.SourceUserId);   // the link survives, ready to come back
             Assert.False(user.IsBusiness);
@@ -368,20 +368,20 @@ namespace DreamCleaningBackend.Tests
             var service = NewService(context);
 
             await service.ApplyBusinessFlagAsync(user, true, AdminId);
-            var originalId = (await context.ContractClients.SingleAsync()).Id;
+            var originalId = (await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Id;
 
             // Staff correct the seeded name to the real registered entity - work that must survive
             // the round trip, which a "delete and recreate" implementation would throw away.
-            var stored = await context.ContractClients.SingleAsync();
+            var stored = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             stored.LegalEntityName = "Chick Tastic LLC";
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await service.ApplyBusinessFlagAsync(user, false, AdminId);
             var outcome = await service.ApplyBusinessFlagAsync(user, true, AdminId);
 
             Assert.Equal(BusinessClientService.LinkOutcome.Reactivated, outcome);
 
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(originalId, client.Id);
             Assert.Equal("Chick Tastic LLC", client.LegalEntityName);
             Assert.True(client.IsActive);
@@ -443,7 +443,7 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             var user = await SeedBusinessAccountAsync(context);
             await NewService(context).ApplyBusinessFlagAsync(user, true, AdminId);
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             var invoice = await NewInvoiceService(context).CreateAsync(new SaveInvoiceDto
             {
@@ -469,7 +469,7 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             var user = await SeedBusinessAccountAsync(context);
             await NewService(context).ApplyBusinessFlagAsync(user, true, AdminId);
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             var result = Body(await NewDirectory(context).UpdateClient(client.Id, new UpdateCommercialClientDto
             {
@@ -496,7 +496,7 @@ namespace DreamCleaningBackend.Tests
             Assert.Single(context.ContractContacts);
             Assert.Single(context.ContractServiceLocations);
 
-            var account = await context.Users.SingleAsync(u => u.Id == user.Id);
+            var account = await context.Users.SingleAsync(u => u.Id == user.Id, cancellationToken: TestContext.Current.CancellationToken);
 
             // THE one field that syncs: same fact about the same party, no machinery behind it.
             Assert.Equal("7185559999", account.Phone);
@@ -514,7 +514,7 @@ namespace DreamCleaningBackend.Tests
             // version renders from its own frozen snapshot taken at generation time.
             using var context = NewContext();
             await NewDirectory(context).CreateClient(StandaloneDto("Old Name Ltd"));
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             var snapshot = new ContractSnapshot();
             snapshot.Client.LegalEntityName = "Old Name Ltd";
@@ -531,7 +531,7 @@ namespace DreamCleaningBackend.Tests
                 Id = 700, ContractId = 70, VersionNumber = 1,
                 FullSnapshotJson = snapshot.ToJson()
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await NewDirectory(context).UpdateClient(client.Id, new UpdateCommercialClientDto
             {
@@ -541,7 +541,7 @@ namespace DreamCleaningBackend.Tests
                 City = "Queens", State = "NY", Zip = "11375"
             });
 
-            var version = await context.ContractVersions.SingleAsync();
+            var version = await context.ContractVersions.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             var frozen = ContractSnapshot.Parse(version.FullSnapshotJson);
 
             Assert.Equal("Old Name Ltd", frozen.Client.LegalEntityName);
@@ -631,13 +631,13 @@ namespace DreamCleaningBackend.Tests
             await NewDirectory(context).DeactivateClient(client.Id);
 
             // The client row itself is still there, just out of circulation.
-            var stored = await context.ContractClients.SingleAsync();
+            var stored = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.False(stored.IsActive);
 
             // And so is everything that refers to it, reference numbers included.
-            Assert.Equal("DCC-2026-55556666", (await context.Contracts.SingleAsync()).ContractNumber);
-            Assert.Equal("DCI-2026-77778888", (await context.CommercialInvoices.SingleAsync()).InvoiceNumber);
-            Assert.Equal(500m, (await context.CommercialInvoicePayments.SingleAsync()).Amount);
+            Assert.Equal("DCC-2026-55556666", (await context.Contracts.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).ContractNumber);
+            Assert.Equal("DCI-2026-77778888", (await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).InvoiceNumber);
+            Assert.Equal(500m, (await context.CommercialInvoicePayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Amount);
         }
 
         [Fact]
@@ -667,7 +667,7 @@ namespace DreamCleaningBackend.Tests
 
             var invoice = await context.CommercialInvoices
                 .Include(i => i.Client)
-                .SingleAsync();
+                .SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.NotNull(invoice.Client);
             Assert.Equal(client.Id, invoice.Client!.Id);
@@ -683,7 +683,7 @@ namespace DreamCleaningBackend.Tests
 
             var contract = await context.Contracts
                 .Include(c => c.ContractClient)
-                .SingleAsync();
+                .SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.NotNull(contract.ContractClient);
             Assert.Equal(client.Id, contract.ContractClient!.Id);
@@ -697,7 +697,7 @@ namespace DreamCleaningBackend.Tests
 
             await NewDirectory(context).DeactivateClient(client.Id);
 
-            var user = await context.Users.SingleAsync(u => u.Id == BusinessUserId);
+            var user = await context.Users.SingleAsync(u => u.Id == BusinessUserId, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.False(user.IsBusiness);
             // The account itself is untouched - login, orders, history all intact.
@@ -715,9 +715,9 @@ namespace DreamCleaningBackend.Tests
             var client = await SeedClientWithHistoryAsync(context);
             await NewDirectory(context).DeactivateClient(client.Id);
 
-            Assert.Equal(0, await NewService(context).BackfillAsync());
+            Assert.Equal(0, await NewService(context).BackfillAsync(TestContext.Current.CancellationToken));
 
-            Assert.False((await context.ContractClients.SingleAsync()).IsActive);
+            Assert.False((await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).IsActive);
             Assert.Single(context.ContractClients);
         }
 
@@ -727,12 +727,12 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             await SeedBusinessAccountAsync(context);
             await NewDirectory(context).CreateClient(StandaloneDto());
-            var client = await context.ContractClients.SingleAsync(c => c.SourceUserId == null);
+            var client = await context.ContractClients.SingleAsync(c => c.SourceUserId == null, cancellationToken: TestContext.Current.CancellationToken);
 
             await NewDirectory(context).DeactivateClient(client.Id);
 
-            Assert.False((await context.ContractClients.SingleAsync(c => c.Id == client.Id)).IsActive);
-            Assert.True((await context.Users.SingleAsync(u => u.Id == BusinessUserId)).IsBusiness);
+            Assert.False((await context.ContractClients.SingleAsync(c => c.Id == client.Id, cancellationToken: TestContext.Current.CancellationToken)).IsActive);
+            Assert.True((await context.Users.SingleAsync(u => u.Id == BusinessUserId, cancellationToken: TestContext.Current.CancellationToken)).IsBusiness);
         }
 
         [Fact]
@@ -740,12 +740,12 @@ namespace DreamCleaningBackend.Tests
         {
             using var context = NewContext();
             await NewDirectory(context).CreateClient(StandaloneDto());
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             await NewDirectory(context).DeactivateClient(client.Id);
 
             await NewDirectory(context).RestoreClient(client.Id);
 
-            Assert.True((await context.ContractClients.SingleAsync()).IsActive);
+            Assert.True((await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).IsActive);
         }
 
         [Fact]
@@ -761,10 +761,10 @@ namespace DreamCleaningBackend.Tests
             var refusal = await NewDirectory(context).RestoreClient(client.Id);
             Assert.IsType<BadRequestObjectResult>(refusal);
 
-            var user = await context.Users.SingleAsync(u => u.Id == BusinessUserId);
+            var user = await context.Users.SingleAsync(u => u.Id == BusinessUserId, cancellationToken: TestContext.Current.CancellationToken);
             await NewService(context).ApplyBusinessFlagAsync(user, true, AdminId);
 
-            var restored = await context.ContractClients.SingleAsync();
+            var restored = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(originalId, restored.Id);
             Assert.True(restored.IsActive);
         }
@@ -796,10 +796,10 @@ namespace DreamCleaningBackend.Tests
             await SeedBusinessAccountAsync(context);
             context.Users.Add(Customer(SecondBusinessUserId, "Other", "Owner",
                 "other@example.invalid", isBusiness: true));
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await NewDirectory(context).CreateClient(StandaloneDto());
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             // A perfectly valid business account, named in an edit payload. The server does not
             // read the field there: the link is granted by the business flag, because it opens
@@ -813,7 +813,7 @@ namespace DreamCleaningBackend.Tests
                 SourceUserId = SecondBusinessUserId
             });
 
-            Assert.Null((await context.ContractClients.SingleAsync()).SourceUserId);
+            Assert.Null((await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).SourceUserId);
         }
 
         [Fact]
@@ -842,13 +842,13 @@ namespace DreamCleaningBackend.Tests
             await service.ApplyBusinessFlagAsync(user, false, AdminId);   // deactivated
             await service.ApplyBusinessFlagAsync(user, true, AdminId);    // reactivated
 
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             await NewDirectory(context).DeactivateClient(client.Id);      // designation removed
 
             var rows = await context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.CommercialClient)
                 .OrderBy(a => a.Id)
-                .ToListAsync();
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(
                 new[]
@@ -894,7 +894,7 @@ namespace DreamCleaningBackend.Tests
             var user = await SeedBusinessAccountAsync(context);
             await NewService(context).ApplyBusinessFlagAsync(user, true, AdminId);
 
-            var autoCreated = await context.ContractClients.SingleAsync();
+            var autoCreated = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             var found = await BusinessAccountLinkPolicy.FindLinkedClientAsync(context, user.Id);
 
@@ -915,10 +915,10 @@ namespace DreamCleaningBackend.Tests
             var service = NewService(context);
 
             await service.ApplyBusinessFlagAsync(user, true, AdminId);
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             await service.ApplyBusinessFlagAsync(user, false, AdminId);
-            Assert.False((await context.ContractClients.SingleAsync()).IsActive);
+            Assert.False((await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).IsActive);
 
             var found = await BusinessAccountLinkPolicy.FindLinkedClientAsync(context, user.Id);
 
@@ -982,7 +982,7 @@ namespace DreamCleaningBackend.Tests
             var service = NewService(context);
 
             await service.ApplyBusinessFlagAsync(user, true, AdminId);
-            var client = await context.ContractClients.SingleAsync();
+            var client = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains(user.Id,
                 await BusinessAccountLinkPolicy.LoadBusinessClientAccountIdsAsync(context));
@@ -991,7 +991,7 @@ namespace DreamCleaningBackend.Tests
             await service.RemoveBusinessClientAsync(client, AdminId);
 
             Assert.False(user.IsBusiness);
-            Assert.False((await context.ContractClients.SingleAsync()).IsActive);
+            Assert.False((await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).IsActive);
 
             // The row still exists - and must no longer count as membership of the other tab.
             Assert.DoesNotContain(user.Id,
@@ -1017,7 +1017,7 @@ namespace DreamCleaningBackend.Tests
 
             await service.ApplyBusinessFlagAsync(user, true, AdminId);
 
-            Assert.Single(await context.ContractClients.ToListAsync());
+            Assert.Single(await context.ContractClients.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
             Assert.Contains(user.Id,
                 await BusinessAccountLinkPolicy.LoadBusinessClientAccountIdsAsync(context));
         }

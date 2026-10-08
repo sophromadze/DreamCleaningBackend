@@ -58,8 +58,8 @@ namespace DreamCleaningBackend.Tests
                 new CreateBookingDto { UserSpecialOfferId = 11, SpecialOfferId = 1 }, orderUserId: 1, subTotal: 275.55m);
             Assert.Equal(27.56m, discount);
 
-            (await _db.SpecialOffers.SingleAsync()).Name = "New Client Deal";
-            await _db.SaveChangesAsync();
+            (await _db.SpecialOffers.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Name = "New Client Deal";
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
             var (renamed, _) = await Booking().ResolveDiscountsAsync(
                 new CreateBookingDto { UserSpecialOfferId = 11, SpecialOfferId = 1 }, orderUserId: 1, subTotal: 275.55m);
             Assert.Equal(discount, renamed);
@@ -99,19 +99,19 @@ namespace DreamCleaningBackend.Tests
                 Id = 5, Name = "Spring", Description = "d", IsPercentage = true, DiscountValue = 15m,
                 Type = OfferType.Seasonal, IsActive = true, MinimumOrderAmount = 150m, CreatedAt = DateTime.UtcNow
             });
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
             var svc = new SpecialOfferService(_db, new AuditService(_db, new HttpContextAccessor(), NullLogger<AuditService>.Instance));
 
             // The old inline editor's body: no minimumOrderAmount at all.
             await svc.UpdateSpecialOffer(5, Body("""{"name":"Spring","description":"d","isPercentage":true,"discountValue":15,"isActive":true}"""));
-            Assert.Equal(150m, (await _db.SpecialOffers.AsNoTracking().SingleAsync()).MinimumOrderAmount);
+            Assert.Equal(150m, (await _db.SpecialOffers.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).MinimumOrderAmount);
 
             // The fixed editor sends the value it loaded.
             await svc.UpdateSpecialOffer(5, Body("""{"name":"Spring","description":"d","isPercentage":true,"discountValue":15,"isActive":true,"minimumOrderAmount":150}"""));
-            Assert.Equal(150m, (await _db.SpecialOffers.AsNoTracking().SingleAsync()).MinimumOrderAmount);
+            Assert.Equal(150m, (await _db.SpecialOffers.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).MinimumOrderAmount);
 
             await svc.UpdateSpecialOffer(5, Body("""{"name":"Spring","description":"d","isPercentage":true,"discountValue":15,"isActive":true,"minimumOrderAmount":null}"""));
-            Assert.Null((await _db.SpecialOffers.AsNoTracking().SingleAsync()).MinimumOrderAmount);
+            Assert.Null((await _db.SpecialOffers.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).MinimumOrderAmount);
         }
 
         // ── Excel exports: Residential by ServiceKey ───────────────────────────────────────────

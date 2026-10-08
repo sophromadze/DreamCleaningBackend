@@ -64,14 +64,14 @@ public class LinkedInvoiceDraftTests
         dto.OrderIds = null; // old clients cannot overwrite existing links with their stale items
         invoice = await f.Invoices.UpdateAsync(id, dto, 1);
         Assert.Equal(2776.29m, invoice.Total); Assert.Equal(3, invoice.Items.Count);
-        Assert.Equal(3, await f.Db.CommercialInvoiceItems.CountAsync(i => i.CommercialInvoiceId == id));
+        Assert.Equal(3, await f.Db.CommercialInvoiceItems.CountAsync(i => i.CommercialInvoiceId == id, cancellationToken: TestContext.Current.CancellationToken));
         dto.OrderIds = new() { 2, 1 };
         invoice = await f.Invoices.UpdateAsync(id, dto, 1);
         Assert.Equal(f.Dates.Take(2), InvoiceService.ParseServiceDates(invoice.ServiceDatesJson));
         Assert.Equal(f.Dates[1], invoice.ServiceEndDate); Assert.Equal(1850.86m, invoice.Total);
-        Assert.Equal(2, await f.Db.CommercialInvoiceItems.CountAsync(i => i.CommercialInvoiceId == id));
-        Assert.Equal(2, await f.Db.CommercialInvoiceOrders.CountAsync(i => i.CommercialInvoiceId == id));
-        Assert.All(await f.Db.Orders.ToListAsync(), o => Assert.Equal(925.43m, o.Total));
+        Assert.Equal(2, await f.Db.CommercialInvoiceItems.CountAsync(i => i.CommercialInvoiceId == id, cancellationToken: TestContext.Current.CancellationToken));
+        Assert.Equal(2, await f.Db.CommercialInvoiceOrders.CountAsync(i => i.CommercialInvoiceId == id, cancellationToken: TestContext.Current.CancellationToken));
+        Assert.All(await f.Db.Orders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken), o => Assert.Equal(925.43m, o.Total));
     }
 
     [Fact]
@@ -85,10 +85,10 @@ public class LinkedInvoiceDraftTests
         preview = await f.Invoices.PreviewLinkedOrdersAsync(dto, null);
         Assert.Equal(2500m, preview.InvoiceTotal);
         Assert.Equal(new[] { 833.34m, 833.33m, 833.33m }, preview.Allocations.Select(a => a.AllocatedAmount));
-        Assert.Empty(await f.Db.CommercialInvoices.ToListAsync()); Assert.Empty(await f.Db.CommercialInvoiceOrders.ToListAsync());
+        Assert.Empty(await f.Db.CommercialInvoices.ToListAsync(cancellationToken: TestContext.Current.CancellationToken)); Assert.Empty(await f.Db.CommercialInvoiceOrders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         var invoice = await f.Invoices.CreateAsync(dto, 1);
         Assert.Equal(2500m, invoice.Total);
-        Assert.Equal(new[] { 900m, 950m, 1000m }, await f.Db.Orders.OrderBy(o => o.Id).Select(o => o.Total).ToArrayAsync());
+        Assert.Equal(new[] { 900m, 950m, 1000m }, await f.Db.Orders.OrderBy(o => o.Id).Select(o => o.Total).ToArrayAsync(cancellationToken: TestContext.Current.CancellationToken));
         Assert.All(invoice.CoveredOrders, l => Assert.Null(l.CommittedAt));
     }
 
@@ -103,7 +103,7 @@ public class LinkedInvoiceDraftTests
         invoice = await f.Invoices.UpdateAsync(invoice.Id, dto, 1);
         Assert.Single(invoice.Items); Assert.Equal(925.43m, invoice.Total);
         Assert.Equal(dto.ServiceDates, InvoiceService.ParseServiceDates(invoice.ServiceDatesJson));
-        Assert.Empty(await f.Db.CommercialInvoiceOrders.ToListAsync());
+        Assert.Empty(await f.Db.CommercialInvoiceOrders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -128,7 +128,7 @@ public class LinkedInvoiceDraftTests
     public async Task InvalidOrderSelectionIsRejectedOnOrdinaryDraftSave(string reason)
     {
         using var f = new Fixture(); var dto = f.Draft();
-        var order = (await f.Db.Orders.FindAsync(1))!;
+        var order = (await f.Db.Orders.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!;
         if (reason == "client") order.ContractClientId = 99;
         if (reason == "contract") dto.ContractId = 99;
         if (reason == "missing") dto.OrderIds!.Add(99);
@@ -136,10 +136,10 @@ public class LinkedInvoiceDraftTests
         if (reason == "cancelled") order.Status = OrderStatuses.Cancelled;
         if (reason == "claimed") f.Db.CommercialInvoiceOrders.Add(new CommercialInvoiceOrder {
             OrderId = 1, Invoice = new CommercialInvoice { ContractClientId = 1, Status = InvoiceStatus.Sent, InvoiceNumber = "Already issued" } });
-        await f.Db.SaveChangesAsync();
-        var count = await f.Db.CommercialInvoices.CountAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var count = await f.Db.CommercialInvoices.CountAsync(cancellationToken: TestContext.Current.CancellationToken);
         await Assert.ThrowsAsync<InvoiceWorkflowException>(() => f.Invoices.CreateAsync(dto, 1));
-        Assert.Equal(count, await f.Db.CommercialInvoices.CountAsync());
+        Assert.Equal(count, await f.Db.CommercialInvoices.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Theory]
@@ -149,7 +149,7 @@ public class LinkedInvoiceDraftTests
     public async Task FinalizedLinkedSnapshotsCannotBeRebuilt(InvoiceStatus status)
     {
         using var f = new Fixture(); var invoice = await f.Invoices.CreateAsync(f.Draft(), 1);
-        invoice.Status = status; await f.Db.SaveChangesAsync();
+        invoice.Status = status; await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var descriptions = invoice.Items.Select(i => i.Description).ToArray();
         await Assert.ThrowsAsync<InvoiceWorkflowException>(() => f.Invoices.UpdateAsync(invoice.Id, f.Draft(), 1));
         await Assert.ThrowsAsync<InvoiceWorkflowException>(() => f.Invoices.PreviewLinkedOrdersAsync(f.Draft(), invoice.Id));

@@ -230,7 +230,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var change = Assert.Single(preview.LineChanges.Where(c => c.Id == BedroomsServiceId));
+            var change = Assert.Single(preview.LineChanges, c => c.Id == BedroomsServiceId);
             Assert.Equal("Service", change.Kind);
             Assert.Equal(2, change.Quantity);
             // The "then" side is the persisted line total, never a re-derivation.
@@ -268,7 +268,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var change = Assert.Single(preview.LineChanges.Where(c => c.Kind == "Extra"));
+            var change = Assert.Single(preview.LineChanges, c => c.Kind == "Extra");
             Assert.Equal(WindowsExtraId, change.Id);
             Assert.Equal(OriginalWindowsPrice, change.OriginalCost);
             Assert.Equal(20m, change.NewCost);
@@ -286,7 +286,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var gone = Assert.Single(preview.Unavailable.Where(u => u.Id == RetiredServiceId));
+            var gone = Assert.Single(preview.Unavailable, u => u.Id == RetiredServiceId);
             Assert.Equal("Service", gone.Kind);
             Assert.Equal(15m, gone.OriginalCost);
             Assert.False(string.IsNullOrWhiteSpace(gone.Reason));
@@ -305,7 +305,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var gone = Assert.Single(preview.Unavailable.Where(u => u.Id == RetiredExtraId));
+            var gone = Assert.Single(preview.Unavailable, u => u.Id == RetiredExtraId);
             Assert.Equal("Extra", gone.Kind);
             Assert.DoesNotContain(preview.Prefill.ExtraServices, e => e.ExtraServiceId == RetiredExtraId);
         }
@@ -332,7 +332,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var slot = Assert.Single(preview.Discounts.Where(d => d.Kind == "PromoCode"));
+            var slot = Assert.Single(preview.Discounts, d => d.Kind == "PromoCode");
             Assert.Equal(35m, slot.OriginalAmount);
             Assert.Equal(0m, slot.AvailableAmount);
             Assert.False(slot.CanReapply);
@@ -354,7 +354,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var slot = Assert.Single(preview.Discounts.Where(d => d.Kind == "PromoCode"));
+            var slot = Assert.Single(preview.Discounts, d => d.Kind == "PromoCode");
             // Valid, and still not automatic — the admin is told it is theirs to add if they want it.
             Assert.False(slot.CanReapply);
             Assert.Null(preview.Prefill.PromoCode);
@@ -381,7 +381,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var slot = Assert.Single(preview.Discounts.Where(d => d.Kind == "GiftCard"));
+            var slot = Assert.Single(preview.Discounts, d => d.Kind == "GiftCard");
             Assert.Equal(100m, slot.OriginalAmount);
             Assert.False(slot.CanReapply);
             Assert.Contains("no balance left", slot.Reason, StringComparison.OrdinalIgnoreCase);
@@ -397,7 +397,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var slot = Assert.Single(preview.Discounts.Where(d => d.Kind == "FirstTime"));
+            var slot = Assert.Single(preview.Discounts, d => d.Kind == "FirstTime");
             Assert.False(slot.CanReapply);
             Assert.Contains("no longer a first-time customer", slot.Reason, StringComparison.OrdinalIgnoreCase);
 
@@ -419,8 +419,8 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            Assert.Single(preview.Discounts.Where(d => d.Kind == "BubblePoints"));
-            Assert.Single(preview.Discounts.Where(d => d.Kind == "RewardBalance"));
+            Assert.Single(preview.Discounts, d => d.Kind == "BubblePoints");
+            Assert.Single(preview.Discounts, d => d.Kind == "RewardBalance");
             Assert.All(
                 preview.Discounts.Where(d => d.Kind == "BubblePoints" || d.Kind == "RewardBalance"),
                 d => Assert.False(d.CanReapply));
@@ -442,7 +442,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var slot = Assert.Single(preview.Discounts.Where(d => d.Kind == "SpecialOffer"));
+            var slot = Assert.Single(preview.Discounts, d => d.Kind == "SpecialOffer");
             Assert.Contains("Summer Treat", slot.Label);
             Assert.False(slot.CanReapply);
             Assert.Null(preview.Prefill.UserSpecialOfferId);
@@ -459,7 +459,7 @@ namespace DreamCleaningBackend.Tests
             var preview = await MakeService(loyaltyPercentage: 10m)
                 .BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var slot = Assert.Single(preview.Discounts.Where(d => d.Kind == "Loyalty"));
+            var slot = Assert.Single(preview.Discounts, d => d.Kind == "Loyalty");
             Assert.True(slot.CanReapply);
             Assert.True(slot.AvailableAmount > 0);
 
@@ -485,7 +485,7 @@ namespace DreamCleaningBackend.Tests
             // The customer is on no plan today.
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var slot = Assert.Single(preview.Discounts.Where(d => d.Kind == "Subscription"));
+            var slot = Assert.Single(preview.Discounts, d => d.Kind == "Subscription");
             Assert.Equal(22.50m, slot.OriginalAmount);
             Assert.False(slot.CanReapply);
             Assert.Equal(0m, slot.AvailableAmount);
@@ -511,7 +511,7 @@ namespace DreamCleaningBackend.Tests
 
             var preview = await MakeService().BuildAsync(SourceOrderId, allowCustomPricing: false);
 
-            var slot = Assert.Single(preview.Discounts.Where(d => d.Kind == "Subscription"));
+            var slot = Assert.Single(preview.Discounts, d => d.Kind == "Subscription");
             Assert.True(slot.CanReapply);
             Assert.Equal(
                 OrderPricingCalculator.Round2(preview.Recreated.SubTotal * 0.15m),

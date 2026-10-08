@@ -178,7 +178,7 @@ namespace DreamCleaningBackend.Tests
             Assert.True(result.InvoiceBecamePaid);
             Assert.False(result.Overpaid);
 
-            var payments = await context.CommercialInvoicePayments.ToListAsync();
+            var payments = await context.CommercialInvoicePayments.ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Single(payments);
             Assert.Equal(925.43m, payments[0].Amount);
             Assert.Equal(InvoicePaymentProvider.Stripe, payments[0].Provider);
@@ -188,12 +188,12 @@ namespace DreamCleaningBackend.Tests
             Assert.Null(payments[0].RecordedByUserId);
             Assert.Equal("Stripe webhook", payments[0].RecordedByLabel);
 
-            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoiceStatus.Paid, reloaded.Status);
             Assert.Equal(0m, reloaded.BalanceDue);
             Assert.NotNull(reloaded.PaidAt);
 
-            var attempt = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            var attempt = await context.CommercialInvoicePaymentAttempts.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentAttemptStatus.Succeeded, attempt.Status);
             Assert.NotNull(attempt.CompletedAt);
         }
@@ -222,9 +222,9 @@ namespace DreamCleaningBackend.Tests
             Assert.False(second.Recorded);
             Assert.True(third.AlreadyProcessed);
 
-            Assert.Equal(1, await context.CommercialInvoicePayments.CountAsync());
+            Assert.Equal(1, await context.CommercialInvoicePayments.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
 
-            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(925.43m, reloaded.AmountPaid);
             Assert.Equal(0m, reloaded.BalanceDue);
         }
@@ -273,7 +273,7 @@ namespace DreamCleaningBackend.Tests
                 RecordedByUserId = 1,
                 CreatedAt = DateTime.UtcNow
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(3000m, invoice.BalanceDue);
 
@@ -286,13 +286,13 @@ namespace DreamCleaningBackend.Tests
             Assert.True(result.Recorded);
             Assert.False(result.Overpaid);
 
-            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(5000m, reloaded.AmountPaid);
             Assert.Equal(0m, reloaded.BalanceDue);
             Assert.Equal(InvoiceStatus.Paid, reloaded.Status);
 
             // Both payments survive: the manual one is not replaced by the online one.
-            Assert.Equal(2, await context.CommercialInvoicePayments.CountAsync());
+            Assert.Equal(2, await context.CommercialInvoicePayments.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         /// <summary>
@@ -310,7 +310,7 @@ namespace DreamCleaningBackend.Tests
             await service.RecordSucceededAsync(
                 "pi_test_half", 40000, "usd", null, Metadata(invoice), null);
 
-            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(400m, reloaded.AmountPaid);
             Assert.Equal(600m, reloaded.BalanceDue);
             Assert.Equal(InvoiceStatus.PartiallyPaid, reloaded.Status);
@@ -348,7 +348,7 @@ namespace DreamCleaningBackend.Tests
             invoice.AmountPaid = 925.43m;
             invoice.BalanceDue = 0m;
             invoice.Status = InvoiceStatus.Paid;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var service = NewService(context);
             var result = await service.RecordSucceededAsync(
@@ -358,9 +358,9 @@ namespace DreamCleaningBackend.Tests
             Assert.True(result.Overpaid);
 
             // Both rows exist — the Stripe settlement was not discarded.
-            Assert.Equal(2, await context.CommercialInvoicePayments.CountAsync());
+            Assert.Equal(2, await context.CommercialInvoicePayments.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
 
-            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(1850.86m, reloaded.AmountPaid);
             // Balance is floored at zero rather than going negative.
             Assert.Equal(0m, reloaded.BalanceDue);
@@ -374,11 +374,11 @@ namespace DreamCleaningBackend.Tests
             // check; "overpaid" alone left them guessing. An overpayment with no manual payment
             // behind it still logs the plain action.
             var flagged = await context.CommercialInvoiceActivityLogs
-                .AnyAsync(a => a.Action == "payment_duplicate_suspected" || a.Action == "payment_overpaid");
+                .AnyAsync(a => a.Action == "payment_duplicate_suspected" || a.Action == "payment_overpaid", cancellationToken: TestContext.Current.CancellationToken);
             Assert.True(flagged, "An overpayment must be flagged for admin review.");
 
             var duplicate = await context.CommercialInvoiceActivityLogs
-                .FirstOrDefaultAsync(a => a.Action == "payment_duplicate_suspected");
+                .FirstOrDefaultAsync(a => a.Action == "payment_duplicate_suspected", cancellationToken: TestContext.Current.CancellationToken);
             Assert.NotNull(duplicate);
             Assert.Contains("DUPLICATE", duplicate!.Description, StringComparison.OrdinalIgnoreCase);
         }
@@ -400,13 +400,13 @@ namespace DreamCleaningBackend.Tests
             await service.HandleFailedAsync(
                 "pi_test_fail", "account_closed", "The bank account has been closed.", Metadata(invoice));
 
-            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync());
+            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
-            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoiceStatus.Sent, reloaded.Status);
             Assert.Equal(925.43m, reloaded.BalanceDue);
 
-            var attempt = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            var attempt = await context.CommercialInvoicePaymentAttempts.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentAttemptStatus.Failed, attempt.Status);
             Assert.Equal("account_closed", attempt.FailureCode);
         }
@@ -426,9 +426,9 @@ namespace DreamCleaningBackend.Tests
             Assert.False(attempt.IsInFlight);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.StripeAchEnabled = true;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var invoices = NewInvoiceService(context, billing);
             var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);
@@ -457,10 +457,10 @@ namespace DreamCleaningBackend.Tests
             await SeedAttemptAsync(context, invoice, "pi_test_inflight", 925.43m);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.StripeAchEnabled = true;
             settings.StripeCardEnabled = true;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var invoices = NewInvoiceService(context, billing);
             var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);
@@ -481,10 +481,10 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             var invoice = await SeedInvoiceAsync(context, total: 925.43m, alreadyPaid: 925.43m);
             invoice.Status = InvoiceStatus.Paid;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.StripeAchEnabled = true;
             settings.StripeCardEnabled = true;
             settings.ManualAchEnabled = true;
@@ -493,7 +493,7 @@ namespace DreamCleaningBackend.Tests
             settings.BankRoutingNumber = "000000000";
             settings.BankAccountNumber = "0000000000";
             settings.BankAccountType = "Business Checking";
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var invoices = NewInvoiceService(context, billing);
             var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);
@@ -511,12 +511,12 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             var invoice = await SeedInvoiceAsync(context);
             invoice.Status = InvoiceStatus.Void;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.StripeAchEnabled = true;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var invoices = NewInvoiceService(context, billing);
             var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);
@@ -539,7 +539,7 @@ namespace DreamCleaningBackend.Tests
             var invoice = await SeedInvoiceAsync(context);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
 
             // The shipped default: card off globally.
             Assert.False(settings.StripeCardEnabled);
@@ -572,7 +572,7 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             var invoice = await SeedInvoiceAsync(context);
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             var invoices = NewInvoiceService(context, billing);
 
             invoice.PaymentMethods = InvoicePaymentMethods.OnlineBank | InvoicePaymentMethods.Card;
@@ -592,7 +592,7 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext();
             var invoice = await SeedInvoiceAsync(context);
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             var invoices = NewInvoiceService(context, billing);
 
             invoice.PaymentMethods = InvoicePaymentMethods.Other;
@@ -619,13 +619,13 @@ namespace DreamCleaningBackend.Tests
             var invoice = await SeedInvoiceAsync(context);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.ManualAchEnabled = true;
             settings.BankAccountHolder = "Test Holder INC";
             settings.BankRoutingNumber = null;   // the fields that matter are missing
             settings.BankAccountNumber = null;
             settings.BankName = null;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.False(BillingSettingsService.IsManualAchComplete(settings));
 
@@ -646,14 +646,14 @@ namespace DreamCleaningBackend.Tests
             var invoice = await SeedInvoiceAsync(context);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.ManualAchEnabled = true;
             settings.BankName = "Test Bank";
             settings.BankAccountHolder = "Test Holder INC";
             settings.BankRoutingNumber = "000000000";
             settings.BankAccountNumber = "0000000000";
             settings.BankAccountType = "Business Checking";
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.True(BillingSettingsService.IsManualAchComplete(settings));
             Assert.Empty(BillingSettingsService.MissingManualAchFields(settings));
@@ -676,7 +676,7 @@ namespace DreamCleaningBackend.Tests
         {
             using var context = NewContext();
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
 
             settings.BankName = "Test Bank";
             settings.BankAccountHolder = "Test Holder INC";
@@ -684,7 +684,7 @@ namespace DreamCleaningBackend.Tests
             settings.BankAccountNumber = "0000000000";
             settings.BankAccountType = "Business Checking";
             settings.BankWireRoutingNumber = null;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.True(BillingSettingsService.IsManualAchComplete(settings));
         }
@@ -707,7 +707,7 @@ namespace DreamCleaningBackend.Tests
                 "pi_test_eur", 92543, "eur", null, Metadata(invoice), null);
 
             Assert.False(result.Recorded);
-            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync());
+            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         // ── checkout.session.completed does not pay the invoice ───────────────────────────────
@@ -731,15 +731,15 @@ namespace DreamCleaningBackend.Tests
                 attempt.StripeCheckoutSessionId!, "pi_test_auth", Metadata(invoice));
 
             // No money recorded.
-            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync());
+            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
-            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            var reloaded = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoiceStatus.Sent, reloaded.Status);
             Assert.Equal(925.43m, reloaded.BalanceDue);
             Assert.Null(reloaded.PaidAt);
 
             // But the attempt now knows its PaymentIntent, which is what settlement resolves by.
-            var reloadedAttempt = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            var reloadedAttempt = await context.CommercialInvoicePaymentAttempts.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentAttemptStatus.Processing, reloadedAttempt.Status);
             Assert.Equal("pi_test_auth", reloadedAttempt.StripePaymentIntentId);
         }
@@ -760,20 +760,20 @@ namespace DreamCleaningBackend.Tests
             var attempt = await SeedAttemptAsync(
                 context, invoice, "pi_test_card", 925.43m, InvoicePaymentAttemptStatus.CheckoutOpen);
             attempt.PaymentMethod = InvoicePaymentRecordMethod.Card;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var service = NewService(context);
             await service.HandleFailedAsync("pi_test_card", "card_declined", "Your card was declined.", Metadata(invoice));
 
-            var afterDecline = await context.CommercialInvoicePaymentAttempts.SingleAsync();
+            var afterDecline = await context.CommercialInvoicePaymentAttempts.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentAttemptStatus.CheckoutOpen, afterDecline.Status);
             Assert.Equal("card_declined", afterDecline.FailureCode);
-            Assert.Contains(await context.CommercialInvoiceActivityLogs.ToListAsync(), a => a.Action == "stripe_card_declined");
+            Assert.Contains(await context.CommercialInvoiceActivityLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken), a => a.Action == "stripe_card_declined");
 
             var result = await service.RecordSucceededAsync("pi_test_card", 92543, "usd", "ch_card", Metadata(invoice), "Visa ••••4242");
             Assert.True(result.InvoiceBecamePaid);
 
-            var payment = await context.CommercialInvoicePayments.SingleAsync();
+            var payment = await context.CommercialInvoicePayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentRecordMethod.Card, payment.PaymentMethod);
             // Card carries no processing fee — the same as card on a regular invoice.
             Assert.Equal(0m, payment.ProcessingFee);
@@ -793,14 +793,14 @@ namespace DreamCleaningBackend.Tests
             var attempt = await SeedAttemptAsync(
                 context, invoice, "pi_test_card_fast", 925.43m, InvoicePaymentAttemptStatus.Succeeded);
             attempt.PaymentMethod = InvoicePaymentRecordMethod.Card;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await NewService(context).HandleCheckoutCompletedAsync(
                 attempt.StripeCheckoutSessionId!, "pi_test_card_fast", Metadata(invoice));
 
             Assert.Equal(InvoicePaymentAttemptStatus.Succeeded,
-                (await context.CommercialInvoicePaymentAttempts.SingleAsync()).Status);
-            Assert.DoesNotContain(await context.CommercialInvoiceActivityLogs.ToListAsync(),
+                (await context.CommercialInvoicePaymentAttempts.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
+            Assert.DoesNotContain(await context.CommercialInvoiceActivityLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken),
                 a => a.Action is "stripe_ach_processing" or "stripe_card_processing");
         }
 
@@ -812,12 +812,12 @@ namespace DreamCleaningBackend.Tests
             var attempt = await SeedAttemptAsync(
                 context, invoice, "pi_test_card_slow", 925.43m, InvoicePaymentAttemptStatus.CheckoutOpen);
             attempt.PaymentMethod = InvoicePaymentRecordMethod.Card;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await NewService(context).HandleCheckoutCompletedAsync(
                 attempt.StripeCheckoutSessionId!, "pi_test_card_slow", Metadata(invoice));
 
-            var entry = Assert.Single(await context.CommercialInvoiceActivityLogs.ToListAsync());
+            var entry = Assert.Single(await context.CommercialInvoiceActivityLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
             Assert.Equal("stripe_card_processing", entry.Action);
             Assert.DoesNotContain("bank", entry.Description, StringComparison.OrdinalIgnoreCase);
         }
@@ -835,7 +835,7 @@ namespace DreamCleaningBackend.Tests
             await service.HandleCheckoutExpiredAsync(
                 attempt.StripeCheckoutSessionId!, Metadata(invoice));
 
-            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentAttemptStatus.Expired, reloaded.Status);
             Assert.False(reloaded.IsInFlight);
         }
@@ -856,7 +856,7 @@ namespace DreamCleaningBackend.Tests
             await service.HandleCheckoutExpiredAsync(
                 attempt.StripeCheckoutSessionId!, Metadata(invoice));
 
-            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentAttemptStatus.Succeeded, reloaded.Status);
         }
 
@@ -952,10 +952,10 @@ namespace DreamCleaningBackend.Tests
             // The invoice offers both online methods; that, not the global switches, is what
             // puts the two buttons on the page.
             invoice.PaymentMethods = InvoicePaymentMethods.OnlineBank | InvoicePaymentMethods.Card;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
 
             var invoices = NewInvoiceService(context, billing);
             var options = await invoices.BuildPaymentOptionsAsync(invoice, settings);
@@ -1000,9 +1000,9 @@ namespace DreamCleaningBackend.Tests
                 InvoicePaymentAttemptStatus.CheckoutOpen);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.StripeAchEnabled = true;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var invoices = NewInvoiceService(context, billing);
             Assert.False((await invoices.BuildPaymentOptionsAsync(invoice, settings)).PaymentInProgress);
@@ -1028,12 +1028,12 @@ namespace DreamCleaningBackend.Tests
             var attempt = await SeedAttemptAsync(context, invoice, "pi_test_breakdown", 925.43m);
             attempt.ProcessingFee = 5.00m;
             attempt.TotalCharged = 930.43m;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.StripeAchEnabled = true;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var options = await NewInvoiceService(context, billing)
                 .BuildPaymentOptionsAsync(invoice, settings);
@@ -1056,12 +1056,12 @@ namespace DreamCleaningBackend.Tests
             var attempt = await SeedAttemptAsync(context, invoice, "pi_test_legacy", 925.43m);
             attempt.ProcessingFee = 5.00m;
             attempt.TotalCharged = 0m;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.StripeAchEnabled = true;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var options = await NewInvoiceService(context, billing)
                 .BuildPaymentOptionsAsync(invoice, settings);
@@ -1084,20 +1084,20 @@ namespace DreamCleaningBackend.Tests
             await NewService(context).HandleAsyncPaymentFailedAsync(
                 attempt.StripeCheckoutSessionId!, "pi_test_returned", Metadata(invoice));
 
-            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync());
+            Assert.Empty(await context.CommercialInvoicePayments.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
-            var reloadedInvoice = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id);
+            var reloadedInvoice = await context.CommercialInvoices.FirstAsync(i => i.Id == invoice.Id, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(925.43m, reloadedInvoice.BalanceDue);
             Assert.Null(reloadedInvoice.PaidAt);
 
-            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentAttemptStatus.Failed, reloaded.Status);
             Assert.False(reloaded.IsAwaitingSettlement);
 
             var billing = new BillingSettingsService(context);
-            var settings = await billing.GetOrCreateAsync();
+            var settings = await billing.GetOrCreateAsync(TestContext.Current.CancellationToken);
             settings.StripeAchEnabled = true;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var options = await NewInvoiceService(context, billing)
                 .BuildPaymentOptionsAsync(reloadedInvoice, settings);
@@ -1122,7 +1122,7 @@ namespace DreamCleaningBackend.Tests
             await NewService(context).HandleAsyncPaymentFailedAsync(
                 attempt.StripeCheckoutSessionId!, "pi_test_late_fail", Metadata(invoice));
 
-            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync();
+            var reloaded = await context.CommercialInvoicePaymentAttempts.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoicePaymentAttemptStatus.Succeeded, reloaded.Status);
         }
 

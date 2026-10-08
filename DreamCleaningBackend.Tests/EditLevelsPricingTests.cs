@@ -153,7 +153,7 @@ namespace DreamCleaningBackend.Tests
 
             await Orders().SuperAdminFullUpdateOrder(order.Id, 1, AdminHouseEdit(order, levels, houseQuote));
 
-            var saved = await _db.Orders.Include(o => o.OrderServices).AsNoTracking().FirstAsync(o => o.Id == order.Id);
+            var saved = await _db.Orders.Include(o => o.OrderServices).AsNoTracking().FirstAsync(o => o.Id == order.Id, cancellationToken: TestContext.Current.CancellationToken);
             var line = Assert.Single(saved.OrderServices, os => os.ServiceId == LevelsId);
             Assert.Equal(levels, line.Quantity);
             Assert.Equal(35m * (levels - 1), line.Cost);
@@ -177,7 +177,7 @@ namespace DreamCleaningBackend.Tests
                 PropertyType = PropertyDetailsHelper.House, LevelsQuantity = 3,
                 Services = booking.Services, ExtraServices = new List<BookingExtraServiceDto>()
             };
-            var loaded = await _db.Orders.Include(o => o.OrderServices).ThenInclude(os => os.Service).FirstAsync(o => o.Id == order.Id);
+            var loaded = await _db.Orders.Include(o => o.OrderServices).ThenInclude(os => os.Service).FirstAsync(o => o.Id == order.Id, cancellationToken: TestContext.Current.CancellationToken);
             var editQuote = OrderPricingCalculator.CalculateQuote(await OrderPricingInputBuilder.FromUpdateDtoAsync(_db, loaded, update));
 
             Assert.Equal(houseQuote.SubTotal, editQuote.SubTotal);
@@ -194,7 +194,7 @@ namespace DreamCleaningBackend.Tests
 
             await Orders().SuperAdminFullUpdateOrder(order.Id, 1, dto);
 
-            Assert.False(await _db.OrderServices.AnyAsync(os => os.OrderId == order.Id && os.ServiceId == LevelsId));
+            Assert.False(await _db.OrderServices.AnyAsync(os => os.OrderId == order.Id && os.ServiceId == LevelsId, cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -202,13 +202,13 @@ namespace DreamCleaningBackend.Tests
         {
             // A levels row belonging to another type, and a non-levels service: neither may be attached.
             var order = await BookApartment(HeavyId, HeavyBedroomsId, HeavyBathroomsId, HeavySqftId);
-            var before = await _db.OrderServices.CountAsync(os => os.OrderId == order.Id);
+            var before = await _db.OrderServices.CountAsync(os => os.OrderId == order.Id, cancellationToken: TestContext.Current.CancellationToken);
             var quote = await BookingQuote(Booking(HeavyId, 2, 1, 850, PropertyDetailsHelper.House, null, HeavyBedroomsId, HeavyBathroomsId, HeavySqftId));
 
             await Orders().SuperAdminFullUpdateOrder(order.Id, 1, AdminHouseEdit(order, 3, quote, levelsServiceId: LevelsId));
             await Orders().SuperAdminFullUpdateOrder(order.Id, 1, AdminHouseEdit(order, 3, quote, levelsServiceId: HeavyBathroomsId));
 
-            Assert.Equal(before, await _db.OrderServices.CountAsync(os => os.OrderId == order.Id));
+            Assert.Equal(before, await _db.OrderServices.CountAsync(os => os.OrderId == order.Id, cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -220,7 +220,7 @@ namespace DreamCleaningBackend.Tests
 
             await Orders().SuperAdminFullUpdateOrder(order.Id, 1, dto);
 
-            Assert.Equal(4, (await _db.OrderServices.SingleAsync(os => os.OrderId == order.Id && os.ServiceId == LevelsId)).Quantity);
+            Assert.Equal(4, (await _db.OrderServices.SingleAsync(os => os.OrderId == order.Id && os.ServiceId == LevelsId, cancellationToken: TestContext.Current.CancellationToken)).Quantity);
         }
     }
 }

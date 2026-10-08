@@ -313,7 +313,10 @@ namespace DreamCleaningBackend.Tests
 
             Assert.Equal(0m, line.Cost);
             Assert.Equal(0m, line.Duration);
+            // The legacy constant is the very value this test guards against, so it is named on purpose.
+#pragma warning disable CS0618
             Assert.NotEqual(OrderPricingCalculator.StudioPrice, line.Cost);
+#pragma warning restore CS0618
         }
 
         /// <summary>

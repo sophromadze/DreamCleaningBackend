@@ -120,8 +120,8 @@ namespace DreamCleaningBackend.Tests
             var result = await Controller().UpdateOrderType(order.Id, new UpdateOrderTypeDto { IsCommercial = true });
 
             Assert.IsType<OkObjectResult>(result);
-            Assert.True((await _db.Orders.AsNoTracking().FirstAsync(o => o.Id == order.Id)).IsCommercial);
-            var audit = await _db.AuditLogs.AsNoTracking().SingleAsync(a => a.EntityType == AuditEntityTypes.OrderType);
+            Assert.True((await _db.Orders.AsNoTracking().FirstAsync(o => o.Id == order.Id, cancellationToken: TestContext.Current.CancellationToken)).IsCommercial);
+            var audit = await _db.AuditLogs.AsNoTracking().SingleAsync(a => a.EntityType == AuditEntityTypes.OrderType, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal((long)order.Id, audit.EntityId);
             Assert.Contains("Commercial", audit.NewValues);
         }
@@ -134,12 +134,12 @@ namespace DreamCleaningBackend.Tests
             await Controller().UpdateOrderType(moved.Id, new UpdateOrderTypeDto { IsCommercial = true });
             var untouched = await service.CreateOrderAsync(Booking(), HouseholdId, false);
 
-            var user = await _db.Users.FirstAsync(u => u.Id == HouseholdId);
+            var user = await _db.Users.FirstAsync(u => u.Id == HouseholdId, cancellationToken: TestContext.Current.CancellationToken);
             user.IsBusiness = true;
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-            Assert.True((await _db.Orders.AsNoTracking().FirstAsync(o => o.Id == moved.Id)).IsCommercial);
-            Assert.False((await _db.Orders.AsNoTracking().FirstAsync(o => o.Id == untouched.Id)).IsCommercial);
+            Assert.True((await _db.Orders.AsNoTracking().FirstAsync(o => o.Id == moved.Id, cancellationToken: TestContext.Current.CancellationToken)).IsCommercial);
+            Assert.False((await _db.Orders.AsNoTracking().FirstAsync(o => o.Id == untouched.Id, cancellationToken: TestContext.Current.CancellationToken)).IsCommercial);
 
             // ...while the customer's NEXT booking follows the new flag.
             Assert.True((await service.CreateOrderAsync(Booking(), HouseholdId, false)).IsCommercial);

@@ -364,8 +364,8 @@ public class BillingHistoryOrderingTests : IClassFixture<MariaDbDatabase>
         var history = await scope.ServiceProvider.GetRequiredService<IBillingHistoryService>()
             .GetHistoryAsync(user.Id, 1, 20);
 
-        var invoiceRow = Assert.Single(history.Items.Where(i => i.Kind == "invoice"));
-        var orderRow = Assert.Single(history.Items.Where(i => i.Kind == "order"));
+        var invoiceRow = Assert.Single(history.Items, i => i.Kind == "invoice");
+        var orderRow = Assert.Single(history.Items, i => i.Kind == "order");
         Assert.Equal(925.43m, invoiceRow.Amount);
         Assert.Equal(150m, orderRow.Amount);
 

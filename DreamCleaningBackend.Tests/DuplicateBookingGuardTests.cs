@@ -315,7 +315,7 @@ public class DuplicateBookingGuardTests
             SubTotal = 200m,
             Total = 217.75m
         });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var createCalls = 0;
         var booking = NoDiscounts(onCreate: () => createCalls++);
@@ -335,7 +335,7 @@ public class DuplicateBookingGuardTests
 
         // Order creation was never reached — this is the PRE-insert guard, not the catch block.
         Assert.Equal(0, createCalls);
-        Assert.Equal(1, await db.Orders.CountAsync());
+        Assert.Equal(1, await db.Orders.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     // ── 3. a lost race must not refund the winner's charge ───────────────────────────────────
@@ -401,7 +401,7 @@ public class DuplicateBookingGuardTests
         var (orderId, _) = Confirmed(Assert.IsType<OkObjectResult>(result));
         Assert.Equal(318, orderId);
         Assert.Empty(refunds);
-        Assert.Equal(1, await db.Orders.CountAsync());
+        Assert.Equal(1, await db.Orders.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     // ── 4. a retry AFTER the card was already charged ────────────────────────────────────────
@@ -450,7 +450,7 @@ public class DuplicateBookingGuardTests
             SubTotal = 200m,
             Total = 386.16m
         });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var retry = Prepared(await controller.PreparePayment(NewBookingDto()));
 
@@ -462,7 +462,7 @@ public class DuplicateBookingGuardTests
         Assert.Null(retry.PaymentClientSecret);
         // Nothing left to confirm: the booking is already on file.
         Assert.Null(retry.AlreadyPaidPaymentIntentId);
-        Assert.Equal(1, await db.Orders.CountAsync());
+        Assert.Equal(1, await db.Orders.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     /// <summary>
@@ -529,7 +529,7 @@ public class DuplicateBookingGuardTests
             ContactFirstName = "Test",
             ContactLastName = "Customer"
         });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var sessions = new BookingDataService(NullLogger<BookingDataService>.Instance);
         const string sessionId = "booking_400_1";
@@ -549,7 +549,7 @@ public class DuplicateBookingGuardTests
         Assert.Equal(400, orderId);
         Assert.Equal(OrderStatuses.Active, status);
 
-        var saved = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == 400);
+        var saved = await db.Orders.AsNoTracking().SingleAsync(o => o.Id == 400, cancellationToken: TestContext.Current.CancellationToken);
         Assert.True(saved.IsPaid);
         Assert.Equal("pi_test_tail", saved.PaymentIntentId);
 

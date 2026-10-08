@@ -195,7 +195,7 @@ namespace DreamCleaningBackend.Tests
                 Order(2, inWindow, "Done", hidden: true, channel: "Paid Search"),    // hidden
                 Order(3, inWindow, "Active", hidden: false, channel: "Paid Search"), // not done
                 Order(4, inWindow.AddMonths(1), "Done", hidden: false, channel: "Paid Search")); // outside
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var controller = new AdminOrderSourcesController(db, new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build());
             var result = await controller.GetOrderSources(new DateTime(2026, 9, 1), new DateTime(2026, 9, 30), null);

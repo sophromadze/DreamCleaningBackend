@@ -175,7 +175,7 @@ public class SavedCardPolicyTests
                 .Select(m => m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value));
         }
 
-        Assert.Equal(Concat("CANCELLATION_CONSENT_TEXT"), AutoPayTerms.CancellationConsentText);
+        Assert.Equal(AutoPayTerms.CancellationConsentText, Concat("CANCELLATION_CONSENT_TEXT"));
         Assert.StartsWith(Concat("SMS_CONSENT_LEAD").TrimEnd(), AutoPayTerms.SmsConsentText);
         Assert.StartsWith(Concat("TERMS_CONSENT_LEAD").TrimEnd(), AutoPayTerms.TermsConsentText);
 

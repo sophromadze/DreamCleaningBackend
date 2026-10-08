@@ -216,7 +216,7 @@ namespace DreamCleaningBackend.Tests
         public async Task Backend_ReproducesFrontendExactly(Fixture fixture)
         {
             var serviceTypeId = fixture.ServiceTypeName.StartsWith("Residential") ? ResidentialId : MoveInOutId;
-            var serviceType = await _context.ServiceTypes.FirstAsync(st => st.Id == serviceTypeId);
+            var serviceType = await _context.ServiceTypes.FirstAsync(st => st.Id == serviceTypeId, cancellationToken: TestContext.Current.CancellationToken);
 
             var dto = new CreateBookingDto
             {

@@ -150,30 +150,30 @@ public class CustomerInvoiceTests
     {
         var (db, invoices, _) = await ServiceWith(NewOrder());
 
-        var created = await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, adminUserId: 5);
+        var created = await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, adminUserId: 5, ct: TestContext.Current.CancellationToken);
 
         var invoice = Assert.Single(created);
         Assert.Equal(CustomerInvoiceKind.Full, invoice.Kind);
         Assert.Matches(@"^DCR-\d{4}-\d{8}$", invoice.InvoiceNumber);
         Assert.Equal(48, invoice.PublicToken.Length);
 
-        var request = await db.OrderPartialPayments.SingleAsync();
+        var request = await db.OrderPartialPayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(2743.65m, request.RequestedAmount);
         Assert.Equal(OrderPartialPaymentStatus.Pending, request.Status);
         Assert.Equal(request.Id, invoice.OrderPartialPaymentId);
 
         // The pay link needs the order's own secret payment token.
-        Assert.False(string.IsNullOrEmpty((await db.Orders.SingleAsync()).PaymentAccessToken));
+        Assert.False(string.IsNullOrEmpty((await db.Orders.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).PaymentAccessToken));
     }
 
     [Fact]
     public async Task ASecondFullInvoice_IsRefusedWhileTheFirstIsOpen()
     {
         var (_, invoices, _) = await ServiceWith(NewOrder());
-        await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5);
+        await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<CustomerInvoiceException>(() =>
-            invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+            invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -185,11 +185,11 @@ public class CustomerInvoiceTests
         {
             OrderId = 1,
             SplitAmounts = new List<decimal> { 1000m, 1743.65m }
-        }, 5);
+        }, 5, TestContext.Current.CancellationToken);
 
         Assert.Equal(2, created.Count);
         Assert.All(created, i => Assert.Equal(CustomerInvoiceKind.Split, i.Kind));
-        var requests = await db.OrderPartialPayments.OrderBy(p => p.Id).ToListAsync();
+        var requests = await db.OrderPartialPayments.OrderBy(p => p.Id).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(new[] { 1000m, 1743.65m }, requests.Select(r => r.RequestedAmount));
         Assert.All(requests, r => Assert.Equal(OrderPartialPaymentStatus.Pending, r.Status));
         Assert.Equal(2, created.Select(i => i.InvoiceNumber).Distinct().Count());
@@ -204,32 +204,32 @@ public class CustomerInvoiceTests
         {
             OrderId = 1,
             SplitAmounts = new List<decimal> { 2000m, 1000m }
-        }, 5));
+        }, 5, TestContext.Current.CancellationToken));
 
         // A FRESH order for the second half. The refused batch above is rolled back by its
         // transaction on MariaDB, but the in-memory provider ignores transactions, so reusing the
         // order here would leave the batch's first split behind and test the provider instead of
         // the rule. Each split is checked against what is not already on another invoice.
         var (_, fresh, _) = await ServiceWith(NewOrder());
-        await fresh.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1, SplitAmounts = new List<decimal> { 2000m } }, 5);
+        await fresh.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1, SplitAmounts = new List<decimal> { 2000m } }, 5, TestContext.Current.CancellationToken);
         await Assert.ThrowsAsync<CustomerInvoiceException>(() => fresh.CreateAsync(new CreateCustomerInvoiceDto
         {
             OrderId = 1,
             SplitAmounts = new List<decimal> { 800m }
-        }, 5));
+        }, 5, TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task AFullInvoiceAndSplitInvoicesNeverSitSideBySide()
     {
         var (_, invoices, _) = await ServiceWith(NewOrder());
-        await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5);
+        await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<CustomerInvoiceException>(() => invoices.CreateAsync(new CreateCustomerInvoiceDto
         {
             OrderId = 1,
             SplitAmounts = new List<decimal> { 500m }
-        }, 5));
+        }, 5, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -237,9 +237,9 @@ public class CustomerInvoiceTests
     {
         // Relaxed ONLY for split invoices. The order panel's own "ask for a deposit" keeps it.
         var (_, invoices, partial) = await ServiceWith(NewOrder());
-        await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1, SplitAmounts = new List<decimal> { 1000m } }, 5);
+        await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1, SplitAmounts = new List<decimal> { 1000m } }, 5, TestContext.Current.CancellationToken);
 
-        await Assert.ThrowsAsync<PartialPaymentException>(() => partial.CreateRequestAsync(1, 500m, null, 5));
+        await Assert.ThrowsAsync<PartialPaymentException>(() => partial.CreateRequestAsync(1, 500m, null, 5, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -248,7 +248,7 @@ public class CustomerInvoiceTests
         var (_, invoices, _) = await ServiceWith(NewOrder(recurringSeriesId: 7));
 
         await Assert.ThrowsAsync<CustomerInvoiceException>(() =>
-            invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+            invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -257,7 +257,7 @@ public class CustomerInvoiceTests
         var (_, invoices, _) = await ServiceWith(NewOrder(method: PaymentMethod.Zelle, status: OrderStatuses.Active));
 
         await Assert.ThrowsAsync<CustomerInvoiceException>(() =>
-            invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+            invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
     }
 
     // ── Additional charges (added after the order was paid) ───────────────────────────────
@@ -281,47 +281,47 @@ public class CustomerInvoiceTests
     {
         var (db, invoices) = await PaidOrderWithTopUp();
 
-        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
 
         Assert.Equal(CustomerInvoiceKind.Additional, invoice.Kind);
         Assert.Equal(100m, invoice.Amount);
         Assert.Null(invoice.OrderPartialPaymentId);
-        Assert.Empty(await db.OrderPartialPayments.ToListAsync());
+        Assert.Empty(await db.OrderPartialPayments.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
-        var page = await invoices.GetPublicAsync(invoice.PublicToken);
+        var page = await invoices.GetPublicAsync(invoice.PublicToken, TestContext.Current.CancellationToken);
         Assert.Equal(100m, page!.AmountDue);
         Assert.Equal(141.54m, page.OrderAmountPaid);
-        Assert.Equal($"/order/1/pay?t={(await db.Orders.SingleAsync()).PaymentAccessToken}", page.CardPaymentPath);
+        Assert.Equal($"/order/1/pay?t={(await db.Orders.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).PaymentAccessToken}", page.CardPaymentPath);
 
         // One open additional invoice at a time, and it can't be split.
         await Assert.ThrowsAsync<CustomerInvoiceException>(() =>
-            invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+            invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task AnAdditionalInvoice_IsPaidOnceTheTopUpIsCollected_AndStaysPaid()
     {
         var (db, invoices) = await PaidOrderWithTopUp();
-        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
 
-        var row = await db.OrderUpdateHistories.SingleAsync();
+        var row = await db.OrderUpdateHistories.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         row.IsPaid = true;
         row.PaidAt = DateTime.UtcNow;
-        await db.SaveChangesAsync();
-        Assert.Equal(CustomerInvoiceStatusPolicy.Paid, (await invoices.GetAsync(invoice.Id))!.Status);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(CustomerInvoiceStatusPolicy.Paid, (await invoices.GetAsync(invoice.Id, TestContext.Current.CancellationToken))!.Status);
 
         // A later edit adds more: the paid invoice must not flip back to owed.
-        var order = await db.Orders.SingleAsync();
+        var order = await db.Orders.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         order.Total = 291.54m;
         db.OrderUpdateHistories.Add(new OrderUpdateHistory
         {
             Id = 2, OrderId = 1, UpdatedByUserId = 5, UpdatedAt = DateTime.UtcNow,
             OriginalTotal = 241.54m, NewTotal = 291.54m, AdditionalAmount = 50m, IsPaid = false
         });
-        await db.SaveChangesAsync();
-        Assert.Equal(CustomerInvoiceStatusPolicy.Paid, (await invoices.GetAsync(invoice.Id))!.Status);
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(CustomerInvoiceStatusPolicy.Paid, (await invoices.GetAsync(invoice.Id, TestContext.Current.CancellationToken))!.Status);
 
-        var next = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+        var next = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
         Assert.Equal(50m, next.Amount);
     }
 
@@ -329,9 +329,9 @@ public class CustomerInvoiceTests
     public async Task TheInvoicePdfRenders()
     {
         var (_, invoices, _) = await ServiceWith(NewOrder());
-        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
 
-        var pdf = await invoices.RenderPdfAsync(invoice.PublicToken);
+        var pdf = await invoices.RenderPdfAsync(invoice.PublicToken, TestContext.Current.CancellationToken);
 
         Assert.NotNull(pdf);
         Assert.Equal("%PDF", System.Text.Encoding.ASCII.GetString(pdf!.Value.Bytes, 0, 4));
@@ -344,29 +344,29 @@ public class CustomerInvoiceTests
     public async Task VoidingWithdrawsTheRequest_SoTheCardPageStopsTakingMoneyForIt()
     {
         var (db, invoices, _) = await ServiceWith(NewOrder());
-        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
 
-        await invoices.VoidAsync(invoice.Id, "Wrong amount", 5);
+        await invoices.VoidAsync(invoice.Id, "Wrong amount", 5, TestContext.Current.CancellationToken);
 
-        Assert.Equal(OrderPartialPaymentStatus.Cancelled, (await db.OrderPartialPayments.SingleAsync()).Status);
-        var dto = await invoices.GetAsync(invoice.Id);
+        Assert.Equal(OrderPartialPaymentStatus.Cancelled, (await db.OrderPartialPayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
+        var dto = await invoices.GetAsync(invoice.Id, TestContext.Current.CancellationToken);
         Assert.Equal(CustomerInvoiceStatusPolicy.Void, dto!.Status);
         Assert.False(dto.CanSend);
 
         // ...and frees the order to be invoiced again.
-        Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
+        Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task APaidInvoiceCannotBeVoided()
     {
         var (db, invoices, _) = await ServiceWith(NewOrder());
-        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
-        var request = await db.OrderPartialPayments.SingleAsync();
+        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
+        var request = await db.OrderPartialPayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         request.Status = OrderPartialPaymentStatus.Paid;
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        await Assert.ThrowsAsync<CustomerInvoiceException>(() => invoices.VoidAsync(invoice.Id, null, 5));
+        await Assert.ThrowsAsync<CustomerInvoiceException>(() => invoices.VoidAsync(invoice.Id, null, 5, TestContext.Current.CancellationToken));
     }
 
     // ── The public page ───────────────────────────────────────────────────────────────────
@@ -375,17 +375,17 @@ public class CustomerInvoiceTests
     public async Task ThePublicPageResolvesByToken_AndPointsTheCardButtonAtThisInvoicesRequest()
     {
         var (db, invoices, _) = await ServiceWith(NewOrder());
-        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5));
-        var order = await db.Orders.SingleAsync();
+        var invoice = Assert.Single(await invoices.CreateAsync(new CreateCustomerInvoiceDto { OrderId = 1 }, 5, TestContext.Current.CancellationToken));
+        var order = await db.Orders.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
-        var page = await invoices.GetPublicAsync(invoice.PublicToken);
+        var page = await invoices.GetPublicAsync(invoice.PublicToken, TestContext.Current.CancellationToken);
 
         Assert.NotNull(page);
         Assert.Equal(invoice.InvoiceNumber, page!.InvoiceNumber);
         Assert.Equal(2743.65m, page.AmountDue);
         Assert.Equal($"/order/1/pay?t={order.PaymentAccessToken}&request={invoice.OrderPartialPaymentId}&full=1", page.CardPaymentPath);
 
-        Assert.Null(await invoices.GetPublicAsync("not-a-real-token"));
+        Assert.Null(await invoices.GetPublicAsync("not-a-real-token", TestContext.Current.CancellationToken));
     }
 
     [Fact]

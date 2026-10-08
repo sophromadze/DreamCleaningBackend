@@ -16,9 +16,9 @@ namespace DreamCleaningBackend.Services
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
         }
 
-        public async Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string> metadata = null,
-            string receiptEmail = null, string customerId = null, bool saveCardForOffSession = false,
-            string idempotencyKey = null)
+        public async Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string>? metadata = null,
+            string? receiptEmail = null, string? customerId = null, bool saveCardForOffSession = false,
+            string? idempotencyKey = null)
         {
             try
             {
@@ -28,17 +28,27 @@ namespace DreamCleaningBackend.Services
                     // lands a hair under a cent boundary can no longer undercharge by a penny.
                     Amount = ToCents(amount),
                     Currency = "usd",
-                    PaymentMethodTypes = new List<string> { "card" },
-                    Metadata = metadata ?? new Dictionary<string, string>(),
-                    // Stripe's receipt goes to the ORDER's email regardless of who pays —
-                    // guest payment links may be settled by a relative/helper.
-                    ReceiptEmail = string.IsNullOrWhiteSpace(receiptEmail) ? null : receiptEmail.Trim(),
-                    Customer = string.IsNullOrWhiteSpace(customerId) ? null : customerId,
+                    AllowedPaymentMethodTypes = new List<string> { "card" },
+                    Metadata = metadata ?? new Dictionary<string, string>()
+                };
+
+                // Optional fields are only ASSIGNED when present: Stripe.net sends an assigned null
+                // as an empty value, which is a different request from leaving the field out.
+
+                // Stripe's receipt goes to the ORDER's email regardless of who pays —
+                // guest payment links may be settled by a relative/helper.
+                if (!string.IsNullOrWhiteSpace(receiptEmail))
+                    options.ReceiptEmail = receiptEmail.Trim();
+
+                if (!string.IsNullOrWhiteSpace(customerId))
+                {
+                    options.Customer = customerId;
+
                     // Saves the card being used for THIS payment for later off-session
                     // recurring charges. Stripe requires a Customer on the intent for this.
-                    SetupFutureUsage = saveCardForOffSession && !string.IsNullOrWhiteSpace(customerId)
-                        ? "off_session" : null
-                };
+                    if (saveCardForOffSession)
+                        options.SetupFutureUsage = "off_session";
+                }
 
                 var service = new PaymentIntentService();
 
@@ -92,15 +102,15 @@ namespace DreamCleaningBackend.Services
         }
 
         public async Task<Refund> CreateRefundAsync(string paymentIntentId, decimal? amount = null,
-            string idempotencyKey = null, Dictionary<string, string> metadata = null)
+            string? idempotencyKey = null, Dictionary<string, string>? metadata = null)
         {
             try
             {
-                var options = new RefundCreateOptions
-                {
-                    PaymentIntent = paymentIntentId,
-                    Metadata = metadata
-                };
+                var options = new RefundCreateOptions { PaymentIntent = paymentIntentId };
+
+                // Assigned only when present: an assigned null would go out as "metadata=".
+                if (metadata != null)
+                    options.Metadata = metadata;
 
                 if (amount.HasValue)
                 {
@@ -245,13 +255,18 @@ namespace DreamCleaningBackend.Services
 
             try
             {
-                var customer = await customerService.CreateAsync(new CustomerCreateOptions
+                var customerOptions = new CustomerCreateOptions
                 {
-                    // Never leak the no-email placeholder address (…@no-email.invalid) to Stripe.
-                    Email = user.IsNoEmailUser ? null : user.Email,
                     Name = $"{user.FirstName} {user.LastName}".Trim(),
                     Metadata = new Dictionary<string, string> { { "userId", user.Id.ToString() } }
-                });
+                };
+
+                // Never leak the no-email placeholder address (…@no-email.invalid) to Stripe — and
+                // leave the field out rather than assign null, which Stripe.net sends as "email=".
+                if (!user.IsNoEmailUser && !string.IsNullOrWhiteSpace(user.Email))
+                    customerOptions.Email = user.Email;
+
+                var customer = await customerService.CreateAsync(customerOptions);
 
                 // Mutates the tracked entity; the caller owns SaveChanges.
                 user.StripeCustomerId = customer.Id;
@@ -269,14 +284,19 @@ namespace DreamCleaningBackend.Services
             try
             {
                 var service = new SetupIntentService();
-                return await service.CreateAsync(new SetupIntentCreateOptions
+                var options = new SetupIntentCreateOptions
                 {
                     Customer = stripeCustomerId,
-                    PaymentMethodTypes = new List<string> { "card" },
-                    Usage = "off_session",
-                    Metadata = metadata
-                });
-            }
+                    AllowedPaymentMethodTypes = new List<string> { "card" },
+                    Usage = "off_session"
+                };
+
+                // Assigned only when present: an assigned null would go out as "metadata=".
+                if (metadata != null)
+                    options.Metadata = metadata;
+
+                return await service.CreateAsync(options);
+}
             catch (StripeException ex)
             {
                 _logger.LogError(ex, "Error creating setup intent for customer {CustomerId}", stripeCustomerId);
@@ -303,24 +323,32 @@ namespace DreamCleaningBackend.Services
 
             try
             {
+                var options = new PaymentIntentCreateOptions
+                {
+                    Amount = ToCents(request.Amount),
+                    Currency = "usd",
+                    Customer = request.CustomerId,
+                    PaymentMethod = request.PaymentMethodId,
+                    // Card-only. Without an allow-list the API turns on automatic payment
+                    // methods, and confirming server-side then demands a return_url for
+                    // redirect-based methods — every off-session charge would fail with an
+                    // invalid_request_error (audit finding, 2026-09). Since 2026-09-30.endive
+                    // the allow-list is allowed_payment_method_types (payment_method_types is
+                    // refused with payment_method_types_no_longer_supported).
+                    AllowedPaymentMethodTypes = new List<string> { "card" },
+                    OffSession = request.OffSession,
+                    Confirm = true,
+                    Metadata = request.Metadata ?? new Dictionary<string, string>()
+                };
+
+                // Optional fields are only assigned when present (an assigned null is sent empty).
+                if (!string.IsNullOrWhiteSpace(request.Description))
+                    options.Description = request.Description;
+                if (!string.IsNullOrWhiteSpace(request.ReceiptEmail))
+                    options.ReceiptEmail = request.ReceiptEmail.Trim();
+
                 var paymentIntent = await service.CreateAsync(
-                    new PaymentIntentCreateOptions
-                    {
-                        Amount = ToCents(request.Amount),
-                        Currency = "usd",
-                        Customer = request.CustomerId,
-                        PaymentMethod = request.PaymentMethodId,
-                        // Card-only. Without it the pinned API version (2025-06-30.basil) turns on
-                        // automatic payment methods, and confirming server-side then demands a
-                        // return_url for redirect-based methods — every off-session charge would
-                        // have failed with an invalid_request_error (audit finding, 2026-09).
-                        PaymentMethodTypes = new List<string> { "card" },
-                        OffSession = request.OffSession,
-                        Confirm = true,
-                        Metadata = request.Metadata ?? new Dictionary<string, string>(),
-                        Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description,
-                        ReceiptEmail = string.IsNullOrWhiteSpace(request.ReceiptEmail) ? null : request.ReceiptEmail.Trim()
-                    },
+                    options,
                     new RequestOptions { IdempotencyKey = request.IdempotencyKey });
 
                 return MapIntent(paymentIntent);
@@ -575,6 +603,10 @@ namespace DreamCleaningBackend.Services
 
         public async Task UpdatePaymentIntentMetadataAsync(string paymentIntentId, Dictionary<string, string> metadata)
         {
+            // On an UPDATE an assigned null (or an empty map) is sent as "metadata=", which wipes
+            // every key the intent already carries. Nothing to add means nothing to send.
+            if (metadata == null || metadata.Count == 0) return;
+
             try
             {
                 var service = new PaymentIntentService();

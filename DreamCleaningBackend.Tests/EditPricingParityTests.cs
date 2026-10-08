@@ -294,7 +294,7 @@ namespace DreamCleaningBackend.Tests
             var order = await Book(Request(Kind.FixedPromo, 2, 1, 850));
             // An order booked before rules were recorded (and not backfilled).
             order.DiscountFixedAmount = null;
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var (promo, _, _) = OrderPricingCalculator.ResolveEditedDiscounts(order, order.SubTotal * 2m);
             Assert.Equal(60m, promo);
@@ -334,8 +334,8 @@ namespace DreamCleaningBackend.Tests
             var order = await Book(Request(Kind.PercentPromo, 2, 1, 850));
             var booked = order.SubTotal;
             // Today's catalogue is more expensive than when the order was booked.
-            (await _db.Services.FirstAsync(s => s.Id == BedroomsId)).Cost = 99m;
-            await _db.SaveChangesAsync();
+            (await _db.Services.FirstAsync(s => s.Id == BedroomsId, cancellationToken: TestContext.Current.CancellationToken)).Cost = 99m;
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var dto = AdminEdit(order, 2, 1, 850, booked + 5m, order.TotalDuration);
             dto.ContactPhone = "7185550199";

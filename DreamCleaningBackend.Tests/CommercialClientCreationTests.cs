@@ -182,7 +182,7 @@ namespace DreamCleaningBackend.Tests
             Assert.True(created.Id > 0);
             Assert.Equal("Chick Tastic LLC", created.LegalEntityName);
 
-            var row = await context.ContractClients.SingleAsync();
+            var row = await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.True(row.IsActive);
 
             // The whole point: no agreement was invented on the way through, so no DCC number was
@@ -197,8 +197,8 @@ namespace DreamCleaningBackend.Tests
 
             var created = Body(await NewDirectory(context).CreateClient(NewClientDto()));
 
-            var contact = await context.ContractContacts.SingleAsync();
-            var location = await context.ContractServiceLocations.SingleAsync();
+            var contact = await context.ContractContacts.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
+            var location = await context.ContractServiceLocations.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             // The nested DTOs carry a ContractClientId the caller cannot know; the server fills
             // both from the row it just inserted rather than trusting what arrived.
@@ -255,9 +255,9 @@ namespace DreamCleaningBackend.Tests
 
             var created = Body(await NewDirectory(context).CreateClient(NewClientDto()));
 
-            var row = await context.ContractClients.SingleAsync(c => c.Id == created.Id);
+            var row = await context.ContractClients.SingleAsync(c => c.Id == created.Id, cancellationToken: TestContext.Current.CancellationToken);
             row.IsActive = false;
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.Empty(Body(await NewInvoicesController(context).Clients()));
         }
@@ -328,7 +328,7 @@ namespace DreamCleaningBackend.Tests
             Assert.True(InvoiceStatusPolicy.CanSend(invoice.Status));
             await invoices.MarkSentAsync(invoice, AdminId, "accounts@chicktastic.invalid");
 
-            var stored = await context.CommercialInvoices.SingleAsync();
+            var stored = await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(InvoiceStatus.Sent, stored.Status);
             Assert.NotNull(stored.FirstSentAt);
             Assert.Null(stored.ContractId);
@@ -353,7 +353,7 @@ namespace DreamCleaningBackend.Tests
                 ContractTemplateId = 1,
                 ContractServiceLocationId = 1
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var dto = NewInvoiceDto(mine.Id);
             dto.ContractId = 40;
@@ -404,7 +404,7 @@ namespace DreamCleaningBackend.Tests
                 .CreateClient(NewClientDto(sourceUserId: null)));
 
             Assert.Null(created.SourceUserId);
-            Assert.Null((await context.ContractClients.SingleAsync()).SourceUserId);
+            Assert.Null((await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).SourceUserId);
         }
 
         [Fact]
@@ -434,7 +434,7 @@ namespace DreamCleaningBackend.Tests
                 .CreateClient(NewClientDto(sourceUserId: BusinessUserId)));
 
             Assert.Equal(BusinessUserId, created.SourceUserId);
-            Assert.Equal(BusinessUserId, (await context.ContractClients.SingleAsync()).SourceUserId);
+            Assert.Equal(BusinessUserId, (await context.ContractClients.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).SourceUserId);
         }
 
         [Fact]
@@ -523,7 +523,7 @@ namespace DreamCleaningBackend.Tests
 
             Assert.NotEqual(first.Id, second.Id);
 
-            var stored = await context.ContractClients.OrderBy(c => c.Id).ToListAsync();
+            var stored = await context.ContractClients.OrderBy(c => c.Id).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(2, stored.Count);
             Assert.Equal("First LLC", stored[0].LegalEntityName);
             Assert.Equal("Second LLC", stored[1].LegalEntityName);

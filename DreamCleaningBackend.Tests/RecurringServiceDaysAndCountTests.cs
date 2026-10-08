@@ -345,7 +345,7 @@ public class RecurringServiceDaysAndCountTests
         // The earliest visit has now happened.
         first.ServiceDate = f.Today.AddDays(-1);
         first.Status = OrderStatuses.Done;
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var pass = await f.Series.GenerateAsync(series.Id, 5);
 
@@ -365,7 +365,7 @@ public class RecurringServiceDaysAndCountTests
 
         var first = (await f.Generated()).First();
         first.ServiceDate = f.Today.AddDays(-1);
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var pass = await f.Series.GenerateAsync(series.Id, 5);
 
@@ -485,7 +485,7 @@ public class RecurringServiceDaysAndCountTests
         dto.ContractId = foreign.Id;
 
         await Assert.ThrowsAsync<RecurringSeriesException>(() => f.Series.CreateAsync(1, dto, 5));
-        Assert.Empty(await f.Db.RecurringOrderSeries.ToListAsync());
+        Assert.Empty(await f.Db.RecurringOrderSeries.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     // ── Weekly-flat-fee visits are $0 operational records (2026-10) ──────────────────────────
@@ -504,9 +504,9 @@ public class RecurringServiceDaysAndCountTests
         await priced.Series.CreateAsync(1, priced.Plan(2), 5);
 
         var visits = await weekly.Db.Orders.Include(o => o.OrderServices)
-            .Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync();
+            .Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
         var reference = await priced.Db.Orders.Include(o => o.OrderServices)
-            .Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync();
+            .Where(o => o.IsGeneratedByRecurringSeries).OrderBy(o => o.ServiceDate).ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(2, visits.Count);
         for (var i = 0; i < visits.Count; i++)
@@ -538,7 +538,7 @@ public class RecurringServiceDaysAndCountTests
         using var f = new Fixture();
         await f.Series.CreateAsync(1, f.Plan(2), 5);
 
-        Assert.All(await f.Db.Orders.Include(o => o.OrderServices).Where(o => o.IsGeneratedByRecurringSeries).ToListAsync(), o =>
+        Assert.All(await f.Db.Orders.Include(o => o.OrderServices).Where(o => o.IsGeneratedByRecurringSeries).ToListAsync(cancellationToken: TestContext.Current.CancellationToken), o =>
         {
             Assert.True(o.Total > 0m);
             Assert.Equal(20m, o.Tips);
@@ -575,7 +575,7 @@ public class RecurringServiceDaysAndCountTests
         var visit = (await f.Generated()).First();
         var expected = $"Billed weekly by contract {contract.ContractNumber}";
 
-        var labels = await ContractBilledOrders.LoadLabelsAsync(f.Db, await f.Db.Orders.ToListAsync());
+        var labels = await ContractBilledOrders.LoadLabelsAsync(f.Db, await f.Db.Orders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         Assert.Equal(expected, labels[visit.Id]);
         Assert.False(labels.ContainsKey(1)); // the template is not a contract visit
 
@@ -612,7 +612,7 @@ public class RecurringServiceDaysAndCountTests
         await f.Series.CreateAsync(1, dto, 5);
 
         f.Db.ChangeTracker.Clear();
-        var template = await f.Db.Orders.Include(o => o.OrderServices).SingleAsync(o => o.Id == 1);
+        var template = await f.Db.Orders.Include(o => o.OrderServices).SingleAsync(o => o.Id == 1, cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(OrderStatuses.Done, template.Status);
         Assert.Equal(128.88m, template.Total);
         Assert.Equal(20m, template.Tips);

@@ -244,7 +244,7 @@ namespace DreamCleaningBackend.Tests
                 Id = 999, ServiceId = SqftId, SourceServiceId = BathroomsId,
                 SourceQuantity = 1, IncludedQuantity = 99999m
             });
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var input = await BuildAsync(bedrooms: 2, bathrooms: 1, sqft: 900);
             Assert.Equal(900, input.Services.Single(s => s.ServiceKey == "sqft").Quantity);

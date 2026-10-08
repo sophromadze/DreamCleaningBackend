@@ -158,7 +158,7 @@ namespace DreamCleaningBackend.Tests
             var order = await SeedAsync(totalDuration: 720, maidsCount: 2, assignedCleaners: 2);
             var lead = order.OrderCleaners.OrderBy(oc => oc.Id).First();
             lead.SalaryHourlyRate = 30m;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await _service.SetHoursForEveryCleanerAsync(order, 255m);
 
@@ -179,7 +179,7 @@ namespace DreamCleaningBackend.Tests
                 oc.IsPaid = true;
                 oc.PaidAmount = 73.50m;
             }
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await _service.SetHoursForEveryCleanerAsync(order, 240m);
 
@@ -201,7 +201,7 @@ namespace DreamCleaningBackend.Tests
             var paid = order.OrderCleaners.OrderBy(oc => oc.Id).First();
             paid.IsPaid = true;
             paid.PaidAmount = 126m;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await _service.SetOrderHourlyRateAsync(order, 28m);
 
@@ -221,7 +221,7 @@ namespace DreamCleaningBackend.Tests
             var order = await SeedAsync(totalDuration: 720, maidsCount: 2, assignedCleaners: 2);
             var lead = order.OrderCleaners.OrderBy(oc => oc.Id).First();
             lead.SalaryHourlyRate = 21m;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await _service.SetOrderHourlyRateAsync(order, 20m);
 
@@ -237,13 +237,13 @@ namespace DreamCleaningBackend.Tests
         {
             var order = await SeedAsync(totalDuration: 720, maidsCount: 2, assignedCleaners: 2);
             order.OrderCleaners.OrderBy(oc => oc.Id).First().SalaryHourlyRate = 30m;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await _service.SetOrderHourlyRateAsync(order, 20m);
 
             var log = Assert.Single(await _context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.OrderCleanerHourlyRate)
-                .ToListAsync());
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
             // Named, not counted — the reach of the change is not something anybody can
             // reconstruct from the page six months later.
@@ -265,7 +265,7 @@ namespace DreamCleaningBackend.Tests
 
             var log = Assert.Single(await _context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.OrderCleanerCount)
-                .ToListAsync());
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
             Assert.Equal(2, Values(log.OldValues)["MaidsCount"]!.Value<int>());
             Assert.Equal(3, Values(log.NewValues)["MaidsCount"]!.Value<int>());
         }
@@ -279,7 +279,7 @@ namespace DreamCleaningBackend.Tests
 
             Assert.Empty(await _context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.OrderCleanerCount)
-                .ToListAsync());
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]

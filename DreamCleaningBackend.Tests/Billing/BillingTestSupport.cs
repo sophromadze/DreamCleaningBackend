@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Models.Billing;
@@ -25,7 +26,11 @@ namespace DreamCleaningBackend.Tests.Billing;
 /// </summary>
 public sealed class MariaDbFactAttribute : FactAttribute
 {
-    public MariaDbFactAttribute()
+    // xUnit v3 records where each test is declared through the attribute's caller info.
+    public MariaDbFactAttribute(
+        [CallerFilePath] string? sourceFilePath = null,
+        [CallerLineNumber] int sourceLineNumber = -1)
+        : base(sourceFilePath, sourceLineNumber)
     {
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DC_TEST_MARIADB")))
             Skip = "Set DC_TEST_MARIADB to a local MariaDB connection string (no Database=) to run the billing integration tests.";
@@ -39,7 +44,7 @@ public sealed class MariaDbDatabase : IAsyncLifetime
     public string DatabaseName { get; } = "dc_billing_it_" + Guid.NewGuid().ToString("N")[..10];
     public bool Available { get; private set; }
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         var server = Environment.GetEnvironmentVariable("DC_TEST_MARIADB");
         if (string.IsNullOrWhiteSpace(server)) return;
@@ -69,7 +74,7 @@ public sealed class MariaDbDatabase : IAsyncLifetime
         return new ApplicationDbContext(options);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (string.IsNullOrEmpty(ConnectionString)) return;
         await using var db = CreateContext();
@@ -269,8 +274,8 @@ public sealed class FakeStripe : IStripeService
         }
     }
 
-    public Task<Refund> CreateRefundAsync(string paymentIntentId, decimal? amount = null, string idempotencyKey = null!,
-        Dictionary<string, string> metadata = null!)
+    public Task<Refund> CreateRefundAsync(string paymentIntentId, decimal? amount = null, string? idempotencyKey = null,
+        Dictionary<string, string>? metadata = null)
     {
         Refunds.Add(paymentIntentId);
         if (Intents.TryGetValue(paymentIntentId, out var intent))
@@ -373,8 +378,8 @@ public sealed class FakeStripe : IStripeService
     }
 
     /// <summary>An intent the customer's browser will confirm ("Pay all upcoming", payment pages).</summary>
-    public Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string> metadata = null!, string receiptEmail = null!,
-        string customerId = null!, bool saveCardForOffSession = false, string idempotencyKey = null!)
+    public Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string>? metadata = null, string? receiptEmail = null,
+        string? customerId = null, bool saveCardForOffSession = false, string? idempotencyKey = null)
     {
         var intent = new PaymentIntent
         {

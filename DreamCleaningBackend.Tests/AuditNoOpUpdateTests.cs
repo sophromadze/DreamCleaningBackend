@@ -59,7 +59,7 @@ namespace DreamCleaningBackend.Tests
 
             await _audit.LogUpdateAsync(before, after);
 
-            Assert.Empty(await _context.AuditLogs.ToListAsync());
+            Assert.Empty(await _context.AuditLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -70,7 +70,7 @@ namespace DreamCleaningBackend.Tests
 
             await _audit.LogUpdateAsync(before, after);
 
-            var log = Assert.Single(await _context.AuditLogs.ToListAsync());
+            var log = Assert.Single(await _context.AuditLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
             Assert.Contains("SubTotal", log.ChangedFields);
         }
 
@@ -82,7 +82,7 @@ namespace DreamCleaningBackend.Tests
 
             await _audit.LogUpdateAsync(before, after);
 
-            var log = Assert.Single(await _context.AuditLogs.ToListAsync());
+            var log = Assert.Single(await _context.AuditLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
             Assert.Contains("Status", log.ChangedFields);
             Assert.DoesNotContain("UpdatedAt", log.ChangedFields);
         }
@@ -95,7 +95,7 @@ namespace DreamCleaningBackend.Tests
 
             await _audit.LogUpdateAsync(before, after);
 
-            Assert.Empty(await _context.AuditLogs.ToListAsync());
+            Assert.Empty(await _context.AuditLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
     }
 }

@@ -37,12 +37,12 @@ namespace DreamCleaningBackend.Tests
 
         private PrivateFileTestHost _host = null!;
 
-        public async Task InitializeAsync()
+        public async ValueTask InitializeAsync()
         {
             _host = await PrivateFileTestHost.StartAsync(new[] { typeof(PrivateFilesController), typeof(AdminUserCareController) });
         }
 
-        public async Task DisposeAsync() => await _host.DisposeAsync();
+        public async ValueTask DisposeAsync() => await _host.DisposeAsync();
 
         // ── Classification ───────────────────────────────────────────────────────
 
@@ -173,7 +173,7 @@ namespace DreamCleaningBackend.Tests
             var result = await service.UploadPhotoAsync(60, Png());
 
             Assert.StartsWith("/api/files/cleaners/60/photo?v=", result!.Url);
-            var stored = (await db.Cleaners.AsNoTracking().SingleAsync(c => c.Id == 60)).PhotoUrl;
+            var stored = (await db.Cleaners.AsNoTracking().SingleAsync(c => c.Id == 60, cancellationToken: TestContext.Current.CancellationToken)).PhotoUrl;
             Assert.Equal(StoredFileKind.Local, Classify(stored));
         }
 
@@ -199,7 +199,7 @@ namespace DreamCleaningBackend.Tests
 
             var response = await _host.GetAsync("/api/admin/user-care/users/80/cleaning-photos", 1, UserRole.Admin);
             HttpStatusAssert.Is(HttpStatusCode.OK, response, "photo list");
-            var photos = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement
+            var photos = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement
                 .EnumerateArray().SelectMany(g => g.GetProperty("photos").EnumerateArray())
                 .ToDictionary(p => p.GetProperty("id").GetInt32(), p => p.GetProperty("photoUrl").GetString());
 

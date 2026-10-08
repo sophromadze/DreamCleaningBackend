@@ -215,7 +215,7 @@ namespace DreamCleaningBackend.Tests
             var invoices = NewInvoiceService(context, NewBilling(context));
             await SettleByAchAsync(context, invoices);
 
-            var payment = await context.CommercialInvoicePayments.SingleAsync();
+            var payment = await context.CommercialInvoicePayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(925.43m, payment.Amount);
             Assert.True(payment.Amount > 0m, "A received payment must never be a negative ledger entry.");
@@ -237,7 +237,7 @@ namespace DreamCleaningBackend.Tests
             var invoices = NewInvoiceService(context, NewBilling(context));
             var seeded = await SettleByAchAsync(context, invoices);
 
-            var invoice = await context.CommercialInvoices.FirstAsync(i => i.Id == seeded.Id);
+            var invoice = await context.CommercialInvoices.FirstAsync(i => i.Id == seeded.Id, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(925.43m, invoice.Total);
             Assert.Equal(925.43m, invoice.AmountPaid);
@@ -259,7 +259,7 @@ namespace DreamCleaningBackend.Tests
             var invoice = await context.CommercialInvoices
                 .Include(i => i.Items)
                 .Include(i => i.Client)
-                .FirstAsync(i => i.Id == seeded.Id);
+                .FirstAsync(i => i.Id == seeded.Id, cancellationToken: TestContext.Current.CancellationToken);
 
             var dto = await invoices.ToPublicDtoAsync(invoice);
 
@@ -324,7 +324,7 @@ namespace DreamCleaningBackend.Tests
             var invoice = await context.CommercialInvoices
                 .Include(i => i.Items)
                 .Include(i => i.Client)
-                .FirstAsync(i => i.Id == seeded.Id);
+                .FirstAsync(i => i.Id == seeded.Id, cancellationToken: TestContext.Current.CancellationToken);
 
             var bytes = new InvoicePdfService().Render(await invoices.ToPublicDtoAsync(invoice));
 
@@ -350,12 +350,12 @@ namespace DreamCleaningBackend.Tests
             var invoices = NewInvoiceService(context, NewBilling(context));
             var seeded = await SettleByAchAsync(context, invoices);
 
-            var original = await context.CommercialInvoicePayments.SingleAsync();
+            var original = await context.CommercialInvoicePayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             await new InvoicePaymentService(context).ReverseAsync(
                 seeded.Id, original.Id, "Bank returned the debit — insufficient funds.", userId: ReversingAdminId);
 
-            var invoice = await context.CommercialInvoices.FirstAsync(i => i.Id == seeded.Id);
+            var invoice = await context.CommercialInvoices.FirstAsync(i => i.Id == seeded.Id, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(0m, invoice.AmountPaid);
             Assert.Equal(925.43m, invoice.BalanceDue);
@@ -374,7 +374,7 @@ namespace DreamCleaningBackend.Tests
             var invoices = NewInvoiceService(context, NewBilling(context));
             var seeded = await SettleByAchAsync(context, invoices);
 
-            var original = await context.CommercialInvoicePayments.SingleAsync();
+            var original = await context.CommercialInvoicePayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             await new InvoicePaymentService(context).ReverseAsync(
                 seeded.Id, original.Id, "Bank returned the debit — insufficient funds.", userId: ReversingAdminId);
@@ -382,8 +382,8 @@ namespace DreamCleaningBackend.Tests
             var dto = await invoices.GetDetailAsync(seeded.Id);
             Assert.Equal(2, dto!.Payments.Count);
 
-            var received = Assert.Single(dto.Payments.Where(p => !p.IsReversal));
-            var reversal = Assert.Single(dto.Payments.Where(p => p.IsReversal));
+            var received = Assert.Single(dto.Payments, p => !p.IsReversal);
+            var reversal = Assert.Single(dto.Payments, p => p.IsReversal);
 
             // The original is untouched: history says money arrived, because it did.
             Assert.Equal(925.43m, received.Amount);
@@ -402,7 +402,7 @@ namespace DreamCleaningBackend.Tests
 
             var activity = await context.CommercialInvoiceActivityLogs
                 .Where(a => a.CommercialInvoiceId == seeded.Id)
-                .ToListAsync();
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Contains(activity, a => a.Action == "payment_reversed");
         }
 
@@ -417,11 +417,11 @@ namespace DreamCleaningBackend.Tests
             var invoices = NewInvoiceService(context, NewBilling(context));
             var seeded = await SettleByAchAsync(context, invoices);
 
-            var original = await context.CommercialInvoicePayments.SingleAsync();
+            var original = await context.CommercialInvoicePayments.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             await new InvoicePaymentService(context).ReverseAsync(
                 seeded.Id, original.Id, "Returned debit.", userId: ReversingAdminId);
 
-            var rows = await context.CommercialInvoicePayments.ToListAsync();
+            var rows = await context.CommercialInvoicePayments.ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.All(rows, r => Assert.True(
                 r.IsReversal || r.Amount > 0m,

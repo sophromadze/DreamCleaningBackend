@@ -42,7 +42,7 @@ public class PaymentConfirmationTaxTests
             DiscountAmount = discounts / 2, SubscriptionDiscountAmount = discounts / 2,
             GiftCardAmountUsed = applyCredits ? 5 : 0, PointsRedeemedDiscount = applyCredits ? 10 : 0,
             Total = total - (applyCredits ? 15 : 0), ContactFirstName = "Test", ContactLastName = "Customer" };
-        db.Orders.Add(order); await db.SaveChangesAsync();
+        db.Orders.Add(order); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         var expected = total - (applyCredits ? 40 : 0);
         var stripe = RecurringDiscountRegressionTests.Stub<IStripeService>((method, args) => {
             Assert.Equal("GetPaymentIntentAsync", method.Name); Assert.Equal("pi_test_paid", args![0]);
@@ -73,7 +73,7 @@ public class PaymentConfirmationTaxTests
         } };
 
         Assert.IsType<OkObjectResult>(await controller.ConfirmPayment(1, new ConfirmPaymentDto { PaymentIntentId = "pi_test_paid" }));
-        var saved = await db.Orders.AsNoTracking().SingleAsync();
+        var saved = await db.Orders.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.True(saved.IsPaid); Assert.Equal(OrderStatuses.Active, saved.Status);
         Assert.Equal(expected, saved.Total); Assert.Equal(split.tax, saved.Tax);
         Assert.Equal(split.subTotal + discounts, saved.SubTotal); Assert.Equal(tips, saved.Tips);
@@ -84,6 +84,6 @@ public class PaymentConfirmationTaxTests
         // What must NOT happen is unchanged: the order is not re-priced or re-settled.
         var replay = Assert.IsType<OkObjectResult>(await controller.ConfirmPayment(1, new ConfirmPaymentDto { PaymentIntentId = "pi_test_paid" }));
         Assert.Equal(true, replay.Value!.GetType().GetProperty("alreadyPaid")!.GetValue(replay.Value));
-        Assert.Equal(expected, (await db.Orders.AsNoTracking().SingleAsync()).Total);
+        Assert.Equal(expected, (await db.Orders.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Total);
     }
 }

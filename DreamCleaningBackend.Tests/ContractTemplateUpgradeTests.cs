@@ -84,13 +84,12 @@ namespace DreamCleaningBackend.Tests
         {
             using var context = NewContext();
             context.ContractTemplates.Add(SoapDraftRow());
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
-            var stale = await context.ContractTemplates.SingleAsync(t => t.Version == "2.0");
-            var current = await context.ContractTemplates.SingleAsync(
-                t => t.Version == ContractTemplateSeed.TemplateVersion);
+            var stale = await context.ContractTemplates.SingleAsync(t => t.Version == "2.0", cancellationToken: TestContext.Current.CancellationToken);
+            var current = await context.ContractTemplates.SingleAsync(t => t.Version == ContractTemplateSeed.TemplateVersion, cancellationToken: TestContext.Current.CancellationToken);
 
             // The stale row is kept — an audit entry can still point at it — but it leaves the
             // picker and stops being what a new contract starts from.
@@ -101,7 +100,7 @@ namespace DreamCleaningBackend.Tests
 
             // Exactly one default, always. Two would make "the template a new contract starts
             // from" a matter of row order.
-            Assert.Single(await context.ContractTemplates.Where(t => t.IsDefault).ToListAsync());
+            Assert.Single(await context.ContractTemplates.Where(t => t.IsDefault).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
             // And the body a new contract now renders is the corrected one.
             Assert.Equal(ContractTemplateSeed.BodyText, current.BodyText);
@@ -120,11 +119,11 @@ namespace DreamCleaningBackend.Tests
             var row = SoapDraftRow();
             var original = row.BodyText;
             context.ContractTemplates.Add(row);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
-            var stale = await context.ContractTemplates.SingleAsync(t => t.Version == "2.0");
+            var stale = await context.ContractTemplates.SingleAsync(t => t.Version == "2.0", cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(original, stale.BodyText);
         }
 
@@ -143,11 +142,11 @@ namespace DreamCleaningBackend.Tests
                 BodyText = "# WAREHOUSE\n",
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
-            var mine = await context.ContractTemplates.SingleAsync(t => t.Name == "Warehouse agreement");
+            var mine = await context.ContractTemplates.SingleAsync(t => t.Name == "Warehouse agreement", cancellationToken: TestContext.Current.CancellationToken);
             Assert.True(mine.IsActive);
         }
 
@@ -157,14 +156,14 @@ namespace DreamCleaningBackend.Tests
         {
             using var context = NewContext();
             context.ContractTemplates.Add(SoapDraftRow());
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
             await Seeder(context).SeedAsync();
 
             Assert.Equal(1, await context.ContractTemplates
-                .CountAsync(t => t.Version == ContractTemplateSeed.TemplateVersion));
-            Assert.Single(await context.ContractTemplates.Where(t => t.IsDefault).ToListAsync());
+                .CountAsync(t => t.Version == ContractTemplateSeed.TemplateVersion, cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Single(await context.ContractTemplates.Where(t => t.IsDefault).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         // ══════════════════════════════════════════════════════════════════════════════════════
@@ -236,11 +235,11 @@ namespace DreamCleaningBackend.Tests
                 StructureJson = stale.ToJson(),
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
-            var row = await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant");
+            var row = await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant", cancellationToken: TestContext.Current.CancellationToken);
             var repaired = ScopeStructure.Parse(row.StructureJson);
             var restrooms = repaired.Groups
                 .Single(g => g.Key == ContractScopeTemplateSeed.AreaTasksKey)
@@ -300,11 +299,11 @@ namespace DreamCleaningBackend.Tests
                 StructureJson = stored.ToJson(),
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
-            var row = await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant");
+            var row = await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant", cancellationToken: TestContext.Current.CancellationToken);
             var after = ScopeStructure.Parse(row.StructureJson)
                 .Groups.Single(g => g.Key == ContractScopeTemplateSeed.AreaTasksKey);
 
@@ -351,11 +350,11 @@ namespace DreamCleaningBackend.Tests
                 StructureJson = stored.ToJson(),
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
-            var row = await context.ScopeTemplates.SingleAsync(t => t.Name == "Client's own type");
+            var row = await context.ScopeTemplates.SingleAsync(t => t.Name == "Client's own type", cancellationToken: TestContext.Current.CancellationToken);
             var item = ScopeStructure.Parse(row.StructureJson).Groups.Single().Items.Single();
 
             Assert.Equal("topping up the soap in the staff washroom", item.Label);
@@ -376,14 +375,14 @@ namespace DreamCleaningBackend.Tests
         {
             using var context = NewContext();
             context.ContractTemplates.Add(SoapDraftRow());
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
             var offered = await context.ContractTemplates
                 .Where(t => t.IsActive)
                 .Select(t => t.Version)
-                .ToListAsync();
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(new[] { ContractTemplateSeed.TemplateVersion }, offered);
         }
@@ -447,12 +446,12 @@ namespace DreamCleaningBackend.Tests
                 StructureJson = stale.ToJson(),
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
             var repaired = ScopeStructure.Parse(
-                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant")).StructureJson);
+                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant", cancellationToken: TestContext.Current.CancellationToken)).StructureJson);
 
             var table = repaired.Groups.Single(g => g.Key == ContractScopeTemplateSeed.AreaTasksKey);
             var row = table.Items.Single();
@@ -501,12 +500,12 @@ namespace DreamCleaningBackend.Tests
                 StructureJson = stale.ToJson(),
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
             var repaired = ScopeStructure.Parse(
-                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Office")).StructureJson);
+                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Office", cancellationToken: TestContext.Current.CancellationToken)).StructureJson);
 
             Assert.Equal(
                 ContractScopeTemplateSeed.IncludedRoomsAreaLabel,
@@ -550,12 +549,12 @@ namespace DreamCleaningBackend.Tests
                 StructureJson = stale.ToJson(),
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
             var repaired = ScopeStructure.Parse(
-                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Client's own type"))
+                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Client's own type", cancellationToken: TestContext.Current.CancellationToken))
                     .StructureJson);
 
             Assert.Equal(
@@ -603,12 +602,12 @@ namespace DreamCleaningBackend.Tests
                 StructureJson = custom.ToJson(),
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
             var after = ScopeStructure.Parse(
-                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Client's own type"))
+                (await context.ScopeTemplates.SingleAsync(t => t.Name == "Client's own type", cancellationToken: TestContext.Current.CancellationToken))
                     .StructureJson);
             var items = after.Groups.Single(g => g.Key == ContractScopeTemplateSeed.AreaTasksKey).Items;
 
@@ -648,14 +647,14 @@ namespace DreamCleaningBackend.Tests
                 StructureJson = stale.ToJson(),
                 IsActive = true
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
-            var afterFirst = (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant"))
+            var afterFirst = (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant", cancellationToken: TestContext.Current.CancellationToken))
                 .StructureJson;
 
             await Seeder(context).SeedAsync();
-            var afterSecond = (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant"))
+            var afterSecond = (await context.ScopeTemplates.SingleAsync(t => t.Name == "Restaurant", cancellationToken: TestContext.Current.CancellationToken))
                 .StructureJson;
 
             Assert.Equal(afterFirst, afterSecond);
@@ -748,13 +747,13 @@ namespace DreamCleaningBackend.Tests
                 IsActive = true,
                 IsDefault = false
             });
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Seeder(context).SeedAsync();
 
             var rows = await context.ContractTemplates
                 .Where(t => t.Name == ContractTemplateSeed.TemplateName)
-                .ToListAsync();
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.False(rows.Single(t => t.Version == "2.0").IsActive);
             Assert.False(rows.Single(t => t.Version == "2.1").IsActive);
@@ -767,7 +766,7 @@ namespace DreamCleaningBackend.Tests
             var current = rows.Single(t => t.Version == ContractTemplateSeed.TemplateVersion);
             Assert.True(current.IsActive);
             Assert.True(current.IsDefault);
-            Assert.Single(rows.Where(t => t.IsDefault));
+            Assert.Single(rows, t => t.IsDefault);
 
             // Each retired row keeps its OWN wording, so a version generated from it still renders
             // the text it was signed with — the seeder stops offering them, it never rewrites them.

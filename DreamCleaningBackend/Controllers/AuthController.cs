@@ -783,7 +783,7 @@ namespace DreamCleaningBackend.Controllers
                 // Always return same message for security
                 return Ok(new { message = "If an account exists with this email, a verification email has been sent." });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Don't reveal actual error
                 return Ok(new { message = "If an account exists with this email, a verification email has been sent." });

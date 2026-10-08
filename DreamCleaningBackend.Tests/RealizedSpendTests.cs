@@ -68,9 +68,9 @@ public class RealizedSpendTests
     {
         using var db = RecurringDiscountRegressionTests.Db();
         db.Orders.AddRange(Orders());
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        Assert.Equal(Expected, await db.Orders.WhereRealizedSpend().SumAsync(o => o.Total - o.TotalRefundedAmount));
+        Assert.Equal(Expected, await db.Orders.WhereRealizedSpend().SumAsync(o => o.Total - o.TotalRefundedAmount, cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public class RealizedSpendTests
         // The paid invoice itself is in the database too — it must not be ADDED to its cleanings.
         db.CommercialInvoices.Add(new CommercialInvoice { Id = 1, ContractClientId = 1, InvoiceNumber = "DCI-2026-00000001",
             Status = InvoiceStatus.Paid, Total = 952.66m, AmountPaid = 952.66m });
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         var audit = new AuditService(db, new HttpContextAccessor(), NullLogger<AuditService>.Instance);
         var result = await new CrmCustomersController(db, audit).GetCustomer(1);

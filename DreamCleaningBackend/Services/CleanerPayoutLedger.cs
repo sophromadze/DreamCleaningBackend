@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
@@ -67,12 +68,15 @@ namespace DreamCleaningBackend.Services
             var ids = orderIds.Distinct().OrderBy(id => id).ToList();
             if (ids.Count == 0) return;
 
-            // Ints only, so the list is safe to inline. Ordered so two lockers of overlapping sets
-            // always queue in the same order instead of deadlocking.
+            // One SQL parameter per id. Ordered so two lockers of overlapping sets always queue in
+            // the same order instead of deadlocking.
+            var placeholders = string.Join(", ", ids.Select((_, i) => "{" + i + "}"));
+            var lockQuery = FormattableStringFactory.Create(
+                "SELECT `Id` FROM `Orders` WHERE `Id` IN (" + placeholders + ") ORDER BY `Id` FOR UPDATE",
+                ids.Cast<object>().ToArray());
             try
             {
-                await _context.Database.ExecuteSqlRawAsync(
-                    $"SELECT `Id` FROM `Orders` WHERE `Id` IN ({string.Join(",", ids)}) ORDER BY `Id` FOR UPDATE");
+                await _context.Database.ExecuteSqlAsync(lockQuery);
             }
             catch (MySqlConnector.MySqlException ex) when (ex.Number is 1020 or 1205 or 1213)
             {

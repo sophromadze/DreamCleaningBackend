@@ -120,9 +120,9 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// <param name="idempotencyKey">Pass one wherever a repeated call is the SAME logical
         /// payment attempt, so a retry reuses the intent Stripe already created instead of a
         /// second chargeable one. The booking flow passes its prepare-session id.</param>
-        Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string> metadata = null,
-            string receiptEmail = null, string customerId = null, bool saveCardForOffSession = false,
-            string idempotencyKey = null);
+        Task<PaymentIntent> CreatePaymentIntentAsync(decimal amount, Dictionary<string, string>? metadata = null,
+            string? receiptEmail = null, string? customerId = null, bool saveCardForOffSession = false,
+            string? idempotencyKey = null);
         Task<PaymentIntent> ConfirmPaymentIntentAsync(string paymentIntentId);
         Task<PaymentIntent> GetPaymentIntentAsync(string paymentIntentId);
         Task<PaymentIntent> CancelPaymentIntentAsync(string paymentIntentId);
@@ -132,7 +132,7 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// <param name="metadata">Traceability only (orderId, adminUserId). The internal admin
         /// reason must NOT go here — Stripe's own `reason` field takes only its fixed enum.</param>
         Task<Refund> CreateRefundAsync(string paymentIntentId, decimal? amount = null,
-            string idempotencyKey = null, Dictionary<string, string> metadata = null);
+            string? idempotencyKey = null, Dictionary<string, string>? metadata = null);
 
         /// <summary>How much of this charge is still refundable, read live from Stripe.
         /// Never throws — a lookup failure comes back as IsRefundable=false with a reason, so a

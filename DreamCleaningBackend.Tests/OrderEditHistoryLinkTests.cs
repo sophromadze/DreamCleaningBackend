@@ -110,11 +110,11 @@ namespace DreamCleaningBackend.Tests
             db.OrderUpdateHistories.Add(Row(2, 1480m, 1750m, secondsBeforeAudit: 1, additional: 270m));
             var log = TipEditAuditRow();
             db.AuditLogs.Add(log);
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await audit.UndoAsync(log.Id);
 
-            var order = (await db.Orders.FindAsync(386))!;
+            var order = (await db.Orders.FindAsync(new object?[] { 386 }, TestContext.Current.CancellationToken))!;
             Assert.Equal(1480m, order.Total);
             Assert.Equal(0m, order.Tips);
             Assert.Equal(new[] { 1 }, db.OrderUpdateHistories.Select(h => h.Id).ToArray());
@@ -140,11 +140,11 @@ namespace DreamCleaningBackend.Tests
             db.OrderUpdateHistories.Add(Row(2, 1480m, 1750m, secondsBeforeAudit: 1, additional: 270m, isPaid: true));
             var log = TipEditAuditRow();
             db.AuditLogs.Add(log);
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => audit.UndoAsync(log.Id));
 
-            Assert.Equal(1750m, (await db.Orders.FindAsync(386))!.Total);
+            Assert.Equal(1750m, (await db.Orders.FindAsync(new object?[] { 386 }, TestContext.Current.CancellationToken))!.Total);
             Assert.Single(db.OrderUpdateHistories);
             Assert.Null(log.UndoneAt);
         }

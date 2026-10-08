@@ -95,7 +95,7 @@ namespace DreamCleaningBackend.Tests
                 new { CanReceiveEmails = true },
                 new { CanReceiveEmails = true });
 
-            Assert.Empty(await _context.AuditLogs.ToListAsync());
+            Assert.Empty(await _context.AuditLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -270,7 +270,7 @@ namespace DreamCleaningBackend.Tests
 
             var log = Assert.Single(await _context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.CleanerPayout)
-                .ToListAsync());
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Equal("PayoutRecorded", log.Action);
             Assert.Equal(900, log.EntityId);
@@ -293,7 +293,7 @@ namespace DreamCleaningBackend.Tests
 
             var reversal = Assert.Single(await _context.AuditLogs
                 .Where(a => a.Action == "PayoutReversed")
-                .ToListAsync());
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
             // Captured BEFORE the fields are cleared. Logging afterwards would record a reversal
             // of "None", which documents nothing.
@@ -314,7 +314,7 @@ namespace DreamCleaningBackend.Tests
 
             var rows = await _context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.CleanerPayout && a.Action == "PayoutRecorded")
-                .ToListAsync();
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Single(rows);
         }
@@ -330,7 +330,7 @@ namespace DreamCleaningBackend.Tests
 
             var log = Assert.Single(await _context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.OrderCleanerHourlyRate)
-                .ToListAsync());
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
             var fields = ChangedFields(log);
             Assert.Contains("CleanerHourlyRate", fields);
@@ -354,7 +354,7 @@ namespace DreamCleaningBackend.Tests
 
             var log = Assert.Single(await _context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.CleanerPayrollOverride)
-                .ToListAsync());
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
 
             Assert.Equal("PayrollOverrideSet", log.Action);
             // The EFFECTIVE rate, not the empty override column. Logging the column read as
@@ -387,7 +387,7 @@ namespace DreamCleaningBackend.Tests
             var actions = await _context.AuditLogs
                 .Where(a => a.EntityType == AuditEntityTypes.CleanerPayrollOverride)
                 .Select(a => a.Action)
-                .ToListAsync();
+                .ToListAsync(cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Contains("PayrollOverrideSet", actions);
             Assert.Contains("PayrollOverrideReset", actions);

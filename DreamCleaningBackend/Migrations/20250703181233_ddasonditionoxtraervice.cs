@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace DreamCleaningBackend.Migrations
 {
     /// <inheritdoc />
-    public partial class ddasonditionoxtraervice : Migration
+    public partial class AddExtraServiceHasCondition : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)

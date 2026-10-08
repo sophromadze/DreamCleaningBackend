@@ -368,3 +368,6 @@ FodyWeavers.xsd
 
 # Apple private keys
 *.p8
+
+# Six Labors (ImageSharp 4+) build licence - never committed
+sixlabors.lic

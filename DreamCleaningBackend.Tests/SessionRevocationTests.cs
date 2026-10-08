@@ -1,4 +1,3 @@
-using System.IdentityModel.Tokens.Jwt;
 using System.Reflection;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Models;
@@ -9,6 +8,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.IdentityModel.JsonWebTokens;
 using Xunit;
 
 namespace DreamCleaningBackend.Tests
@@ -94,7 +94,7 @@ namespace DreamCleaningBackend.Tests
         {
             var service = NewService(out var context);
             context.Users.Add(NewUser(id: 7, tokenVersion: 1));
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             // The token in the offline user's browser still says version 0.
             Assert.False(await service.IsTokenCurrentAsync(7, 0));
@@ -105,7 +105,7 @@ namespace DreamCleaningBackend.Tests
         {
             var service = NewService(out var context);
             context.Users.Add(NewUser(id: 7, tokenVersion: 1));
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.True(await service.IsTokenCurrentAsync(7, 1));
         }
@@ -118,7 +118,7 @@ namespace DreamCleaningBackend.Tests
             // those two defaults.
             var service = NewService(out var context);
             context.Users.Add(NewUser(id: 7, tokenVersion: 0));
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.True(await service.IsTokenCurrentAsync(7, 0));
         }
@@ -142,12 +142,12 @@ namespace DreamCleaningBackend.Tests
             var service = NewService(out var context);
             var user = NewUser(id: 7, tokenVersion: 0);
             context.Users.Add(user);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             Assert.True(await service.IsTokenCurrentAsync(7, 0));   // populates the cache
 
             service.RevokeSessions(user);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
             service.SyncCache(user.Id, user.TokenVersion);
 
             Assert.False(await service.IsTokenCurrentAsync(7, 0));
@@ -159,7 +159,7 @@ namespace DreamCleaningBackend.Tests
         [Fact]
         public void EveryIssuedTokenCarriesTheAccountsCurrentVersion()
         {
-            var token = new JwtSecurityTokenHandler().ReadJwtToken(
+            var token = new JsonWebTokenHandler().ReadJsonWebToken(
                 CreateToken(NewUser(id: 7, tokenVersion: 9)));
 
             var claim = token.Claims.FirstOrDefault(c => c.Type == TokenVersionService.ClaimType);

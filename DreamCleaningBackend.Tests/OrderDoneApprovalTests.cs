@@ -97,12 +97,12 @@ namespace DreamCleaningBackend.Tests
                 new UpdateOrderStatusDto { Status = "Done", PaymentMethod = "Zelle", PaymentReference = "ZL-1", SendReviewRequest = true });
 
             Assert.IsType<AcceptedResult>(result);
-            var order = await _db.Orders.AsNoTracking().FirstAsync(o => o.Id == orderId);
+            var order = await _db.Orders.AsNoTracking().FirstAsync(o => o.Id == orderId, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("Pending", order.Status);
             Assert.Equal(PaymentMethod.Normal, order.PaymentMethod);   // nothing applied yet
             Assert.Empty(_points.Completed);
 
-            var request = await _db.PendingOrderEdits.AsNoTracking().SingleAsync();
+            var request = await _db.PendingOrderEdits.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(PendingOrderEditKinds.Done, request.Kind);
             Assert.Equal("Pending", request.Status);
             Assert.Equal(AdminId, request.RequestedByUserId);
@@ -120,7 +120,7 @@ namespace DreamCleaningBackend.Tests
             var second = await controller.UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" });
 
             Assert.IsType<ConflictObjectResult>(second);
-            Assert.Equal(1, await _db.PendingOrderEdits.CountAsync());
+            Assert.Equal(1, await _db.PendingOrderEdits.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -132,7 +132,7 @@ namespace DreamCleaningBackend.Tests
                 new UpdateOrderStatusDto { Status = "Done" });
 
             Assert.IsType<AcceptedResult>(result);
-            Assert.Equal("Cancelled", (await _db.Orders.AsNoTracking().FirstAsync()).Status);
+            Assert.Equal("Cancelled", (await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
         }
 
         [Fact]
@@ -144,7 +144,7 @@ namespace DreamCleaningBackend.Tests
                 new UpdateOrderStatusDto { Status = "Done", PaymentMethod = "Cash" });
 
             Assert.IsType<OkObjectResult>(result);
-            var order = await _db.Orders.AsNoTracking().FirstAsync();
+            var order = await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("Done", order.Status);
             Assert.Equal(PaymentMethod.Cash, order.PaymentMethod);
             Assert.Equal(AdminId, order.ManualPaymentRecordedByUserId);
@@ -163,7 +163,7 @@ namespace DreamCleaningBackend.Tests
                 new UpdateOrderStatusDto { Status = "Done" });
 
             Assert.IsType<OkObjectResult>(result);
-            Assert.Equal("Done", (await _db.Orders.AsNoTracking().FirstAsync()).Status);
+            Assert.Equal("Done", (await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
             Assert.Equal(new[] { orderId }, _points.Completed);
             Assert.Empty(_db.PendingOrderEdits);
         }
@@ -177,7 +177,7 @@ namespace DreamCleaningBackend.Tests
                 new UpdateOrderStatusDto { Status = "Finished" });
 
             Assert.IsType<BadRequestObjectResult>(result);
-            Assert.Equal("Pending", (await _db.Orders.AsNoTracking().FirstAsync()).Status);
+            Assert.Equal("Pending", (await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
         }
 
         [Fact]
@@ -188,7 +188,7 @@ namespace DreamCleaningBackend.Tests
             await Controller(SuperAdminId, UserRole.SuperAdmin).UpdateOrderStatus(orderId,
                 new UpdateOrderStatusDto { Status = "done" });
 
-            Assert.Equal("Done", (await _db.Orders.AsNoTracking().FirstAsync()).Status);
+            Assert.Equal("Done", (await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
         }
 
         // ── Approve / reject ───────────────────────────────────────────────────────────────
@@ -199,12 +199,12 @@ namespace DreamCleaningBackend.Tests
             var orderId = SeedOrder("Pending");
             await Controller(AdminId, UserRole.Admin).UpdateOrderStatus(orderId,
                 new UpdateOrderStatusDto { Status = "Done", PaymentMethod = "Zelle", PaymentReference = "ZL-9", PaymentNotes = "paid on site" });
-            var requestId = (await _db.PendingOrderEdits.SingleAsync()).Id;
+            var requestId = (await _db.PendingOrderEdits.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Id;
 
             var result = await Controller(SuperAdminId, UserRole.SuperAdmin).ApprovePendingOrderEdit(requestId);
 
             Assert.IsType<OkObjectResult>(result);
-            var order = await _db.Orders.AsNoTracking().FirstAsync();
+            var order = await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("Done", order.Status);
             Assert.Equal(PaymentMethod.Zelle, order.PaymentMethod);
             Assert.Equal("ZL-9", order.PaymentReference);
@@ -214,7 +214,7 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(AdminId, order.ManualPaymentRecordedByUserId);
             Assert.Equal(new[] { orderId }, _points.Completed);
 
-            var request = await _db.PendingOrderEdits.AsNoTracking().SingleAsync();
+            var request = await _db.PendingOrderEdits.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("Approved", request.Status);
             Assert.Equal(SuperAdminId, request.ReviewedByUserId);
         }
@@ -224,10 +224,10 @@ namespace DreamCleaningBackend.Tests
         {
             var orderId = SeedOrder("Pending");
             await Controller(AdminId, UserRole.Admin).UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" });
-            var requestId = (await _db.PendingOrderEdits.SingleAsync()).Id;
+            var requestId = (await _db.PendingOrderEdits.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Id;
 
             Assert.IsType<OkObjectResult>(await Controller(GrantedAdminId, UserRole.Admin).ApprovePendingOrderEdit(requestId));
-            Assert.Equal("Done", (await _db.Orders.AsNoTracking().FirstAsync()).Status);
+            Assert.Equal("Done", (await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
         }
 
         [Fact]
@@ -236,10 +236,10 @@ namespace DreamCleaningBackend.Tests
             var orderId = SeedOrder("Pending");
             var admin = Controller(AdminId, UserRole.Admin);
             await admin.UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" });
-            var requestId = (await _db.PendingOrderEdits.SingleAsync()).Id;
+            var requestId = (await _db.PendingOrderEdits.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Id;
 
             Assert.IsType<ForbidResult>(await admin.ApprovePendingOrderEdit(requestId));
-            Assert.Equal("Pending", (await _db.Orders.AsNoTracking().FirstAsync()).Status);
+            Assert.Equal("Pending", (await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
         }
 
         [Fact]
@@ -247,12 +247,12 @@ namespace DreamCleaningBackend.Tests
         {
             var orderId = SeedOrder("Pending");
             await Controller(AdminId, UserRole.Admin).UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" });
-            var requestId = (await _db.PendingOrderEdits.SingleAsync()).Id;
+            var requestId = (await _db.PendingOrderEdits.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Id;
 
             await Controller(SuperAdminId, UserRole.SuperAdmin).RejectPendingOrderEdit(requestId,
                 new RejectPendingOrderEditDto { RejectReason = "Customer has not paid yet" });
 
-            Assert.Equal("Pending", (await _db.Orders.AsNoTracking().FirstAsync()).Status);
+            Assert.Equal("Pending", (await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
             Assert.Empty(_points.Completed);
 
             // The requester - who cannot open the reviewer queue - reads the outcome on the order.
@@ -273,7 +273,7 @@ namespace DreamCleaningBackend.Tests
             var admin = Controller(AdminId, UserRole.Admin);
             await admin.UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" });
             await Controller(SuperAdminId, UserRole.SuperAdmin).RejectPendingOrderEdit(
-                (await _db.PendingOrderEdits.SingleAsync()).Id, new RejectPendingOrderEditDto());
+                (await _db.PendingOrderEdits.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Id, new RejectPendingOrderEditDto());
 
             Assert.IsType<AcceptedResult>(await admin.UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" }));
         }
@@ -283,17 +283,17 @@ namespace DreamCleaningBackend.Tests
         {
             var orderId = SeedOrder("Pending");
             await Controller(AdminId, UserRole.Admin).UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" });
-            var requestId = (await _db.PendingOrderEdits.SingleAsync()).Id;
+            var requestId = (await _db.PendingOrderEdits.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Id;
 
-            var order = await _db.Orders.FirstAsync();
+            var order = await _db.Orders.FirstAsync(cancellationToken: TestContext.Current.CancellationToken);
             order.Status = "Cancelled";
-            await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             var result = await Controller(SuperAdminId, UserRole.SuperAdmin).ApprovePendingOrderEdit(requestId);
 
             Assert.IsType<BadRequestObjectResult>(result);
-            Assert.Equal("Cancelled", (await _db.Orders.AsNoTracking().FirstAsync()).Status);
-            Assert.Equal("Pending", (await _db.PendingOrderEdits.AsNoTracking().SingleAsync()).Status);
+            Assert.Equal("Cancelled", (await _db.Orders.AsNoTracking().FirstAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
+            Assert.Equal("Pending", (await _db.PendingOrderEdits.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
             Assert.Empty(_points.Completed);
         }
 
@@ -302,14 +302,14 @@ namespace DreamCleaningBackend.Tests
         {
             var orderId = SeedOrder("Pending");
             await Controller(AdminId, UserRole.Admin).UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" });
-            var requestId = (await _db.PendingOrderEdits.SingleAsync()).Id;
+            var requestId = (await _db.PendingOrderEdits.SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Id;
             await Controller(SuperAdminId, UserRole.SuperAdmin).UpdateOrderStatus(orderId, new UpdateOrderStatusDto { Status = "Done" });
 
             var result = await Controller(SuperAdminId, UserRole.SuperAdmin).ApprovePendingOrderEdit(requestId);
 
             Assert.IsType<OkObjectResult>(result);
             Assert.Equal(new[] { orderId }, _points.Completed);   // once, from the direct Done
-            Assert.Equal("Approved", (await _db.PendingOrderEdits.AsNoTracking().SingleAsync()).Status);
+            Assert.Equal("Approved", (await _db.PendingOrderEdits.AsNoTracking().SingleAsync(cancellationToken: TestContext.Current.CancellationToken)).Status);
         }
 
         [Fact]

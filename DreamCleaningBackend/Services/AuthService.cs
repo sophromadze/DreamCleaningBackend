@@ -1,11 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using System.IdentityModel.Tokens.Jwt;
+using Microsoft.IdentityModel.JsonWebTokens;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Linq;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
@@ -14,7 +12,6 @@ using Google.Apis.Auth;
 using DreamCleaningBackend.Services.Interfaces;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Repositories.Interfaces;
-using System.Security.Cryptography;
 
 namespace DreamCleaningBackend.Services
 {
@@ -649,24 +646,9 @@ namespace DreamCleaningBackend.Services
         {
             try
             {
-                var handler = new JwtSecurityTokenHandler();
-                var jsonToken = handler.ReadToken(identityToken) as JwtSecurityToken;
-                
+                // Apple's published key set; the handler picks the key the token's "kid" names.
                 using var httpClient = new HttpClient();
-                var response = await httpClient.GetStringAsync("https://appleid.apple.com/auth/keys");
-                var appleKeys = System.Text.Json.JsonSerializer.Deserialize<AppleKeyResponse>(response);
-                
-                var kid = jsonToken?.Header.Kid;
-                var appleKey = appleKeys?.Keys.FirstOrDefault(k => k.Kid == kid);
-                
-                if (appleKey == null) return null;
-
-                var rsa = RSA.Create();
-                rsa.ImportParameters(new RSAParameters
-                {
-                    Modulus = Base64UrlDecode(appleKey.N),
-                    Exponent = Base64UrlDecode(appleKey.E)
-                });
+                var keySet = new JsonWebKeySet(await httpClient.GetStringAsync("https://appleid.apple.com/auth/keys"));
 
                 var validationParameters = new TokenValidationParameters
                 {
@@ -675,20 +657,25 @@ namespace DreamCleaningBackend.Services
                     ValidateAudience = true,
                     ValidAudience = _configuration["Authentication:Apple:ClientId"],
                     ValidateLifetime = true,
-                    IssuerSigningKey = new RsaSecurityKey(rsa)
+                    IssuerSigningKeys = keySet.GetSigningKeys()
                 };
 
-                var principal = handler.ValidateToken(identityToken, validationParameters, out _);
-                
-                var isPrivateEmailClaim = principal.FindFirst("is_private_email")?.Value;
+                var result = await new JsonWebTokenHandler().ValidateTokenAsync(identityToken, validationParameters);
+                if (!result.IsValid)
+                {
+                    _logger.LogWarning(result.Exception, "Apple identity token rejected");
+                    return null;
+                }
+
+                // JsonWebTokenHandler keeps the token's own claim names ("sub", "email").
+                var identity = result.ClaimsIdentity;
+                var isPrivateEmailClaim = identity.FindFirst("is_private_email")?.Value;
                 var isPrivateEmail = string.Equals(isPrivateEmailClaim, "true", StringComparison.OrdinalIgnoreCase);
 
                 return new AppleTokenPayload
                 {
-                    Subject = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
-                              ?? principal.FindFirst("sub")?.Value ?? "",
-                    Email = principal.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value 
-                            ?? principal.FindFirst("email")?.Value,
+                    Subject = identity.FindFirst(JwtRegisteredClaimNames.Sub)?.Value ?? "",
+                    Email = identity.FindFirst(JwtRegisteredClaimNames.Email)?.Value,
                     IsPrivateEmail = isPrivateEmail
                 };
             }
@@ -699,18 +686,7 @@ namespace DreamCleaningBackend.Services
             }
         }
 
-        private byte[] Base64UrlDecode(string input)
-        {
-            var output = input.Replace('-', '+').Replace('_', '/');
-            switch (output.Length % 4)
-            {
-                case 2: output += "=="; break;
-                case 3: output += "="; break;
-            }
-            return Convert.FromBase64String(output);
-        }
-
-        /// <summary>
+/// <summary>
         /// How long the refresh token a renewal REPLACED stays acceptable (see
         /// <see cref="User.PreviousRefreshToken"/>).
         ///
@@ -763,7 +739,7 @@ namespace DreamCleaningBackend.Services
                     throw new Exception("Invalid refresh token");
                 }
 
-                var principal = GetPrincipalFromExpiredToken(suppliedAccessToken);
+                var principal = await GetPrincipalFromExpiredTokenAsync(suppliedAccessToken);
                 // PRESERVED: Try both claim types for user ID
                 var userId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
                              principal.FindFirst("UserId")?.Value;
@@ -925,7 +901,7 @@ namespace DreamCleaningBackend.Services
             return payload?.Email;
         }
 
-        private ClaimsPrincipal GetPrincipalFromExpiredToken(string token)
+        private async Task<ClaimsIdentity> GetPrincipalFromExpiredTokenAsync(string token)
         {
             var tokenValidationParameters = new TokenValidationParameters
             {
@@ -936,14 +912,17 @@ namespace DreamCleaningBackend.Services
                 ValidateLifetime = false // Don't validate lifetime for expired tokens
             };
 
-            var tokenHandler = new JwtSecurityTokenHandler();
-            var principal = tokenHandler.ValidateToken(token, tokenValidationParameters, out SecurityToken securityToken);
-            var jwtSecurityToken = securityToken as JwtSecurityToken;
+            // MapInboundClaims turns the short names the token carries ("nameid", "role", ...) back
+            // into ClaimTypes.*, exactly as the bearer handler does on every request.
+            var tokenHandler = new JsonWebTokenHandler { MapInboundClaims = true };
+            var result = await tokenHandler.ValidateTokenAsync(token, tokenValidationParameters);
 
-            if (jwtSecurityToken == null || !jwtSecurityToken.Header.Alg.Equals(SecurityAlgorithms.HmacSha512, StringComparison.InvariantCultureIgnoreCase))
+            if (!result.IsValid
+                || result.SecurityToken is not Microsoft.IdentityModel.JsonWebTokens.JsonWebToken jwt
+                || !jwt.Alg.Equals(SecurityAlgorithms.HmacSha512, StringComparison.InvariantCultureIgnoreCase))
                 throw new SecurityTokenException("Invalid token");
 
-            return principal;
+            return result.ClaimsIdentity;
         }
 
         private void CreatePasswordHash(string password, out string passwordHash, out string passwordSalt)
@@ -968,15 +947,21 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        /// <summary>The short JWT name the bearer handler maps to <see cref="ClaimTypes.Role"/>.</summary>
+        private const string RoleClaimName = "role";
+
         private string CreateToken(User user)
         {
+            // Written with the short JWT claim names ("nameid", "email", "unique_name", "role") that
+            // every session issued so far carries; the bearer handler maps them back to ClaimTypes.*
+            // on the way in. JsonWebTokenHandler writes claim types verbatim, so they are named here.
             var claims = new List<Claim>
     {
-        new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-        new Claim(ClaimTypes.Email, user.Email),
-        new Claim(ClaimTypes.Name, $"{user.FirstName} {user.LastName}"),
+        new Claim(JwtRegisteredClaimNames.NameId, user.Id.ToString()),
+        new Claim(JwtRegisteredClaimNames.Email, user.Email),
+        new Claim(JwtRegisteredClaimNames.UniqueName, $"{user.FirstName} {user.LastName}"),
         // IMPORTANT: Add both ClaimTypes.Role and custom "Role" claim (PRESERVED FROM ORIGINAL)
-        new Claim(ClaimTypes.Role, user.Role.ToString()),
+        new Claim(RoleClaimName, user.Role.ToString()),
         new Claim("Role", user.Role.ToString()),
         new Claim("UserId", user.Id.ToString()),
         new Claim("FirstName", user.FirstName),
@@ -997,7 +982,7 @@ namespace DreamCleaningBackend.Services
             var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(
                 _configuration.GetSection("AppSettings:Token").Value));
 
-            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha512Signature);
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha512);
 
             var tokenDescriptor = new SecurityTokenDescriptor
             {
@@ -1006,10 +991,7 @@ namespace DreamCleaningBackend.Services
                 SigningCredentials = creds
             };
 
-            var tokenHandler = new JwtSecurityTokenHandler();
-            var token = tokenHandler.CreateToken(tokenDescriptor);
-
-            return tokenHandler.WriteToken(token);
+            return new JsonWebTokenHandler().CreateToken(tokenDescriptor);
         }
 
         private string GenerateRefreshToken()
@@ -1835,23 +1817,7 @@ namespace DreamCleaningBackend.Services
     }
 
     // Apple token validation helper classes
-    public class AppleKeyResponse
-    {
-        [JsonPropertyName("keys")]
-        public List<AppleKey> Keys { get; set; } = new();
-    }
-
-    public class AppleKey
-    {
-        [JsonPropertyName("kid")]
-        public string Kid { get; set; } = "";
-        [JsonPropertyName("n")]
-        public string N { get; set; } = "";
-        [JsonPropertyName("e")]
-        public string E { get; set; } = "";
-    }
-
-    public class AppleTokenPayload
+public class AppleTokenPayload
     {
         public string Subject { get; set; } = "";
         public string? Email { get; set; }

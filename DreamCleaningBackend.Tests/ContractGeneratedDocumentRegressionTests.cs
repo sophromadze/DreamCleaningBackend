@@ -654,11 +654,11 @@ namespace DreamCleaningBackend.Tests
                 BodyText = edited, IsActive = true, IsDefault = true,
                 CreatedAt = created, UpdatedAt = created.AddDays(2)
             });
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await new ContractSeedService(db, NullLogger<ContractSeedService>.Instance).SeedAsync();
 
-            var row = await db.ContractTemplates.SingleAsync(t => t.Version == ContractTemplateSeed.TemplateVersion);
+            var row = await db.ContractTemplates.SingleAsync(t => t.Version == ContractTemplateSeed.TemplateVersion, cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal(edited, row.BodyText);
         }
 
@@ -797,12 +797,12 @@ namespace DreamCleaningBackend.Tests
                 IsActive = true,
                 IsDefault = true
             });
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
             await new ContractSeedService(db, NullLogger<ContractSeedService>.Instance).SeedAsync();
 
-            var previous = await db.ContractTemplates.SingleAsync(t => t.Version == previousVersion);
-            var current = await db.ContractTemplates.SingleAsync(t => t.Version == ContractTemplateSeed.TemplateVersion);
+            var previous = await db.ContractTemplates.SingleAsync(t => t.Version == previousVersion, cancellationToken: TestContext.Current.CancellationToken);
+            var current = await db.ContractTemplates.SingleAsync(t => t.Version == ContractTemplateSeed.TemplateVersion, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.Equal(previousBody, previous.BodyText);
             Assert.DoesNotContain(BackgroundCheckClause, previous.BodyText);
@@ -853,7 +853,7 @@ namespace DreamCleaningBackend.Tests
             var pdfPath = Path.Combine(Path.GetTempPath(), $"dc-existing-contract-{Guid.NewGuid():N}.pdf");
             var pdfBytes = new ContractPdfService()
                 .GenerateDocument(oldRendered, oldSnapshot, Block(), certificate: null, draftWatermark: false);
-            await File.WriteAllBytesAsync(pdfPath, pdfBytes);
+            await File.WriteAllBytesAsync(pdfPath, pdfBytes, TestContext.Current.CancellationToken);
             try
             {
                 var contract = new Contract
@@ -865,7 +865,7 @@ namespace DreamCleaningBackend.Tests
                     DraftSnapshotJson = oldSnapshot.ToJson()
                 };
                 harness.Db.Contracts.Add(contract);
-                await harness.Db.SaveChangesAsync();
+                await harness.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
                 var stored = new ContractVersion
                 {
@@ -879,9 +879,9 @@ namespace DreamCleaningBackend.Tests
                     GeneratedByAdminId = 1
                 };
                 harness.Db.ContractVersions.Add(stored);
-                await harness.Db.SaveChangesAsync();
+                await harness.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
                 contract.CurrentVersionId = stored.Id;
-                await harness.Db.SaveChangesAsync();
+                await harness.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
                 string Fingerprint(Contract c, ContractVersion v) => string.Join("\u001f",
                     c.ContractNumber, c.Status, c.ContractTemplateId, c.CurrentVersionId, c.DraftSnapshotJson,
@@ -896,10 +896,10 @@ namespace DreamCleaningBackend.Tests
                 Assert.Contains(BackgroundCheckClause, ContractSnapshot.Parse(newVersion.FullSnapshotJson).TemplateBodyText);
 
                 harness.Db.ChangeTracker.Clear();
-                var contractAfter = await harness.Db.Contracts.SingleAsync(c => c.Id == contract.Id);
-                var versionAfter = await harness.Db.ContractVersions.SingleAsync(v => v.ContractId == contract.Id);
+                var contractAfter = await harness.Db.Contracts.SingleAsync(c => c.Id == contract.Id, cancellationToken: TestContext.Current.CancellationToken);
+                var versionAfter = await harness.Db.ContractVersions.SingleAsync(v => v.ContractId == contract.Id, cancellationToken: TestContext.Current.CancellationToken);
                 Assert.Equal(before, Fingerprint(contractAfter, versionAfter));
-                Assert.Equal(pdfBytes, await File.ReadAllBytesAsync(pdfPath));
+                Assert.Equal(pdfBytes, await File.ReadAllBytesAsync(pdfPath, TestContext.Current.CancellationToken));
 
                 var reRendered = ContractRenderer.Render(ContractSnapshot.Parse(versionAfter.FullSnapshotJson));
                 Assert.Equal(versionAfter.DocumentHashSha256, reRendered.Sha256);
@@ -1045,7 +1045,7 @@ namespace DreamCleaningBackend.Tests
             var pdfPath = Path.Combine(Path.GetTempPath(), $"dc-signed-notice-{Guid.NewGuid():N}.pdf");
             var pdfBytes = new ContractPdfService().GenerateDocument(
                 signedRendered, signed, Block(), certificate: null, draftWatermark: false);
-            await File.WriteAllBytesAsync(pdfPath, pdfBytes);
+            await File.WriteAllBytesAsync(pdfPath, pdfBytes, TestContext.Current.CancellationToken);
             try
             {
                 var contract = new Contract
@@ -1057,7 +1057,7 @@ namespace DreamCleaningBackend.Tests
                     DraftSnapshotJson = signedJson
                 };
                 harness.Db.Contracts.Add(contract);
-                await harness.Db.SaveChangesAsync();
+                await harness.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
                 var stored = new ContractVersion
                 {
                     ContractId = contract.Id, VersionNumber = 1,
@@ -1069,9 +1069,9 @@ namespace DreamCleaningBackend.Tests
                     GeneratedByAdminId = 1
                 };
                 harness.Db.ContractVersions.Add(stored);
-                await harness.Db.SaveChangesAsync();
+                await harness.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
                 contract.CurrentVersionId = stored.Id;
-                await harness.Db.SaveChangesAsync();
+                await harness.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
                 string Fingerprint(Contract c, ContractVersion v) => string.Join("\u001f",
                     c.Status, c.CurrentVersionId, c.DraftSnapshotJson, v.FullSnapshotJson,
@@ -1082,10 +1082,10 @@ namespace DreamCleaningBackend.Tests
                 await harness.Service.GeneratePreviewAsync(newId, adminId: 1);
 
                 harness.Db.ChangeTracker.Clear();
-                var contractAfter = await harness.Db.Contracts.SingleAsync(c => c.Id == contract.Id);
-                var versionAfter = await harness.Db.ContractVersions.SingleAsync(v => v.ContractId == contract.Id);
+                var contractAfter = await harness.Db.Contracts.SingleAsync(c => c.Id == contract.Id, cancellationToken: TestContext.Current.CancellationToken);
+                var versionAfter = await harness.Db.ContractVersions.SingleAsync(v => v.ContractId == contract.Id, cancellationToken: TestContext.Current.CancellationToken);
                 Assert.Equal(before, Fingerprint(contractAfter, versionAfter));
-                Assert.Equal(pdfBytes, await File.ReadAllBytesAsync(pdfPath));
+                Assert.Equal(pdfBytes, await File.ReadAllBytesAsync(pdfPath, TestContext.Current.CancellationToken));
 
                 var reRendered = ContractRenderer.Render(ContractSnapshot.Parse(versionAfter.FullSnapshotJson));
                 Assert.Equal(versionAfter.DocumentHashSha256, reRendered.Sha256);

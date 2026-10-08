@@ -185,13 +185,13 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext($"purge-happy-{Guid.NewGuid()}");
             var (contractId, _) = await SeedAsync(context);
 
-            await Purge(context).PurgeAsync(await LoadGraphAsync(context, contractId), "Nodar Alania");
+            await Purge(context).PurgeAsync(await LoadGraphAsync(context, contractId), "Nodar Alania", TestContext.Current.CancellationToken);
 
-            Assert.Empty(await context.Contracts.Where(c => c.Id == contractId).ToListAsync());
-            Assert.Empty(await context.ContractVersions.Where(v => v.ContractId == contractId).ToListAsync());
-            Assert.Empty(await context.ContractSigners.ToListAsync());
-            Assert.Empty(await context.ContractFiles.ToListAsync());
-            Assert.Empty(await context.ContractAuditLogs.Where(a => a.ContractId == contractId).ToListAsync());
+            Assert.Empty(await context.Contracts.Where(c => c.Id == contractId).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Empty(await context.ContractVersions.Where(v => v.ContractId == contractId).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Empty(await context.ContractSigners.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Empty(await context.ContractFiles.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Empty(await context.ContractAuditLogs.Where(a => a.ContractId == contractId).ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         /// <summary>
@@ -208,9 +208,9 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext($"purge-log-{Guid.NewGuid()}");
             var (contractId, _) = await SeedAsync(context);
 
-            await Purge(context).PurgeAsync(await LoadGraphAsync(context, contractId), "Nodar Alania");
+            await Purge(context).PurgeAsync(await LoadGraphAsync(context, contractId), "Nodar Alania", TestContext.Current.CancellationToken);
 
-            var log = await context.ContractDeletionLogs.SingleAsync();
+            var log = await context.ContractDeletionLogs.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("DCC-2026-48392175", log.ContractNumber);
             Assert.Equal(contractId, log.ContractId);
             Assert.Equal("Northline Holdings Inc.", log.ClientLegalName);
@@ -238,11 +238,11 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext($"purge-shared-{Guid.NewGuid()}");
             var (contractId, clientId) = await SeedAsync(context);
 
-            await Purge(context).PurgeAsync(await LoadGraphAsync(context, contractId), "Nodar Alania");
+            await Purge(context).PurgeAsync(await LoadGraphAsync(context, contractId), "Nodar Alania", TestContext.Current.CancellationToken);
 
-            Assert.NotNull(await context.ContractClients.FindAsync(clientId));
+            Assert.NotNull(await context.ContractClients.FindAsync(new object?[] { clientId }, TestContext.Current.CancellationToken));
 
-            var invoice = await context.CommercialInvoices.SingleAsync();
+            var invoice = await context.CommercialInvoices.SingleAsync(cancellationToken: TestContext.Current.CancellationToken);
             Assert.Equal("DCI-2026-99998888", invoice.InvoiceNumber);
             Assert.Equal(clientId, invoice.ContractClientId);
         }
@@ -263,15 +263,15 @@ namespace DreamCleaningBackend.Tests
 
             var contract = await LoadGraphAsync(context, contractId);
             var ex = await Assert.ThrowsAsync<ContractPurgeRefusedException>(
-                () => Purge(context).PurgeAsync(contract, "Nodar Alania"));
+                () => Purge(context).PurgeAsync(contract, "Nodar Alania", TestContext.Current.CancellationToken));
 
             Assert.Contains("signature", ex.Message, StringComparison.OrdinalIgnoreCase);
 
             // Still entirely there, and no deletion log was written for something that did not
             // happen.
-            Assert.NotNull(await context.Contracts.FindAsync(contractId));
-            Assert.Single(await context.ContractVersions.ToListAsync());
-            Assert.Empty(await context.ContractDeletionLogs.ToListAsync());
+            Assert.NotNull(await context.Contracts.FindAsync(new object?[] { contractId }, TestContext.Current.CancellationToken));
+            Assert.Single(await context.ContractVersions.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Empty(await context.ContractDeletionLogs.ToListAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         /// <summary>
@@ -287,10 +287,10 @@ namespace DreamCleaningBackend.Tests
             var (contractId, _) = await SeedAsync(context, withInvoice: true);
             var contract = await LoadGraphAsync(context, contractId);
             var ex = await Assert.ThrowsAsync<ContractPurgeRefusedException>(
-                () => Purge(context).PurgeAsync(contract, "Nodar Alania"));
+                () => Purge(context).PurgeAsync(contract, "Nodar Alania", TestContext.Current.CancellationToken));
 
             Assert.Contains("invoice", ex.Message, StringComparison.OrdinalIgnoreCase);
-            Assert.NotNull(await context.Contracts.FindAsync(contractId));
+            Assert.NotNull(await context.Contracts.FindAsync(new object?[] { contractId }, TestContext.Current.CancellationToken));
         }
 
         /// <summary>
@@ -303,14 +303,12 @@ namespace DreamCleaningBackend.Tests
             using var context = NewContext($"purge-blocker-{Guid.NewGuid()}");
             var (cleanId, _) = await SeedAsync(context);
 
-            Assert.Null(await Purge(context).DescribeBlockerAsync(
-                await context.Contracts.FirstAsync(c => c.Id == cleanId)));
+            Assert.Null(await Purge(context).DescribeBlockerAsync(await context.Contracts.FirstAsync(c => c.Id == cleanId, cancellationToken: TestContext.Current.CancellationToken), TestContext.Current.CancellationToken));
 
             using var signedContext = NewContext($"purge-blocker-signed-{Guid.NewGuid()}");
             var (signedId, _) = await SeedAsync(signedContext, signed: true);
 
-            Assert.NotNull(await Purge(signedContext).DescribeBlockerAsync(
-                await signedContext.Contracts.FirstAsync(c => c.Id == signedId)));
+            Assert.NotNull(await Purge(signedContext).DescribeBlockerAsync(await signedContext.Contracts.FirstAsync(c => c.Id == signedId, cancellationToken: TestContext.Current.CancellationToken), TestContext.Current.CancellationToken));
         }
     }
 

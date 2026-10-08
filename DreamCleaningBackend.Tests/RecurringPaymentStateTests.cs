@@ -75,9 +75,9 @@ public class RecurringPaymentStateTests
         var retry = await f.Start();
         Assert.NotEqual(first.PaymentIntentId, retry.PaymentIntentId);
         Assert.Contains(first.PaymentIntentId, f.Canceled);
-        Assert.Equal(OrderPaymentBatchStatus.Canceled, (await f.Db.OrderPaymentBatches.FindAsync(first.BatchId))!.Status);
-        Assert.Equal(OrderPaymentBatchStatus.Pending, (await f.Db.OrderPaymentBatches.FindAsync(retry.BatchId))!.Status);
-        Assert.All(await f.Db.Orders.ToListAsync(), o => Assert.False(o.IsPaid));
+        Assert.Equal(OrderPaymentBatchStatus.Canceled, (await f.Db.OrderPaymentBatches.FindAsync(new object?[] { first.BatchId }, TestContext.Current.CancellationToken))!.Status);
+        Assert.Equal(OrderPaymentBatchStatus.Pending, (await f.Db.OrderPaymentBatches.FindAsync(new object?[] { retry.BatchId }, TestContext.Current.CancellationToken))!.Status);
+        Assert.All(await f.Db.Orders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken), o => Assert.False(o.IsPaid));
     }
 
     [Fact]
@@ -112,10 +112,10 @@ public class RecurringPaymentStateTests
         intent.Status = state; intent.LastPaymentError = state == "requires_payment_method" ? new StripeError { Message = "Declined" } : null;
         await f.Service.MarkBatchFailedAsync(intent.Id, "Declined");
         Assert.Equal(state == "canceled" ? OrderPaymentBatchStatus.Canceled : OrderPaymentBatchStatus.Failed,
-            (await f.Db.OrderPaymentBatches.FindAsync(batch.BatchId))!.Status);
+            (await f.Db.OrderPaymentBatches.FindAsync(new object?[] { batch.BatchId }, TestContext.Current.CancellationToken))!.Status);
         Assert.True((await f.Service.GetUpcomingAsync(1)).CanPayAll);
-        Assert.All(await f.Db.Orders.ToListAsync(), o => Assert.False(o.IsPaid));
-        await f.Start(); Assert.Equal(2, await f.Db.OrderPaymentBatches.CountAsync());
+        Assert.All(await f.Db.Orders.ToListAsync(cancellationToken: TestContext.Current.CancellationToken), o => Assert.False(o.IsPaid));
+        await f.Start(); Assert.Equal(2, await f.Db.OrderPaymentBatches.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 
     // "Success between page load and retry settles exactly once" MOVED to
@@ -138,7 +138,7 @@ public class RecurringPaymentStateTests
     public async Task CombinedRetryCancelsAnAbandonedIndividualIntentToo()
     {
         using var f = new Fixture(); f.Intents.Add("pi_individual", new PaymentIntent { Id = "pi_individual", Status = "requires_action" });
-        (await f.Db.Orders.FindAsync(1))!.PaymentIntentId = "pi_individual"; await f.Db.SaveChangesAsync();
+        (await f.Db.Orders.FindAsync(new object?[] { 1 }, TestContext.Current.CancellationToken))!.PaymentIntentId = "pi_individual"; await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
         await f.Start(); Assert.Contains("pi_individual", f.Canceled);
     }
 
@@ -154,8 +154,8 @@ public class RecurringPaymentStateTests
         Assert.Equal(OrderStatuses.Cancelled, order.Status);
         Assert.Equal(order.ServiceDate, order.RecurrenceOccurrenceDate);
         Assert.Equal("canceled", f.Intents[batch.PaymentIntentId].Status);
-        Assert.Equal(3, await f.Db.OrderPaymentBatchItems.CountAsync()); // skip preserves history
-        Assert.All(await f.Db.Orders.Where(o => o.Id != order.Id).ToListAsync(), o => Assert.Equal(OrderStatuses.Pending, o.Status));
+        Assert.Equal(3, await f.Db.OrderPaymentBatchItems.CountAsync(cancellationToken: TestContext.Current.CancellationToken)); // skip preserves history
+        Assert.All(await f.Db.Orders.Where(o => o.Id != order.Id).ToListAsync(cancellationToken: TestContext.Current.CancellationToken), o => Assert.Equal(OrderStatuses.Pending, o.Status));
         Assert.Equal(2, (await f.Service.GetUpcomingAsync(1)).PayAllCount);
     }
 
@@ -165,7 +165,7 @@ public class RecurringPaymentStateTests
         using var f = new Fixture(); var order = await f.GeneratedOrder();
         order.PaymentIntentId = "pi_single";
         f.Intents.Add(order.PaymentIntentId, new PaymentIntent { Id = order.PaymentIntentId, Status = "requires_payment_method" });
-        await f.Db.SaveChangesAsync();
+        await f.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
         await f.SeriesService().SkipAsync(1, order.Id, 1);
         Assert.Equal(OrderStatuses.Cancelled, order.Status); Assert.Contains("pi_single", f.Canceled);
     }
@@ -181,7 +181,7 @@ public class RecurringPaymentStateTests
         await Assert.ThrowsAsync<RecurringSeriesException>(() => f.SeriesService().SkipAsync(1, order.Id, 1));
         await Assert.ThrowsAsync<RecurringSeriesException>(() => f.SeriesService().PrepareDeleteAsync(order));
         Assert.NotEqual(OrderStatuses.Cancelled, order.Status);
-        Assert.Equal(3, await f.Db.OrderPaymentBatchItems.CountAsync()); Assert.Empty(f.Canceled);
+        Assert.Equal(3, await f.Db.OrderPaymentBatchItems.CountAsync(cancellationToken: TestContext.Current.CancellationToken)); Assert.Empty(f.Canceled);
     }
 
     [Theory]
@@ -206,9 +206,9 @@ public class RecurringPaymentStateTests
             RequestServices = provider, User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("Role", "SuperAdmin") }, "test"))
         } };
         Assert.IsType<OkObjectResult>(await controller.DeleteOrder(order.Id));
-        Assert.Null(await f.Db.Orders.FindAsync(order.Id));
-        Assert.Equal(2, await f.Db.OrderPaymentBatchItems.CountAsync());
-        Assert.Equal(OrderPaymentBatchStatus.Canceled, (await f.Db.OrderPaymentBatches.FindAsync(batch.BatchId))!.Status);
+        Assert.Null(await f.Db.Orders.FindAsync(new object?[] { order.Id }, TestContext.Current.CancellationToken));
+        Assert.Equal(2, await f.Db.OrderPaymentBatchItems.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
+        Assert.Equal(OrderPaymentBatchStatus.Canceled, (await f.Db.OrderPaymentBatches.FindAsync(new object?[] { batch.BatchId }, TestContext.Current.CancellationToken))!.Status);
         Assert.Contains(batch.PaymentIntentId, f.Canceled);
     }
 
@@ -218,7 +218,7 @@ public class RecurringPaymentStateTests
         using var f = new Fixture(); var order = await f.GeneratedOrder(); await f.Start();
         f.ConfirmationWinsCancellation = true;
         await Assert.ThrowsAsync<RecurringSeriesException>(() => f.SeriesService().SkipAsync(1, order.Id, 1));
-        Assert.Equal(OrderStatuses.Pending, order.Status); Assert.Equal(3, await f.Db.OrderPaymentBatchItems.CountAsync());
+        Assert.Equal(OrderStatuses.Pending, order.Status); Assert.Equal(3, await f.Db.OrderPaymentBatchItems.CountAsync(cancellationToken: TestContext.Current.CancellationToken));
         Assert.Empty(f.Canceled);
     }
 }

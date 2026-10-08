@@ -39,7 +39,7 @@ namespace DreamCleaningBackend.Tests
         private const string ChatFileA = "0123456789abcdef0123456789abcdef.jpg";
         private const string UnsentChatFile = "fedcba9876543210fedcba9876543210.png";
 
-        public async Task InitializeAsync()
+        public async ValueTask InitializeAsync()
         {
             _host = await PrivateFileTestHost.StartAsync(
                 new[] { typeof(PrivateFilesController), typeof(ChatController) },
@@ -80,7 +80,7 @@ namespace DreamCleaningBackend.Tests
             });
         }
 
-        public async Task DisposeAsync() => await _host.DisposeAsync();
+        public async ValueTask DisposeAsync() => await _host.DisposeAsync();
 
         // ── Cleaner documents ────────────────────────────────────────────────────
 
@@ -94,7 +94,7 @@ namespace DreamCleaningBackend.Tests
 
             HttpStatusAssert.Is(HttpStatusCode.OK, response, $"{role} sees cleaner documents on the dashboard today");
             Assert.Equal("image/webp", response.Content.Headers.ContentType?.MediaType);
-            Assert.Equal(PrivateFileTestHost.WebpBytes, await response.Content.ReadAsByteArrayAsync());
+            Assert.Equal(PrivateFileTestHost.WebpBytes, await response.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken));
             AssertNoStore(response);
             Assert.Contains("nosniff", response.Headers.GetValues("X-Content-Type-Options"));
             var disposition = response.Content.Headers.ContentDisposition;
@@ -131,7 +131,7 @@ namespace DreamCleaningBackend.Tests
 
             foreach (var r in new[] { unknown, noDocument, refused })
                 HttpStatusAssert.Is(HttpStatusCode.NotFound, r, "every refusal is a plain 404");
-            Assert.Equal(WithoutTraceId(await unknown.Content.ReadAsStringAsync()), WithoutTraceId(await refused.Content.ReadAsStringAsync()));
+            Assert.Equal(WithoutTraceId(await unknown.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)), WithoutTraceId(await refused.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)));
         }
 
         [Fact]
@@ -314,7 +314,7 @@ namespace DreamCleaningBackend.Tests
             Assert.NotNull(result);
             Assert.StartsWith("/api/files/cleaners/5/document?v=", result!.Url);
 
-            var stored = (await db.Cleaners.AsNoTracking().SingleAsync(c => c.Id == 5)).DocumentUrl!;
+            var stored = (await db.Cleaners.AsNoTracking().SingleAsync(c => c.Id == 5, cancellationToken: TestContext.Current.CancellationToken)).DocumentUrl!;
             Assert.Matches(@"^/cleaners/documents/[0-9a-f]{32}\.webp$", stored);
 
             var detail = await service.GetByIdAsync(5);
