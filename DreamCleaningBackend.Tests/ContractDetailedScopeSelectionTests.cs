@@ -21,11 +21,6 @@ namespace DreamCleaningBackend.Tests
     /// </summary>
     public class ContractDetailedScopeSelectionTests
     {
-        static ContractDetailedScopeSelectionTests()
-        {
-            QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-        }
-
         private static ScopeGroup Group(string key, string title, string kind, bool inline, params (string Label, bool Selected, string? Detail)[] items) => new()
         {
             Key = key, Title = title, Kind = kind, Inline = inline,

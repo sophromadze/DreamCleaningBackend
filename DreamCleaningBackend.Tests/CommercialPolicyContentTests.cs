@@ -27,12 +27,6 @@ namespace DreamCleaningBackend.Tests
     /// </summary>
     public class CommercialPolicyContentTests
     {
-        static CommercialPolicyContentTests()
-        {
-            // Program.cs sets this at startup; the test host has no startup.
-            QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-        }
-
         private static readonly JsonSerializerOptions Json = new()
         {
             PropertyNameCaseInsensitive = true,

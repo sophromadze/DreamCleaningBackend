@@ -22,11 +22,6 @@ namespace DreamCleaningBackend.Tests
     /// </summary>
     public class ContractPdfTextIntegrityTests
     {
-        static ContractPdfTextIntegrityTests()
-        {
-            QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-        }
-
         private static ContractSnapshot Snapshot()
         {
             var snapshot = new ContractSnapshot

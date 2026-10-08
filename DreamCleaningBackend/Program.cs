@@ -449,10 +449,10 @@ builder.Services.AddSingleton<BlogContentService>();
 builder.Services.AddScoped<IBlogGenerationService, BlogGenerationService>();
 builder.Services.AddHostedService<BlogGenerationBackgroundService>();
 
-// Commercial contracts + e-signature. QuestPDF runs under its Community licence (free for this
-// revenue tier); the flag must be set before the first document is composed, so it lives here
-// rather than in the PDF service where a first call could race it.
-QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
+// Commercial contracts + e-signature. Every QuestPDF setting (Community licence, bundled fonts,
+// glyph and layout-error behaviour) lives in QuestPdfSetup and must be applied before the first
+// document is composed - here at startup, and again (as a no-op) by each PDF service's constructor.
+DreamCleaningBackend.Helpers.QuestPdfSetup.Configure();
 builder.Services.AddSingleton<DreamCleaningBackend.Services.Contracts.ContractStorage>();
 builder.Services.AddSingleton<DreamCleaningBackend.Services.Contracts.ContractPdfService>();
 builder.Services.AddScoped<DreamCleaningBackend.Services.Contracts.ContractNotificationService>();
@@ -481,7 +481,7 @@ builder.Services.AddSingleton<DreamCleaningBackend.Services.Commercial.Commercia
 
 // ── Commercial invoicing ────────────────────────────────────────────────────────────────────
 // Billed against a commercial contract, settled by ACH out of band, recorded by an admin. Shares
-// the QuestPDF licence set above and the app's IEmailService; touches no Stripe path.
+// the QuestPDF setup applied above and the app's IEmailService; touches no Stripe path.
 builder.Services.AddSingleton<DreamCleaningBackend.Services.Commercial.InvoicePdfService>();
 builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.BillingSettingsService>();
 builder.Services.AddScoped<DreamCleaningBackend.Services.Commercial.InvoiceNumberService>();
@@ -617,6 +617,15 @@ DreamCleaningBackend.Helpers.FirstTimeOfferHelper.Logger = app.Services.GetRequi
 
 // Get logger
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
+
+// PDFs still render without them (Lato, then whatever else is present), but non-Latin text would
+// lose its glyphs - so a deployment that left Assets/Fonts behind is said once, here.
+var missingPdfFonts = DreamCleaningBackend.Helpers.QuestPdfSetup.MissingFontFamilies();
+if (missingPdfFonts.Count > 0)
+{
+    logger.LogWarning("PDF fonts not found in {FontDirectory}: {MissingFonts}. Documents fall back to the remaining fonts.",
+        DreamCleaningBackend.Helpers.QuestPdfSetup.FontDirectory, string.Join(", ", missingPdfFonts));
+}
 
 // Apply migrations automatically
 using (var scope = app.Services.CreateScope())

@@ -22,8 +22,9 @@ namespace DreamCleaningBackend.Services.Commercial
     ///
     /// LIGATURES ARE DISABLED for the same proven reason they are in <c>ContractPdfService</c> -
     /// with standard ligatures on, the shaper substituted a single glyph for pairs like "ti" and
-    /// then dropped it, so extracted text read "noce" for "notice". No font family is named, so
-    /// QuestPDF's embedded Lato is used on the Linux VPS and the Windows dev box alike.
+    /// then dropped it, so extracted text read "noce" for "notice". Fonts are QuestPDF's bundled
+    /// Lato plus the Noto fallbacks shipped with the app (<see cref="QuestPdfSetup"/>), never the
+    /// machine's own, so the Linux VPS and the Windows dev box render alike.
     ///
     /// The palette and measurements are deliberately the contract PDF's, so a client who receives
     /// an agreement and a policy document recognises them as the same company's paperwork. They
@@ -57,6 +58,7 @@ namespace DreamCleaningBackend.Services.Commercial
 
         public CommercialPolicyPdfService()
         {
+            QuestPdfSetup.Configure();
             _complete = new Lazy<byte[]>(
                 () => Generate(CommercialPolicyDocument.BuildComplete()),
                 LazyThreadSafetyMode.ExecutionAndPublication);
@@ -72,6 +74,7 @@ namespace DreamCleaningBackend.Services.Commercial
         public byte[] GenerateCancellationAndTermination() => _cancellation.Value;
 
         private static TextStyle BaseTextStyle => TextStyle.Default
+            .FontFamily(QuestPdfSetup.FontFamilies)
             .FontSize(BodySize)
             .LineHeight(BodyLineHeight)
             .FontColor(BodyInk)
@@ -107,7 +110,7 @@ namespace DreamCleaningBackend.Services.Commercial
                         ComposeClosing(column, document);
                     });
                 });
-            }).GeneratePdfExclusive();
+            }).GeneratePdf();
         }
 
         // ── page chrome ────────────────────────────────────────────────────────

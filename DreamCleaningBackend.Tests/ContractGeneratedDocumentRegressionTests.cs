@@ -34,11 +34,6 @@ namespace DreamCleaningBackend.Tests
     /// </summary>
     public class ContractGeneratedDocumentRegressionTests
     {
-        static ContractGeneratedDocumentRegressionTests()
-        {
-            QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-        }
-
         // ── Fixture: the configuration of DCC-2026-49303882, with neutral party data ─────────
 
         internal static ContractSnapshot Dcc49303882Configuration()

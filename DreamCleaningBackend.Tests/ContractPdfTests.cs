@@ -20,12 +20,6 @@ namespace DreamCleaningBackend.Tests
     /// </summary>
     public class ContractPdfTests
     {
-        static ContractPdfTests()
-        {
-            // Program.cs sets this at startup; the test host has no startup.
-            QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-        }
-
         private static ContractSnapshot Snapshot()
         {
             var snapshot = new ContractSnapshot
@@ -211,8 +205,6 @@ namespace DreamCleaningBackend.Tests
         /// </summary>
         public class Branding
         {
-            static Branding() => QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-
             private static UglyToad.PdfPig.PdfDocument Executed()
             {
                 var snapshot = Snapshot();

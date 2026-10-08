@@ -40,7 +40,14 @@ namespace DreamCleaningBackend.Services
 
         private static readonly Lazy<byte[]?> Logo = new(LoadLogo);
 
+        public CustomerInvoicePdfService()
+        {
+            QuestPdfSetup.Configure();
+        }
+
+        // Lato first, then the bundled Noto fallbacks for a name or address Lato cannot draw.
         private static TextStyle BaseTextStyle => TextStyle.Default
+            .FontFamily(QuestPdfSetup.FontFamilies)
             .FontSize(BodySize)
             .LineHeight(BodyLineHeight)
             .FontColor(BodyInk)
@@ -56,8 +63,6 @@ namespace DreamCleaningBackend.Services
         /// rather than carried on the DTO because it contains the invoice's secret token.</param>
         public byte[] Render(PublicCustomerInvoiceDto invoice, string? publicUrl = null)
         {
-            QuestPDF.Settings.License = LicenseType.Community;
-
             return Document.Create(container =>
             {
                 container.Page(page =>
@@ -70,7 +75,7 @@ namespace DreamCleaningBackend.Services
                     page.Content().Element(e => ComposeContent(e, invoice, publicUrl));
                     page.Footer().Element(e => ComposeFooter(e, invoice));
                 });
-            }).GeneratePdfExclusive();
+            }).GeneratePdf();
         }
 
         private static void ComposeHeader(IContainer container, PublicCustomerInvoiceDto invoice)

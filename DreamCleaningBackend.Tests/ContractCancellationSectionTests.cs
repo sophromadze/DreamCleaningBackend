@@ -20,11 +20,6 @@ namespace DreamCleaningBackend.Tests
     /// </summary>
     public class ContractCancellationSectionTests
     {
-        static ContractCancellationSectionTests()
-        {
-            QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-        }
-
         // ══════════════════════════════════════════════════════════════════════════════════════
         //  It is part of the agreement, automatically
         // ══════════════════════════════════════════════════════════════════════════════════════

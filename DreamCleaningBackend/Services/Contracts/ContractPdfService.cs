@@ -48,11 +48,17 @@ namespace DreamCleaningBackend.Services.Contracts
     /// ContractPdfTextIntegrityTests extracts the text back out of a generated PDF and diffs it
     /// against the source to prove nothing is being dropped.
     ///
-    /// No font family is named on purpose — QuestPDF embeds Lato, and naming a system font would
-    /// render differently (or fail) on the Linux VPS than on a Windows dev box.
+    /// Fonts are QuestPDF's bundled Lato plus the Noto fallbacks shipped with the app
+    /// (<see cref="QuestPdfSetup"/>) — never a system font, which would render differently (or not
+    /// at all) on the Linux VPS than on a Windows dev box.
     /// </summary>
     public class ContractPdfService
     {
+        public ContractPdfService()
+        {
+            QuestPdfSetup.Configure();
+        }
+
         // Every measurement below was taken off the approved reference document
         // ("Contract review and notes.pdf") rather than chosen: page margin, type sizes, tracking,
         // rule weights and the two distinct blues. Change one only against that reference.
@@ -81,6 +87,7 @@ namespace DreamCleaningBackend.Services.Contracts
         /// class summary; this single call is what stops characters disappearing.
         /// </summary>
         private static TextStyle BaseTextStyle => TextStyle.Default
+            .FontFamily(QuestPdfSetup.FontFamilies)
             .FontSize(BodySize)
             .LineHeight(BodyLineHeight)
             .FontColor(BodyInk)
@@ -121,7 +128,7 @@ namespace DreamCleaningBackend.Services.Contracts
                 }
             });
 
-            return document.GeneratePdfExclusive();
+            return document.GeneratePdf();
         }
 
         /// <summary>The certificate on its own, stored alongside the executed document.</summary>
@@ -134,7 +141,7 @@ namespace DreamCleaningBackend.Services.Contracts
                     ConfigurePage(page, snapshot, false);
                     page.Content().PaddingVertical(6).Column(column => ComposeCertificate(column, certificate));
                 });
-            }).GeneratePdfExclusive();
+            }).GeneratePdf();
         }
 
         // ── page chrome ────────────────────────────────────────────────────────

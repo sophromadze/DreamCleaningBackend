@@ -26,11 +26,6 @@ namespace DreamCleaningBackend.Tests
     /// </summary>
     public class ContractWeeklyFlatFeeTests
     {
-        static ContractWeeklyFlatFeeTests()
-        {
-            QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
-        }
-
         private static readonly List<string> SixDays =
             new() { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Sunday" };
 
