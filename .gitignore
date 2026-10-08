@@ -371,3 +371,6 @@ FodyWeavers.xsd
 
 # Six Labors (ImageSharp 4+) build licence - never committed
 sixlabors.lic
+
+# Generated contract documents (previews, executed contracts, signature certificates) - runtime data, never committed
+**/App_Data/contracts/
