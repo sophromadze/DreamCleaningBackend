@@ -39,6 +39,24 @@ public class SavedCardChargeIntegrationTests : IClassFixture<MariaDbDatabase>
         return await db.BillingPaymentAttempts.AsNoTracking().Where(a => a.OrderId == orderId).OrderBy(a => a.Id).ToListAsync();
     }
 
+    /// <summary>
+    /// Every charge attempt made for ONE customer. The sweep tests below must assert through this,
+    /// never through the harness's Stripe fake: the class shares one database, the sweep is global,
+    /// and a series another test left authorised and due (AutoPaySwitchedOffServerSide_ChargesNothing
+    /// leaves one on purpose) is legitimately charged by whichever test sweeps next - which made
+    /// these tests pass or fail on xUnit's ordering alone.
+    /// </summary>
+    private async Task<List<BillingPaymentAttempt>> UserAttempts(BillingHarness h, int userId)
+    {
+        await using var db = h.NewContext();
+        return await db.BillingPaymentAttempts.AsNoTracking().Where(a => a.UserId == userId).OrderBy(a => a.Id).ToListAsync();
+    }
+
+    /// <summary>The ordinary "please pay for this cleaning" mail went out for this order.</summary>
+    private static bool PaymentReminderSent(BillingHarness h, int orderId) =>
+        h.Messaging.EmailCalls.Any(c => c.Method == nameof(Services.Interfaces.IEmailService.SendPaymentReminderEmailAsync)
+                                        && c.Args.Length > 3 && Equals(c.Args[3], orderId));
+
     private async Task<List<BillingNotification>> Notices(BillingHarness h, int userId)
     {
         await using var db = h.NewContext();
@@ -663,10 +681,12 @@ public class SavedCardChargeIntegrationTests : IClassFixture<MariaDbDatabase>
         await Sweep(h);
         await Sweep(h); // a second pass the same day changes nothing
 
-        Assert.Single(h.Stripe.SucceededCharges);
+        var attempt = Assert.Single(await UserAttempts(h, user.Id));
+        Assert.Equal(BillingAttemptStatus.Succeeded, attempt.Status);
+        Assert.Equal(first.Id, attempt.OrderId);
         Assert.True((await ReloadOrder(h, first.Id)).IsPaid);
         Assert.False((await ReloadOrder(h, second.Id)).IsPaid); // never the whole horizon
-        Assert.Empty(h.Messaging.Emails.Where(e => e.Subject.Contains("Confirm Your Payment")));
+        Assert.False(PaymentReminderSent(h, first.Id)); // charged, so not also asked to pay
         Assert.Contains(await Notices(h, user.Id), n => n.Type == BillingNotificationType.AutoPaySucceeded);
     }
 
@@ -681,7 +701,7 @@ public class SavedCardChargeIntegrationTests : IClassFixture<MariaDbDatabase>
             await scope.ServiceProvider.GetRequiredService<IBillingNotificationService>().DeliverDueAsync(CancellationToken.None);
         await Sweep(h);
 
-        Assert.Single(h.Stripe.ChargeCalls);
+        Assert.Single(await UserAttempts(h, user.Id));
         Assert.False((await ReloadOrder(h, first.Id)).IsPaid);
         var notice = Assert.Single(await Notices(h, user.Id), n => n.Type == BillingNotificationType.AutoPayFailed);
         Assert.Equal(BillingDeliveryStatus.Sent, notice.EmailStatus);
@@ -694,11 +714,12 @@ public class SavedCardChargeIntegrationTests : IClassFixture<MariaDbDatabase>
     public async Task RecurringWithoutAuthorisation_KeepsTheOrdinaryRequest_AndChargesNothing()
     {
         var h = Harness();
-        await RecurringSetup(h, CardBehaviour.Succeed, authorize: false);
+        var (user, _, first, _) = await RecurringSetup(h, CardBehaviour.Succeed, authorize: false);
 
         await Sweep(h);
 
-        Assert.Empty(h.Stripe.ChargeCalls);
+        Assert.Empty(await UserAttempts(h, user.Id));
+        Assert.True(PaymentReminderSent(h, first.Id));
     }
 
     [MariaDbFact]

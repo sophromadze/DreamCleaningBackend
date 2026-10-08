@@ -415,6 +415,13 @@ public sealed class FakeStripe : IStripeService
 public sealed class FakeMessaging
 {
     public ConcurrentBag<(string To, string Subject)> Emails { get; } = new();
+
+    /// <summary>
+    /// Every IEmailService call by method name, with all its arguments. <see cref="Emails"/> keeps only
+    /// the first two, which for most send methods are the address and a NAME, not a subject - so a
+    /// specific mail (the payment reminder for one order) has to be found here.
+    /// </summary>
+    public ConcurrentBag<(string Method, object?[] Args)> EmailCalls { get; } = new();
     public ConcurrentBag<(string To, string Body)> Sms { get; } = new();
     public bool FailEmail { get; set; }
     public bool FailSms { get; set; }
@@ -423,6 +430,7 @@ public sealed class FakeMessaging
     {
         if (FailEmail) return Task.FromException(new InvalidOperationException("SMTP down"));
         Emails.Add(((string)args![0]!, args.Length > 1 ? args[1]?.ToString() ?? "" : ""));
+        EmailCalls.Add((method.Name, args));
         return Task.CompletedTask;
     });
 
