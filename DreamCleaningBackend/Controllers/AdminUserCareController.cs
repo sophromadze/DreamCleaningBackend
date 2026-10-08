@@ -294,27 +294,6 @@ namespace DreamCleaningBackend.Controllers
             return Ok(new { message = "Photo deleted" });
         }
 
-        /// <summary>
-        /// LEGACY route, kept so admin tabs still open from before the 2026-10 deploy keep showing
-        /// photos; the panels now use api/files/cleaning-photos/{id} (PrivateFilesController). Same
-        /// gate as the two list endpoints that hand out these sequential ids — never anonymous.
-        /// Safe to delete once no browser can still hold the old bundle.
-        /// </summary>
-        [HttpGet("cleaning-photos/{photoId}/raw")]
-        [RequirePermission(Permission.View)]
-        public async Task<IActionResult> GetCleaningPhotoFile(int photoId)
-        {
-            var storedPath = await _context.UserCleaningPhotos
-                .Where(p => p.Id == photoId)
-                .Select(p => p.PhotoUrl)
-                .FirstOrDefaultAsync();
-
-            var full = PrivateFileStore.Resolve(_configuration["FileUpload:Path"], storedPath, PrivateFileUrls.CleaningPhotosFolder);
-            return full == null
-                ? NotFound()
-                : PrivateFileResponse.Serve(this, full, $"cleaning-photo-{photoId}", PrivateFileResponse.NoStore);
-        }
-
         // ─────────────────────────────────────────────────────────
         //  COMMUNICATIONS — list & quick-create against ClientInteractions
         // ─────────────────────────────────────────────────────────
