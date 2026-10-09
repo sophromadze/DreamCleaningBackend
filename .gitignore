@@ -374,3 +374,6 @@ sixlabors.lic
 
 # Generated contract documents (previews, executed contracts, signature certificates) - runtime data, never committed
 **/App_Data/contracts/
+
+# Uploaded files (before/after photos, cleaner documents and photos, customer cleaning photos) - runtime data, never committed
+**/wwwroot/uploads/
