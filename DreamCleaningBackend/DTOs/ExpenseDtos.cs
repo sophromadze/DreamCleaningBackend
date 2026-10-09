@@ -172,14 +172,25 @@ namespace DreamCleaningBackend.DTOs
     // ── Grouped view (Category → Name → individual entries) ─────────────────────
 
     // The whole grouped view for one calendar month. MonthTotal and every category/name total
-    // are scoped to that month (prorated). Each name additionally carries an all-time total and
-    // the underlying expense rows that feed it.
+    // are scoped to that month (prorated), and only names and entries that charge in the month
+    // are listed. Each name additionally carries an all-time total as a secondary figure.
     public class GroupedExpensesDto
     {
         public int Year { get; set; }
         public int Month { get; set; }
         public string MonthLabel { get; set; } = string.Empty; // e.g. "June 2026"
+
+        /// <summary>The WHOLE calendar month, including charges dated later in it.</summary>
         public decimal MonthTotal { get; set; }
+
+        /// <summary>
+        /// Running month only: what has been charged up to and including <see cref="ToDate"/> —
+        /// the figure Finances' "This Month" reports with its projection off. Null for any other
+        /// month, where the two are the same thing.
+        /// </summary>
+        public decimal? ChargedToDate { get; set; }
+        public DateTime? ToDate { get; set; }
+
         public List<GroupedCategoryDto> Categories { get; set; } = new();
     }
 
@@ -193,8 +204,9 @@ namespace DreamCleaningBackend.DTOs
     }
 
     // One distinct expense name within a category. MonthTotal is what hits the selected month;
-    // AllTimeTotal is everything charged to date across every entry sharing this name; Entries
-    // are the raw rows (e.g. the "$100 for 2 months" Claude row and the ongoing "$20" Claude row).
+    // AllTimeTotal is everything charged up to the end of that month across every entry sharing
+    // this name (a secondary figure, never the line's total); Entries are only the raw rows that
+    // charge in the month (e.g. the "$100 for 2 months" Claude row and the ongoing "$20" one).
     public class GroupedNameDto
     {
         public string Name { get; set; } = string.Empty;

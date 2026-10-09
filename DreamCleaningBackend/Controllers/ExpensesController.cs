@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using DreamCleaningBackend.Attributes;
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 
@@ -110,17 +111,20 @@ namespace DreamCleaningBackend.Controllers
             return Ok(await _expenseService.GetBreakdownAsync(f, t));
         }
 
-        // Grouped Category → Name → entries view for one calendar month (defaults to current).
+        // Grouped Category → Name → entries view for one calendar month (defaults to the current
+        // one). `today` is the caller's own date, so the running month's charged-so-far figure
+        // ends on the same day Finances' "This Month" does in that browser; New York otherwise.
         [HttpGet("grouped")]
         [RequirePageView(AdminViewablePages.Expenses)]
         public async Task<ActionResult<GroupedExpensesDto>> GetGrouped(
             [FromQuery] int? year,
-            [FromQuery] int? month)
+            [FromQuery] int? month,
+            [FromQuery] DateTime? today)
         {
-            var now = DateTime.UtcNow;
+            var now = NyTimeHelper.NowNy;
             try
             {
-                return Ok(await _expenseService.GetGroupedAsync(year ?? now.Year, month ?? now.Month));
+                return Ok(await _expenseService.GetGroupedAsync(year ?? now.Year, month ?? now.Month, today?.Date));
             }
             catch (InvalidOperationException ex)
             {

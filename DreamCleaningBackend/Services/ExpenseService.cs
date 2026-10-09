@@ -247,16 +247,21 @@ namespace DreamCleaningBackend.Services
             };
         }
 
-        public async Task<GroupedExpensesDto> GetGroupedAsync(int year, int month)
+        public async Task<GroupedExpensesDto> GetGroupedAsync(int year, int month, DateTime? today = null)
         {
             if (month < 1 || month > 12)
                 throw new InvalidOperationException("Month must be between 1 and 12.");
+            if (year < 2000 || year > 2100)
+                throw new InvalidOperationException("Year must be between 2000 and 2100.");
 
             var monthStart = new DateTime(year, month, 1);
             var monthEnd = monthStart.AddMonths(1);
             // "All-time" = everything charged up to the end of the selected month (so a future
             // month doesn't pre-count occurrences that haven't happened yet relative to the view).
             var allTimeTo = monthEnd;
+            // The business's own day, the same one Statistics forecasts Google Ads spend from.
+            var todayDate = (today ?? NyTimeHelper.NowNy).Date;
+            var isRunningMonth = todayDate >= monthStart && todayDate < monthEnd;
 
             var categories = await _context.ExpenseCategories
                 .OrderBy(c => c.DisplayOrder).ThenBy(c => c.Id)
@@ -276,10 +281,19 @@ namespace DreamCleaningBackend.Services
             var allTimeByRow = new Dictionary<int, decimal>();
             var monthByRowInCurrency = new Dictionary<int, decimal>();
             var allTimeByRowInCurrency = new Dictionary<int, decimal>();
+            // Rows that charge at least once in the month — the only entries the month lists. Kept
+            // apart from the totals because a charge can net to zero (a credit) and still belong.
+            var chargesInMonth = new HashSet<int>();
+            decimal chargedToDate = 0m;
             foreach (var e in rows)
             {
                 var inMonth = ProjectOccurrences(e, monthStart, monthEnd).ToList();
                 var allTime = ProjectOccurrences(e, DateTime.MinValue, allTimeTo).ToList();
+
+                if (inMonth.Count > 0) chargesInMonth.Add(e.Id);
+                chargedToDate += inMonth
+                    .Where(o => o.Date <= todayDate)
+                    .Sum(o => ToUsd(o.Amount, e.Currency, o.Date, fx).Usd);
 
                 monthByRowInCurrency[e.Id] = inMonth.Sum(o => o.Amount);
                 allTimeByRowInCurrency[e.Id] = allTime.Sum(o => o.Amount);
@@ -299,8 +313,14 @@ namespace DreamCleaningBackend.Services
                 // Aggregate by normalized (trimmed, case-insensitive) name within the category —
                 // except salary rows carrying a staff link, which group by PERSON instead. See
                 // SalaryExpenseRules.GroupingKey for why.
+                //
+                // Grouped over EVERY row so the all-time figure and the line's name stay whole, then
+                // narrowed to the month: a line appears only when one of its rows charges in the
+                // month, and lists only those rows. Listing the whole group put every daily Google
+                // Ads row since the integration started under each month.
                 var names = catRows
                     .GroupBy(e => SalaryExpenseRules.GroupingKey(e.StaffUserId, e.Name), StringComparer.Ordinal)
+                    .Where(g => g.Any(e => chargesInMonth.Contains(e.Id)))
                     .Select(g => new GroupedNameDto
                     {
                         // Display the most recently created spelling of the name — or, for a staff
@@ -318,10 +338,11 @@ namespace DreamCleaningBackend.Services
                         AllTimeTotalInCurrency = SingleNonUsdCurrency(g) == null
                             ? null : g.Sum(e => allTimeByRowInCurrency[e.Id]),
                         Entries = g
+                            .Where(e => chargesInMonth.Contains(e.Id))
                             .OrderByDescending(e => e.StartDate).ThenByDescending(e => e.Id)
                             .Select(e => ToDto(e, staffNames)).ToList()
                     })
-                    // Names with activity in the month sort first (by month spend), then the rest.
+                    // Biggest spend in the month first.
                     .OrderByDescending(n => n.MonthTotal)
                     .ThenByDescending(n => n.AllTimeTotal)
                     .ThenBy(n => n.Name, StringComparer.OrdinalIgnoreCase)
@@ -343,6 +364,8 @@ namespace DreamCleaningBackend.Services
                 Month = month,
                 MonthLabel = monthStart.ToString("MMMM yyyy", CultureInfo.InvariantCulture),
                 MonthTotal = categoryDtos.Sum(c => c.MonthTotal),
+                ChargedToDate = isRunningMonth ? chargedToDate : null,
+                ToDate = isRunningMonth ? todayDate : null,
                 Categories = categoryDtos
             };
         }

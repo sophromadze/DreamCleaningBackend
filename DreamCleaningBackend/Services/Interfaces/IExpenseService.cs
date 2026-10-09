@@ -25,8 +25,10 @@ namespace DreamCleaningBackend.Services.Interfaces
         // Breakdown grouped by category, items inside each group sorted by date desc.
         Task<ExpenseBreakdownDto> GetBreakdownAsync(DateTime from, DateTime to);
 
-        // Grouped Category → Name → entries view for a single calendar month.
-        Task<GroupedExpensesDto> GetGroupedAsync(int year, int month);
+        // Grouped Category → Name → entries view for a single calendar month. Only entries that
+        // charge in that month are listed. `today` (defaults to today in New York) decides the
+        // month's charged-so-far figure when the month is the running one.
+        Task<GroupedExpensesDto> GetGroupedAsync(int year, int month, DateTime? today = null);
 
         // People a salary can be recorded against: current staff, plus anyone who already has
         // salary rows so a leaver's final payment can still be entered against them.
