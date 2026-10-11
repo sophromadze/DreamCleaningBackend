@@ -585,19 +585,26 @@ namespace DreamCleaningBackend.Services
 
             if (!string.IsNullOrWhiteSpace(query.Search))
             {
-                var term = query.Search.Trim();
+                // Runs of spaces collapse to one, so "Irma  Xar" still finds Irma Xarebava.
+                var term = string.Join(' ', query.Search.Split(' ', StringSplitOptions.RemoveEmptyEntries));
                 // Order number, customer name, or cleaner name — the three things somebody
                 // reconciling a payout actually has in front of them. The order number is
                 // matched by EQUALITY on a parsed int, not by string-contains: "5" must not drag
                 // in every order from 50 to 599.
                 var orderId = int.TryParse(term, out var parsedId) ? parsedId : (int?)null;
 
+                // Names are matched as "First Last" too: testing each column on its own meant
+                // that typing a space after the first name and starting the surname matched
+                // nobody, because no single column holds both halves.
                 q = q.Where(o =>
                     (orderId != null && o.Id == orderId) ||
                     o.ContactFirstName.Contains(term) ||
                     o.ContactLastName.Contains(term) ||
+                    (o.ContactFirstName + " " + o.ContactLastName).Contains(term) ||
                     o.OrderCleaners.Any(oc =>
-                        oc.Cleaner.FirstName.Contains(term) || oc.Cleaner.LastName.Contains(term)));
+                        oc.Cleaner.FirstName.Contains(term) ||
+                        oc.Cleaner.LastName.Contains(term) ||
+                        (oc.Cleaner.FirstName + " " + oc.Cleaner.LastName).Contains(term)));
             }
 
             if (query.CleanerId.HasValue)
@@ -889,7 +896,7 @@ namespace DreamCleaningBackend.Services
         Task<OutgoingPaymentOrderDto?> MarkCleanerPaidAsync(int orderId, int orderCleanerId, MarkCleanerPaidDto dto, int paidByUserId);
         Task<OutgoingPaymentOrderDto?> MarkOrderPaidAsync(int orderId, MarkOrderPaidDto dto, int paidByUserId);
         Task<OutgoingPaymentOrderDto?> UndoCleanerPaymentAsync(int orderId, int orderCleanerId, int? userId = null);
-        Task<UnpaidCleanersDto> GetUnpaidCleanersAsync();
+        Task<UnpaidCleanersDto> GetUnpaidCleanersAsync(DateTime? from = null, DateTime? to = null);
         Task<PayCleanersResultDto> PayCleanersAsync(PayCleanersDto dto, int userId);
         Task<CleanerPayoutHistoryDto> GetPayoutHistoryAsync(CleanerPayoutHistoryQuery query);
         Task<CleanerPayoutDto?> RevertPayoutAsync(int payoutId, string reason, int userId);

@@ -20,8 +20,16 @@ namespace DreamCleaningBackend.Services
         Task<RecurringSeriesDto> CreateAsync(int templateOrderId, SaveRecurringSeriesDto dto, int adminUserId);
         Task<RecurringSeriesDto> UpdateAsync(int seriesId, SaveRecurringSeriesDto dto, int adminUserId);
         Task<RecurringSeriesDto> SetStateAsync(int seriesId, string action, int adminUserId);
-        Task SkipAsync(int seriesId, int orderId, int adminUserId);
-        Task PrepareDeleteAsync(Order order);
+        Task<RecurringSkipResultDto> SkipAsync(int seriesId, int orderId, int adminUserId);
+
+        /// <summary>The plan's unfinished orders, each with whether Stop may delete it.</summary>
+        Task<RecurringStopPreviewDto> GetStopPreviewAsync(int seriesId);
+
+        /// <summary>
+        /// Stops the plan permanently and deletes the chosen unfinished orders, in one transaction.
+        /// Orders left unchosen stay as ordinary orders.
+        /// </summary>
+        Task<RecurringStopResultDto> StopAsync(int seriesId, IReadOnlyCollection<int> deleteOrderIds, int adminUserId, bool mayDeleteOrders);
         Task<RecurringPricePreviewDto> PreviewAsync(int sourceOrderId, SaveRecurringSeriesDto dto);
         Task<RecurringSeriesDto?> GetAsync(int seriesId);
         Task<RecurringSeriesDto?> GetForOrderAsync(int orderId);
@@ -87,19 +95,22 @@ namespace DreamCleaningBackend.Services
         private readonly IAuditService _audit;
         private readonly IRecurringCustomerPaymentService _payments;
         private readonly ILogger<RecurringOrderSeriesService> _logger;
+        private readonly IOrderRemovalService _removal;
 
         public RecurringOrderSeriesService(
             ApplicationDbContext context,
             IBookingCreationService bookingCreation,
             IAuditService audit,
             ILogger<RecurringOrderSeriesService> logger,
-            IRecurringCustomerPaymentService payments)
+            IRecurringCustomerPaymentService payments,
+            IOrderRemovalService? removal = null)
         {
             _context = context;
             _bookingCreation = bookingCreation;
             _audit = audit;
             _logger = logger;
             _payments = payments;
+            _removal = removal ?? new OrderRemovalService(context, payments, audit: audit);
         }
 
         // ── Create / update ───────────────────────────────────────────────────────────────────
@@ -120,24 +131,25 @@ namespace DreamCleaningBackend.Services
                 .FirstOrDefaultAsync(o => o.Id == templateOrderId)
                 ?? throw new RecurringSeriesException("Order not found.");
 
+            // ANY order may start a new plan once the plan it belongs to is STOPPED (2026-10): its
+            // old source, a cleaning that plan generated, or an unrelated order. Only one plan that
+            // has not been stopped (active OR paused) may hang off an order. The stopped plan and
+            // its orders are kept; only this order's current-plan link moves, and the audit row
+            // records where it came from.
             int? previousSeriesId = order.RecurringSeriesId;
+            var wasGenerated = order.IsGeneratedByRecurringSeries;
             if (previousSeriesId.HasValue)
             {
                 var previous = await _context.RecurringOrderSeries.FindAsync(previousSeriesId.Value);
-                if (previous?.StoppedAt == null || previous.TemplateOrderId != order.Id || order.IsGeneratedByRecurringSeries)
+                if (previous != null && previous.StoppedAt == null)
                     throw new RecurringSeriesException(
-                        "This order is already part of a recurring series. Edit that series instead.");
-
-                var now = NyTimeHelper.NowNy;
-                if (await _context.Orders.AnyAsync(o => o.RecurringSeriesId == previous.Id
-                    && o.IsGeneratedByRecurringSeries
-                    && (o.ServiceDate > now.Date || (o.ServiceDate == now.Date && o.ServiceTime > now.TimeOfDay))
-                    && o.Status != OrderStatuses.Cancelled && o.Status != OrderStatuses.Refunded))
-                    throw new RecurringSeriesException(
-                        "Remove or cancel the previous plan's remaining future cleanings before starting a new plan from this order.");
-                // Preserve the stopped schedule and its historical occurrences. Only the source
-                // order's current-plan link moves when the replacement has been saved.
+                        "This order is already part of a recurring plan that has not been stopped. "
+                        + "Edit that plan, or stop it first to start a new one.");
             }
+            if (await _context.RecurringOrderSeries.AnyAsync(s => s.TemplateOrderId == order.Id && s.StoppedAt == null))
+                throw new RecurringSeriesException(
+                    "This order is already the source of a recurring plan that has not been stopped. "
+                    + "Edit that plan, or stop it first to start a new one.");
 
             if (OrderStatuses.IsCancelled(order.Status))
                 throw new RecurringSeriesException(
@@ -189,6 +201,10 @@ namespace DreamCleaningBackend.Services
             // is the same date unless the admin typed a different First cleaning — and then the
             // template silently claimed that first visit, so it was never generated (2026-10).
             order.RecurrenceOccurrenceDate = order.ServiceDate.Date;
+            // A cleaning an earlier (stopped) plan generated becomes this plan's SOURCE, and a
+            // source is never "generated" — that flag is what lets automatic regeneration retire
+            // an order, and a person chose this one.
+            order.IsGeneratedByRecurringSeries = false;
             order.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
 
@@ -199,6 +215,7 @@ namespace DreamCleaningBackend.Services
                 {
                     SeriesId = series.Id,
                     PreviousSeriesId = previousSeriesId,
+                    SourceWasGeneratedByPreviousSeries = wasGenerated,
                     TemplateOrderId = order.Id,
                     CustomerUserId = order.UserId,
                     Recurrence = RecurrenceCalculator.Describe(RecurrenceRule.From(series)),
@@ -224,6 +241,8 @@ namespace DreamCleaningBackend.Services
                 var generated = await GenerateAsync(series.Id, adminUserId);
                 response = await GetAsync(series.Id) ?? response;
                 response.GenerationWarnings = generated.Warnings;
+                if (previousSeriesId.HasValue)
+                    response.GenerationWarnings.AddRange(await OverlapWithPreviousPlanAsync(series.Id, previousSeriesId.Value));
             }
             catch (Exception ex)
             {
@@ -231,6 +250,32 @@ namespace DreamCleaningBackend.Services
                 response.GenerationWarnings.Add("The schedule was saved, but generation could not finish. Use Generate now to retry.");
             }
             return response;
+        }
+
+        /// <summary>
+        /// Cleanings kept from the stopped plan that fall on a day the new plan also cleans. Not a
+        /// refusal — keeping some of them may be exactly what was meant — but the admin is told,
+        /// because two bookings on one day is otherwise noticed by the crew at the door.
+        /// </summary>
+        private async Task<List<string>> OverlapWithPreviousPlanAsync(int seriesId, int previousSeriesId)
+        {
+            var today = NyTimeHelper.NowNy.Date;
+            var newDates = await _context.Orders
+                .Where(o => o.RecurringSeriesId == seriesId && o.ServiceDate >= today
+                    && o.Status != OrderStatuses.Cancelled && o.Status != OrderStatuses.Refunded)
+                .Select(o => o.ServiceDate.Date).ToListAsync();
+            var kept = await _context.Orders
+                .Where(o => o.RecurringSeriesId == previousSeriesId && o.ServiceDate >= today
+                    && o.Status != OrderStatuses.Cancelled && o.Status != OrderStatuses.Refunded)
+                .Select(o => new { o.Id, o.ServiceDate }).ToListAsync();
+            var clashes = kept.Where(k => newDates.Contains(k.ServiceDate.Date)).OrderBy(k => k.ServiceDate).ToList();
+            if (clashes.Count == 0) return new List<string>();
+            return new List<string>
+            {
+                $"{clashes.Count} cleaning(s) kept from the stopped plan fall on the same day as this plan: "
+                + string.Join(", ", clashes.Select(c => $"#{c.Id} ({c.ServiceDate:ddd MMM d})"))
+                + ". Delete or skip whichever one you don't want."
+            };
         }
 
         public async Task<RecurringSeriesDto> UpdateAsync(
@@ -309,7 +354,7 @@ namespace DreamCleaningBackend.Services
                     // release their date key so the new rule can replace a visit on the same day.
                     foreach (var occurrence in future)
                     {
-                        if (await UnsafeToRetireAsync(occurrence, now) != null) continue;
+                        if (await UnsafeToRegenerateAsync(occurrence, now) != null) continue;
                         await RetireAsync(occurrence, adminUserId, replacing: true);
                     }
                     // Any protected bookings remain the boundary for the new rule.
@@ -374,60 +419,184 @@ namespace DreamCleaningBackend.Services
             return (await GetAsync(seriesId))!;
         }
 
-        public async Task SkipAsync(int seriesId, int orderId, int adminUserId)
+        /// <summary>
+        /// Cancels ONE cleaning of the plan and keeps its date slot, so the generator never refills
+        /// it. Any Pending, unpaid cleaning of the plan may be skipped — generated or the source,
+        /// future or already past — subject to the shared removal check (<see cref="OrderRemovalService"/>).
+        /// </summary>
+        public async Task<RecurringSkipResultDto> SkipAsync(int seriesId, int orderId, int adminUserId)
         {
             var order = await _context.Orders.FirstOrDefaultAsync(o => o.Id == orderId && o.RecurringSeriesId == seriesId)
                 ?? throw new RecurringSeriesException("Recurring occurrence not found.");
             using var transaction = await RecurringPaymentAttemptGuard.LockAsync(_context, order.UserId);
             await _context.Entry(order).ReloadAsync();
-            var reason = await UnsafeToRetireAsync(order, NyTimeHelper.NowNy);
-            if (reason != null) throw new RecurringSeriesException(reason);
+            if (!OrderStatuses.Is(order.Status, OrderStatuses.Pending))
+                throw new RecurringSeriesException($"Only Pending cleanings can be skipped. Order #{order.Id} is {order.Status}.");
+            var check = await _removal.CheckAsync(order);
+            if (!check.CanRemove)
+                throw new RecurringSeriesException($"Order #{order.Id} can't be skipped: {check.BlockedReason}.");
+            try { await _removal.CloseOpenPaymentAttemptsAsync(order); }
+            catch (OrderRemovalException ex) { throw new RecurringSeriesException(ex.Message); }
             await RetireAsync(order, adminUserId, replacing: false);
             if (transaction != null) await transaction.CommitAsync();
+
+            var result = new RecurringSkipResultDto();
+            if (check.NotifiedCleaners.Count > 0)
+                result.Warnings.Add(OrderRemovalService.NotifiedWarning(order, check.NotifiedCleaners));
+            return result;
         }
 
-        /// <summary>Called by permanent deletion while holding the customer's payment lock.</summary>
-        public async Task PrepareDeleteAsync(Order order)
-        {
-            var reason = await UnsafeToRetireAsync(order, NyTimeHelper.NowNy, allowCancelled: true);
-            if (reason != null) throw new RecurringSeriesException(reason);
-            // These restricted FKs cannot outlive the order. Keep the canceled attempt itself;
-            // its old client secret has been invalidated before any links are removed.
-            _context.OrderPaymentBatchItems.RemoveRange(await _context.OrderPaymentBatchItems
-                .Where(i => i.OrderId == order.Id).ToListAsync());
-        }
-
-        private async Task<string?> UnsafeToRetireAsync(Order order, DateTime now, bool allowCancelled = false)
+        /// <summary>
+        /// AUTOMATIC regeneration only (a schedule edit with "Regenerate"). Stricter than an admin's
+        /// own delete or skip, on purpose: besides the shared check it keeps anything a person has
+        /// touched — an edited order, a cleaner who was told, a recorded payment reference —
+        /// because a machine must not cancel those. Null = may be retired.
+        /// </summary>
+        private async Task<string?> UnsafeToRegenerateAsync(Order order, DateTime now)
         {
             if (!order.IsGeneratedByRecurringSeries || order.ServiceDate.Date.Add(order.ServiceTime) <= now
-                || !(OrderStatuses.Is(order.Status, OrderStatuses.Pending)
-                    || (allowCancelled && OrderStatuses.IsCancelled(order.Status))))
-                return "Only future, uncommitted Pending generated cleanings can be skipped or replaced.";
-            if (order.IsPaid || order.PaidAt != null || order.InvoicePaidAt != null
-                || order.ManualPaymentRecordedAt != null
-                || !string.IsNullOrEmpty(order.PaymentReference) || order.TotalRefundedAmount != 0
-                || await _context.OrderUpdateHistories.AnyAsync(h => h.OrderId == order.Id)
-                || await _context.OrderRefunds.AnyAsync(r => r.OrderId == order.Id)
-                || await _context.OrderPaymentBatchItems.AnyAsync(i => i.OrderId == order.Id
-                    && i.Batch!.Status == OrderPaymentBatchStatus.Paid)
-                || await _context.CommercialInvoiceOrders.AnyAsync(i => i.OrderId == order.Id
-                    && i.Invoice!.Status != Models.Commercial.InvoiceStatus.Void)
-                || await _context.OrderCleaners.AnyAsync(c => c.OrderId == order.Id
-                    && (c.IsPaid || c.PaidAt != null || c.AssignmentNotificationSentAt != null)))
-                return "This cleaning has payment, invoice or staffing activity. Use the existing cancellation/reversal workflow.";
-            try
-            {
-                // Share retry's authoritative Stripe check and whole-batch cancellation. Merely
-                // opening Pay All (or an individual form) must not permanently reserve a visit.
-                await _payments.PrepareIndividualPaymentAsync(order.Id);
-            }
-            catch (CombinedPaymentException ex) { return ex.Message; }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not safely close payment attempts for recurring order {OrderId}", order.Id);
-                return "Could not safely close the previous payment attempt. Please retry before removing this cleaning.";
-            }
+                || !OrderStatuses.Is(order.Status, OrderStatuses.Pending))
+                return "Only future, uncommitted Pending generated cleanings are replaced.";
+            var check = await _removal.CheckAsync(order);
+            if (!check.CanRemove) return check.BlockedReason;
+            if (check.HandEdited || check.NotifiedCleaners.Count > 0 || check.HasPaymentReference)
+                return "Edited, staffed or annotated by a person — kept.";
+            try { await _removal.CloseOpenPaymentAttemptsAsync(order); }
+            catch (OrderRemovalException ex) { return ex.Message; }
             return null;
+        }
+
+        // ── Stop, optionally deleting the unfinished cleanings ────────────────────────────────
+
+        public async Task<RecurringStopPreviewDto> GetStopPreviewAsync(int seriesId)
+        {
+            var series = await _context.RecurringOrderSeries.AsNoTracking().FirstOrDefaultAsync(s => s.Id == seriesId)
+                ?? throw new RecurringSeriesException("Recurring series not found.");
+            var orders = await LoadUnfinishedAsync(seriesId, tracked: false);
+            var checks = await _removal.CheckAsync(orders);
+            var ids = orders.Select(o => o.Id).ToList();
+            var staff = await _context.OrderCleaners.AsNoTracking()
+                .Where(c => ids.Contains(c.OrderId))
+                .Select(c => new { c.OrderId, c.CleanerId })
+                .ToListAsync();
+            var names = await _removal.CleanerNamesAsync(staff.Select(c => c.CleanerId).Distinct().ToList());
+
+            return new RecurringStopPreviewDto
+            {
+                SeriesId = series.Id,
+                AlreadyStopped = series.StoppedAt != null,
+                Orders = orders.Select(o => new RecurringStopCandidateDto
+                {
+                    OrderId = o.Id,
+                    ServiceDate = o.ServiceDate,
+                    ServiceTime = o.ServiceTime,
+                    Total = o.Total,
+                    Status = o.Status,
+                    IsTemplate = o.Id == series.TemplateOrderId,
+                    Cleaners = staff.Where(c => c.OrderId == o.Id)
+                        .Select(c => names.GetValueOrDefault(c.CleanerId) ?? OrderRemovalService.CleanerName(c.CleanerId, null, null)).ToList(),
+                    CanDelete = checks[o.Id].CanRemove,
+                    BlockedReason = checks[o.Id].BlockedReason,
+                    NotifiedCleaners = checks[o.Id].NotifiedCleaners
+                }).ToList()
+            };
+        }
+
+        public async Task<RecurringStopResultDto> StopAsync(
+            int seriesId, IReadOnlyCollection<int> deleteOrderIds, int adminUserId, bool mayDeleteOrders)
+        {
+            var deleteIds = deleteOrderIds.Distinct().ToHashSet();
+            if (deleteIds.Count > 0 && !mayDeleteOrders)
+                throw new RecurringSeriesException(
+                    "Only a SuperAdmin can delete orders. Stop the plan without deleting, and the cleanings stay as ordinary orders.");
+
+            var userId = await _context.RecurringOrderSeries.Where(s => s.Id == seriesId).Select(s => (int?)s.UserId).FirstOrDefaultAsync()
+                ?? throw new RecurringSeriesException("Recurring series not found.");
+
+            var result = new RecurringStopResultDto();
+            var photoUrls = new List<string>();
+            using (var transaction = await RecurringPaymentAttemptGuard.LockAsync(_context, userId))
+            {
+                var series = await _context.RecurringOrderSeries.FirstAsync(s => s.Id == seriesId);
+                if (series.StoppedAt != null && deleteIds.Count == 0)
+                    return new RecurringStopResultDto { Series = await GetAsync(seriesId) };
+
+                // Only this plan's UNFINISHED orders may be named. Done, cancelled and refunded
+                // cleanings are history and are never touched from here.
+                var unfinished = await LoadUnfinishedAsync(seriesId, tracked: true);
+                var stray = deleteIds.Where(id => unfinished.All(o => o.Id != id)).ToList();
+                if (stray.Count > 0)
+                    throw new RecurringSeriesException(
+                        $"Order(s) {string.Join(", ", stray.Select(id => "#" + id))} are not unfinished cleanings of this plan, so they can't be deleted from here.");
+
+                var toDelete = unfinished.Where(o => deleteIds.Contains(o.Id))
+                    // The source goes LAST: by then the other deletions are gone, so the plan's
+                    // source moves onto an order that is actually staying.
+                    .OrderBy(o => o.Id == series.TemplateOrderId).ThenBy(o => o.ServiceDate).ToList();
+                var checks = await _removal.CheckAsync(toDelete);
+                var blocked = toDelete.Where(o => !checks[o.Id].CanRemove).ToList();
+                if (blocked.Count > 0)
+                    throw new RecurringSeriesException("Nothing was changed. These can't be deleted: "
+                        + string.Join("; ", blocked.Select(o => $"#{o.Id} ({o.ServiceDate:ddd MMM d}) — {checks[o.Id].BlockedReason}")) + ".");
+
+                var before = Snapshot(series);
+                series.IsActive = false;
+                series.StoppedAt ??= DateTime.UtcNow;
+                series.UpdatedAt = DateTime.UtcNow;
+                series.UpdatedByUserId = adminUserId;
+                await _context.SaveChangesAsync();
+                await _audit.LogActionAsync(AuditEntityTypes.RecurringOrderSeriesAction, seriesId,
+                    "RecurringSeriesstop", before, new
+                    {
+                        series.IsActive,
+                        series.StoppedAt,
+                        DeletedOrderIds = toDelete.Select(o => o.Id).ToArray(),
+                        KeptOrderIds = unfinished.Where(o => !deleteIds.Contains(o.Id)).Select(o => o.Id).ToArray()
+                    }, actingUserId: adminUserId);
+
+                try
+                {
+                    foreach (var order in toDelete)
+                    {
+                        await _removal.CloseOpenPaymentAttemptsAsync(order);
+                        var snapshot = new { OrderId = order.Id, order.ServiceDate, order.ServiceTime, order.Status, order.Total };
+                        var outcome = await _removal.RemoveAsync(order, adminUserId, deleteIds);
+                        photoUrls.AddRange(outcome.PhotoUrls);
+                        result.Warnings.AddRange(outcome.Warnings);
+                        result.DeletedOrderIds.Add(order.Id);
+                        await _audit.LogDeleteAsync(order);
+                        await _audit.LogActionAsync(AuditEntityTypes.RecurringOrderSeriesAction, seriesId,
+                            "RecurringOccurrenceDeleted", snapshot, null, actingUserId: adminUserId);
+                    }
+                }
+                catch (OrderRemovalException ex)
+                {
+                    _logger.LogWarning("Stop of recurring series {SeriesId} refused while deleting orders: {Reason}", seriesId, ex.Message);
+                    throw new RecurringSeriesException("Nothing was changed. " + ex.Message);
+                }
+                catch (DbUpdateException ex)
+                {
+                    _logger.LogError(ex, "Stop of recurring series {SeriesId} failed while deleting orders {OrderIds}: {Detail}",
+                        seriesId, string.Join(",", deleteIds), ex.InnerException?.Message ?? ex.Message);
+                    throw new RecurringSeriesException("Nothing was changed. "
+                        + OrderRemovalService.Describe(ex, result.DeletedOrderIds.Count < toDelete.Count ? toDelete[result.DeletedOrderIds.Count].Id : 0));
+                }
+
+                if (transaction != null) await transaction.CommitAsync();
+            }
+
+            _removal.DeleteStoredFiles(photoUrls);
+            result.Series = await GetAsync(seriesId);
+            return result;
+        }
+
+        /// <summary>A plan's orders that are not finished: not Done, cancelled or refunded.</summary>
+        private async Task<List<Order>> LoadUnfinishedAsync(int seriesId, bool tracked)
+        {
+            var query = _context.Orders.Where(o => o.RecurringSeriesId == seriesId
+                && o.Status != OrderStatuses.Done && o.Status != OrderStatuses.Cancelled && o.Status != OrderStatuses.Refunded);
+            if (!tracked) query = query.AsNoTracking();
+            return await query.OrderBy(o => o.ServiceDate).ThenBy(o => o.ServiceTime).ToListAsync();
         }
 
         private async Task RetireAsync(Order order, int adminUserId, bool replacing)

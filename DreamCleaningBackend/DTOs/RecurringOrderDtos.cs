@@ -102,6 +102,54 @@ namespace DreamCleaningBackend.DTOs
         public int AssignedCleanerCount { get; set; }
     }
 
+    /// <summary>
+    /// One unfinished order of a plan, as the Stop recurrence dialog lists it. Done, cancelled and
+    /// refunded orders are never listed and never touched.
+    /// </summary>
+    public class RecurringStopCandidateDto
+    {
+        public int OrderId { get; set; }
+        public DateTime ServiceDate { get; set; }
+        public TimeSpan ServiceTime { get; set; }
+        public decimal Total { get; set; }
+        public string Status { get; set; } = "";
+        public bool IsTemplate { get; set; }
+        public List<string> Cleaners { get; set; } = new();
+
+        /// <summary>False when the order has real payment, invoice or work on it (<see cref="BlockedReason"/>).</summary>
+        public bool CanDelete { get; set; }
+        public string? BlockedReason { get; set; }
+
+        /// <summary>Cleaners who were sent the assignment. Deleting is allowed; somebody has to tell them.</summary>
+        public List<string> NotifiedCleaners { get; set; } = new();
+    }
+
+    public class RecurringStopPreviewDto
+    {
+        public int SeriesId { get; set; }
+        public bool AlreadyStopped { get; set; }
+        public List<RecurringStopCandidateDto> Orders { get; set; } = new();
+    }
+
+    /// <summary>Stop a plan and, in the same transaction, permanently delete the chosen unfinished orders.</summary>
+    public class StopRecurringSeriesDto
+    {
+        public List<int> DeleteOrderIds { get; set; } = new();
+    }
+
+    public class RecurringStopResultDto
+    {
+        /// <summary>Null when the plan itself was removed (its source and every order were deleted).</summary>
+        public RecurringSeriesDto? Series { get; set; }
+        public List<int> DeletedOrderIds { get; set; } = new();
+        public List<string> Warnings { get; set; } = new();
+    }
+
+    public class RecurringSkipResultDto
+    {
+        public List<string> Warnings { get; set; } = new();
+    }
+
     public class RecurringSeriesDto
     {
         public decimal? RecurringLoyaltyDiscountPercent { get; set; }

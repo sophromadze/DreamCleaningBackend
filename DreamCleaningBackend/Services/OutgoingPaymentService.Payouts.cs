@@ -24,11 +24,21 @@ namespace DreamCleaningBackend.Services
 
         // ── Unpaid cleaners ───────────────────────────────────────────────────────────────────
 
-        public async Task<UnpaidCleanersDto> GetUnpaidCleanersAsync()
+        public async Task<UnpaidCleanersDto> GetUnpaidCleanersAsync(DateTime? from = null, DateTime? to = null)
         {
-            // Every finished order, not one month: money owed for a job in March is still owed in
-            // October. Read-only, so untracked.
-            var orders = await PerformedOrdersWithIncludes()
+            // Every finished order by default, not one month: money owed for a job in March is
+            // still owed in October. The page narrows it to the month in its month bar, by NY
+            // service date like the Orders view; "All months" sends no dates. Read-only, so untracked.
+            var q = PerformedOrdersWithIncludes();
+            if (from.HasValue)
+                q = q.Where(o => o.ServiceDate >= from.Value.Date);
+            if (to.HasValue)
+            {
+                var toExclusive = to.Value.Date.AddDays(1);
+                q = q.Where(o => o.ServiceDate < toExclusive);
+            }
+
+            var orders = await q
                 .AsNoTracking()
                 .AsSplitQuery()
                 .ToListAsync();

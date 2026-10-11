@@ -29,17 +29,30 @@ namespace DreamCleaningBackend.Controllers.Admin
     {
         private readonly IRecurringOrderSeriesService _series;
         private readonly RecurringOrderGenerationService _generator;
+        private readonly ILogger<AdminRecurringOrdersController>? _logger;
 
         public AdminRecurringOrdersController(
             IRecurringOrderSeriesService series,
-            RecurringOrderGenerationService generator)
+            RecurringOrderGenerationService generator,
+            ILogger<AdminRecurringOrdersController>? logger = null)
         {
             _series = series;
             _generator = generator;
+            _logger = logger;
         }
 
         private int CurrentUserId =>
             int.TryParse(User.FindFirst("UserId")?.Value, out var id) ? id : 0;
+
+        private bool IsSuperAdmin => User.FindFirst("Role")?.Value == nameof(UserRole.SuperAdmin);
+
+        /// <summary>A refusal is the admin's to act on, but it is logged so it can be found later.</summary>
+        private BadRequestObjectResult Refused(string action, int seriesId, RecurringSeriesException ex)
+        {
+            _logger?.LogWarning("Recurring series {SeriesId}: {Action} refused for user {UserId}: {Reason}",
+                seriesId, action, CurrentUserId, ex.Message);
+            return BadRequest(new { message = ex.Message });
+        }
 
         [HttpGet]
         [RequirePermission(Permission.View)]
@@ -125,10 +138,35 @@ namespace DreamCleaningBackend.Controllers.Admin
 
         [HttpPost("{id:int}/occurrences/{orderId:int}/skip")]
         [RequirePermission(Permission.Update)]
-        public async Task<IActionResult> Skip(int id, int orderId)
+        public async Task<ActionResult<RecurringSkipResultDto>> Skip(int id, int orderId)
         {
-            try { await _series.SkipAsync(id, orderId, CurrentUserId); return Ok(); }
-            catch (RecurringSeriesException ex) { return BadRequest(new { message = ex.Message }); }
+            try { return Ok(await _series.SkipAsync(id, orderId, CurrentUserId)); }
+            catch (RecurringSeriesException ex) { return Refused($"skip of order {orderId}", id, ex); }
+        }
+
+        /// <summary>The plan's unfinished orders for the Stop dialog, each with whether it may be deleted.</summary>
+        [HttpGet("{id:int}/stop-preview")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<RecurringStopPreviewDto>> StopPreview(int id)
+        {
+            try { return Ok(await _series.GetStopPreviewAsync(id)); }
+            catch (RecurringSeriesException ex) { return Refused("stop preview", id, ex); }
+        }
+
+        /// <summary>
+        /// Stops the plan permanently and, in the same transaction, deletes the chosen unfinished
+        /// orders. Deleting is SuperAdmin-only, exactly like <c>DELETE api/admin/orders/{id}</c>;
+        /// an Admin may still stop the plan and keep every order.
+        /// </summary>
+        [HttpPost("{id:int}/stop")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult<RecurringStopResultDto>> Stop(int id, [FromBody] StopRecurringSeriesDto? dto)
+        {
+            try
+            {
+                return Ok(await _series.StopAsync(id, dto?.DeleteOrderIds ?? new List<int>(), CurrentUserId, IsSuperAdmin));
+            }
+            catch (RecurringSeriesException ex) { return Refused("stop", id, ex); }
         }
 
         [HttpPost("from-order/{orderId:int}/preview")]

@@ -21,6 +21,14 @@ using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Under systemd, log in the systemd console format (2026-10). journald takes a line's priority
+// only from that format's "<3>" prefix; with the default format every line - errors included -
+// was stored at priority 6, so `journalctl -u <api service> -p err` never showed one, and a
+// failed order delete looked unlogged. It also keeps an exception on ONE line. INVOCATION_ID is
+// set by systemd for every service it starts, so a local `dotnet run` keeps the readable format.
+if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("INVOCATION_ID")))
+    builder.Logging.AddSystemdConsole();
+
 builder.Services.AddScoped<IPermissionService, PermissionService>();
 builder.Services.AddScoped<IPageAccessService, PageAccessService>();
 
@@ -212,6 +220,9 @@ builder.Services.AddScoped<IBookingCreationService, BookingCreationService>();
 // BookingCreationService, so it is priced, discounted and displayed like any other booking.
 builder.Services.AddScoped<IRecurringOrderSeriesService, RecurringOrderSeriesService>();
 builder.Services.AddScoped<IRecurringCustomerPaymentService, RecurringCustomerPaymentService>();
+// The one "may this order be deleted / skipped?" check + the delete itself (2026-10): shared by
+// DELETE api/admin/orders/{id}, Skip, and Stop recurrence's delete-the-unfinished option.
+builder.Services.AddScoped<IOrderRemovalService, OrderRemovalService>();
 builder.Services.AddScoped<ICombinedPaymentFollowUpService, CombinedPaymentFollowUpService>();
 
 // Singleton AND hosted, resolving the same instance both ways — same arrangement as

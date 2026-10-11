@@ -120,6 +120,35 @@ namespace DreamCleaningBackend.Tests
         }
 
         [Fact]
+        public async Task UnpaidCleanersCanBeNarrowedToTheMonthOnScreen_ByServiceDate()
+        {
+            await SeedAsync();
+            // Order 900 is serviced on Aug 14, order 901 on Aug 20.
+            var unpaid = await Service().GetUnpaidCleanersAsync(new DateTime(2026, 8, 1), new DateTime(2026, 8, 14));
+
+            var ana = Assert.Single(unpaid.Cleaners);
+            Assert.Equal(418, ana.CleanerId);
+            Assert.Equal(new[] { 900 }, ana.Lines.Select(l => l.OrderId));
+            Assert.Equal(105.00m, unpaid.TotalOutstanding);
+
+            // No dates = every finished order, as before.
+            Assert.Equal(189.00m, (await Service().GetUnpaidCleanersAsync()).TotalOutstanding);
+        }
+
+        [Theory]
+        [InlineData("Ben Oka", new[] { 901 })]
+        [InlineData("Ana  Reyes", new[] { 900, 901 })]   // a double space still matches
+        [InlineData("Maia K", new[] { 900, 901 })]       // the customer's full name too
+        [InlineData("Ben Reyes", new int[0])]            // first name of one cleaner + surname of another is nobody
+        public async Task OrdersSearchMatchesAFullNameTypedWithASpace(string search, int[] expected)
+        {
+            await SeedAsync();
+            var list = await Service().GetAsync(new OutgoingPaymentQuery { Search = search });
+
+            Assert.Equal(expected, list.Orders.Select(o => o.OrderId).OrderBy(id => id));
+        }
+
+        [Fact]
         public async Task PayingCleanersRecordsOnePayoutEachWithTheLinesItCovered()
         {
             await SeedAsync();

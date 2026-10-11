@@ -1739,7 +1739,12 @@ namespace DreamCleaningBackend.Controllers
         }
 
         /// <summary>SuperAdmin-only: permanently delete an order with its dependent rows and photo files.
-        /// No Stripe refund is issued — run the cancel flow first if the customer needs a refund.</summary>
+        /// No Stripe refund is issued — run the cancel flow first if the customer needs a refund.
+        ///
+        /// What may be deleted is decided by <see cref="IOrderRemovalService"/> — the same check
+        /// Skip and Stop recurrence use, so the three cannot disagree. It also clears every RESTRICT
+        /// foreign key into Orders (series source, invoice links, combined-payment items, gift-card
+        /// usages, notification logs) or refuses with a message naming the record.</summary>
         [HttpDelete("orders/{orderId}")]
         [Authorize(Roles = "SuperAdmin")]
         public async Task<ActionResult> DeleteOrder(int orderId)
@@ -1751,85 +1756,73 @@ namespace DreamCleaningBackend.Controllers
             if (order == null)
                 return NotFound(new { message = "Order not found" });
 
-            if (await _context.RecurringOrderSeries.AnyAsync(s => s.TemplateOrderId == orderId))
-                return BadRequest(new { message = "This order is the source of a recurring series. Keep the source order and remove its generated cleanings instead." });
+            var removal = HttpContext.RequestServices.GetRequiredService<IOrderRemovalService>();
+            var adminUserId = GetCurrentUserId();
+            var check = await removal.CheckAsync(order);
+            if (!check.CanRemove)
+            {
+                _logger.LogWarning("Delete of order {OrderId} refused: {Reason}", orderId, check.BlockedReason);
+                return BadRequest(new { message = $"Order #{orderId} can't be deleted: {check.BlockedReason}." });
+            }
 
-            using var transaction = order.IsGeneratedByRecurringSeries
+            var seriesId = order.RecurringSeriesId;
+            OrderRemovalOutcome outcome;
+            // A cleaning in a recurring plan is deleted under the customer's payment lock, so a
+            // payment page or "Pay all" cannot start on it while its intents are being closed.
+            using var transaction = check.InSeries
                 ? await RecurringPaymentAttemptGuard.LockAsync(_context, order.UserId)
                 : await _context.Database.BeginTransactionAsync();
             try
             {
-                if (order.IsGeneratedByRecurringSeries)
+                if (check.InSeries)
                 {
                     await _context.Entry(order).ReloadAsync();
-                    await HttpContext.RequestServices.GetRequiredService<IRecurringOrderSeriesService>().PrepareDeleteAsync(order);
+                    check = await removal.CheckAsync(order);
+                    if (!check.CanRemove)
+                        throw new OrderRemovalException($"Order #{orderId} can't be deleted: {check.BlockedReason}.");
+                    await removal.CloseOpenPaymentAttemptsAsync(order);
                 }
-                // Cleaning photos: the FK would only null OrderId, leaving them as
-                // unassigned photos (no longer allowed) — delete rows and files instead.
-                var photos = await _context.UserCleaningPhotos
-                    .Where(p => p.OrderId == orderId)
-                    .ToListAsync();
-                foreach (var photo in photos)
-                    DeleteUploadedFileIfExists(photo.PhotoUrl);
-                _context.UserCleaningPhotos.RemoveRange(photos);
 
-                // Gift-card usages reference the order with Restrict — remove them explicitly.
-                // The card balance stays as already deducted; only the usage record goes.
-                var giftCardUsages = await _context.GiftCardUsages
-                    .Where(g => g.OrderId == orderId)
-                    .ToListAsync();
-                _context.GiftCardUsages.RemoveRange(giftCardUsages);
-
-                // Notification logs have no cascade on OrderId — drop the ones tied to this order.
-                var notificationLogs = await _context.NotificationLogs
-                    .Where(n => n.OrderId == orderId)
-                    .ToListAsync();
-                _context.NotificationLogs.RemoveRange(notificationLogs);
-
-                // Services, extras, cleaner assignments, update history, admin assignment
-                // history, pending edits and reminder acks all cascade from the order.
-                // BubblePointsHistory / CleanerNote / UserSpecialOffer order refs are SET NULL.
-                _context.Orders.Remove(order);
-
-                await _context.SaveChangesAsync();
+                outcome = await removal.RemoveAsync(order, adminUserId);
                 if (transaction != null) { await transaction.CommitAsync(); await transaction.DisposeAsync(); }
+            }
+            catch (OrderRemovalException ex)
+            {
+                if (transaction != null) await transaction.RollbackAsync();
+                _logger.LogWarning("Delete of order {OrderId} refused: {Reason}", orderId, ex.Message);
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (DbUpdateException ex)
+            {
+                if (transaction != null) await transaction.RollbackAsync();
+                _logger.LogError(ex, "Failed to delete order {OrderId}: {Detail}", orderId, ex.InnerException?.Message ?? ex.Message);
+                return BadRequest(new { message = OrderRemovalService.Describe(ex, orderId) });
             }
             catch (Exception ex)
             {
                 if (transaction != null) await transaction.RollbackAsync();
-                _logger.LogError(ex, "Failed to delete order {OrderId}", orderId);
-                return BadRequest(new { message = "Failed to delete order: " + ex.Message });
+                _logger.LogError(ex, "Failed to delete order {OrderId}: {Detail}", orderId, ex.InnerException?.Message ?? ex.Message);
+                return StatusCode(500, new { message = $"Order #{orderId} could not be deleted because of an unexpected error. Nothing was changed; the details were logged." });
             }
+
+            // Files only once the rows are really gone — a rolled-back delete keeps its photos.
+            removal.DeleteStoredFiles(outcome.PhotoUrls);
 
             try
             {
                 await _auditService.LogDeleteAsync(order);
+                if (seriesId.HasValue)
+                    await _auditService.LogActionAsync(AuditEntityTypes.RecurringOrderSeriesAction, seriesId.Value,
+                        "RecurringOccurrenceDeleted",
+                        new { OrderId = orderId, order.ServiceDate, order.ServiceTime, order.Status, order.Total },
+                        null, actingUserId: adminUserId);
             }
             catch (Exception auditEx)
             {
                 _logger.LogError(auditEx, "Audit logging failed for order delete {OrderId}", orderId);
             }
 
-            return Ok(new { message = "Order deleted permanently." });
-        }
-
-        private void DeleteUploadedFileIfExists(string? publicUrl)
-        {
-            if (string.IsNullOrWhiteSpace(publicUrl)) return;
-
-            var basePath = _configuration["FileUpload:Path"];
-            if (string.IsNullOrWhiteSpace(basePath)) return;
-
-            var fullPath = Path.Combine(basePath, publicUrl.TrimStart('/'));
-            try
-            {
-                if (System.IO.File.Exists(fullPath))
-                    System.IO.File.Delete(fullPath);
-            }
-            catch
-            {
-                // ignore — the DB row is being removed regardless
-            }
+            return Ok(new { message = "Order deleted permanently.", warnings = outcome.Warnings });
         }
 
         /// <summary>Submit proposed order changes for approval. Only for Admins WITHOUT the direct-save

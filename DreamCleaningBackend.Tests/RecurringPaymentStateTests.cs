@@ -179,7 +179,7 @@ public class RecurringPaymentStateTests
         using var f = new Fixture(); var order = await f.GeneratedOrder(); var batch = await f.Start();
         f.Intents[batch.PaymentIntentId].Status = state;
         await Assert.ThrowsAsync<RecurringSeriesException>(() => f.SeriesService().SkipAsync(1, order.Id, 1));
-        await Assert.ThrowsAsync<RecurringSeriesException>(() => f.SeriesService().PrepareDeleteAsync(order));
+        await Assert.ThrowsAsync<OrderRemovalException>(() => new OrderRemovalService(f.Db, f.Service).CloseOpenPaymentAttemptsAsync(order));
         Assert.NotEqual(OrderStatuses.Cancelled, order.Status);
         Assert.Equal(3, await f.Db.OrderPaymentBatchItems.CountAsync(cancellationToken: TestContext.Current.CancellationToken)); Assert.Empty(f.Canceled);
     }
@@ -192,7 +192,8 @@ public class RecurringPaymentStateTests
         using var f = new Fixture(); var order = await f.GeneratedOrder(); var batch = await f.Start();
         var series = f.SeriesService();
         if (skipFirst) await series.SkipAsync(1, order.Id, 1);
-        using var provider = new ServiceCollection().AddSingleton<IRecurringOrderSeriesService>(series).BuildServiceProvider();
+        using var provider = new ServiceCollection().AddSingleton<IRecurringOrderSeriesService>(series)
+            .AddSingleton<IOrderRemovalService>(new OrderRemovalService(f.Db, f.Service)).BuildServiceProvider();
         var constructor = typeof(AdminOrdersController).GetConstructors().Single();
         var args = constructor.GetParameters().Select(p => p.Name switch {
             "context" => (object)f.Db,

@@ -387,10 +387,15 @@ namespace DreamCleaningBackend.Controllers
         // The same ledger as the per-order endpoints above, read per CLEANER: who is owed across
         // every finished job, paying several of them at once, and the payout history.
 
-        /// <summary>Every cleaner owed money right now, across all finished orders, with the lines.</summary>
+        /// <summary>
+        /// Every cleaner owed money right now, with the lines — across all finished orders, or
+        /// only those serviced between from and to (NY service dates) when given.
+        /// </summary>
         [HttpGet("cleaners/unpaid")]
-        public async Task<ActionResult<UnpaidCleanersDto>> GetUnpaidCleaners()
-            => Ok(await _service.GetUnpaidCleanersAsync());
+        public async Task<ActionResult<UnpaidCleanersDto>> GetUnpaidCleaners(
+            [FromQuery] DateTime? from = null,
+            [FromQuery] DateTime? to = null)
+            => Ok(await _service.GetUnpaidCleanersAsync(from, to));
 
         /// <summary>
         /// Pays the selected cleaners for exactly the lines and amounts the confirmation showed —

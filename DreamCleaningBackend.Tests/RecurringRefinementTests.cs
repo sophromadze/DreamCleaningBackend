@@ -118,8 +118,8 @@ public class RecurringRefinementTests
 
     [Theory]
     [InlineData("pause")]
-    [InlineData("stop")]
-    public async Task ReplacementCannotBypassPausedPlansOrRemainingFutureCleanings(string state)
+    [InlineData("resume")]
+    public async Task ReplacementCannotBypassAPlanThatIsNotStopped(string state)
     {
         using var db = Db(); var service = await SeriesService(db);
         var first = await service.CreateAsync(1, new SaveRecurringSeriesDto(), 5);
@@ -245,7 +245,7 @@ public class RecurringRefinementTests
     [Theory]
     [InlineData("paid")]
     [InlineData("invoice")]
-    [InlineData("notified")]
+    [InlineData("wages")]
     [InlineData("active")]
     public async Task SkipRejectsPaymentInvoiceAndOperationalCommitments(string kind)
     {
@@ -254,7 +254,7 @@ public class RecurringRefinementTests
         var o = await db.Orders.FirstAsync(o => o.IsGeneratedByRecurringSeries, cancellationToken: TestContext.Current.CancellationToken);
         if (kind == "paid") o.IsPaid = true;
         if (kind == "active") o.Status = OrderStatuses.Active;
-        if (kind == "notified") db.OrderCleaners.Add(new OrderCleaner { OrderId = o.Id, AssignmentNotificationSentAt = DateTime.UtcNow });
+        if (kind == "wages") db.OrderCleaners.Add(new OrderCleaner { OrderId = o.Id, IsPaid = true, PaidAt = DateTime.UtcNow });
         if (kind == "invoice") db.CommercialInvoiceOrders.Add(new CommercialInvoiceOrder { OrderId = o.Id,
             Invoice = new CommercialInvoice { Status = InvoiceStatus.Draft } });
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
