@@ -1,8 +1,12 @@
 using System.Reflection;
+using System.Security.Claims;
+using DreamCleaningBackend.Controllers;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
@@ -262,6 +266,72 @@ namespace DreamCleaningBackend.Tests
                 "en", "Ben", order, "2h", "1 Test St", false, false, null, hideTips
             })!;
             return body;
+        }
+
+        // ── Who may change it (owner's call, 2026-10-12) ──────────────────────────────────────
+
+        private const int GrantedAdminId = 50, UngrantedAdminId = 51, SuperAdminId = 52;
+
+        private void SeedStaff()
+        {
+            _context.Users.AddRange(
+                new User { Id = GrantedAdminId, Email = "ga@example.invalid", FirstName = "Gina", LastName = "Granted", PasswordHash = "x", PasswordSalt = "x", Role = UserRole.Admin, CanEditOrdersWithoutApproval = true },
+                new User { Id = UngrantedAdminId, Email = "ua@example.invalid", FirstName = "Una", LastName = "Ungranted", PasswordHash = "x", PasswordSalt = "x", Role = UserRole.Admin },
+                new User { Id = SuperAdminId, Email = "sa@example.invalid", FirstName = "Sam", LastName = "Super", PasswordHash = "x", PasswordSalt = "x", Role = UserRole.SuperAdmin });
+            _context.SaveChanges();
+        }
+
+        private AdminOrdersController Controller(int userId, UserRole role)
+        {
+            var controller = new AdminOrdersController(_context, null!, _audit, null!, null!, null!, null!, null!,
+                null!, null!, null!, null!, null!, null!, null!, null!, null!, null!,
+                NullLogger<AdminOrdersController>.Instance);
+            controller.ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+                        new Claim("UserId", userId.ToString()),
+                        new Claim("Role", role.ToString()),
+                        new Claim(ClaimTypes.Role, role.ToString())
+                    }, "test"))
+                }
+            };
+            return controller;
+        }
+
+        private static UpdateCleanerTipsDto Hide => new() { HideFromCleaner = true, WithholdFromPayout = true };
+
+        [Theory]
+        [InlineData(SuperAdminId, UserRole.SuperAdmin)]
+        [InlineData(GrantedAdminId, UserRole.Admin)]
+        public async Task SuperAdminAndGrantedAdmin_CanHideTips(int userId, UserRole role)
+        {
+            await SeedAsync(hideBen: false, withholdBen: false);
+            SeedStaff();
+
+            var result = await Controller(userId, role).UpdateCleanerTips(901, 419, Hide);
+
+            Assert.IsType<OkObjectResult>(result);
+            var line = await _context.OrderCleaners.AsNoTracking().SingleAsync(oc => oc.Id == 12);
+            Assert.True(line.TipsHiddenFromCleaner);
+            Assert.True(line.TipsWithheldFromPayout);
+        }
+
+        [Fact]
+        public async Task AnAdminWithoutTheDirectSaveGrant_IsRefused_AndNothingChanges()
+        {
+            await SeedAsync(hideBen: false, withholdBen: false);
+            SeedStaff();
+
+            var result = await Controller(UngrantedAdminId, UserRole.Admin).UpdateCleanerTips(901, 419, Hide);
+
+            Assert.Equal(StatusCodes.Status403Forbidden, Assert.IsType<ObjectResult>(result).StatusCode);
+            var line = await _context.OrderCleaners.AsNoTracking().SingleAsync(oc => oc.Id == 12);
+            Assert.False(line.TipsHiddenFromCleaner);
+            Assert.False(line.TipsWithheldFromPayout);
         }
 
         // ── Bookkeeping ───────────────────────────────────────────────────────────────────────

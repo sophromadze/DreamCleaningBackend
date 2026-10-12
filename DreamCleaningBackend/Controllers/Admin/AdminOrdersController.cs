@@ -1029,14 +1029,23 @@ namespace DreamCleaningBackend.Controllers
         ///   only. A line already paid WITH the tip then reads as overpaid (nothing is clawed
         ///   back); paying the tip again later shows the difference as still to pay.
         ///
-        /// Same gate as the payroll edits: Admin + SuperAdmin with Update. It moves what a cleaner
-        /// is paid, never a customer price, so it is not an order edit and needs no approval.
+        /// Who may: SuperAdmin, and an Admin holding the direct-save grant
+        /// (<c>CanEditOrdersWithoutApproval</c>) — the owner's call, 2026-10-12. The same predicate
+        /// as a direct order save (<see cref="CallerCanApplyOrderEditsAsync"/>), read from the DB so
+        /// granting/revoking takes effect on the next request. An ungranted Admin is refused here
+        /// and never shown the buttons.
         /// </summary>
         [HttpPut("orders/{orderId}/cleaners/{cleanerId}/tips")]
         [Authorize(Roles = "Admin,SuperAdmin")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult> UpdateCleanerTips(int orderId, int cleanerId, [FromBody] UpdateCleanerTipsDto dto)
         {
+            if (!await CallerCanApplyOrderEditsAsync())
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    message = "Only a SuperAdmin, or an Admin who can save order edits without approval, can change a cleaner's tips."
+                });
+
             if (dto == null)
                 return BadRequest(new { message = "No changes were supplied." });
 
