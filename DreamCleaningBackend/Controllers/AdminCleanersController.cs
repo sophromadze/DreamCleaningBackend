@@ -34,7 +34,7 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.View)]
         public async Task<ActionResult<CleanerDetailDto>> GetById(int id)
         {
-            var result = await _service.GetByIdAsync(id);
+            var result = await _service.GetByIdAsync(id, await CallerCanSeePayAsync());
             if (result == null)
                 return NotFound();
             return Ok(result);
@@ -48,7 +48,7 @@ namespace DreamCleaningBackend.Controllers
                 return BadRequest(ModelState);
 
             var adminId = GetUserId();
-            var result = await _service.CreateAsync(dto, adminId);
+            var result = await _service.CreateAsync(dto, adminId, await CallerCanSeePayAsync());
             return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
         }
 
@@ -62,7 +62,7 @@ namespace DreamCleaningBackend.Controllers
             var adminId = GetUserId();
             try
             {
-                var result = await _service.UpdateAsync(id, dto, adminId);
+                var result = await _service.UpdateAsync(id, dto, adminId, await CallerCanSeePayAsync());
                 if (result == null)
                     return NotFound();
                 return Ok(result);
@@ -169,6 +169,17 @@ namespace DreamCleaningBackend.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Wages and tips in the detail panel's stats are for SuperAdmins and direct-save-granted
+        /// Admins only; everyone else gets the work figures with the money left out (null), so the
+        /// values never reach their browser at all.
+        /// </summary>
+        private Task<bool> CallerCanSeePayAsync()
+        {
+            Enum.TryParse<UserRole>(User.FindFirst("Role")?.Value, out var role);
+            return _service.CallerCanSeePayAsync(GetUserId(), role);
         }
 
         private int GetUserId()

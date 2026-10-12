@@ -68,6 +68,43 @@ namespace DreamCleaningBackend.DTOs
         /// a second client-side copy of the rule could only disagree with what the API will accept.
         /// </summary>
         public bool IsEmailManagedByAccount { get; set; }
+
+        /// <summary>All-time work and pay figures for the panel — see Helpers/CleanerWorkStats.</summary>
+        public CleanerWorkStatsDto WorkStats { get; set; } = new();
+    }
+
+    /// <summary>
+    /// What the cleaner has done and been paid, all-time, over their COMPLETED (Done) orders.
+    /// Built only by <c>Helpers/CleanerWorkStats.Build</c>. The four money fields are null unless
+    /// the caller may see them (SuperAdmin, or an Admin with the direct-save grant —
+    /// OrderEditApprovalPolicy.CanSaveDirectly); <see cref="IncludesPay"/> says which.
+    /// </summary>
+    public class CleanerWorkStatsDto
+    {
+        public int JobsCompleted { get; set; }
+
+        /// <summary>Sum of the cleaner's payroll minutes (the hours they are paid for).</summary>
+        public decimal TotalMinutesWorked { get; set; }
+
+        /// <summary>Distinct service dates with at least one completed order.</summary>
+        public int DaysWorked { get; set; }
+
+        public decimal AverageMinutesPerDay { get; set; }
+
+        /// <summary>True when the money fields below were filled in for this caller.</summary>
+        public bool IncludesPay { get; set; }
+
+        /// <summary>Wages already handed over. Never includes tips.</summary>
+        public decimal? PaidOut { get; set; }
+
+        /// <summary>Wages owed for completed orders and not paid yet. Never includes tips.</summary>
+        public decimal? RemainingToPay { get; set; }
+
+        /// <summary>(PaidOut + RemainingToPay) / JobsCompleted — wages only.</summary>
+        public decimal? AverageEarnedPerJob { get; set; }
+
+        /// <summary>The cleaner's tip shares on completed orders (withheld tips excluded).</summary>
+        public decimal? Tips { get; set; }
     }
 
     public class CleanerVacationDto

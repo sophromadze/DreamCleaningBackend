@@ -135,7 +135,7 @@ namespace DreamCleaningBackend.Services
             return result;
         }
 
-        public async Task<CleanerDetailDto?> GetByIdAsync(int id)
+        public async Task<CleanerDetailDto?> GetByIdAsync(int id, bool includePay = false)
         {
             var cleaner = await _context.Cleaners
                 .Include(c => c.CreatedByAdmin)
@@ -168,10 +168,50 @@ namespace DreamCleaningBackend.Services
                 .OrderByDescending(dto => dto.ServiceDate)
                 .ToListAsync();
 
-            return MapToDetail(cleaner, assignments, await LoadLinkedAccountAsync(cleaner));
+            var detail = MapToDetail(cleaner, assignments, await LoadLinkedAccountAsync(cleaner));
+            detail.WorkStats = await BuildWorkStatsAsync(id, includePay);
+            return detail;
         }
 
-        public async Task<CleanerDetailDto> CreateAsync(CreateCleanerDto dto, int adminId)
+        /// <summary>
+        /// The panel's all-time work and pay figures, read off the cleaner's own payroll lines.
+        /// Loads exactly what <see cref="CleanerPayrollCalculator"/> needs — OrderServices →
+        /// Service (is TotalDuration already per-cleaner?) and every OrderCleaner on the order
+        /// (the split count and the tip shares depend on the whole crew, not just this cleaner).
+        /// </summary>
+        private async Task<CleanerWorkStatsDto> BuildWorkStatsAsync(int cleanerId, bool includePay)
+        {
+            var completedOrders = await _context.Orders
+                .AsNoTracking()
+                .Where(o => o.Status == OrderStatuses.Done && o.OrderCleaners.Any(oc => oc.CleanerId == cleanerId))
+                .Include(o => o.OrderServices)
+                    .ThenInclude(os => os.Service)
+                .Include(o => o.OrderCleaners)
+                .AsSplitQuery()
+                .ToListAsync();
+
+            return CleanerWorkStats.Build(completedOrders, cleanerId, includePay);
+        }
+
+        /// <summary>
+        /// May this caller see what cleaners are paid? SuperAdmin, or an Admin holding the
+        /// direct-save grant — Helpers/OrderEditApprovalPolicy, the same predicate the order panel's
+        /// tip controls use. The grant is read from the DB, never from a claim, so revoking it takes
+        /// effect on the next request.
+        /// </summary>
+        public async Task<bool> CallerCanSeePayAsync(int userId, UserRole role)
+        {
+            if (role == UserRole.SuperAdmin) return true;
+            if (role != UserRole.Admin) return false;
+
+            var granted = await _context.Users
+                .Where(u => u.Id == userId)
+                .Select(u => u.CanEditOrdersWithoutApproval)
+                .FirstOrDefaultAsync();
+            return OrderEditApprovalPolicy.CanSaveDirectly(role, granted);
+        }
+
+        public async Task<CleanerDetailDto> CreateAsync(CreateCleanerDto dto, int adminId, bool includePay = false)
         {
             var cleaner = new Cleaner
             {
@@ -213,10 +253,10 @@ namespace DreamCleaningBackend.Services
                 await _context.SaveChangesAsync();
             }
 
-            return (await GetByIdAsync(cleaner.Id))!;
+            return (await GetByIdAsync(cleaner.Id, includePay))!;
         }
 
-        public async Task<CleanerDetailDto?> UpdateAsync(int id, UpdateCleanerDto dto, int adminId)
+        public async Task<CleanerDetailDto?> UpdateAsync(int id, UpdateCleanerDto dto, int adminId, bool includePay = false)
         {
             var cleaner = await _context.Cleaners
                 .Include(c => c.Vacations)
@@ -285,7 +325,7 @@ namespace DreamCleaningBackend.Services
 
             await _audit.LogUpdateAsync(beforeCleaner, cleaner);
 
-            return await GetByIdAsync(id);
+            return await GetByIdAsync(id, includePay);
         }
 
         public async Task<bool> DeleteAsync(int id)
