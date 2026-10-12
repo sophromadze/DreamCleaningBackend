@@ -806,7 +806,8 @@ namespace DreamCleaningBackend.Controllers
                             OrderCleanerId = oc.Id,
                             oc.CleanerId,
                             oc.SalaryHourlyRate,
-                            oc.SalaryBillableMinutes
+                            oc.SalaryBillableMinutes,
+                            oc.TipsWithheldFromPayout
                         })
                         .ToList()
                 })
@@ -836,7 +837,8 @@ namespace DreamCleaningBackend.Controllers
                             OrderCleanerId = a.OrderCleanerId,
                             CleanerId = a.CleanerId,
                             SalaryHourlyRate = a.SalaryHourlyRate,
-                            SalaryBillableMinutes = a.SalaryBillableMinutes
+                            SalaryBillableMinutes = a.SalaryBillableMinutes,
+                            TipsWithheld = a.TipsWithheldFromPayout
                         })
                         .ToList()
                 });
@@ -1016,6 +1018,75 @@ namespace DreamCleaningBackend.Controllers
         }
 
         /// <summary>
+        /// Hide one cleaner's tip on this order, and decide whether they are still paid it
+        /// (order panel → Cleaners, 2026-10). Used when a cleaner behaved badly or broke something
+        /// and the office decides they did not earn the customer's tip.
+        ///
+        /// - Hidden: the assignment email / SMS (Send, Send-all and Resend all build through
+        ///   EmailService) print no tip for this cleaner. The cleaner portal shows no tip to a
+        ///   cleaner at all.
+        /// - Withheld: CleanerPayrollCalculator drops the share, so Outgoing Payments owes salary
+        ///   only. A line already paid WITH the tip then reads as overpaid (nothing is clawed
+        ///   back); paying the tip again later shows the difference as still to pay.
+        ///
+        /// Same gate as the payroll edits: Admin + SuperAdmin with Update. It moves what a cleaner
+        /// is paid, never a customer price, so it is not an order edit and needs no approval.
+        /// </summary>
+        [HttpPut("orders/{orderId}/cleaners/{cleanerId}/tips")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        [RequirePermission(Permission.Update)]
+        public async Task<ActionResult> UpdateCleanerTips(int orderId, int cleanerId, [FromBody] UpdateCleanerTipsDto dto)
+        {
+            if (dto == null)
+                return BadRequest(new { message = "No changes were supplied." });
+
+            if (dto.WithholdFromPayout && !dto.HideFromCleaner)
+                return BadRequest(new { message = "Hide the tip from the cleaner before withholding it from their pay." });
+
+            var assignment = await _context.OrderCleaners
+                .Include(oc => oc.Cleaner)
+                .FirstOrDefaultAsync(oc => oc.OrderId == orderId && oc.CleanerId == cleanerId);
+            if (assignment == null)
+                return NotFound(new { message = "That cleaner is not assigned to this order." });
+
+            var wasHidden = assignment.TipsHiddenFromCleaner;
+            var wasWithheld = assignment.TipsWithheldFromPayout;
+
+            if (wasHidden != dto.HideFromCleaner || wasWithheld != dto.WithholdFromPayout)
+            {
+                assignment.TipsHiddenFromCleaner = dto.HideFromCleaner;
+                assignment.TipsWithheldFromPayout = dto.WithholdFromPayout;
+                await _context.SaveChangesAsync();
+
+                // Cleaner on BOTH sides: it is the context, not a change (see the audit-expansion
+                // rule in CLAUDE.md). Worded values, so the row reads as a decision.
+                var who = CleanerPayrollEditService.DescribeCleaner(assignment);
+                await _auditService.LogActionAsync(
+                    AuditEntityTypes.CleanerTipsDecision,
+                    orderId,
+                    "Update",
+                    new
+                    {
+                        Cleaner = who,
+                        TipsShownToCleaner = wasHidden ? "No" : "Yes",
+                        TipsPaidToCleaner = wasWithheld ? "No" : "Yes"
+                    },
+                    new
+                    {
+                        Cleaner = who,
+                        TipsShownToCleaner = dto.HideFromCleaner ? "No" : "Yes",
+                        TipsPaidToCleaner = dto.WithholdFromPayout ? "No" : "Yes"
+                    });
+            }
+
+            return Ok(new
+            {
+                tipsHiddenFromCleaner = assignment.TipsHiddenFromCleaner,
+                tipsWithheldFromPayout = assignment.TipsWithheldFromPayout
+            });
+        }
+
+        /// <summary>
         /// The order with everything the payroll calculator needs. Tracked for the writes, not for
         /// the read. OrderServices -> Service is what HasCleanerHoursService reads; without it
         /// every cleaner-hours order would have its duration divided a second time.
@@ -1070,7 +1141,10 @@ namespace DreamCleaningBackend.Controllers
                         HoursOverridden = line.HoursOverridden,
                         HourlyRate = line.HourlyRate,
                         RateOverridden = line.RateOverridden,
-                        Salary = line.Salary
+                        Salary = line.Salary,
+                        Tips = line.Tips,
+                        TipsWithheld = line.TipsWithheld,
+                        WithheldTips = line.WithheldTips
                     };
                 }).ToList(),
                 // One line per unstaffed slot rather than a single lumped row, so the breakdown
@@ -2410,7 +2484,10 @@ namespace DreamCleaningBackend.Controllers
                     // assignmentNotificationSentAt to say "auto-assigned from recurring series -
                     // cleaner has not been notified". The existing Send / Resend controls stay
                     // the only thing that contacts them.
-                    autoAssignedFromSeriesId = oc.AutoAssignedFromSeriesId
+                    autoAssignedFromSeriesId = oc.AutoAssignedFromSeriesId,
+                    // Order panel → Cleaners → Hide tips / Pay tips (2026-10).
+                    tipsHiddenFromCleaner = oc.TipsHiddenFromCleaner,
+                    tipsWithheldFromPayout = oc.TipsWithheldFromPayout
                 })
                 .ToListAsync();
 
@@ -2440,7 +2517,10 @@ namespace DreamCleaningBackend.Controllers
                     // assignmentNotificationSentAt to say "auto-assigned from recurring series -
                     // cleaner has not been notified". The existing Send / Resend controls stay
                     // the only thing that contacts them.
-                    autoAssignedFromSeriesId = oc.AutoAssignedFromSeriesId
+                    autoAssignedFromSeriesId = oc.AutoAssignedFromSeriesId,
+                    // Order panel → Cleaners → Hide tips / Pay tips (2026-10).
+                    tipsHiddenFromCleaner = oc.TipsHiddenFromCleaner,
+                    tipsWithheldFromPayout = oc.TipsWithheldFromPayout
                 })
                 .ToListAsync();
 
@@ -2448,7 +2528,7 @@ namespace DreamCleaningBackend.Controllers
                 .GroupBy(r => r.orderId)
                 .ToDictionary(
                     g => g.Key.ToString(),
-                    g => g.Select(r => new { r.id, r.name, r.assignmentNotificationSentAt }).ToList());
+                    g => g.Select(r => new { r.id, r.name, r.assignmentNotificationSentAt, r.tipsHiddenFromCleaner, r.tipsWithheldFromPayout }).ToList());
 
             return Ok(grouped);
         }

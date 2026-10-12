@@ -51,6 +51,13 @@ namespace DreamCleaningBackend.Services
             public int CleanerId { get; set; }
             public decimal? SalaryHourlyRate { get; set; }
             public decimal? SalaryBillableMinutes { get; set; }
+
+            /// <summary>
+            /// OrderCleaner.TipsWithheldFromPayout — the office decided this cleaner is not paid
+            /// the tip on this order. Their share is still CUT (so the other lines do not move)
+            /// and then dropped from what they are owed.
+            /// </summary>
+            public bool TipsWithheld { get; set; }
         }
 
         /// <summary>What one cleaner is owed for one order.</summary>
@@ -69,8 +76,17 @@ namespace DreamCleaningBackend.Services
             /// <summary>BillableMinutes / 60 × HourlyRate, rounded to cents.</summary>
             public decimal Salary { get; set; }
 
-            /// <summary>This cleaner's share of Order.Tips. Shares re-add to the order's tips exactly.</summary>
+            /// <summary>
+            /// This cleaner's share of Order.Tips, as PAID — 0 when the tip is withheld. With no
+            /// line withheld the shares re-add to the order's tips exactly.
+            /// </summary>
             public decimal Tips { get; set; }
+
+            /// <summary>True when the office withheld this cleaner's tip on this order.</summary>
+            public bool TipsWithheld { get; set; }
+
+            /// <summary>The share the cleaner WOULD have been paid — kept so the screens can say what was withheld.</summary>
+            public decimal WithheldTips { get; set; }
 
             /// <summary>Salary + Tips — what actually gets handed over.</summary>
             public decimal Payout => OrderPricingCalculator.Round2(Salary + Tips);
@@ -113,6 +129,12 @@ namespace DreamCleaningBackend.Services
 
             /// <summary>Tips belonging to the unassigned slots, in total.</summary>
             public decimal UnassignedTips { get; set; }
+
+            /// <summary>
+            /// Tip shares withheld from named cleaners, in total. Order.Tips minus this is what
+            /// is actually handed to the crew (assigned lines + unassigned slots).
+            /// </summary>
+            public decimal WithheldTips { get; set; }
         }
 
         /// <summary>
@@ -137,7 +159,9 @@ namespace DreamCleaningBackend.Services
                 totalDuration, splitCount, hasCleanerService);
 
             // Tips are shared by everyone who worked, so the shares are cut over the SPLIT count.
-            // Anything past the assigned lines belongs to the unassigned slots.
+            // Anything past the assigned lines belongs to the unassigned slots. A WITHHELD share is
+            // cut the same way and then simply not paid — it is never re-split onto the others,
+            // so withholding one cleaner's tip cannot change what anybody else is owed.
             var tipShares = SplitTips(tips, splitCount);
 
             var lines = new List<CleanerLine>(assignedCount);
@@ -156,7 +180,9 @@ namespace DreamCleaningBackend.Services
                     HourlyRate = rate,
                     RateOverridden = a.SalaryHourlyRate.HasValue,
                     Salary = OrderPricingCalculator.Round2(minutes / 60m * rate),
-                    Tips = tipShares[i]
+                    Tips = a.TipsWithheld ? 0m : tipShares[i],
+                    TipsWithheld = a.TipsWithheld,
+                    WithheldTips = a.TipsWithheld ? tipShares[i] : 0m
                 });
             }
 
@@ -172,6 +198,7 @@ namespace DreamCleaningBackend.Services
                 UnassignedCount = unassignedCount,
                 UnassignedSalaryEach = unassignedCount > 0 ? unassignedSalaryEach : 0m,
                 UnassignedTips = unassignedTips,
+                WithheldTips = OrderPricingCalculator.Round2(lines.Sum(l => l.WithheldTips)),
                 AutomaticBillableMinutes = automaticMinutes,
                 // The unassigned slots count toward the order's labour cost — somebody worked
                 // those hours. Dropping them would understate every under-assigned order.
@@ -260,7 +287,8 @@ namespace DreamCleaningBackend.Services
                     OrderCleanerId = oc.Id,
                     CleanerId = oc.CleanerId,
                     SalaryHourlyRate = oc.SalaryHourlyRate,
-                    SalaryBillableMinutes = oc.SalaryBillableMinutes
+                    SalaryBillableMinutes = oc.SalaryBillableMinutes,
+                    TipsWithheld = oc.TipsWithheldFromPayout
                 })
                 .ToList();
 

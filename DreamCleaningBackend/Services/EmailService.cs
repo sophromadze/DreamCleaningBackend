@@ -976,7 +976,9 @@ namespace DreamCleaningBackend.Services
                 fullAddress,
                 hasCleaningSupplies,
                 hasCleaningEssentials,
-                cleanerAdditionalInstructions);
+                cleanerAdditionalInstructions,
+                // The office hid the tip from this cleaner (order panel → Cleaners → Hide tips).
+                hideTips: assignment?.TipsHiddenFromCleaner == true);
 
             await SendEmailAsync(email, subject, body);
 
@@ -1010,7 +1012,8 @@ namespace DreamCleaningBackend.Services
             string fullAddress,
             bool hasCleaningSupplies,
             bool hasCleaningEssentials,
-            string? cleanerAdditionalInstructions)
+            string? cleanerAdditionalInstructions,
+            bool hideTips = false)
         {
             var culture = language switch
             {
@@ -1040,7 +1043,9 @@ namespace DreamCleaningBackend.Services
             string entryValue = string.IsNullOrWhiteSpace(order.EntryMethod) ? "—" : order.EntryMethod;
             var maidsCount = order.MaidsCount > 0 ? order.MaidsCount : 1;
             var perCleanerTips = Math.Round(order.Tips / maidsCount, 2);
-            string tipsValue = perCleanerTips > 0 ? $"${perCleanerTips:F2}" : "—";
+            // A hidden tip reads exactly like an order with no tip ("—"), so the mail does not
+            // tell the cleaner that a tip existed and was held back.
+            string tipsValue = perCleanerTips > 0 && !hideTips ? $"${perCleanerTips:F2}" : "—";
 
             var rows = new System.Text.StringBuilder();
             // Deep / Regular, not "Residential Cleaning" - the shared cleaner-facing rule, so the
@@ -1326,7 +1331,8 @@ namespace DreamCleaningBackend.Services
             if (extraItems.Count > 0)
                 lines.Add($"{labels["extraServices"]}: {string.Join(", ", extraItems)}");
 
-            if (perCleanerTips > 0)
+            // Omitted when the office hid the tip from this cleaner — the same as an order with no tip.
+            if (perCleanerTips > 0 && assignment?.TipsHiddenFromCleaner != true)
                 lines.Add($"{labels["tips"]}: ${perCleanerTips:F2}");
             if (!string.IsNullOrWhiteSpace(order.SpecialInstructions))
                 lines.Add($"{labels["specialInstruction"]}: {order.SpecialInstructions.Trim()}");

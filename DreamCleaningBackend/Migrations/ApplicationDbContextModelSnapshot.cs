@@ -17,7 +17,7 @@ namespace DreamCleaningBackend.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.16")
+                .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 64);
 
             MySqlModelBuilderExtensions.AutoIncrementColumns(modelBuilder);
@@ -5867,6 +5867,12 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<string>("TipsForCleaner")
                         .HasMaxLength(1000)
                         .HasColumnType("varchar(1000)");
+
+                    b.Property<bool>("TipsHiddenFromCleaner")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("TipsWithheldFromPayout")
+                        .HasColumnType("tinyint(1)");
 
                     b.HasKey("Id");
 

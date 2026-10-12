@@ -162,7 +162,17 @@ namespace DreamCleaningBackend.DTOs
         public bool RateDiffersFromDefault { get; set; }
 
         public decimal Salary { get; set; }
+
+        /// <summary>This person's tip share as PAID — 0 when the office withheld it.</summary>
         public decimal Tips { get; set; }
+
+        /// <summary>
+        /// The office withheld this cleaner's tip on this order (order panel → Cleaners →
+        /// Hide tips, without "Pay tips"). <see cref="Tips"/> is then 0 and
+        /// <see cref="WithheldTips"/> says what the share would have been.
+        /// </summary>
+        public bool TipsWithheld { get; set; }
+        public decimal WithheldTips { get; set; }
 
         /// <summary>Salary + tips: what actually gets handed to this person.</summary>
         public decimal Payout { get; set; }
@@ -242,6 +252,22 @@ namespace DreamCleaningBackend.DTOs
         public int TotalCount { get; set; }
         public int Page { get; set; }
         public int PageSize { get; set; }
+    }
+
+    /// <summary>
+    /// One cleaner's tip on one order, from the order panel's Cleaners tab (2026-10). The FULL
+    /// state is sent every time, never a toggle, so a double-click or a replay lands on the same
+    /// answer.
+    ///
+    /// - <see cref="HideFromCleaner"/>: the assignment email / SMS print no tip for this cleaner.
+    /// - <see cref="WithholdFromPayout"/>: Outgoing Payments does not pay this cleaner the tip.
+    ///   Only allowed while the tip is hidden — paying nothing while the mail still announces a
+    ///   tip would promise the cleaner money we decided not to hand over.
+    /// </summary>
+    public class UpdateCleanerTipsDto
+    {
+        public bool HideFromCleaner { get; set; }
+        public bool WithholdFromPayout { get; set; }
     }
 
     /// <summary>

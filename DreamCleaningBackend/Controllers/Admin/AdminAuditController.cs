@@ -44,7 +44,8 @@ namespace DreamCleaningBackend.Controllers
             {
                 "Order", AuditEntityTypes.OrderServicesUpdate, AuditEntityTypes.CleanerAssignment,
                 AuditEntityTypes.OrderCleanerHourlyRate, AuditEntityTypes.OrderCleanerCount,
-                AuditEntityTypes.CleanerPayrollOverride, AuditEntityTypes.OrderRefundAction,
+                AuditEntityTypes.CleanerPayrollOverride, AuditEntityTypes.CleanerTipsDecision,
+                AuditEntityTypes.OrderRefundAction,
                 AuditEntityTypes.OrderAdminNote, AuditEntityTypes.OrderTransferAction,
                 AuditEntityTypes.OrderEditRequest, AuditEntityTypes.OrderPaymentAction,
                 AuditEntityTypes.OrderAssignedAdmin, AuditEntityTypes.CustomerInvoiceAction,

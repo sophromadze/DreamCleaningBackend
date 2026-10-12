@@ -42,6 +42,11 @@ namespace DreamCleaningBackend.Services
         public const string OrderCleanerCount = "OrderCleanerCount";
         /// <summary>A payout marked paid or un-paid (named cleaner or unassigned slot). EntityId = order id.</summary>
         public const string CleanerPayout = "CleanerPayout";
+        /// <summary>
+        /// One cleaner's tip on one order hidden from their notifications and/or withheld from
+        /// their payout (order panel → Cleaners). EntityId = order id.
+        /// </summary>
+        public const string CleanerTipsDecision = "CleanerTipsDecision";
 
         // --- Orders ------------------------------------------------------------------------
         /// <summary>Refund issued or synced. EntityId = order id.</summary>
@@ -265,6 +270,7 @@ namespace DreamCleaningBackend.Services
                 [OrderCleanerHourlyRate] = "Payroll figures feed reported labour cost. Set the rate back by hand so the change is recorded.",
                 [OrderCleanerCount] = "Payroll figures feed reported labour cost. Set the cleaner count back from the Wages card so the change is recorded.",
                 [CleanerPayout] = "This records money handed to a cleaner. Use Undo payment on the Outgoing Payments page.",
+                [CleanerTipsDecision] = "This decides what a cleaner is paid. Change it from the order's Cleaners tab so the change is recorded.",
 
                 // notification + scheduling logs
                 ["NotificationLog"] = "Notification records track what was sent; reverting one would not recall it.",

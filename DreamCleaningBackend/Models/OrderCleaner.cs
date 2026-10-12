@@ -54,6 +54,26 @@ namespace DreamCleaningBackend.Models
         /// </summary>
         public int? AutoAssignedFromSeriesId { get; set; }
 
+        // ===== Tips withheld from this cleaner (2026-10) =====
+        //
+        // Set per cleaner per order from the order panel's Cleaners tab, when the office decides
+        // a cleaner did not earn the customer's tip (behaviour, damage). Both false by default.
+
+        /// <summary>
+        /// The cleaner is not TOLD about the tip: the assignment email / SMS (send, send-all and
+        /// resend all build through EmailService) prints no tip figure. The cleaner portal does not
+        /// show a cleaner any tip at all, so there is nothing to hide there.
+        /// </summary>
+        public bool TipsHiddenFromCleaner { get; set; }
+
+        /// <summary>
+        /// The cleaner is not PAID the tip: CleanerPayrollCalculator drops this line's tip share,
+        /// so Outgoing Payments owes salary only. Turned on together with
+        /// <see cref="TipsHiddenFromCleaner"/>; the office can turn it back off ("pay tips") while
+        /// the tip stays hidden from the cleaner's notifications.
+        /// </summary>
+        public bool TipsWithheldFromPayout { get; set; }
+
         // ===== Payroll (Outgoing Payments page, SuperAdmin) =====
         //
         // This row is the payout record for ONE cleaner on ONE order. Both overrides below are

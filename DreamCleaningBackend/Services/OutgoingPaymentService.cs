@@ -679,6 +679,8 @@ namespace DreamCleaningBackend.Services
                     RateDiffersFromDefault = line.HourlyRate != expectedRate,
                     Salary = line.Salary,
                     Tips = line.Tips,
+                    TipsWithheld = line.TipsWithheld,
+                    WithheldTips = line.WithheldTips,
                     Payout = line.Payout,
                     IsPaid = assignment.IsPaid,
                     PaidAmount = assignment.PaidAmount,
@@ -750,8 +752,10 @@ namespace DreamCleaningBackend.Services
 
             // Wages + the customer's tips, ALWAYS — including the unassigned slots. An order
             // nobody was assigned to still cost the company money, and reporting its payout as
-            // $0 in the list made it look like there was nothing to settle.
-            var totalPayout = OrderPricingCalculator.Round2(totalSalary + order.Tips);
+            // $0 in the list made it look like there was nothing to settle. Tips the office
+            // WITHHELD from a cleaner (order panel → Cleaners) are the one part left out: nobody
+            // is handed them.
+            var totalPayout = OrderPricingCalculator.Round2(totalSalary + order.Tips - payroll.WithheldTips);
 
             var row = new OutgoingPaymentOrderDto
             {

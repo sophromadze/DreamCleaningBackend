@@ -101,5 +101,14 @@ namespace DreamCleaningBackend.DTOs
         /// because tips are the customer's money passing through and are never part of the
         /// order's reported labour cost.</summary>
         public decimal Salary { get; set; }
+
+        /// <summary>This cleaner's tip share as it will be PAID — 0 when withheld.</summary>
+        public decimal Tips { get; set; }
+
+        /// <summary>The office withheld this cleaner's tip (Cleaners tab → Hide tips).</summary>
+        public bool TipsWithheld { get; set; }
+
+        /// <summary>What the withheld share would have been.</summary>
+        public decimal WithheldTips { get; set; }
     }
 }
