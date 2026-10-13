@@ -356,6 +356,12 @@ namespace DreamCleaningBackend.DTOs
     public class OrderListDto
     {
         public int Id { get; set; }
+        /// <summary>
+        /// Admin Orders list only: the order is a Deep cleaning (Helpers/ResidentialCleaningVariant.cs),
+        /// so a residential row reads "Deep" rather than "Regular" from the first frame. Always false
+        /// on other endpoints, which do not compute it.
+        /// </summary>
+        public bool IsDeepCleaning { get; set; }
         public int UserId { get; set; } 
         public string ContactEmail { get; set; }  
         public string ContactFirstName { get; set; }  

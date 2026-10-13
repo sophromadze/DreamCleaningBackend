@@ -68,6 +68,9 @@ namespace DreamCleaningBackend.Services
 
             var contractLabels = await ContractBilledOrders.LoadLabelsAsync(_context, orders);
 
+            // Deep vs Regular for every order in the list - one grouped query, never one per order.
+            var deepOrderIds = await ResidentialCleaningVariant.LoadDeepOrderIdsAsync(_context);
+
             // Orders with a Done request waiting for approval - one grouped query for the list.
             var pendingDoneOrderIds = new HashSet<int>(await _context.PendingOrderEdits
                 .Where(p => p.Status == "Pending" && p.Kind == PendingOrderEditKinds.Done)
@@ -81,6 +84,7 @@ namespace DreamCleaningBackend.Services
                 BilledByContractLabel = contractLabels.GetValueOrDefault(o.Id),
                 IsCommercial = o.IsCommercial,
                 HasPendingDoneRequest = pendingDoneOrderIds.Contains(o.Id),
+                IsDeepCleaning = deepOrderIds.Contains(o.Id),
                 UserId = o.UserId,
                 ContactEmail = o.ContactEmail,
                 ContactFirstName = o.ContactFirstName,
