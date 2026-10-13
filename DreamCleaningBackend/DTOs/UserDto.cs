@@ -23,5 +23,7 @@ namespace DreamCleaningBackend.DTOs
         /// <summary>True when this (Admin-role) user may save order edits without SuperAdmin approval.
         /// Rule: Helpers/OrderEditApprovalPolicy.</summary>
         public bool CanEditOrdersWithoutApproval { get; set; }
+        /// <summary>What the optional SMS consent boxes show for this account (SmsConsentRules.ShowsTicked).</summary>
+        public bool SmsConsentGiven { get; set; }
     }
 }

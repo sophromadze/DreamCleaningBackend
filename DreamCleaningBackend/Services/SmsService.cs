@@ -71,6 +71,12 @@ namespace DreamCleaningBackend.Services
                 return;
             }
 
+            if (await IsOptedOutCustomerPhoneAsync(toNumber))
+            {
+                _logger.LogInformation("Not sending SMS to {To}: the customer opted out of text messages", toNumber);
+                return;
+            }
+
             // SMS max 160 chars for single segment; RingCentral may concatenate. Truncate to avoid huge costs.
             var text = message?.Length > 1600 ? message[..1600] + "..." : (message ?? "");
 
@@ -146,6 +152,40 @@ namespace DreamCleaningBackend.Services
             {
                 // A lookup failure must not take the SMS pipeline down with it.
                 _logger.LogError(ex, "Blocked-user phone check failed for {Phone}; allowing send", toNumber);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// A CUSTOMER who opted out of SMS (User.CanReceiveMessages = false: an unticked box that was
+        /// shown ticked, the profile or the admin toggle - see Helpers/SmsConsentRules) receives no
+        /// SMS from us, booking messages included. Matched like the blocked check: the profile phone
+        /// and the contact phone on their orders. Staff and cleaner accounts are not customers, so
+        /// their texts (assignments, staff alerts) are never held back here. Fails open.
+        /// </summary>
+        private async Task<bool> IsOptedOutCustomerPhoneAsync(string toNumber)
+        {
+            var target = PhoneHelper.NormalizeToDigits(toNumber);
+            if (target == null) return false;
+            try
+            {
+                var optedOutPhones = await _context.Users
+                    .Where(u => !u.CanReceiveMessages && u.Role == Models.UserRole.Customer && !u.IsDeleted
+                        && u.Phone != null && u.Phone != "")
+                    .Select(u => u.Phone)
+                    .ToListAsync();
+                var optedOutOrderPhones = await _context.Orders
+                    .Where(o => !o.User.CanReceiveMessages && o.User.Role == Models.UserRole.Customer && !o.User.IsDeleted
+                        && o.ContactPhone != null && o.ContactPhone != "")
+                    .Select(o => o.ContactPhone)
+                    .Distinct()
+                    .ToListAsync();
+                return optedOutPhones.Concat(optedOutOrderPhones)
+                    .Any(p => PhoneHelper.NormalizeToDigits(p) == target);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "SMS opt-out check failed for {Phone}; allowing send", toNumber);
                 return false;
             }
         }

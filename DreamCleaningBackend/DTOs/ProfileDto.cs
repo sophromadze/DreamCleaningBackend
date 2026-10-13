@@ -23,6 +23,8 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>When true, user can receive SMS/messages from the company.</summary>
         public bool CanReceiveMessages { get; set; }
+        /// <summary>What the optional SMS consent boxes show: consent recorded and still on (SmsConsentRules.ShowsTicked).</summary>
+        public bool SmsConsentGiven { get; set; }
         /// <summary>When true, user has a password set (Local or set via reset). When false, show "Set password" instead of "Change password".</summary>
         public bool HasPassword { get; set; }
 

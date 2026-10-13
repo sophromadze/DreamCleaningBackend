@@ -7,6 +7,16 @@ namespace DreamCleaningBackend.DTOs
         [Required]
         public int ServiceTypeId { get; set; }
 
+        /// <summary>
+        /// The booking form's OPTIONAL SMS consent box (2026-10). Null: the client sent nothing,
+        /// nothing changes. Applied through Helpers/SmsConsentRules; never blocks the booking.
+        /// </summary>
+        public bool? SmsConsent { get; set; }
+
+        /// <summary>Whether the page SHOWED the SMS box ticked (the saved setting it drew from). An
+        /// unticked submit is an opt-out only when this and the server both say it was shown ticked.</summary>
+        public bool? SmsConsentShown { get; set; }
+
         // Admin-chosen display label for the custom ("Pre-Arranged") service type (e.g. "Deep").
         // Stored without the "Cleaning" suffix; ignored unless the selected service type IsCustom.
         [StringLength(100)]

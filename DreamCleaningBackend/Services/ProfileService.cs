@@ -1,4 +1,5 @@
 using DreamCleaningBackend.DTOs;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Repositories.Interfaces;
 using DreamCleaningBackend.Services.Interfaces;
@@ -48,12 +49,12 @@ namespace DreamCleaningBackend.Services
             {
                 user.CanReceiveCommunications = updateProfileDto.CanReceiveCommunications.Value;
                 user.CanReceiveEmails = updateProfileDto.CanReceiveCommunications.Value;
-                user.CanReceiveMessages = updateProfileDto.CanReceiveCommunications.Value;
+                SmsConsentRules.RecordChange(user, updateProfileDto.CanReceiveCommunications.Value, SmsConsentRules.SourceProfile, DateTime.UtcNow);
             }
             if (updateProfileDto.CanReceiveEmails.HasValue)
                 user.CanReceiveEmails = updateProfileDto.CanReceiveEmails.Value;
             if (updateProfileDto.CanReceiveMessages.HasValue)
-                user.CanReceiveMessages = updateProfileDto.CanReceiveMessages.Value;
+                SmsConsentRules.RecordChange(user, updateProfileDto.CanReceiveMessages.Value, SmsConsentRules.SourceProfile, DateTime.UtcNow);
             user.UpdatedAt = DateTime.UtcNow;
 
             await _userRepository.UpdateAsync(user);
@@ -203,6 +204,7 @@ namespace DreamCleaningBackend.Services
                 CanReceiveCommunications = user.CanReceiveCommunications,
                 CanReceiveEmails = user.CanReceiveEmails,
                 CanReceiveMessages = user.CanReceiveMessages,
+                SmsConsentGiven = SmsConsentRules.ShowsTicked(user),
                 HasPassword = user.PasswordHash != null,
                 LoyaltyDiscountPercentage = user.LoyaltyDiscountPercentage,
             };

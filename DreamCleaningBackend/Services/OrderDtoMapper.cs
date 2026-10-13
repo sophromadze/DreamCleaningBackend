@@ -85,6 +85,7 @@ namespace DreamCleaningBackend.Services
                 // Account-email status of the owner, resolved through NoEmailHelper. Both stay
                 // neutral (false / null) when the User isn't Included - admin fetches Include it.
                 CustomerHasNoAccountEmail = NoEmailHelper.HasNoRealEmail(order.User),
+                SmsConsentGiven = order.User != null && SmsConsentRules.ShowsTicked(order.User),
                 CustomerAccountEmail = NoEmailHelper.ResolveRealEmail(order.User),
                 NotificationEmailTarget = NoEmailHelper.ResolveOrderNotificationEmail(order.ContactEmail, order.User),
                 ServiceAddress = order.ServiceAddress,

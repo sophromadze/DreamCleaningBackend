@@ -94,7 +94,8 @@ namespace DreamCleaningBackend.Controllers
                     LeadSource.ContactForm,
                     firstName, lastName,
                     contactForm.Email, contactForm.Phone,
-                    message: contactForm.Message);
+                    message: contactForm.Message,
+                    smsConsent: contactForm.SmsConsent);
 
                 return Ok(new { message = "Your message has been sent successfully!" });
             }
@@ -232,7 +233,8 @@ namespace DreamCleaningBackend.Controllers
                     quoteRequest.Email, quoteRequest.Phone,
                     serviceAddress: quoteRequest.HomeAddress,
                     cleaningType: quoteRequest.CleaningType,
-                    message: quoteRequest.Message);
+                    message: quoteRequest.Message,
+                    smsConsent: quoteRequest.SmsConsent);
 
                 return Ok(new { message = "Your quote request has been received! We'll call you back soon." });
             }

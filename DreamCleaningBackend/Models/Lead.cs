@@ -49,6 +49,16 @@ namespace DreamCleaningBackend.Models
         [StringLength(2000)]
         public string? Message { get; set; }
 
+        /// <summary>
+        /// The optional SMS consent box on the contact / free-quote form (2026-10). False when it was
+        /// left unticked (or the lead came from somewhere without one); a later unticked inquiry
+        /// never clears a consent already given.
+        /// </summary>
+        public bool SmsConsent { get; set; }
+
+        /// <summary>When that consent was given.</summary>
+        public DateTime? SmsConsentAt { get; set; }
+
         /// <summary>Pipeline stage. One of LeadStage.* — see <see cref="LeadStage"/>.</summary>
         [Required]
         [StringLength(20)]

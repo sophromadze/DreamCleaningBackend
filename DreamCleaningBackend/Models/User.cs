@@ -261,6 +261,17 @@ namespace DreamCleaningBackend.Models
         /// <summary>When true, user can receive SMS/messages (e.g. RingCentral) from the company.</summary>
         public bool CanReceiveMessages { get; set; } = true;
 
+        /// <summary>
+        /// When <see cref="CanReceiveMessages"/> last changed through a consent path (an optional SMS
+        /// checkbox, the profile or the admin toggle). Null: never recorded (accounts from before
+        /// 2026-10, and new accounts until the customer answers). See Helpers/SmsConsentRules.
+        /// </summary>
+        public DateTime? SmsConsentAt { get; set; }
+
+        /// <summary>Where that last change came from (SmsConsentRules.Source*).</summary>
+        [StringLength(40)]
+        public string? SmsConsentSource { get; set; }
+
         /// <summary>Hex color chosen by the admin for the shift calendar (e.g. "#4f46e5").</summary>
         [StringLength(10)]
         public string? ShiftColor { get; set; }

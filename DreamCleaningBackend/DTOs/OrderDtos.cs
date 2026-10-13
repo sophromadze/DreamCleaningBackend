@@ -67,6 +67,8 @@ namespace DreamCleaningBackend.DTOs
         /// send as a bug, so the panel warns off this flag rather than off ContactEmail.
         /// False when the User navigation wasn't Included: unknown is not "has no email".</summary>
         public bool CustomerHasNoAccountEmail { get; set; }
+        /// <summary>What the payment page's optional SMS box shows for the order's owner (SmsConsentRules.ShowsTicked).</summary>
+        public bool SmsConsentGiven { get; set; }
 
         /// <summary>The owner's real account email, or null when the account has none / the User
         /// wasn't loaded. Shown by the admin panel only when it DIFFERS from ContactEmail.</summary>

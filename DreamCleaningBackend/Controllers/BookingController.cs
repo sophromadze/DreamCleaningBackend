@@ -472,6 +472,12 @@ namespace DreamCleaningBackend.Controllers
                 if (user == null)
                     return Unauthorized();
 
+                // The optional SMS box (signed in: the form showed the saved setting).
+                if (SmsConsentRules.ApplyCheckbox(user, dto.SmsConsent,
+                        dto.SmsConsentShown == true && SmsConsentRules.ShowsTicked(user),
+                        SmsConsentRules.SourceBooking, DateTime.UtcNow))
+                    await _context.SaveChangesAsync();
+
                 // Get service type to check base price
                 var serviceType = await _context.ServiceTypes
                     .Include(st => st.Services)
@@ -1158,6 +1164,13 @@ namespace DreamCleaningBackend.Controllers
                 if (user == null)
                     return Unauthorized();
 
+                // The optional SMS box. A guest checkout never saw it ticked, so it can only ADD
+                // consent; a signed-in visitor saw their saved setting and may untick it.
+                if (SmsConsentRules.ApplyCheckbox(user, dto.SmsConsent,
+                        authenticatedCallerId != 0 && dto.SmsConsentShown == true && SmsConsentRules.ShowsTicked(user),
+                        SmsConsentRules.SourceBooking, DateTime.UtcNow))
+                    await _context.SaveChangesAsync();
+
                 // Get service type to check base price
                 var serviceType = await _context.ServiceTypes
                     .Include(st => st.Services)
@@ -1554,8 +1567,17 @@ namespace DreamCleaningBackend.Controllers
                 });
             }
 
-            if (dto == null || !dto.SmsConsent || !dto.CancellationConsent || !dto.TermsConsent)
+            // SMS consent is OPTIONAL (2026-10, RingCentral 10DLC): it may never be a condition of
+            // booking or paying, so only the cancellation-fee and terms consents are required.
+            if (dto == null || !dto.CancellationConsent || !dto.TermsConsent)
                 return BadRequest(new { message = PaymentConsentPolicy.ConsentRequiredMessage });
+
+            // The optional SMS box, as the page showed it for the order's owner (OrderDto.SmsConsentGiven).
+            var owner = await _context.Users.FindAsync(order.UserId);
+            if (owner != null)
+                SmsConsentRules.ApplyCheckbox(owner, dto.SmsConsent,
+                    dto.SmsConsentShown == true && SmsConsentRules.ShowsTicked(owner),
+                    SmsConsentRules.SourcePaymentPage, DateTime.UtcNow);
 
             order.PaymentConsentAcceptedAt = DateTime.UtcNow;
             order.PaymentConsentIpAddress = GetClientIpAddress();

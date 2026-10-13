@@ -265,8 +265,9 @@ namespace DreamCleaningBackend.Services.Billing
             {
                 if (!_features.SavedCardsEnabled)
                     throw new BillingRuleException("Saved-card payments are not available yet.");
-                if (!dto.SmsConsent || !dto.CancellationFeeConsent || !dto.TermsOfServiceConsent)
-                    throw new BillingRuleException("Please tick all three agreements — they apply to every order our office books for you.",
+                // SMS consent is never a condition (2026-10, 10DLC) - only the two below are.
+                if (!dto.CancellationFeeConsent || !dto.TermsOfServiceConsent)
+                    throw new BillingRuleException("Please tick both agreements — they apply to every order our office books for you.",
                         "consents_required");
             }
             else if (!_features.AutoPayEnabled)
@@ -328,7 +329,8 @@ namespace DreamCleaningBackend.Services.Billing
             var authorization = NewAuthorization(userId, scope, seriesId, clientId, allowBackup, text, ip, userAgent);
             if (scope == PaymentAuthorizationScope.OfficeBookedOrders)
             {
-                authorization.SmsConsentAccepted = true;
+                // SmsConsentAccepted stays false: the authorization no longer carries SMS consent
+                // (the column is kept for rows accepted before 2026-10).
                 authorization.CancellationFeeAccepted = true;
                 authorization.TermsOfServiceAccepted = true;
             }

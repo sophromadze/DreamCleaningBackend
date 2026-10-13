@@ -5161,6 +5161,12 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("varchar(500)");
 
+                    b.Property<bool>("SmsConsent")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("SmsConsentAt")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(30)
@@ -8197,6 +8203,13 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<string>("ShiftColor")
                         .HasMaxLength(10)
                         .HasColumnType("varchar(10)");
+
+                    b.Property<DateTime?>("SmsConsentAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("SmsConsentSource")
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
 
                     b.Property<string>("StripeCustomerId")
                         .HasMaxLength(100)

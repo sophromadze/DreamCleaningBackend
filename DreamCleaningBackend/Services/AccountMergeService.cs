@@ -182,6 +182,8 @@ namespace DreamCleaningBackend.Services
                 newAccount.CanReceiveCommunications = oldAccount.CanReceiveCommunications;
                 newAccount.CanReceiveEmails = oldAccount.CanReceiveEmails;
                 newAccount.CanReceiveMessages = oldAccount.CanReceiveMessages;
+                newAccount.SmsConsentAt = oldAccount.SmsConsentAt;
+                newAccount.SmsConsentSource = oldAccount.SmsConsentSource;
 
                 // 6c. Transfer password for local login — so user can sign in with email/password after merge
                 if (!string.IsNullOrEmpty(oldAccount.PasswordHash) && !string.IsNullOrEmpty(oldAccount.PasswordSalt))

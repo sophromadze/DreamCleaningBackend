@@ -28,6 +28,7 @@ namespace DreamCleaningBackend.Services.Interfaces
             string? serviceAddress = null,
             string? cleaningType = null,
             string? message = null,
-            string? leadType = null);
+            string? leadType = null,
+            bool? smsConsent = null);
     }
 }

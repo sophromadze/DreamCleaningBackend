@@ -1133,7 +1133,7 @@ namespace DreamCleaningBackend.Controllers
             targetUser.CanReceiveCommunications = dto.CanReceiveCommunications;
             // The dto carries the pre-edit value; a freshly emailed account should start receiving mail.
             targetUser.CanReceiveEmails = becameEmailUser || dto.CanReceiveEmails;
-            targetUser.CanReceiveMessages = dto.CanReceiveMessages;
+            SmsConsentRules.RecordChange(targetUser, dto.CanReceiveMessages, SmsConsentRules.SourceAdmin, DateTime.UtcNow);
             targetUser.UpdatedAt = DateTime.UtcNow;
 
             if (roleChanged)
@@ -1320,12 +1320,12 @@ namespace DreamCleaningBackend.Controllers
             if (dto.CanReceiveEmails.HasValue)
                 targetUser.CanReceiveEmails = dto.CanReceiveEmails.Value;
             if (dto.CanReceiveMessages.HasValue)
-                targetUser.CanReceiveMessages = dto.CanReceiveMessages.Value;
+                SmsConsentRules.RecordChange(targetUser, dto.CanReceiveMessages.Value, SmsConsentRules.SourceAdmin, DateTime.UtcNow);
             if (!dto.CanReceiveEmails.HasValue && !dto.CanReceiveMessages.HasValue)
             {
                 targetUser.CanReceiveCommunications = dto.CanReceiveCommunications;
                 targetUser.CanReceiveEmails = dto.CanReceiveCommunications;
-                targetUser.CanReceiveMessages = dto.CanReceiveCommunications;
+                SmsConsentRules.RecordChange(targetUser, dto.CanReceiveCommunications, SmsConsentRules.SourceAdmin, DateTime.UtcNow);
             }
             targetUser.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();

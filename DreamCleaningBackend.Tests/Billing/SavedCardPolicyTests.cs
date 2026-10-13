@@ -160,10 +160,12 @@ public class SavedCardPolicyTests
     }
 
     [Fact]
-    public void OfficeTerms_CarryTheThreeBookingConsents_VerbatimFromTheBookingForm()
+    public void OfficeTerms_CarryTheRequiredBookingConsents_VerbatimFromTheBookingForm_AndNoSmsConsent()
     {
         // The office scope stands in for the booking form an office-booked customer never saw, so
-        // its consents must read EXACTLY as the booking form's do (consent-texts.ts).
+        // its consents must read EXACTLY as the booking form's do - as the labels render on BOTH
+        // pages that show them (booking, and the payment page of an office-created order).
+        // SMS consent is not among them (2026-10, 10DLC): it is never a condition of anything.
         var ts = System.IO.File.ReadAllText(RepoFile("..", "DreamCleaningNG", "src", "app", "shared", "booking", "consent-texts.ts"))
             .Replace("\r\n", "\n");
         string Concat(string name)
@@ -174,13 +176,33 @@ public class SavedCardPolicyTests
             return string.Concat(System.Text.RegularExpressions.Regex.Matches(body, "'([^']*)'|\"([^\"]*)\"")
                 .Select(m => m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value));
         }
+        string Rendered(string html, string startMarker)
+        {
+            var start = html.IndexOf(startMarker, StringComparison.Ordinal);
+            Assert.True(start >= 0, $"label starting {startMarker} not found");
+            var label = html[start..html.IndexOf("</label>", start, StringComparison.Ordinal)]
+                .Replace("{{ termsConsentLead }}", Concat("TERMS_CONSENT_LEAD"));
+            label = System.Text.RegularExpressions.Regex.Replace(label, @"<span class=""required"">\*</span>", "");
+            label = System.Text.RegularExpressions.Regex.Replace(label, "<[^>]+>", "").Replace("&amp;", "&");
+            return System.Text.RegularExpressions.Regex.Replace(label, @"\s+", " ").Trim();
+        }
 
         Assert.Equal(AutoPayTerms.CancellationConsentText, Concat("CANCELLATION_CONSENT_TEXT"));
-        Assert.StartsWith(Concat("SMS_CONSENT_LEAD").TrimEnd(), AutoPayTerms.SmsConsentText);
-        Assert.StartsWith(Concat("TERMS_CONSENT_LEAD").TrimEnd(), AutoPayTerms.TermsConsentText);
+        foreach (var page in new[]
+                 {
+                     RepoFile("..", "DreamCleaningNG", "src", "app", "booking", "booking.component.html"),
+                     RepoFile("..", "DreamCleaningNG", "src", "app", "auth", "profile", "order-payment", "order-payment.component.html")
+                 })
+        {
+            Assert.Equal(AutoPayTerms.TermsConsentText, Rendered(System.IO.File.ReadAllText(page), "{{ termsConsentLead }}"));
+        }
 
         var office = AutoPayTerms.Render(PaymentAuthorizationScope.OfficeBookedOrders, new AutoPayTermsContext());
-        Assert.Contains(AutoPayTerms.CancellationConsentText, office);
+        Assert.Contains("• " + AutoPayTerms.CancellationConsentText, office);
+        Assert.Contains("• " + AutoPayTerms.TermsConsentText, office);
+        Assert.Equal(2, office.Split('\n').Count(l => l.StartsWith("• ")));
+        Assert.DoesNotContain("SMS", office, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("text message", office, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Nothing is charged automatically under this authorization", office);
     }
 

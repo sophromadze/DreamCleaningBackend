@@ -36,12 +36,10 @@ namespace DreamCleaningBackend.Helpers.Billing
     /// </summary>
     public static class AutoPayTerms
     {
-        public const string Version = "2026-09.1";
-
-        public const string SmsConsentText =
-            "I consent to receive Customer care text messages from Dream Cleaning. Reply STOP to opt-out; " +
-            "Reply HELP for support; Message and data rates apply; Messaging frequency may vary. " +
-            "Visit our Privacy Policy and Terms and Conditions for more information.";
+        // 2026-10.1: SMS consent is no longer part of any authorization (10DLC: never a
+        // condition of anything - it is the optional box on the booking form only), and the terms
+        // consent reads exactly as the booking form's label.
+        public const string Version = "2026-10.1";
 
         public const string CancellationConsentText =
             "I understand that I will be charged a $70 cancellation fee if I cancel or reschedule my " +
@@ -52,7 +50,7 @@ namespace DreamCleaningBackend.Helpers.Billing
             "30-60 minute window of the scheduled cleaning time.";
 
         public const string TermsConsentText =
-            "I have read and agree to Dream Cleaning's Privacy Policy and Terms and Conditions.";
+            "I have read and agree to Dream Cleaning's Privacy Policy and Terms of Service.";
 
         private const string CardStorage =
             "Your cards are stored by our payment processor, Stripe. Dream Cleaning NYC never stores your " +
@@ -133,7 +131,6 @@ namespace DreamCleaningBackend.Helpers.Billing
                     sb.AppendLine();
                     sb.AppendLine("Because you will not see our booking form for these orders, you also agree, for every " +
                                   "order booked for you by our office:");
-                    sb.AppendLine("• " + SmsConsentText);
                     sb.AppendLine("• " + CancellationConsentText);
                     sb.AppendLine("• " + TermsConsentText);
                     break;

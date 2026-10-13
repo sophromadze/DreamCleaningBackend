@@ -25,5 +25,8 @@ namespace DreamCleaningBackend.DTOs
 
         [Required(ErrorMessage = "Message is required")]
         public string Message { get; set; }
+
+        /// <summary>Optional SMS consent box (2026-10) - stored on the CRM lead, never required.</summary>
+        public bool SmsConsent { get; set; }
     }
 }

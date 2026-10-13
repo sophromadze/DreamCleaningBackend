@@ -26,7 +26,8 @@ namespace DreamCleaningBackend.Services
             string? serviceAddress = null,
             string? cleaningType = null,
             string? message = null,
-            string? leadType = null)
+            string? leadType = null,
+            bool? smsConsent = null)
         {
             try
             {
@@ -58,6 +59,12 @@ namespace DreamCleaningBackend.Services
                         existing.ServiceAddress = serviceAddress.Trim();
                     if (string.IsNullOrWhiteSpace(existing.CleaningType) && !string.IsNullOrWhiteSpace(cleaningType))
                         existing.CleaningType = cleaningType.Trim();
+                    // A ticked SMS box records consent; an unticked one never clears an earlier one.
+                    if (smsConsent == true && !existing.SmsConsent)
+                    {
+                        existing.SmsConsent = true;
+                        existing.SmsConsentAt = DateTime.UtcNow;
+                    }
 
                     _context.LeadActivities.Add(new LeadActivity
                     {
@@ -82,6 +89,8 @@ namespace DreamCleaningBackend.Services
                     CleaningType = string.IsNullOrWhiteSpace(cleaningType) ? null : cleaningType.Trim(),
                     Message = string.IsNullOrWhiteSpace(message) ? null : message.Trim(),
                     Type = LeadType.IsValid(leadType) ? leadType! : LeadType.Residential,
+                    SmsConsent = smsConsent == true,
+                    SmsConsentAt = smsConsent == true ? DateTime.UtcNow : null,
                     Stage = LeadStage.New,
                     Source = source,
                     CreatedAt = DateTime.UtcNow,

@@ -27,6 +27,6 @@ namespace DreamCleaningBackend.Helpers
 
         /// <summary>Message shown when the gate rejects a payment attempt.</summary>
         public const string ConsentRequiredMessage =
-            "Please review and accept the SMS, cancellation-fee and terms consents before paying.";
+            "Please review and accept the cancellation-fee and terms consents before paying.";
     }
 }

@@ -1079,7 +1079,8 @@ namespace DreamCleaningBackend.Services
                 HasPassword = user.PasswordHash != null,
                 IsEmailVerified = user.IsEmailVerified,
                 ViewablePages = AdminViewablePages.Parse(user.ViewablePages),
-                CanEditOrdersWithoutApproval = user.CanEditOrdersWithoutApproval
+                CanEditOrdersWithoutApproval = user.CanEditOrdersWithoutApproval,
+                SmsConsentGiven = SmsConsentRules.ShowsTicked(user)
             };
         }
 
@@ -1665,7 +1666,8 @@ namespace DreamCleaningBackend.Services
                 HasPassword = user.PasswordHash != null,
                 IsEmailVerified = user.IsEmailVerified,
                 ViewablePages = AdminViewablePages.Parse(user.ViewablePages),
-                CanEditOrdersWithoutApproval = user.CanEditOrdersWithoutApproval
+                CanEditOrdersWithoutApproval = user.CanEditOrdersWithoutApproval,
+                SmsConsentGiven = SmsConsentRules.ShowsTicked(user)
             };
         }
 
