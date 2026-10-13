@@ -89,6 +89,20 @@ public class SmsConsentWordingTests
     }
 
     [Fact]
+    public void TheTermsLine_NamesTheRegisteredBrand_OnEverySurface()
+    {
+        Assert.Equal("I have read and agree to Dream Cleaning NYC's Privacy Policy and Terms & Conditions.", AutoPayTerms.TermsConsentText);
+        // The office AutoPay dialog's own checkbox (booking and payment page: BookingAndPaymentPage_*).
+        var dialog = Read("auth", "profile", "billing", "billing-tab.component.html");
+        var start = dialog.IndexOf("terms()!.termsOfServiceConsent", StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        var span = dialog.IndexOf("<span>", start, StringComparison.Ordinal);
+        var text = dialog[(span + 6)..dialog.IndexOf("</span></label>", span, StringComparison.Ordinal)];
+        text = Regex.Replace(text, "<[^>]+>", "").Replace("&amp;", "&");
+        Assert.Equal(AutoPayTerms.TermsConsentText, Regex.Replace(text, @"\s+", " ").Trim());
+    }
+
+    [Fact]
     public void NoSmsLabel_NamesAPhoneNumber()
     {
         foreach (var (page, marker) in new[]

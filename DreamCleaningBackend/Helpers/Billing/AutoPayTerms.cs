@@ -39,7 +39,8 @@ namespace DreamCleaningBackend.Helpers.Billing
         // 2026-10.2: SMS consent is not part of any authorization (10DLC: never a condition of
         // anything - it is the optional box on the forms only), and the terms consent names the
         // two pages by their titles, exactly as the booking form's label does.
-        public const string Version = "2026-10.2";
+        // 2026-10.3: the terms consent names the 10DLC-registered Dream Cleaning NYC.
+        public const string Version = "2026-10.3";
 
         public const string CancellationConsentText =
             "I understand that I will be charged a $70 cancellation fee if I cancel or reschedule my " +
@@ -50,7 +51,7 @@ namespace DreamCleaningBackend.Helpers.Billing
             "30-60 minute window of the scheduled cleaning time.";
 
         public const string TermsConsentText =
-            "I have read and agree to Dream Cleaning's Privacy Policy and Terms & Conditions.";
+            "I have read and agree to Dream Cleaning NYC's Privacy Policy and Terms & Conditions.";
 
         private const string CardStorage =
             "Your cards are stored by our payment processor, Stripe. Dream Cleaning NYC never stores your " +
