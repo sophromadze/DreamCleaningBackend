@@ -91,11 +91,16 @@ builder.Services.AddSignalR()
     });
 
 // Database Configuration
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
+// The catalogue version the frontend's Node server polls (api/booking/catalogue-version): bumped
+// after any SaveChanges that touches the booking catalogue. See Helpers/CatalogueVersion.cs.
+builder.Services.AddSingleton<DreamCleaningBackend.Helpers.CatalogueVersion>();
+builder.Services.AddSingleton<DreamCleaningBackend.Helpers.CatalogueChangeInterceptor>();
+builder.Services.AddDbContext<ApplicationDbContext>((serviceProvider, options) =>
 {
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
     var serverVersion = new MariaDbServerVersion(new Version(10, 9, 8));
     options.UseMySql(connectionString, serverVersion);
+    options.AddInterceptors(serviceProvider.GetRequiredService<DreamCleaningBackend.Helpers.CatalogueChangeInterceptor>());
 });
 
 // Check if we're using cookie authentication

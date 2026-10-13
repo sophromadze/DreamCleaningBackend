@@ -231,6 +231,19 @@ namespace DreamCleaningBackend.Controllers
             return Ok(result);
         }
 
+        /// <summary>
+        /// The booking catalogue's change stamp (Helpers/CatalogueVersion.cs), polled every 2 seconds
+        /// by the frontend's Node server to refresh its in-memory catalogue, plans, blocked slots and
+        /// public offers the moment an admin changes them. In memory only - never a database query.
+        /// </summary>
+        [HttpGet("catalogue-version")]
+        [AllowAnonymous]
+        public ActionResult GetCatalogueVersion([FromServices] CatalogueVersion version)
+        {
+            Response.Headers.CacheControl = "no-store";
+            return Ok(new { version = version.Current });
+        }
+
         [HttpGet("subscriptions")]
         public async Task<ActionResult<List<SubscriptionDto>>> GetSubscriptions()
         {
