@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Data;
+using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
@@ -646,9 +647,8 @@ namespace DreamCleaningBackend.Controllers
         {
             if (_useCookieAuth)
             {
-                // Clear cookies
-                Response.Cookies.Delete("access_token");
-                Response.Cookies.Delete("refresh_token");
+                // Clear cookies - with the attributes they were set with (Path, Secure, SameSite).
+                AuthCookies.Delete(Response, _configuration);
             }
             
             return Ok(new { message = "Logged out successfully" });
@@ -1032,27 +1032,8 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
-        private void SetAuthCookies(string token, string refreshToken)
-        {
-            var cookieOptions = new CookieOptions
-            {
-                HttpOnly = true,
-                Secure = !_configuration.GetValue<bool>("Development:UseHttp", false), // Use HTTPS in production
-                SameSite = SameSiteMode.Strict,
-                Expires = DateTime.UtcNow.AddDays(30) // 30 days, matching the access token and refresh token
-            };
-
-            Response.Cookies.Append("access_token", token, cookieOptions);
-
-            var refreshCookieOptions = new CookieOptions
-            {
-                HttpOnly = true,
-                Secure = !_configuration.GetValue<bool>("Development:UseHttp", false),
-                SameSite = SameSiteMode.Strict,
-                Expires = DateTime.UtcNow.AddDays(30)
-            };
-
-            Response.Cookies.Append("refresh_token", refreshToken, refreshCookieOptions);
-        }
+        // HttpOnly, Secure (except Development:UseHttp), SameSite=Strict, 30 days - see Helpers/AuthCookies.
+        private void SetAuthCookies(string token, string refreshToken) =>
+            AuthCookies.Append(Response, _configuration, token, refreshToken);
     }
 }

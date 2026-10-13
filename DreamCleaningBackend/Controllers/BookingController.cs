@@ -100,24 +100,10 @@ namespace DreamCleaningBackend.Controllers
             _scopeFactory = scopeFactory;
         }
 
-        // Mirrors AuthController.SetAuthCookies — used by the guest auto-registration path in
-        // cookie-auth mode so a freshly created guest gets the same httpOnly session cookies a
-        // normal login would. Kept in sync with AuthController (HttpOnly, Secure off only when
-        // Development:UseHttp, SameSite=Strict, 30-day expiry to match the refresh token).
-        private void SetGuestAuthCookies(string token, string refreshToken)
-        {
-            var secure = !_configuration.GetValue<bool>("Development:UseHttp", false);
-            var cookieOptions = new CookieOptions
-            {
-                HttpOnly = true,
-                Secure = secure,
-                SameSite = SameSiteMode.Strict,
-                Expires = DateTime.UtcNow.AddDays(30)
-            };
-
-            Response.Cookies.Append("access_token", token, cookieOptions);
-            Response.Cookies.Append("refresh_token", refreshToken, cookieOptions);
-        }
+        // The guest auto-registration path in cookie-auth mode: a freshly created guest gets the
+        // same httpOnly session cookies a normal login would - one definition, Helpers/AuthCookies.
+        private void SetGuestAuthCookies(string token, string refreshToken) =>
+            AuthCookies.Append(Response, _configuration, token, refreshToken);
 
         // Order creation (incl. loyalty stacking) lives in BookingCreationService —
         // see _bookingCreationService.CreateOrderAsync.
