@@ -873,8 +873,10 @@ namespace DreamCleaningBackend.Controllers
             // the source would leave the dependent service billing from zero — a large, silent
             // overcharge. Check up front so we can name the dependency instead of surfacing a
             // raw DbUpdateException. Its own thresholds/tiers cascade and need no check.
+            // A rule the service holds on ITSELF (Levels: "when Levels is 1, 1 is included") is
+            // not a dependency of anything else, so it does not block - it is removed below.
             var dependentServiceNames = await _context.ServiceThresholds
-                .Where(t => t.SourceServiceId == id)
+                .Where(t => t.SourceServiceId == id && t.ServiceId != id)
                 .Select(t => t.Service.Name)
                 .Distinct()
                 .ToListAsync();
@@ -889,8 +891,21 @@ namespace DreamCleaningBackend.Controllers
                 });
             }
 
+            // The ServiceId cascade would also remove the self-referencing rows (MariaDB allows it
+            // despite the Restrict SourceServiceId FK on the same row), but they are deleted
+            // explicitly so each one gets its own audit entry, like a rule removed by hand.
+            var selfRules = await _context.ServiceThresholds
+                .Where(t => t.ServiceId == id && t.SourceServiceId == id)
+                .ToListAsync();
+
+            // Audit first: the audit service saves the context, so anything queued for removal
+            // before it would be committed on its own, ahead of the service delete.
+            foreach (var rule in selfRules)
+                await _auditService.LogDeleteAsync(rule);
             await _auditService.LogDeleteAsync(service);
 
+            // One SaveChanges = one transaction: the rules and the service go together or not at all.
+            _context.ServiceThresholds.RemoveRange(selfRules);
             _context.Services.Remove(service);
 
             try
