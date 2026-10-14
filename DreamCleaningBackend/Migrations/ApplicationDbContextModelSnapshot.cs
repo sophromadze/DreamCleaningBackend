@@ -182,6 +182,45 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("AdminOrderNotes");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.AdminPercentBonusRule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Basis")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("ExistingCustomerPercent")
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<decimal>("NewCustomerPercent")
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<DateTime>("StartDate")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("UserId", "StartDate")
+                        .HasDatabaseName("IX_AdminPercentBonusRules_UserId_StartDate");
+
+                    b.ToTable("AdminPercentBonusRules");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.AdminSalaryPayee", b =>
                 {
                     b.Property<int>("Id")
@@ -4361,6 +4400,10 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<decimal>("Amount")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<string>("BonusLabel")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
                     b.Property<int>("CategoryId")
                         .HasColumnType("int")
                         .HasColumnName("Category");
@@ -8504,6 +8547,24 @@ namespace DreamCleaningBackend.Migrations
                         .IsRequired();
 
                     b.Navigation("Order");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.AdminPercentBonusRule", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.User", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DreamCleaningBackend.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("CreatedByUser");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.AdminSalaryPayee", b =>

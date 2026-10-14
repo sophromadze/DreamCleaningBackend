@@ -110,6 +110,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<OrderAdminAssignmentHistory> OrderAdminAssignmentHistories { get; set; }
         public DbSet<AdminBonusSetting> AdminBonusSettings { get; set; }
         public DbSet<AdminBonusRateOverride> AdminBonusRateOverrides { get; set; }
+        public DbSet<AdminPercentBonusRule> AdminPercentBonusRules { get; set; }
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<AdminSalaryPayment> AdminSalaryPayments { get; set; }
@@ -2214,6 +2215,24 @@ namespace DreamCleaningBackend.Data
                 entity.HasOne(e => e.UpdatedByUser)
                     .WithMany()
                     .HasForeignKey(e => e.UpdatedByUserId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // AdminPercentBonusRule — a dated HISTORY per staff member (see the model). Cascade on
+            // the person: a rule has no meaning without them, and their earned bonuses are already
+            // reflected in the orders' figures for as long as the account exists.
+            modelBuilder.Entity<AdminPercentBonusRule>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.UserId, e.StartDate })
+                    .HasDatabaseName("IX_AdminPercentBonusRules_UserId_StartDate");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.CreatedByUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.CreatedByUserId)
                     .OnDelete(DeleteBehavior.SetNull);
             });
 

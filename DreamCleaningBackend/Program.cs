@@ -256,6 +256,7 @@ builder.Services.AddScoped<ICleanerPortalService, CleanerPortalService>();
 builder.Services.AddScoped<ICleanerPayrollEditService, CleanerPayrollEditService>();
 builder.Services.AddScoped<IOutgoingPaymentService, OutgoingPaymentService>();
 builder.Services.AddScoped<IAdminSalaryPayoutService, AdminSalaryPayoutService>();
+builder.Services.AddScoped<IAdminPerformanceService, AdminPerformanceService>();
 builder.Services.AddScoped<IUserCleaningPhotoService, UserCleaningPhotoService>();
 builder.Services.AddHostedService<CleanerNotificationService>();
 builder.Services.AddHostedService<CustomerNotificationService>();

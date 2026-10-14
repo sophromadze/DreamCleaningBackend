@@ -172,6 +172,59 @@ namespace DreamCleaningBackend.Controllers
             }
         }
 
+        // SuperAdmin only — a percentage bonus on top of the fixed one (2026-10): X% of the full
+        // order (no tips) or X% of its net, from a start date. Rules are a dated history; a new one
+        // takes over from its own date and never restates earlier orders. Both percents 0 = stop.
+        // Answers with the row over the window the panel shows, like the rate override above.
+        [HttpPost("admin/{adminId}/percent-rules")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<AdminBonusSummaryDto>> AddPercentRule(
+            int adminId,
+            [FromBody] SetAdminPercentBonusDto dto,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to)
+        {
+            try
+            {
+                var rule = await _bonusService.AddPercentRuleAsync(adminId, dto, GetUserId());
+
+                await _auditService.LogActionAsync(
+                    DreamCleaningBackend.Services.AuditEntityTypes.RewardSetting, adminId, "AdminPercentBonusSet",
+                    null,
+                    new { rule.Basis, rule.NewCustomerPercent, rule.ExistingCustomerPercent, StartDate = rule.StartDate.ToString("yyyy-MM-dd") });
+
+                var (fromDate, toDate) = ResolveMonthRange(from, to);
+                return Ok(await _bonusService.GetSummaryForAdminAsync(adminId, fromDate, toDate));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // SuperAdmin only — removes a rule entered by mistake. Orders from its start date fall back
+        // to whatever rule came before it.
+        [HttpDelete("admin/{adminId}/percent-rules/{ruleId}")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<ActionResult<AdminBonusSummaryDto>> DeletePercentRule(
+            int adminId,
+            int ruleId,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to)
+        {
+            var removed = await _bonusService.DeletePercentRuleAsync(adminId, ruleId);
+            if (removed == null)
+                return NotFound(new { message = "That percentage bonus no longer exists." });
+
+            await _auditService.LogActionAsync(
+                DreamCleaningBackend.Services.AuditEntityTypes.RewardSetting, adminId, "AdminPercentBonusRemoved",
+                new { Basis = removed.Basis.ToString(), removed.NewCustomerPercent, removed.ExistingCustomerPercent, StartDate = removed.StartDate.ToString("yyyy-MM-dd") },
+                null);
+
+            var (fromDate, toDate) = ResolveMonthRange(from, to);
+            return Ok(await _bonusService.GetSummaryForAdminAsync(adminId, fromDate, toDate));
+        }
+
         // ──────────────────────────────────────────────────────────────────────────────
 
         private static (DateTime From, DateTime To) ResolveMonthRange(DateTime? from, DateTime? to)

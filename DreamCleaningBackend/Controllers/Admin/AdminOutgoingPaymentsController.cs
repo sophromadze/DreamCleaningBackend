@@ -28,15 +28,18 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly IOutgoingPaymentService _service;
         private readonly IAdminSalaryPayoutService _salaries;
+        private readonly IAdminPerformanceService _adminPerformance;
         private readonly ILogger<AdminOutgoingPaymentsController> _logger;
 
         public AdminOutgoingPaymentsController(
             IOutgoingPaymentService service,
             IAdminSalaryPayoutService salaries,
+            IAdminPerformanceService adminPerformance,
             ILogger<AdminOutgoingPaymentsController> logger)
         {
             _service = service;
             _salaries = salaries;
+            _adminPerformance = adminPerformance;
             _logger = logger;
         }
 
@@ -251,6 +254,27 @@ namespace DreamCleaningBackend.Controllers
                 orderId, slotIndex, GetCurrentUserId());
 
             return Ok(order);
+        }
+
+        // ── Admins: what each admin's completed orders came to (2026-10) ───────────
+
+        /// <summary>
+        /// Per admin (not SuperAdmins): completed orders they booked, their total without tips, and
+        /// the net after sales tax, cleaners' wages and staff bonuses. Inclusive service dates;
+        /// leave both out for all time.
+        /// </summary>
+        [HttpGet("admins")]
+        public async Task<ActionResult<AdminPerformanceListDto>> GetAdmins(
+            [FromQuery] DateTime? from = null, [FromQuery] DateTime? to = null)
+        {
+            try
+            {
+                return Ok(await _adminPerformance.GetAsync(from, to));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
         }
 
         // ── Staff salaries ─────────────────────────────────────────────────────────

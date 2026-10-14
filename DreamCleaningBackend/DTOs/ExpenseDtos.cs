@@ -26,6 +26,9 @@ namespace DreamCleaningBackend.DTOs
         public int? StaffUserId { get; set; }
         public bool StaffUserRemoved { get; set; }
 
+        /// <summary>Set only on a one-time commercial bonus ("Onyx commercial bonus").</summary>
+        public string? BonusLabel { get; set; }
+
         public DateTime StartDate { get; set; }
         public bool IsRecurring { get; set; }
         public int? FrequencyMonths { get; set; }
@@ -62,6 +65,12 @@ namespace DreamCleaningBackend.DTOs
         // Who this salary is for. Only accepted on the Salaries category; ignored elsewhere.
         // Null on a salary row means "not a staff member on file" and falls back to Name.
         public int? StaffUserId { get; set; }
+
+        // A one-time COMMERCIAL BONUS added to a staff member's pay (2026-10): its name, e.g.
+        // "Onyx commercial bonus". Requires the Salaries category, a picked staff member and a
+        // one-time entry — validated in ExpenseService. Blank = an ordinary salary row.
+        [StringLength(200)]
+        public string? BonusLabel { get; set; }
 
         [Required]
         public DateTime StartDate { get; set; }
@@ -118,6 +127,9 @@ namespace DreamCleaningBackend.DTOs
         public int CategoryId { get; set; }
         public string CategoryName { get; set; } = string.Empty;
         public DateTime Date { get; set; }
+
+        /// <summary>Non-null on a one-time commercial bonus. Outgoing Payments pays it on the second instalment.</summary>
+        public string? BonusLabel { get; set; }
 
         /// <summary>
         /// USD — already converted from <see cref="Currency"/> at the occurrence month's locked FX

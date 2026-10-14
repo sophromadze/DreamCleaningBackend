@@ -33,5 +33,17 @@ namespace DreamCleaningBackend.Services.Interfaces
         /// Never true on a path that pays somebody — a bonus is earned on delivery.
         /// </param>
         Task<Dictionary<int, decimal>> GetOrderBonusCostsGelAsync(DateTime? from, DateTime? to, bool includeUnfinished = false);
+
+        /// <summary>One admin's percentage-bonus rules, newest first.</summary>
+        Task<List<AdminPercentBonusRuleDto>> GetPercentRulesAsync(int adminId);
+
+        /// <summary>
+        /// Adds a dated rule: from its start date on, the admin earns this percentage on the orders
+        /// they book, on top of the fixed bonus. Earlier orders keep whatever applied to them.
+        /// </summary>
+        Task<AdminPercentBonusRuleDto> AddPercentRuleAsync(int adminId, SetAdminPercentBonusDto dto, int byUserId);
+
+        /// <summary>Removes a rule entered by mistake. Returns it (for the audit row), or null.</summary>
+        Task<Models.AdminPercentBonusRule?> DeletePercentRuleAsync(int adminId, int ruleId);
     }
 }

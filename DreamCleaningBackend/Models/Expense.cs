@@ -87,6 +87,14 @@ namespace DreamCleaningBackend.Models
         [StringLength(1000)]
         public string? Notes { get; set; }
 
+        // Set ONLY on a one-time COMMERCIAL BONUS paid to a staff member (2026-10) — "Onyx
+        // commercial bonus". Salaries category only, never recurring (SalaryExpenseRules). Name
+        // keeps holding the person's name snapshot, which is why the bonus needs its own column.
+        // Being an ordinary Salaries row is what puts it in Statistics and Finances with nothing
+        // else to do; Outgoing Payments pays it whole on the month's second instalment.
+        [StringLength(200)]
+        public string? BonusLabel { get; set; }
+
         // Idempotency marker for externally-synced expenses. NULL for manually-entered rows;
         // "googleads:yyyy-MM-dd" for a Google Ads daily-spend row. A UNIQUE index on this column
         // (see ApplicationDbContext) guarantees exactly one row per ad-spend day and makes

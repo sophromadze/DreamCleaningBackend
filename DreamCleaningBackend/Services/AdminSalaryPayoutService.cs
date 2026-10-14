@@ -330,7 +330,13 @@ namespace DreamCleaningBackend.Services
             int? resolvedStaffUserId,
             string? bonusOnlyName)
         {
-            var reference = occurrences.FirstOrDefault();
+            // Commercial bonuses (one-time Salaries rows carrying a BonusLabel) are not salary: they
+            // are not halved, they ride whole on the second payment beside the staff bonuses, and
+            // they are listed by name so the month's sum can still be followed by hand.
+            var commercialOccs = occurrences.Where(o => o.BonusLabel != null).ToList();
+            occurrences = occurrences.Where(o => o.BonusLabel == null).ToList();
+
+            var reference = occurrences.FirstOrDefault() ?? commercialOccs.FirstOrDefault();
             var staffUserId = resolvedStaffUserId
                 ?? reference?.StaffUserId
                 ?? payments.FirstOrDefault()?.StaffUserId;
@@ -343,6 +349,9 @@ namespace DreamCleaningBackend.Services
             // one-off), and they could be in different currencies. The USD total is always right;
             // the entered-currency total is only shown when there is a single currency to show.
             var currencies = occurrences.Select(o => ExpenseCurrency.Normalize(o.Currency)).Distinct().ToList();
+            // Somebody paid only a commercial bonus this month: its currency is the month's.
+            if (currencies.Count == 0)
+                currencies = commercialOccs.Select(o => ExpenseCurrency.Normalize(o.Currency)).Distinct().ToList();
             var currency = currencies.Count == 1
                 ? currencies[0]
                 // No salary rows to read a currency off. A previous payment says what was used
@@ -359,8 +368,39 @@ namespace DreamCleaningBackend.Services
 
             // Bonus rates are always set in GEL. Expressed in the SALARY's currency so the two can
             // be added at all: a GEL salary adds it straight, a USD salary converts it first.
-            var bonusUsd = ExpenseCurrency.ToUsd(bonusGel, ExpenseCurrency.Gel, usdPerGelForMonth);
-            var bonusInCurrency = ExpenseCurrency.IsGel(currency) && !mixedCurrencies ? bonusGel : bonusUsd;
+            var staffBonusUsd = ExpenseCurrency.ToUsd(bonusGel, ExpenseCurrency.Gel, usdPerGelForMonth);
+            var payInGel = ExpenseCurrency.IsGel(currency) && !mixedCurrencies;
+            var staffBonusInCurrency = payInGel ? bonusGel : staffBonusUsd;
+
+            // Each commercial bonus in the payee's currency: as typed when it matches, otherwise
+            // through its USD figure (already converted at the month's rate by the expense read).
+            var commercial = commercialOccs
+                .OrderBy(o => o.Date).ThenBy(o => o.ExpenseId)
+                .Select(o =>
+                {
+                    var sameCurrency = ExpenseCurrency.Normalize(o.Currency) == currency && !mixedCurrencies;
+                    var inPayeeCurrency = sameCurrency
+                        ? o.AmountInCurrency
+                        : payInGel && usdPerGelForMonth > 0m
+                            ? decimal.Round(o.Amount / usdPerGelForMonth, 2)
+                            : o.Amount;
+                    return new CommercialBonusLineDto
+                    {
+                        ExpenseId = o.ExpenseId,
+                        Label = o.BonusLabel!,
+                        Date = o.Date,
+                        Amount = o.AmountInCurrency,
+                        Currency = ExpenseCurrency.Normalize(o.Currency),
+                        AmountUsd = o.Amount,
+                        AmountInPayeeCurrency = inPayeeCurrency
+                    };
+                })
+                .ToList();
+            var commercialInCurrency = commercial.Sum(c => c.AmountInPayeeCurrency);
+            var commercialUsd = commercial.Sum(c => c.AmountUsd);
+
+            var bonusInCurrency = staffBonusInCurrency + commercialInCurrency;
+            var bonusUsd = staffBonusUsd + commercialUsd;
 
             var monthTotal = salaryTotal + bonusInCurrency;
             var monthTotalUsd = salaryUsd + bonusUsd;
@@ -418,8 +458,11 @@ namespace DreamCleaningBackend.Services
                 IsFormerStaff = isFormer,
                 SalaryTotal = salaryTotal,
                 BonusTotal = bonusInCurrency,
+                StaffBonusTotal = staffBonusInCurrency,
                 BonusTotalGel = bonusGel,
                 BonusTotalUsd = bonusUsd,
+                CommercialBonusTotal = commercialInCurrency,
+                CommercialBonuses = commercial,
                 MonthTotal = monthTotal,
                 Currency = currency,
                 MonthTotalUsd = monthTotalUsd,
@@ -439,7 +482,7 @@ namespace DreamCleaningBackend.Services
             if (!mixedCurrencies && ExpenseCurrency.IsGel(currency) && !usdPerGel.HasValue && monthTotal != 0)
                 dto.Warnings.Add("No exchange rate for this month yet, so the USD figure is not converted.");
 
-            if (salaryTotal == 0 && bonusGel == 0 && instalments.Any(i => i.IsPaid))
+            if (salaryTotal == 0 && bonusGel == 0 && commercial.Count == 0 && instalments.Any(i => i.IsPaid))
                 dto.Warnings.Add("This month no longer has a salary on file, but a payment was recorded against it.");
 
             // The bonus was earned but the second payment has already gone out at the old figure.

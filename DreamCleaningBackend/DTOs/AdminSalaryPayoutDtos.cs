@@ -44,6 +44,16 @@ namespace DreamCleaningBackend.DTOs
 
         /// <summary>The bonus as it is actually set and reported: GEL.</summary>
         public decimal BonusTotalGel { get; set; }
+
+        /// <summary>
+        /// The staff (per-order) bonuses alone, in <see cref="Currency"/>. BonusTotal is this plus
+        /// <see cref="CommercialBonusTotal"/> — everything that rides on the second payment.
+        /// </summary>
+        public decimal StaffBonusTotal { get; set; }
+
+        /// <summary>One-time commercial bonuses this month, in <see cref="Currency"/>.</summary>
+        public decimal CommercialBonusTotal { get; set; }
+        public List<CommercialBonusLineDto> CommercialBonuses { get; set; } = new();
         public decimal BonusTotalUsd { get; set; }
 
         /// <summary>Salary + bonuses — what the month owes this person in total.</summary>
@@ -73,6 +83,20 @@ namespace DreamCleaningBackend.DTOs
     }
 
     /// <summary>One of the two monthly instalments.</summary>
+    /// <summary>One commercial bonus (a Salaries expense with a BonusLabel) owed this month.</summary>
+    public class CommercialBonusLineDto
+    {
+        public int ExpenseId { get; set; }
+        public string Label { get; set; } = string.Empty;
+        public DateTime Date { get; set; }
+        /// <summary>As entered, in <see cref="Currency"/>.</summary>
+        public decimal Amount { get; set; }
+        public string Currency { get; set; } = "GEL";
+        public decimal AmountUsd { get; set; }
+        /// <summary>The same bonus in the payee's month currency — what is added to their pay.</summary>
+        public decimal AmountInPayeeCurrency { get; set; }
+    }
+
     public class AdminSalaryInstalmentDto
     {
         /// <summary>1 = first payment of the month, 2 = second.</summary>

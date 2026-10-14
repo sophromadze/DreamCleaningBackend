@@ -11,9 +11,23 @@ namespace DreamCleaningBackend.Services
     {
         private readonly ApplicationDbContext _context;
 
-        public AdminBonusService(ApplicationDbContext context)
+        // GEL per USD for a month, used to put the percentage bonus (earned on dollar prices) on
+        // the same GEL footing as the fixed bonuses. Resolved LAZILY from the container:
+        // FinancialRateService takes this service in its constructor, so a constructor dependency
+        // the other way round would be a cycle DI refuses to build.
+        private readonly Func<int, int, Task<decimal>> _usdPerGel;
+
+        public AdminBonusService(ApplicationDbContext context, IServiceProvider services)
+            : this(context, async (year, month) =>
+                (await services.GetRequiredService<IFinancialRateService>().GetOrCreateAsync(year, month)).UsdPerGel)
+        {
+        }
+
+        /// <summary>Tests: a fixed exchange rate instead of the snapshot table.</summary>
+        public AdminBonusService(ApplicationDbContext context, Func<int, int, Task<decimal>> usdPerGel)
         {
             _context = context;
+            _usdPerGel = usdPerGel;
         }
 
         public async Task<OrderAssignedAdminDto> AssignAdminAsync(int orderId, int? adminId, int byUserId)
@@ -26,6 +40,7 @@ namespace DreamCleaningBackend.Services
             // order alongside the assignment itself — see the comment on Order.BonusBookerId.
             AdminPosition position = AdminPosition.Administrator;
             int? assigneeManagerId = null;
+            var assigneeIsSuperAdmin = false;
 
             if (adminId.HasValue)
             {
@@ -36,13 +51,14 @@ namespace DreamCleaningBackend.Services
                                 && !u.IsDeleted
                                 && u.IsActive
                                 && (u.Role == UserRole.Admin || u.Role == UserRole.SuperAdmin))
-                    .Select(u => new { u.Id, u.AdminPosition, u.ManagerId })
+                    .Select(u => new { u.Id, u.AdminPosition, u.ManagerId, u.Role })
                     .FirstOrDefaultAsync();
                 if (admin == null)
                     throw new InvalidOperationException("Selected user is not an active admin.");
 
                 position = admin.AdminPosition;
                 assigneeManagerId = admin.ManagerId;
+                assigneeIsSuperAdmin = admin.Role == UserRole.SuperAdmin;
             }
 
             var previousAdminId = order.AssignedAdminId;
@@ -55,7 +71,11 @@ namespace DreamCleaningBackend.Services
                 return await BuildAssignedAdminDtoAsync(adminId);
             }
 
-            var attribution = adminId.HasValue
+            // A SuperAdmin is never paid a staff bonus (owner's rule, 2026-10): they stay the
+            // order's assigned admin — the pill, the responsibility — but nobody earns on it, so it
+            // costs nothing in Statistics and Finances either. Migration
+            // ClearSuperAdminBonusAttribution applied the same rule to orders already held.
+            var attribution = adminId.HasValue && !assigneeIsSuperAdmin
                 ? AdminBonusAttribution.Resolve(position, adminId.Value, assigneeManagerId)
                 : BonusAttribution.None;
 
@@ -74,7 +94,7 @@ namespace DreamCleaningBackend.Services
                 ChangedAt = DateTime.UtcNow,
                 // What THIS person earns for THIS order, at today's rates — the one number a
                 // dispute about this assignment would need. Zero when the assignment was cleared.
-                BonusRateAtChange = adminId.HasValue
+                BonusRateAtChange = adminId.HasValue && !assigneeIsSuperAdmin
                     ? await ResolveBookerRateForOrderAsync(adminId.Value, position, order.IsNewCustomerOrder)
                     : 0m
             });
@@ -243,10 +263,12 @@ namespace DreamCleaningBackend.Services
                 .ToDictionaryAsync(x => x.ManagerId, x => x.Count);
 
             var setting = await EnsureSettingAsync();
-            var overrides = await LoadOverridesAsync(admins.Select(a => a.Id).ToList());
+            var adminIds = admins.Select(a => a.Id).ToList();
+            var overrides = await LoadOverridesAsync(adminIds);
+            var percent = await PercentByAdminAsync(from, to, adminIds);
 
             return admins
-                .Select(a => BuildSummary(a, counts, setting, overrides, teamSizes))
+                .Select(a => BuildSummary(a, counts, setting, overrides, teamSizes, percent))
                 .ToList();
         }
 
@@ -281,9 +303,10 @@ namespace DreamCleaningBackend.Services
 
             var teamSize = await _context.Users
                 .CountAsync(u => !u.IsDeleted && u.IsActive && u.Role == UserRole.Admin && u.ManagerId == adminId);
+            var percent = await PercentByAdminAsync(from, to, new List<int> { adminId });
 
             return BuildSummary(admin, counts, setting, overrides,
-                new Dictionary<int, int> { [adminId] = teamSize });
+                new Dictionary<int, int> { [adminId] = teamSize }, percent);
         }
 
         public async Task<Dictionary<int, decimal>> GetOrderBonusCostsGelAsync(
@@ -298,22 +321,168 @@ namespace DreamCleaningBackend.Services
             if (to.HasValue) query = query.Where(o => o.ServiceDate < to.Value);
 
             var orders = await query
+                .Select(o => new FixedBonusInput(
+                    o.Id, o.BonusBookerId, o.BonusBookerPosition, o.BonusManagerId, o.IsNewCustomerOrder))
+                .ToListAsync();
+            if (orders.Count == 0)
+                return new Dictionary<int, decimal>();
+
+            var costs = await FixedCostsGelAsync(orders);
+
+            // The percentage bonus is the SAME kind of cost — money paid to staff because of an
+            // order — so it rides in the same per-order figure. That is what makes it reach
+            // Statistics, Finances, the shifts panel and the salary payout once each, through the
+            // paths those already take, with nothing added at any of them. Its orders are always a
+            // subset of the ones above (same window, same eligibility, booker set).
+            foreach (var line in await ComputePercentBonusesAsync(from, to, includeUnfinished, onlyUsers: null))
+                costs[line.OrderId] = (costs.TryGetValue(line.OrderId, out var c) ? c : 0m) + line.Gel;
+
+            return costs;
+        }
+
+        // ── Percentage bonuses (2026-10) ───────────────────────────────────────────────
+
+        public async Task<List<AdminPercentBonusRuleDto>> GetPercentRulesAsync(int adminId)
+        {
+            var rules = await _context.AdminPercentBonusRules
+                .Where(r => r.UserId == adminId)
+                .Include(r => r.CreatedByUser)
+                .ToListAsync();
+            return ToRuleDtos(rules);
+        }
+
+        public async Task<AdminPercentBonusRuleDto> AddPercentRuleAsync(int adminId, SetAdminPercentBonusDto dto, int byUserId)
+        {
+            if (dto.NewCustomerPercent < 0m || dto.NewCustomerPercent > 100m
+                || dto.ExistingCustomerPercent < 0m || dto.ExistingCustomerPercent > 100m)
+                throw new InvalidOperationException("Each percentage must be between 0 and 100.");
+            if (!Enum.TryParse<AdminPercentBonusBasis>(dto.Basis, ignoreCase: true, out var basis)
+                || !Enum.IsDefined(basis)
+                || int.TryParse(dto.Basis, out _))
+                throw new InvalidOperationException("Pick what the percentage is taken from.");
+
+            // Admins only — the same people the fixed bonus pays. A SuperAdmin earns no bonus at
+            // all (owner's rule), and a rule parked on them would read as money owed.
+            var isAdmin = await _context.Users.AnyAsync(u => u.Id == adminId && !u.IsDeleted && u.Role == UserRole.Admin);
+            if (!isAdmin)
+                throw new InvalidOperationException("Percentage bonuses can only be given to admins.");
+
+            var rule = new AdminPercentBonusRule
+            {
+                UserId = adminId,
+                Basis = basis,
+                NewCustomerPercent = decimal.Round(dto.NewCustomerPercent, 2),
+                ExistingCustomerPercent = decimal.Round(dto.ExistingCustomerPercent, 2),
+                StartDate = (dto.StartDate ?? NyTimeHelper.NowNy).Date,
+                CreatedByUserId = byUserId,
+                CreatedAt = DateTime.UtcNow
+            };
+            _context.AdminPercentBonusRules.Add(rule);
+            await _context.SaveChangesAsync();
+            await _context.Entry(rule).Reference(r => r.CreatedByUser).LoadAsync();
+            return ToRuleDtos(new List<AdminPercentBonusRule> { rule }).Single();
+        }
+
+        public async Task<AdminPercentBonusRule?> DeletePercentRuleAsync(int adminId, int ruleId)
+        {
+            var rule = await _context.AdminPercentBonusRules
+                .FirstOrDefaultAsync(r => r.Id == ruleId && r.UserId == adminId);
+            if (rule == null) return null;
+            _context.AdminPercentBonusRules.Remove(rule);
+            await _context.SaveChangesAsync();
+            return rule;
+        }
+
+        /// <summary>
+        /// The percentage bonus on every qualifying order in the window: the order's BOOKER, a rule
+        /// in force on its service date, and the same eligibility the fixed bonus uses. One line
+        /// per order, in USD (what it was computed on) and GEL (what bonuses are paid and reported
+        /// in, at the order month's rate). GEL is left unrounded so the reports, which convert it
+        /// back at that same rate, land on the dollar figure.
+        /// </summary>
+        private async Task<List<PercentBonusLine>> ComputePercentBonusesAsync(
+            DateTime? from, DateTime? to, bool includeUnfinished, IReadOnlyCollection<int>? onlyUsers)
+        {
+            var ruleQuery = _context.AdminPercentBonusRules.AsQueryable();
+            if (onlyUsers != null)
+                ruleQuery = ruleQuery.Where(r => onlyUsers.Contains(r.UserId));
+            var rules = await ruleQuery.ToListAsync();
+            // Nothing set anywhere is the normal case — no order query at all.
+            if (!rules.Any(r => r.PaysAnything))
+                return new List<PercentBonusLine>();
+
+            var rulesByUser = rules.GroupBy(r => r.UserId).ToDictionary(g => g.Key, g => g.ToList());
+            var userIds = rulesByUser.Keys.ToList();
+            var earliest = rules.Min(r => r.StartDate.Date);
+
+            var query = _context.Orders
+                .Where(o => o.BonusBookerId != null && userIds.Contains(o.BonusBookerId.Value))
+                .Where(includeUnfinished
+                    ? AdminBonusAttribution.BonusEligibleOrProjected
+                    : AdminBonusAttribution.BonusEligible)
+                .Where(o => o.ServiceDate >= earliest);
+            if (from.HasValue) query = query.Where(o => o.ServiceDate >= from.Value);
+            if (to.HasValue) query = query.Where(o => o.ServiceDate < to.Value);
+
+            var orders = await query
                 .Select(o => new
                 {
-                    o.Id,
-                    o.BonusBookerId,
-                    o.BonusBookerPosition,
-                    o.BonusManagerId,
-                    o.IsNewCustomerOrder
+                    o.Id, o.BonusBookerId, o.BonusBookerPosition, o.BonusManagerId, o.IsNewCustomerOrder,
+                    o.ServiceDate, o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount,
+                    o.LoyaltyDiscountAmount, o.Tax, o.Tips, o.CompanyDevelopmentTips,
+                    o.TotalRefundedAmount, o.CleanerTotalSalary
                 })
                 .ToListAsync();
+            if (orders.Count == 0)
+                return new List<PercentBonusLine>();
+
+            // The "net" basis has the order's FIXED bonuses taken off (both slots, the manager's
+            // share included) — but not this percentage, which cannot be a share of itself.
+            var fixedGel = await FixedCostsGelAsync(orders
+                .Select(o => new FixedBonusInput(o.Id, o.BonusBookerId, o.BonusBookerPosition, o.BonusManagerId, o.IsNewCustomerOrder))
+                .ToList());
+
+            var fx = new Dictionary<int, decimal>();
+            var lines = new List<PercentBonusLine>();
+            foreach (var o in orders)
+            {
+                var rule = AdminOrderEarnings.RuleOn(rulesByUser[o.BonusBookerId!.Value], o.ServiceDate);
+                if (rule == null || !rule.PaysAnything) continue;
+
+                var key = o.ServiceDate.Year * 100 + o.ServiceDate.Month;
+                if (!fx.TryGetValue(key, out var usdPerGel))
+                    fx[key] = usdPerGel = await _usdPerGel(o.ServiceDate.Year, o.ServiceDate.Month);
+                if (usdPerGel <= 0m) continue;
+
+                var figures = AdminOrderEarnings.Figures(
+                    o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount, o.LoyaltyDiscountAmount,
+                    o.Tax, o.Tips, o.CompanyDevelopmentTips, o.TotalRefundedAmount);
+                var fixedUsd = (fixedGel.TryGetValue(o.Id, out var g) ? g : 0m) * usdPerGel;
+                var netBefore = AdminOrderEarnings.Net(figures.Revenue, o.CleanerTotalSalary, fixedUsd);
+
+                var usd = AdminOrderEarnings.PercentBonusUsd(rule, o.IsNewCustomerOrder, figures.OrderTotal, netBefore);
+                if (usd <= 0m) continue;
+
+                lines.Add(new PercentBonusLine(o.Id, o.BonusBookerId.Value, usd, usd / usdPerGel));
+            }
+            return lines;
+        }
+
+        private sealed record PercentBonusLine(int OrderId, int UserId, decimal Usd, decimal Gel);
+
+        private sealed record FixedBonusInput(
+            int Id, int? BonusBookerId, AdminPosition BonusBookerPosition, int? BonusManagerId, bool IsNewCustomerOrder);
+
+        /// <summary>The fixed per-order GEL bonuses (both slots), keyed by order id.</summary>
+        private async Task<Dictionary<int, decimal>> FixedCostsGelAsync(List<FixedBonusInput> orders)
+        {
             if (orders.Count == 0)
                 return new Dictionary<int, decimal>();
 
             var earnerIds = orders.Select(o => o.BonusBookerId)
                 .Concat(orders.Select(o => o.BonusManagerId))
                 .Where(id => id.HasValue)
-                .Select(id => id.Value)
+                .Select(id => id!.Value)
                 .Distinct()
                 .ToList();
 
@@ -362,6 +531,29 @@ namespace DreamCleaningBackend.Services
                 costs[o.Id] = cost;
             }
             return costs;
+        }
+
+        private static List<AdminPercentBonusRuleDto> ToRuleDtos(List<AdminPercentBonusRule> rules)
+        {
+            var today = NyTimeHelper.NowNy.Date;
+            var current = AdminOrderEarnings.RuleOn(rules, today);
+            return rules
+                .OrderByDescending(r => r.StartDate).ThenByDescending(r => r.Id)
+                .Select(r => new AdminPercentBonusRuleDto
+                {
+                    Id = r.Id,
+                    Basis = r.Basis.ToString(),
+                    NewCustomerPercent = r.NewCustomerPercent,
+                    ExistingCustomerPercent = r.ExistingCustomerPercent,
+                    StartDate = r.StartDate.Date,
+                    IsCurrent = current != null && current.Id == r.Id,
+                    IsUpcoming = r.StartDate.Date > today,
+                    CreatedAt = r.CreatedAt,
+                    CreatedByName = r.CreatedByUser == null
+                        ? null
+                        : $"{r.CreatedByUser.FirstName} {r.CreatedByUser.LastName}".Trim()
+                })
+                .ToList();
         }
 
         // ──────────────────────────────────────────────────────────────────────────────
@@ -493,12 +685,36 @@ namespace DreamCleaningBackend.Services
                 .ToDictionaryAsync(o => o.UserId, o => o);
         }
 
+        /// <summary>Each person's percentage bonus over the window, with their rule history.</summary>
+        private async Task<Dictionary<int, PercentSummary>> PercentByAdminAsync(
+            DateTime? from, DateTime? to, List<int> adminIds)
+        {
+            var lines = await ComputePercentBonusesAsync(from, to, includeUnfinished: false, onlyUsers: adminIds);
+            var rules = await _context.AdminPercentBonusRules
+                .Where(r => adminIds.Contains(r.UserId))
+                .Include(r => r.CreatedByUser)
+                .ToListAsync();
+
+            return adminIds.ToDictionary(id => id, id =>
+            {
+                var mine = lines.Where(l => l.UserId == id).ToList();
+                return new PercentSummary(
+                    decimal.Round(mine.Sum(l => l.Gel), 2),
+                    mine.Sum(l => l.Usd),
+                    mine.Count,
+                    ToRuleDtos(rules.Where(r => r.UserId == id).ToList()));
+            });
+        }
+
+        private sealed record PercentSummary(decimal Gel, decimal Usd, int OrderCount, List<AdminPercentBonusRuleDto> Rules);
+
         private static AdminBonusSummaryDto BuildSummary(
             AdminRow admin,
             BonusCounts counts,
             AdminBonusSetting setting,
             Dictionary<int, AdminBonusRateOverride> overrides,
-            Dictionary<int, int> teamSizes)
+            Dictionary<int, int> teamSizes,
+            Dictionary<int, PercentSummary> percentByAdmin)
         {
             overrides.TryGetValue(admin.Id, out var personal);
 
@@ -524,6 +740,7 @@ namespace DreamCleaningBackend.Services
                 + AdminBonusAttribution.ComputeBonus(team.NewCustomer, team.ExistingCustomer, teamRates);
 
             var displayedOwnRates = admin.Position == AdminPosition.Manager ? asManager : asAdministrator;
+            percentByAdmin.TryGetValue(admin.Id, out var percent);
 
             return new AdminBonusSummaryDto
             {
@@ -549,7 +766,14 @@ namespace DreamCleaningBackend.Services
                 TeamExistingCustomerRate = teamRates.ExistingCustomer,
                 TeamNewCustomerRateIsCustom = teamRates.NewCustomerIsCustom,
                 TeamExistingCustomerRateIsCustom = teamRates.ExistingCustomerIsCustom,
-                BonusAmount = bonus,
+                FixedBonusAmount = bonus,
+                PercentBonusAmount = percent?.Gel ?? 0m,
+                PercentBonusUsd = percent?.Usd ?? 0m,
+                PercentBonusOrderCount = percent?.OrderCount ?? 0,
+                PercentRules = percent?.Rules ?? new List<AdminPercentBonusRuleDto>(),
+                // Everything this person is owed in bonuses — what the salary payout adds to the
+                // second instalment. GEL, like the fixed rates.
+                BonusAmount = bonus + (percent?.Gel ?? 0m),
                 Currency = setting.Currency
             };
         }

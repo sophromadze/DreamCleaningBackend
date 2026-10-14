@@ -56,6 +56,7 @@ namespace DreamCleaningBackend.Services
             {
                 Name = name,
                 StaffUserId = staffUserId,
+                BonusLabel = ResolveBonusLabel(dto),
                 Amount = dto.Amount,
                 Currency = ResolveCurrency(dto),
                 CategoryId = dto.CategoryId,
@@ -93,6 +94,7 @@ namespace DreamCleaningBackend.Services
 
             row.Name = name;
             row.StaffUserId = staffUserId;
+            row.BonusLabel = ResolveBonusLabel(dto);
             row.Amount = dto.Amount;
             row.Currency = ResolveCurrency(dto);
             row.CategoryId = dto.CategoryId;
@@ -207,6 +209,7 @@ namespace DreamCleaningBackend.Services
                         CategoryId = e.CategoryId,
                         CategoryName = e.Category?.Name ?? string.Empty,
                         Date = date,
+                        BonusLabel = e.BonusLabel,
                         Amount = usd,
                         AmountInCurrency = amount,
                         Currency = ExpenseCurrency.Normalize(e.Currency),
@@ -703,6 +706,12 @@ namespace DreamCleaningBackend.Services
                 ? ExpenseCurrency.Normalize(dto.Currency)
                 : ExpenseCurrency.Usd;
 
+        /// <summary>The commercial bonus name, or null for an ordinary row. Validated beforehand.</summary>
+        private static string? ResolveBonusLabel(CreateExpenseDto dto)
+            => SalaryExpenseRules.IsSalaryCategory(dto.CategoryId) && !string.IsNullOrWhiteSpace(dto.BonusLabel)
+                ? dto.BonusLabel.Trim()
+                : null;
+
         // ── Salary identity ───────────────────────────────────────────────────────
 
         /// <summary>
@@ -814,6 +823,19 @@ namespace DreamCleaningBackend.Services
                 throw new InvalidOperationException("Name is required.");
             if (!await _context.ExpenseCategories.AnyAsync(c => c.Id == dto.CategoryId))
                 throw new InvalidOperationException("Selected category does not exist.");
+            if (!string.IsNullOrWhiteSpace(dto.BonusLabel))
+            {
+                // A commercial bonus is one amount, once, to one staff member — the whole shape the
+                // owner asked for. Anything else would be a salary with a misleading label.
+                if (!SalaryExpenseRules.IsSalaryCategory(dto.CategoryId))
+                    throw new InvalidOperationException("A bonus can only be added to a salary.");
+                if (!dto.StaffUserId.HasValue)
+                    throw new InvalidOperationException("Pick the staff member this bonus is for.");
+                if (dto.IsRecurring)
+                    throw new InvalidOperationException("A bonus is paid once — it cannot repeat.");
+                if (dto.Amount <= 0m)
+                    throw new InvalidOperationException("A bonus needs an amount above zero.");
+            }
             if (dto.IsRecurring)
             {
                 if (!dto.FrequencyMonths.HasValue || dto.FrequencyMonths.Value <= 0)
@@ -835,6 +857,7 @@ namespace DreamCleaningBackend.Services
             CategoryName = e.Category?.Name ?? string.Empty,
             StaffUserId = e.StaffUserId,
             StaffUserRemoved = IsRemovedStaffRow(e, staffNames),
+            BonusLabel = e.BonusLabel,
             StartDate = e.StartDate,
             IsRecurring = e.IsRecurring,
             FrequencyMonths = e.FrequencyMonths,

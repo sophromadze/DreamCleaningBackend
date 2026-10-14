@@ -41,15 +41,21 @@ namespace DreamCleaningBackend.Services
 
             if (!string.IsNullOrWhiteSpace(search))
             {
-                var term = search.Trim();
-                query = query.Where(c =>
-                    c.FirstName.Contains(term) ||
-                    c.LastName.Contains(term) ||
-                    (c.Phone != null && c.Phone.Contains(term)) ||
-                    (c.Email != null && c.Email.Contains(term)) ||
-                    (c.Address != null && c.Address.Contains(term)) ||
-                    (c.Location != null && c.Location.Contains(term)) ||
-                    (c.OperatingAreas != null && c.OperatingAreas.Contains(term)));
+                // Every typed WORD must match some field, so "Ana Smith" finds Ana Smith: the whole
+                // string matched no single column (first and last name are separate), which is why
+                // a search with a space in it used to find nobody.
+                foreach (var word in search.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var term = word;
+                    query = query.Where(c =>
+                        c.FirstName.Contains(term) ||
+                        c.LastName.Contains(term) ||
+                        (c.Phone != null && c.Phone.Contains(term)) ||
+                        (c.Email != null && c.Email.Contains(term)) ||
+                        (c.Address != null && c.Address.Contains(term)) ||
+                        (c.Location != null && c.Location.Contains(term)) ||
+                        (c.OperatingAreas != null && c.OperatingAreas.Contains(term)));
+                }
             }
 
             var cleaners = await query

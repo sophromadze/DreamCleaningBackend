@@ -77,8 +77,50 @@ namespace DreamCleaningBackend.DTOs
         public bool TeamNewCustomerRateIsCustom { get; set; }
         public bool TeamExistingCustomerRateIsCustom { get; set; }
 
+        /// <summary>The fixed per-order bonuses alone (both slots), GEL.</summary>
+        public decimal FixedBonusAmount { get; set; }
+
+        /// <summary>The percentage bonus over the window, GEL at each order month's rate.</summary>
+        public decimal PercentBonusAmount { get; set; }
+        /// <summary>The same percentage bonus in USD — what it was computed on.</summary>
+        public decimal PercentBonusUsd { get; set; }
+        /// <summary>Orders in the window that earned a percentage bonus.</summary>
+        public int PercentBonusOrderCount { get; set; }
+        /// <summary>This person's percentage rules, newest first (a dated history).</summary>
+        public List<AdminPercentBonusRuleDto> PercentRules { get; set; } = new();
+
+        /// <summary>Everything owed in bonuses: fixed + percentage, GEL.</summary>
         public decimal BonusAmount { get; set; }
         public string Currency { get; set; } = "GEL";
+    }
+
+    /// <summary>One dated percentage-bonus rule (see Models.AdminPercentBonusRule).</summary>
+    public class AdminPercentBonusRuleDto
+    {
+        public int Id { get; set; }
+        /// <summary>"FullOrder" or "NetIncome".</summary>
+        public string Basis { get; set; } = "FullOrder";
+        /// <summary>Percent on new-customer / returning-customer orders. Both 0 = stopped from <see cref="StartDate"/>.</summary>
+        public decimal NewCustomerPercent { get; set; }
+        public decimal ExistingCustomerPercent { get; set; }
+        public DateTime StartDate { get; set; }
+        /// <summary>The rule in force today.</summary>
+        public bool IsCurrent { get; set; }
+        /// <summary>Starts after today.</summary>
+        public bool IsUpcoming { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public string? CreatedByName { get; set; }
+    }
+
+    public class SetAdminPercentBonusDto
+    {
+        /// <summary>"FullOrder" or "NetIncome" (a string: the API has no enum-name converter).</summary>
+        public string Basis { get; set; } = nameof(Models.AdminPercentBonusBasis.FullOrder);
+        /// <summary>0–100 each, like the per-order new / returning rates. Send both 0 to stop it from <see cref="StartDate"/>.</summary>
+        public decimal NewCustomerPercent { get; set; }
+        public decimal ExistingCustomerPercent { get; set; }
+        /// <summary>First service date it applies to. Defaults to today (New York).</summary>
+        public DateTime? StartDate { get; set; }
     }
 
     /// <summary>
