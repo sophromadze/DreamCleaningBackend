@@ -311,6 +311,61 @@ public class PartialPaymentTests
         Assert.Null(balance.CannotRequestReason);
     }
 
+    /// <summary>
+    /// Order #478: an Invoice order whose commercial invoice was paid (InvoicePaidAt stamped) read
+    /// "Paid $0.00, Owed $207.37" on the Payments tab, because the balance read IsPaid, which is
+    /// Stripe-only. Settled is the reporting rule (OrderPaymentFilter), the one Statistics uses.
+    /// </summary>
+    [Fact]
+    public async Task AnInvoiceOrderWhoseInvoiceWasPaid_OwesNothingAndReadsPaidInFull()
+    {
+        var order = Order(total: 207.37m, status: OrderStatuses.Done, method: PaymentMethod.Invoice);
+        order.InvoicePaidAt = DateTime.UtcNow.AddDays(-3);
+        var (_, service, _) = await ServiceWith(order);
+
+        var balance = await service.GetBalanceAsync(1, TestContext.Current.CancellationToken);
+        Assert.Equal(207.37m, balance.Total);
+        Assert.Equal(207.37m, balance.AmountPaid);
+        Assert.Equal(0m, balance.AmountDue);
+        Assert.False(balance.IsPartiallyPaid);
+        Assert.Equal("This order is already paid in full.", balance.CannotRequestReason);
+    }
+
+    [Fact]
+    public async Task AnInvoiceOrderStillAwaitingItsInvoice_StillOwesItsTotal()
+    {
+        var (_, service, _) = await ServiceWith(Order(total: 207.37m, method: PaymentMethod.Invoice));
+
+        var balance = await service.GetBalanceAsync(1, TestContext.Current.CancellationToken);
+        Assert.Equal(0m, balance.AmountPaid);
+        Assert.Equal(207.37m, balance.AmountDue);
+        Assert.Contains("settled outside the website", balance.CannotRequestReason!);
+    }
+
+    /// <summary>Same root cause on a cash order: it owed nothing but read "Paid $0.00".</summary>
+    [Theory]
+    [InlineData(PaymentMethod.Cash)]
+    [InlineData(PaymentMethod.Zelle)]
+    [InlineData(PaymentMethod.BankTransfer)]
+    public async Task AManuallyPaidOrder_ReadsPaidInFull(PaymentMethod method)
+    {
+        var (_, service, _) = await ServiceWith(Order(total: 300m, status: OrderStatuses.Active, method: method));
+
+        var balance = await service.GetBalanceAsync(1, TestContext.Current.CancellationToken);
+        Assert.Equal(300m, balance.AmountPaid);
+        Assert.Equal(0m, balance.AmountDue);
+    }
+
+    [Fact]
+    public async Task ACardPaidOrder_IsUnchanged()
+    {
+        var (_, service, _) = await ServiceWith(Order(total: 300m, isPaid: true, status: OrderStatuses.Active));
+
+        var balance = await service.GetBalanceAsync(1, TestContext.Current.CancellationToken);
+        Assert.Equal(300m, balance.AmountPaid);
+        Assert.Equal(0m, balance.AmountDue);
+    }
+
     // ── Wiring that would fail silently ───────────────────────────────────────────────────
 
     [Fact]

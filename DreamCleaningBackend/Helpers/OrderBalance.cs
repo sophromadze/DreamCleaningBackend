@@ -92,7 +92,9 @@ namespace DreamCleaningBackend.Helpers
         /// </summary>
         public static bool CanRequestPartialPayment(Order order, out string? refusal)
         {
-            if (order.IsPaid)
+            // Settled by any route (card, a manual method, or a paid commercial invoice), not only
+            // IsPaid - an invoice-paid order is paid in full, not "settled outside the website".
+            if (OrderPaymentFilter.IsSettledInMemory(order))
             {
                 refusal = "This order is already paid in full.";
                 return false;

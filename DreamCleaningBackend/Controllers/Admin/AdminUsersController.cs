@@ -1478,8 +1478,15 @@ namespace DreamCleaningBackend.Controllers
                         // EF cannot translate a helper call inside a projection, so the balance
                         // rule from Helpers/OrderBalance.cs is written out here by hand — the same
                         // arrangement OrderPaymentFilter documents. Change both together.
+                        // Settled by ANY route owes nothing - the OrderPaymentFilter.IsSettled
+                        // clause written out (a paid commercial invoice or a cash order keeps
+                        // IsPaid false), same rule as OrderPartialPaymentService.GetBalanceAsync.
                         AmountPaid = o.AmountPaid,
-                        AmountDue = o.IsPaid || o.AmountPaid >= o.Total ? 0m : o.Total - o.AmountPaid,
+                        AmountDue = o.IsPaid
+                                    || (o.PaymentMethod != Models.PaymentMethod.Normal
+                                        && (o.PaymentMethod != Models.PaymentMethod.Invoice || o.InvoicePaidAt != null))
+                                    || o.AmountPaid >= o.Total
+                            ? 0m : o.Total - o.AmountPaid,
                         IsPartiallyPaid = !o.IsPaid
                             && o.PaymentMethod == Models.PaymentMethod.Normal
                             && o.AmountPaid >= 0.01m

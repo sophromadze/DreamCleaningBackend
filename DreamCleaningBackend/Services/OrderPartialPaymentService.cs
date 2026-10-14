@@ -67,18 +67,23 @@ namespace DreamCleaningBackend.Services
             if (additionalDue >= OrderAdditionalCharge.MinimumCollectableAmount && !canRequest && order.IsPaid)
                 refusal = null;
 
+            // SETTLED is the reporting definition (OrderPaymentFilter), not IsPaid. IsPaid means
+            // "paid through the residential Stripe checkout" and stays false for Cash / Zelle /
+            // Check / Other / BankTransfer AND for an Invoice order whose commercial invoice has
+            // been paid (InvoicePaidAt). Reading IsPaid alone showed those orders as "Paid $0.00,
+            // Owed <total>" (order #478) while Statistics already counted them as income.
+            var settled = OrderPaymentFilter.IsSettledInMemory(order);
+
             return new OrderPaymentBalanceDto
             {
                 Total = order.Total,
-                // A fully paid order settles through IsPaid and never touches AmountPaid, so the
-                // money actually received is the total less anything added after payment.
-                AmountPaid = order.IsPaid
+                // A settled order never touches AmountPaid (the full-payment flow sets IsPaid, a
+                // manual method or a paid invoice settles it on record), so the money actually
+                // received is the total less anything added after payment.
+                AmountPaid = settled
                     ? OrderPricingCalculator.Round2(Math.Max(0m, order.Total - additionalDue))
                     : order.AmountPaid,
-                // Cash / Zelle / Check / Other were paid in person when recorded — IsPaid stays
-                // false for them (it means "paid through Stripe"), so the plain subtraction would
-                // report the whole total as owed on an order that owes nothing.
-                AmountDue = PaymentMethodRules.IsSettledOnRecord(order.PaymentMethod) ? 0m : OrderBalance.AmountDue(order),
+                AmountDue = settled ? 0m : OrderBalance.AmountDue(order),
                 AdditionalAmountDue = additionalDue,
                 IsPartiallyPaid = OrderBalance.IsPartiallyPaid(order),
                 OverpaidAmount = OrderBalance.OverpaidAmount(order),
