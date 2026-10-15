@@ -160,6 +160,9 @@ namespace DreamCleaningBackend.Data
         // AI chat agent (DB-persisted sessions; distinct from the in-memory LiveChat models)
         public DbSet<ChatAgentSession> ChatAgentSessions { get; set; }
         public DbSet<ChatAgentMessage> ChatAgentMessages { get; set; }
+        public DbSet<AdminAgentSession> AdminAgentSessions { get; set; }
+        public DbSet<AdminAgentMessage> AdminAgentMessages { get; set; }
+        public DbSet<AdminAgentSqlLog> AdminAgentSqlLogs { get; set; }
         public DbSet<ChatAgentSettings> ChatAgentSettings { get; set; }
         // Admin-chosen visitor-facing names for Telegram agents (never from Telegram profiles)
         public DbSet<TelegramAgentDisplayName> TelegramAgentDisplayNames { get; set; }
@@ -235,6 +238,38 @@ namespace DreamCleaningBackend.Data
                     .WithMany(s => s.Messages)
                     .HasForeignKey(e => e.ChatSessionId)
                     .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // SuperAdmin analytics agent (2026-10). Sessions belong to one SuperAdmin; deleting the
+            // account removes them (they are that person's private working notes).
+            modelBuilder.Entity<AdminAgentSession>(entity =>
+            {
+                entity.HasIndex(e => new { e.OwnerUserId, e.UpdatedAt }).HasDatabaseName("IX_AdminAgentSessions_Owner_UpdatedAt");
+                entity.HasOne(e => e.Owner)
+                    .WithMany()
+                    .HasForeignKey(e => e.OwnerUserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<AdminAgentMessage>(entity =>
+            {
+                entity.HasIndex(e => new { e.SessionId, e.Id }).HasDatabaseName("IX_AdminAgentMessages_Session_Id");
+                entity.Property(e => e.Content).HasColumnType("LONGTEXT");
+                entity.Property(e => e.PartsJson).HasColumnType("LONGTEXT");
+                entity.Property(e => e.ToolCallsJson).HasColumnType("LONGTEXT");
+                entity.Property(e => e.ApiMessagesJson).HasColumnType("LONGTEXT");
+                entity.HasOne(e => e.Session)
+                    .WithMany(s => s.Messages)
+                    .HasForeignKey(e => e.SessionId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // Deliberately no foreign keys: the SQL audit outlives a deleted session or account.
+            modelBuilder.Entity<AdminAgentSqlLog>(entity =>
+            {
+                entity.HasIndex(e => e.CreatedAt).HasDatabaseName("IX_AdminAgentSqlLogs_CreatedAt");
+                entity.HasIndex(e => new { e.UserId, e.CreatedAt }).HasDatabaseName("IX_AdminAgentSqlLogs_User_CreatedAt");
+                entity.Property(e => e.Sql).HasColumnType("LONGTEXT");
             });
 
             modelBuilder.Entity<TelegramAgentDisplayName>(entity =>

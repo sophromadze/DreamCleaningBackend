@@ -106,7 +106,7 @@ namespace DreamCleaningBackend.Tests
             // reports an unpaid commercial job as revenue.
             foreach (var file in new[]
                      {
-                         Path.Combine("Controllers", "Admin", "AdminStatisticsController.cs"),
+                         Path.Combine("Services", "Reporting", "StatisticsReportService.cs"),
                          Path.Combine("Helpers", "AdminBonusAttribution.cs")
                      })
             {

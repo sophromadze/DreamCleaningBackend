@@ -325,8 +325,10 @@ public class RecurringRefinementTests
             PaidAt = date, AmountPaid = 925.43m };
         invoice.Payments.Add(new CommercialInvoicePayment { Amount = 925.43m, PaymentDate = date, Provider = provider });
         db.CommercialInvoices.Add(invoice); await db.SaveChangesAsync(TestContext.Current.CancellationToken);
-        var controller = new AdminStatisticsController(db, new ConfigurationBuilder().Build(),
-            Stub<IExpenseService>(), Stub<IFinancialRateService>(), new RecordingAuditService(), Stub<IAdminBonusService>());
+        var controller = new AdminStatisticsController(
+            new DreamCleaningBackend.Services.Reporting.StatisticsReportService(db, new ConfigurationBuilder().Build(),
+                Stub<IExpenseService>(), Stub<IFinancialRateService>(), Stub<IAdminBonusService>()),
+            Stub<IFinancialRateService>(), new RecordingAuditService());
         for (var linked = 0; linked < 2; linked++)
         {
             var result = await controller.GetOrderStatistics(date, date);

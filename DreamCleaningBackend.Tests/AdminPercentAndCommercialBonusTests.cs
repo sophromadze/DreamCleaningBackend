@@ -241,6 +241,33 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(3, allTime.Admins.Single(a => a.AdminId == Ana).CompletedOrders);
         }
 
+        [Fact]
+        public async Task TheOrderRowsTheAnalyticsAgentGroupsReAddToTheAdminsTab()
+        {
+            // The agent breaks one admin down by week / service type from these rows (2026-10);
+            // they must be exactly the orders and figures the tab sums.
+            AddOrder(1, new DateTime(2026, 10, 5));
+            AddOrder(2, new DateTime(2026, 10, 6), status: OrderStatuses.Active);
+            var newCustomer = AddOrder(4, new DateTime(2026, 10, 8));
+            newCustomer.IsNewCustomerOrder = true;
+            _context.SaveChanges();
+
+            var service = new AdminPerformanceService(_context, Bonuses(), new FixedRateService(Rate));
+            var from = new DateTime(2026, 10, 1);
+            var to = new DateTime(2026, 10, 31);
+            var ana = (await service.GetAsync(from, to)).Admins.Single(a => a.AdminId == Ana);
+            var rows = (await service.GetOrderRowsAsync(from, to)).Where(r => r.BookerId == Ana).ToList();
+
+            Assert.Equal(new[] { 1, 4 }, rows.Select(r => r.OrderId).OrderBy(i => i));
+            Assert.Equal(ana.CompletedOrders, rows.Count);
+            Assert.Equal(ana.OrdersTotal, rows.Sum(r => r.OrderTotal));
+            Assert.Equal(ana.SalesTax, rows.Sum(r => r.SalesTax));
+            Assert.Equal(ana.CleanerWages, rows.Sum(r => r.CleanerWages));
+            Assert.Equal(ana.StaffBonuses, decimal.Round(rows.Sum(r => r.StaffBonusesUsd), 2));
+            Assert.Equal(ana.NetIncome, decimal.Round(rows.Sum(r => r.Net), 2));
+            Assert.All(rows, r => Assert.Equal(r.OrderTotal - r.SalesTax, r.Revenue));
+        }
+
         // ── Commercial bonus ────────────────────────────────────────────────────────
 
         [Fact]

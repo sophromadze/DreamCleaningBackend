@@ -43,7 +43,17 @@ namespace DreamCleaningBackend.Services
                 return;
             }
 
-            // Force IPv4 — IPv6 is disabled on the production VPS (see CLAUDE.md quirk #2).
+            _http = CreateHttpClient(apiKey, TimeSpan.FromSeconds(60));
+            IsConfigured = true;
+        }
+
+        /// <summary>
+        /// An HttpClient for the Messages API that connects over IPv4 only — IPv6 is disabled on
+        /// the production VPS (see CLAUDE.md quirk #2). Shared with the SuperAdmin analytics
+        /// agent's client, which needs its own key and a longer timeout.
+        /// </summary>
+        internal static HttpClient CreateHttpClient(string apiKey, TimeSpan timeout)
+        {
             var handler = new SocketsHttpHandler
             {
                 ConnectCallback = async (context, cancellationToken) =>
@@ -57,11 +67,13 @@ namespace DreamCleaningBackend.Services
                 }
             };
 
-            _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
-            _http.DefaultRequestHeaders.Add("x-api-key", apiKey);
-            _http.DefaultRequestHeaders.Add("anthropic-version", ApiVersion);
-            IsConfigured = true;
+            var http = new HttpClient(handler) { Timeout = timeout };
+            http.DefaultRequestHeaders.Add("x-api-key", apiKey);
+            http.DefaultRequestHeaders.Add("anthropic-version", ApiVersion);
+            return http;
         }
+
+        internal const string MessagesEndpoint = MessagesUrl;
 
         /// <summary>
         /// One Messages API call. The caller (ChatAgentService) owns the tool-use loop.

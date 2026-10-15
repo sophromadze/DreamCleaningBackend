@@ -64,6 +64,184 @@ namespace DreamCleaningBackend.Migrations
                     b.ToTable("AccountMergeRequests");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.AdminAgentMessage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ApiMessagesJson")
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<int>("CacheReadTokens")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CacheWriteTokens")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<decimal?>("CostUsd")
+                        .HasColumnType("decimal(18,6)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<string>("InputMode")
+                        .HasMaxLength(10)
+                        .HasColumnType("varchar(10)");
+
+                    b.Property<int>("InputTokens")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Model")
+                        .HasMaxLength(60)
+                        .HasColumnType("varchar(60)");
+
+                    b.Property<int>("OutputTokens")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PartsJson")
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<string>("ProgressLabel")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<int>("SessionId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("ToolCallsJson")
+                        .HasColumnType("LONGTEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SessionId", "Id")
+                        .HasDatabaseName("IX_AdminAgentMessages_Session_Id");
+
+                    b.ToTable("AdminAgentMessages");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.AdminAgentSession", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<long>("CacheReadTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CacheWriteTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<decimal?>("EstimatedCostUsd")
+                        .HasColumnType("decimal(18,6)");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("OwnerUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerUserId", "UpdatedAt")
+                        .HasDatabaseName("IX_AdminAgentSessions_Owner_UpdatedAt");
+
+                    b.ToTable("AdminAgentSessions");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.AdminAgentSqlLog", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("DurationMs")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<long?>("MessageId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("Rejected")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("SessionId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Sql")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<bool>("Succeeded")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("Truncated")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("IX_AdminAgentSqlLogs_CreatedAt");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("IX_AdminAgentSqlLogs_User_CreatedAt");
+
+                    b.ToTable("AdminAgentSqlLogs");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.AdminBonusRateOverride", b =>
                 {
                     b.Property<int>("Id")
@@ -8524,6 +8702,28 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("OldAccount");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.AdminAgentMessage", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.AdminAgentSession", "Session")
+                        .WithMany("Messages")
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Session");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.AdminAgentSession", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.User", "Owner")
+                        .WithMany()
+                        .HasForeignKey("OwnerUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Owner");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.AdminBonusRateOverride", b =>
                 {
                     b.HasOne("DreamCleaningBackend.Models.User", "UpdatedByUser")
@@ -10140,6 +10340,11 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("UsedOnOrder");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.AdminAgentSession", b =>
+                {
+                    b.Navigation("Messages");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.ChatAgentSession", b =>

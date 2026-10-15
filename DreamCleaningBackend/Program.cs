@@ -75,7 +75,9 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-builder.Services.AddAuthorization();
+// Named policies. AdminAgentSuperAdmin guards every analytics-agent endpoint (2026-10): SuperAdmin
+// role only, checked server-side whatever the frontend shows.
+builder.Services.AddAuthorization(DreamCleaningBackend.Controllers.AdminAgentController.AddPolicy);
 
 // Add CSRF Protection for cookie authentication
 builder.Services.AddAntiforgery(options =>
@@ -257,6 +259,9 @@ builder.Services.AddScoped<ICleanerPayrollEditService, CleanerPayrollEditService
 builder.Services.AddScoped<IOutgoingPaymentService, OutgoingPaymentService>();
 builder.Services.AddScoped<IAdminSalaryPayoutService, AdminSalaryPayoutService>();
 builder.Services.AddScoped<IAdminPerformanceService, AdminPerformanceService>();
+// Statistics / Finances report (2026-10: moved out of AdminStatisticsController so the
+// SuperAdmin analytics agent reads the same figures the page shows).
+builder.Services.AddScoped<DreamCleaningBackend.Services.Reporting.IStatisticsReportService, DreamCleaningBackend.Services.Reporting.StatisticsReportService>();
 builder.Services.AddScoped<IUserCleaningPhotoService, UserCleaningPhotoService>();
 builder.Services.AddHostedService<CleanerNotificationService>();
 builder.Services.AddHostedService<CustomerNotificationService>();
@@ -445,6 +450,14 @@ builder.Services.AddSingleton<TelegramBotService>();
 // escalation hand-off channel (gated by TelegramBot:Enabled — see TelegramBotService).
 builder.Services.AddScoped<IChatCatalogService, ChatCatalogService>();
 builder.Services.AddSingleton<AnthropicMessagesClient>(); // raw HttpClient forcing IPv4 (VPS quirk)
+
+// SuperAdmin analytics agent (2026-10) - separate from the public chat agent above: its own
+// IPv4 client (AdminAgent:ApiKey, falling back to Anthropic:ApiKey), tools, prompt and tables.
+builder.Services.AddSingleton<DreamCleaningBackend.Services.AdminAgent.AdminAgentAnthropicClient>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.AdminAgent.IAgentSqlRunner, DreamCleaningBackend.Services.AdminAgent.AgentSqlRunner>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.AdminAgent.AdminAgentTools>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.AdminAgent.AdminAgentTurnRunner>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.AdminAgent.IAdminAgentService, DreamCleaningBackend.Services.AdminAgent.AdminAgentService>();
 builder.Services.AddScoped<IChatAgentService, ChatAgentService>();
 builder.Services.AddHostedService<ChatImageCleanupService>(); // daily 30-day photo retention sweep
 builder.Services.AddSingleton<IWebsitePageContentService, WebsitePageContentService>(); // get_page_content tool cache
@@ -573,6 +586,24 @@ builder.Services.AddRateLimiter(options =>
         return RateLimitPartition.GetFixedWindowLimiter(clientIp, _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        });
+    });
+
+    // SuperAdmin analytics agent: starting a turn costs real AI tokens, so even a signed-in
+    // SuperAdmin is held to 20 questions a minute. Its OWN policy - never shares the public chat
+    // limiter. Partitioned by client IP because this middleware runs before authentication.
+    options.AddPolicy(DreamCleaningBackend.Controllers.AdminAgentController.RateLimitPolicy, httpContext =>
+    {
+        var clientIp = httpContext.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+            ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
+        if (string.IsNullOrEmpty(clientIp))
+            clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter("agent:" + clientIp, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 20,
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         });
