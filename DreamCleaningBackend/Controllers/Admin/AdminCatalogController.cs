@@ -298,6 +298,29 @@ namespace DreamCleaningBackend.Controllers
                 : (key, null);
         }
 
+        /// <summary>
+        /// Field rules (CatalogInputPolicy) plus key uniqueness WITHIN the service type: the booking
+        /// and pricing code find a type's bedrooms / sq.ft / levels row by its key, so two rows with
+        /// one key make that lookup pick whichever comes first. Returns null when the save may go ahead.
+        /// </summary>
+        private async Task<string?> ValidateServiceAsync(
+            int? exceptServiceId, int serviceTypeId, string? name, string? serviceKey, string inputType,
+            string? relationType, int? minValue, int? maxValue, int? stepValue, decimal cost, decimal timeDuration)
+        {
+            var problem = CatalogInputPolicy.ValidateService(
+                name, serviceKey, inputType, relationType, minValue, maxValue, stepValue, cost, timeDuration);
+            if (problem != null) return problem;
+
+            var key = serviceKey!.Trim();
+            var duplicate = await _context.Services.AnyAsync(s =>
+                s.ServiceTypeId == serviceTypeId && s.ServiceKey == key
+                && (exceptServiceId == null || s.Id != exceptServiceId));
+            return duplicate ? DescribeDuplicateServiceKey(key) : null;
+        }
+
+        private static string DescribeDuplicateServiceKey(string key) =>
+            $"This service type already has a service with the key \"{key}\". Each key can be used once per service type.";
+
         [HttpPut("service-types/{id}/deactivate")]
         [Authorize(Roles = "SuperAdmin")]
         [RequirePermission(Permission.Deactivate)]
@@ -467,6 +490,13 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ServiceDto>> CreateService(CreateServiceDto dto)
         {
+            var (inputType, isRangeInput) = CatalogInputPolicy.NormalizeInputType(dto.InputType, dto.IsRangeInput);
+            var relationType = CatalogInputPolicy.NormalizeRelationType(dto.ServiceRelationType);
+            var serviceError = await ValidateServiceAsync(
+                exceptServiceId: null, dto.ServiceTypeId, dto.Name, dto.ServiceKey, inputType, relationType,
+                dto.MinValue, dto.MaxValue, dto.StepValue, dto.Cost, dto.TimeDuration);
+            if (serviceError != null) return BadRequest(new { message = serviceError });
+
             using (var transaction = await _context.Database.BeginTransactionAsync())
             {
                 try
@@ -495,18 +525,18 @@ namespace DreamCleaningBackend.Controllers
 
                     var service = new Service
                     {
-                        Name = dto.Name,
-                        ServiceKey = dto.ServiceKey,
+                        Name = dto.Name.Trim(),
+                        ServiceKey = dto.ServiceKey.Trim(),
                         Cost = dto.Cost,
                         TimeDuration = dto.TimeDuration,
                         ServiceTypeId = dto.ServiceTypeId,
-                        InputType = dto.InputType,
+                        InputType = inputType,
                         MinValue = dto.MinValue,
                         MaxValue = dto.MaxValue,
                         StepValue = dto.StepValue,
-                        IsRangeInput = dto.IsRangeInput,
+                        IsRangeInput = isRangeInput,
                         Unit = dto.Unit,
-                        ServiceRelationType = dto.ServiceRelationType, // ADD THIS
+                        ServiceRelationType = relationType,
                         DisplayOrder = dto.DisplayOrder,
                         IsActive = true,
                         ChargeAboveThreshold = dto.ChargeAboveThreshold,
@@ -561,11 +591,19 @@ namespace DreamCleaningBackend.Controllers
                 StepValue = sourceService.StepValue,
                 IsRangeInput = sourceService.IsRangeInput,
                 Unit = sourceService.Unit,
-                ServiceRelationType = sourceService.ServiceRelationType, // ADD THIS
-                DisplayOrder = sourceService.DisplayOrder,
+                ServiceRelationType = sourceService.ServiceRelationType,
+                // Appended after the target type's services; the source's number collided there.
+                DisplayOrder = (await _context.Services
+                    .Where(s => s.ServiceTypeId == dto.TargetServiceTypeId)
+                    .MaxAsync(s => (int?)s.DisplayOrder) ?? 0) + 1,
                 IsActive = true,
                 CreatedAt = now
             };
+
+            var duplicateKey = await _context.Services.AnyAsync(s =>
+                s.ServiceTypeId == dto.TargetServiceTypeId && s.ServiceKey == sourceService.ServiceKey);
+            if (duplicateKey)
+                return BadRequest(new { message = DescribeDuplicateServiceKey(sourceService.ServiceKey) });
 
             // Threshold sources are remapped by ServiceKey within the TARGET service type, so a
             // copy into a different type points at that type's own bedrooms rather than reaching
@@ -624,6 +662,13 @@ namespace DreamCleaningBackend.Controllers
             if (service == null)
                 return NotFound();
 
+            var (inputType, isRangeInput) = CatalogInputPolicy.NormalizeInputType(dto.InputType, dto.IsRangeInput);
+            var relationType = CatalogInputPolicy.NormalizeRelationType(dto.ServiceRelationType);
+            var serviceError = await ValidateServiceAsync(
+                exceptServiceId: id, dto.ServiceTypeId, dto.Name, dto.ServiceKey, inputType, relationType,
+                dto.MinValue, dto.MaxValue, dto.StepValue, dto.Cost, dto.TimeDuration);
+            if (serviceError != null) return BadRequest(new { message = serviceError });
+
             // FULL scalar snapshot - see AuditSnapshot.
             //
             // This copy omitted ChargeAboveThreshold, ZeroQuantityCost and ZeroQuantityDuration,
@@ -671,18 +716,18 @@ namespace DreamCleaningBackend.Controllers
                     }
 
                     // Update all fields
-                    service.Name = dto.Name;
-                    service.ServiceKey = dto.ServiceKey;
+                    service.Name = dto.Name.Trim();
+                    service.ServiceKey = dto.ServiceKey.Trim();
                     service.Cost = dto.Cost;
                     service.TimeDuration = dto.TimeDuration;
                     service.ServiceTypeId = dto.ServiceTypeId;
-                    service.InputType = dto.InputType;
+                    service.InputType = inputType;
                     service.MinValue = dto.MinValue;
                     service.MaxValue = dto.MaxValue;
                     service.StepValue = dto.StepValue;
-                    service.IsRangeInput = dto.IsRangeInput;
+                    service.IsRangeInput = isRangeInput;
                     service.Unit = dto.Unit;
-                    service.ServiceRelationType = dto.ServiceRelationType;
+                    service.ServiceRelationType = relationType;
                     service.DisplayOrder = dto.DisplayOrder;
                     service.ChargeAboveThreshold = dto.ChargeAboveThreshold;
                     service.ZeroQuantityCost = dto.ZeroQuantityCost;
@@ -1213,6 +1258,7 @@ namespace DreamCleaningBackend.Controllers
                     IsSuperDeepCleaning = es.IsSuperDeepCleaning,
                     IsSameDayService = es.IsSameDayService,
                     PriceMultiplier = es.PriceMultiplier,
+                    TimeMultiplier = es.TimeMultiplier,
                     IsAvailableForAll = es.IsAvailableForAll,
                     IsActive = es.IsActive,
                     DisplayOrder = es.DisplayOrder
@@ -1227,6 +1273,14 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<ExtraServiceDto>> CreateExtraService(CreateExtraServiceDto dto)
         {
+            var inputError = CatalogInputPolicy.ValidateExtraService(
+                dto.Name, dto.Price, dto.Duration, dto.HasQuantity, dto.HasHours,
+                dto.IsDeepCleaning, dto.IsSuperDeepCleaning, dto.IsSameDayService,
+                dto.PriceMultiplier, dto.TimeMultiplier);
+            if (inputError != null) return BadRequest(new { message = inputError });
+            var (priceMultiplier, timeMultiplier) = CatalogInputPolicy.NormalizeMultipliers(
+                dto.IsDeepCleaning, dto.IsSuperDeepCleaning, dto.PriceMultiplier, dto.TimeMultiplier);
+
             var (extraServiceKey, extraServiceKeyError) = await ResolveExtraServiceKeyAsync(
                 dto.ExtraServiceKey, exceptExtraServiceId: null, dto.IsAvailableForAll, dto.ServiceTypeId);
             if (extraServiceKeyError != null) return BadRequest(new { message = extraServiceKeyError });
@@ -1271,7 +1325,7 @@ namespace DreamCleaningBackend.Controllers
 
                     var extraService = new ExtraService
                     {
-                        Name = dto.Name,
+                        Name = dto.Name.Trim(),
                         ExtraServiceKey = extraServiceKey,
                         Description = dto.Description,
                         Price = dto.Price,
@@ -1282,7 +1336,8 @@ namespace DreamCleaningBackend.Controllers
                         IsDeepCleaning = dto.IsDeepCleaning,
                         IsSuperDeepCleaning = dto.IsSuperDeepCleaning,
                         IsSameDayService = dto.IsSameDayService,
-                        PriceMultiplier = dto.PriceMultiplier,
+                        PriceMultiplier = priceMultiplier,
+                        TimeMultiplier = timeMultiplier,
                         ServiceTypeId = dto.ServiceTypeId,
                         IsAvailableForAll = dto.IsAvailableForAll,
                         DisplayOrder = dto.DisplayOrder,
@@ -1295,25 +1350,7 @@ namespace DreamCleaningBackend.Controllers
 
                     await _auditService.LogCreateAsync(extraService);
 
-                    return Ok(new ExtraServiceDto
-                    {
-                        Id = extraService.Id,
-                        Name = extraService.Name,
-                        ExtraServiceKey = extraService.ExtraServiceKey,
-                        Description = extraService.Description,
-                        Price = extraService.Price,
-                        Duration = extraService.Duration,
-                        Icon = extraService.Icon,
-                        HasQuantity = extraService.HasQuantity,
-                        HasHours = extraService.HasHours,
-                        IsDeepCleaning = extraService.IsDeepCleaning,
-                        IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
-                        IsSameDayService = extraService.IsSameDayService,
-                        PriceMultiplier = extraService.PriceMultiplier,
-                        IsAvailableForAll = extraService.IsAvailableForAll,
-                        DisplayOrder = extraService.DisplayOrder,
-                        IsActive = extraService.IsActive
-                    });
+                    return Ok(CatalogDtoMapper.ToExtraServiceDto(extraService));
                 }
                 catch (Exception ex)
                 {
@@ -1358,9 +1395,14 @@ namespace DreamCleaningBackend.Controllers
                 IsSuperDeepCleaning = sourceExtraService.IsSuperDeepCleaning,
                 IsSameDayService = sourceExtraService.IsSameDayService,
                 PriceMultiplier = sourceExtraService.PriceMultiplier,
+                TimeMultiplier = sourceExtraService.TimeMultiplier,
                 ServiceTypeId = dto.TargetServiceTypeId,
                 IsAvailableForAll = false, // When copying to specific service type
-                DisplayOrder = sourceExtraService.DisplayOrder,
+                // Appended after everything the target type already shows (its own rows and the
+                // universal ones). Keeping the source's number collided with whatever sat there.
+                DisplayOrder = (await _context.ExtraServices
+                    .Where(es => es.ServiceTypeId == dto.TargetServiceTypeId || es.IsAvailableForAll)
+                    .MaxAsync(es => (int?)es.DisplayOrder) ?? 0) + 1,
                 IsActive = true,
                 CreatedAt = DateTime.UtcNow
             };
@@ -1377,24 +1419,7 @@ namespace DreamCleaningBackend.Controllers
                     TargetServiceTypeId = dto.TargetServiceTypeId
                 });
 
-            return Ok(new ExtraServiceDto
-            {
-                Id = newExtraService.Id,
-                Name = newExtraService.Name,
-                ExtraServiceKey = newExtraService.ExtraServiceKey,
-                Description = newExtraService.Description,
-                Price = newExtraService.Price,
-                Duration = newExtraService.Duration,
-                Icon = newExtraService.Icon,
-                HasQuantity = newExtraService.HasQuantity,
-                HasHours = newExtraService.HasHours,
-                IsDeepCleaning = newExtraService.IsDeepCleaning,
-                IsSuperDeepCleaning = newExtraService.IsSuperDeepCleaning,
-                IsSameDayService = newExtraService.IsSameDayService,
-                PriceMultiplier = newExtraService.PriceMultiplier,
-                IsAvailableForAll = newExtraService.IsAvailableForAll,
-                IsActive = newExtraService.IsActive
-            });
+            return Ok(CatalogDtoMapper.ToExtraServiceDto(newExtraService));
         }
 
         [HttpPut("extra-services/{id}")]
@@ -1408,6 +1433,16 @@ namespace DreamCleaningBackend.Controllers
 
             // Full scalar snapshot - see AuditSnapshot.
             var originalExtraService = AuditSnapshot.Of(extraService);
+
+            // An absent time multiplier keeps the stored one (see UpdateExtraServiceDto).
+            var requestedTimeMultiplier = dto.TimeMultiplier ?? extraService.TimeMultiplier;
+            var inputError = CatalogInputPolicy.ValidateExtraService(
+                dto.Name, dto.Price, dto.Duration, dto.HasQuantity, dto.HasHours,
+                dto.IsDeepCleaning, dto.IsSuperDeepCleaning, dto.IsSameDayService,
+                dto.PriceMultiplier, requestedTimeMultiplier);
+            if (inputError != null) return BadRequest(new { message = inputError });
+            var (priceMultiplier, timeMultiplier) = CatalogInputPolicy.NormalizeMultipliers(
+                dto.IsDeepCleaning, dto.IsSuperDeepCleaning, dto.PriceMultiplier, requestedTimeMultiplier);
 
             // An absent key keeps the stored one (see UpdateExtraServiceDto), but it is still
             // re-checked: moving the extra to another service type, or making it universal, can put
@@ -1460,7 +1495,7 @@ namespace DreamCleaningBackend.Controllers
                     }
 
                     // Update fields
-                    extraService.Name = dto.Name;
+                    extraService.Name = dto.Name.Trim();
                     extraService.ExtraServiceKey = extraServiceKey;
                     extraService.Description = dto.Description;
                     extraService.Price = dto.Price;
@@ -1471,7 +1506,8 @@ namespace DreamCleaningBackend.Controllers
                     extraService.IsDeepCleaning = dto.IsDeepCleaning;
                     extraService.IsSuperDeepCleaning = dto.IsSuperDeepCleaning;
                     extraService.IsSameDayService = dto.IsSameDayService;
-                    extraService.PriceMultiplier = dto.PriceMultiplier;
+                    extraService.PriceMultiplier = priceMultiplier;
+                    extraService.TimeMultiplier = timeMultiplier;
                     extraService.ServiceTypeId = dto.ServiceTypeId;
                     extraService.IsAvailableForAll = dto.IsAvailableForAll;
                     extraService.DisplayOrder = dto.DisplayOrder;
@@ -1483,25 +1519,7 @@ namespace DreamCleaningBackend.Controllers
                     // LOG THE UPDATE
                     await _auditService.LogUpdateAsync(originalExtraService, extraService);
 
-                    return Ok(new ExtraServiceDto
-                    {
-                        Id = extraService.Id,
-                        Name = extraService.Name,
-                        ExtraServiceKey = extraService.ExtraServiceKey,
-                        Description = extraService.Description,
-                        Price = extraService.Price,
-                        Duration = extraService.Duration,
-                        Icon = extraService.Icon,
-                        HasQuantity = extraService.HasQuantity,
-                        HasHours = extraService.HasHours,
-                        IsDeepCleaning = extraService.IsDeepCleaning,
-                        IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
-                        IsSameDayService = extraService.IsSameDayService,
-                        PriceMultiplier = extraService.PriceMultiplier,
-                        IsAvailableForAll = extraService.IsAvailableForAll,
-                        DisplayOrder = extraService.DisplayOrder,
-                        IsActive = extraService.IsActive
-                    });
+                    return Ok(CatalogDtoMapper.ToExtraServiceDto(extraService));
                 }
                 catch (Exception ex)
                 {

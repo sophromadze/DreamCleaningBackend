@@ -54,6 +54,12 @@ namespace DreamCleaningBackend.Models
         [Column(TypeName = "decimal(18,2)")]
         public decimal PriceMultiplier { get; set; } = 1.0m;
 
+        // Time multiplier for deep cleaning services: scales the home's minutes (service-type base
+        // duration + home lines such as bedrooms, bathrooms, sq.ft), never the extras. 1.0 = no change.
+        // DB default 1.0 (ApplicationDbContext), so rows created before the column read as "no change".
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal TimeMultiplier { get; set; } = 1.0m;
+
         // Service Type relationship (which service types can use this extra service)
         public int? ServiceTypeId { get; set; }
         public virtual ServiceType? ServiceType { get; set; }

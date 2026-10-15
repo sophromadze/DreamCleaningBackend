@@ -428,6 +428,7 @@ namespace DreamCleaningBackend.Services
                     Price = extraService.Price,
                     Duration = extraService.Duration,
                     PriceMultiplier = extraService.PriceMultiplier,
+                    TimeMultiplier = extraService.TimeMultiplier,
                     IsDeepCleaning = extraService.IsDeepCleaning,
                     IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
                     IsSameDayService = extraService.IsSameDayService,

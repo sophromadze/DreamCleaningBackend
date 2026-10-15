@@ -175,6 +175,8 @@ namespace DreamCleaningBackend.Services
             public decimal Price { get; set; }
             public decimal Duration { get; set; }
             public decimal PriceMultiplier { get; set; } = 1m;
+            /// <summary>Deep / Super Deep only: scales the home's minutes (base + home lines), never extras.</summary>
+            public decimal TimeMultiplier { get; set; } = 1m;
             public bool IsDeepCleaning { get; set; }
             public bool IsSuperDeepCleaning { get; set; }
             public bool IsSameDayService { get; set; }
@@ -240,6 +242,7 @@ namespace DreamCleaningBackend.Services
             /// <summary>Rounded subtotal including the deep-cleaning fee. Pre-discount, pre-tax.</summary>
             public decimal SubTotal { get; set; }
             public decimal PriceMultiplier { get; set; } = 1m;
+            public decimal TimeMultiplier { get; set; } = 1m;
             public decimal DeepCleaningFee { get; set; }
 
             /// <summary>
@@ -280,11 +283,6 @@ namespace DreamCleaningBackend.Services
         // ===== Step 1: multiplier =====
 
         /// <summary>
-        /// Cleaning-type multiplier: Super Deep wins over Deep wins over regular,
-        /// regardless of selection order. The fee is the matching extra's flat price,
-        /// added to the subtotal at the END (after service costs).
-        /// </summary>
-        /// <summary>
         /// Custom Pricing only: records the selected extras as $0 / 0-minute lines.
         ///
         /// On a custom-priced ("Pre-Arranged") order the admin-entered amount and duration ARE the
@@ -310,16 +308,45 @@ namespace DreamCleaningBackend.Services
             }
         }
 
+        /// <summary>
+        /// Cleaning-type multiplier: Super Deep wins over Deep wins over regular,
+        /// regardless of selection order. The fee is the matching extra's flat price,
+        /// added to the subtotal at the END (after service costs).
+        ///
+        /// The multiplier scales the HOME only — the service type's base price and every home
+        /// line (bedrooms, bathrooms, sq.ft, studio, levels, the cleaner rate). Extras are never
+        /// multiplied (2026-10): they keep their own catalogue price.
+        /// </summary>
         public static (decimal multiplier, decimal deepCleaningFee) ResolvePriceMultiplier(
             IEnumerable<ExtraServiceLineInput> extraServices)
         {
-            var super = extraServices.FirstOrDefault(e => e.IsSuperDeepCleaning);
-            var deep = extraServices.FirstOrDefault(e => e.IsDeepCleaning);
-
-            if (super != null) return (super.PriceMultiplier, super.Price);
-            if (deep != null) return (deep.PriceMultiplier, deep.Price);
-            return (1m, 0m);
+            var cleaningType = ResolveCleaningTypeExtra(extraServices);
+            return cleaningType == null ? (1m, 0m) : (cleaningType.PriceMultiplier, cleaningType.Price);
         }
+
+        /// <summary>
+        /// Time multiplier of the selected cleaning type (same precedence as the price multiplier),
+        /// 1 for a regular cleaning. Scales the home's minutes only: the service type's base duration
+        /// and the home lines. Extras, the deep extra's own minutes and explicitly chosen cleaner
+        /// hours are never scaled.
+        /// </summary>
+        public static decimal ResolveTimeMultiplier(IEnumerable<ExtraServiceLineInput> extraServices)
+            => ResolveCleaningTypeExtra(extraServices)?.TimeMultiplier ?? 1m;
+
+        private static ExtraServiceLineInput? ResolveCleaningTypeExtra(IEnumerable<ExtraServiceLineInput> extraServices)
+            => extraServices.FirstOrDefault(e => e.IsSuperDeepCleaning)
+               ?? extraServices.FirstOrDefault(e => e.IsDeepCleaning);
+
+        /// <summary>
+        /// Home minutes under the time multiplier, rounded to whole minutes (half up) so the two
+        /// calculators agree exactly. A multiplier of 1 returns the minutes untouched, which keeps
+        /// every regular quote — and every deep quote at the default 1.0 — identical to before.
+        /// Mirrors scaleHomeMinutes in order-pricing.calculator.ts.
+        /// </summary>
+        public static decimal ScaleHomeMinutes(decimal minutes, decimal timeMultiplier)
+            => timeMultiplier == 1m
+                ? minutes
+                : Math.Round(minutes * timeMultiplier, 0, MidpointRounding.AwayFromZero);
 
         // ===== Step 2: subtotal + duration + maids =====
 
@@ -349,7 +376,9 @@ namespace DreamCleaningBackend.Services
             }
 
             var (priceMultiplier, deepCleaningFee) = ResolvePriceMultiplier(input.ExtraServices);
+            var timeMultiplier = ResolveTimeMultiplier(input.ExtraServices);
             result.PriceMultiplier = priceMultiplier;
+            result.TimeMultiplier = timeMultiplier;
             result.DeepCleaningFee = deepCleaningFee;
 
             decimal subTotal = 0;
@@ -372,8 +401,9 @@ namespace DreamCleaningBackend.Services
             }
             else
             {
-                totalDuration += input.BaseDuration;
-                actualTotalDuration += input.BaseDuration;
+                var baseDuration = ScaleHomeMinutes(input.BaseDuration, timeMultiplier);
+                totalDuration += baseDuration;
+                actualTotalDuration += baseDuration;
             }
 
             // Services
@@ -401,12 +431,10 @@ namespace DreamCleaningBackend.Services
                 else if (service.Quantity == 0 &&
                          (service.ZeroQuantityCost.HasValue || service.ZeroQuantityDuration.HasValue))
                 {
-                    // Generic zero-quantity rule (Studio is just bedrooms = 0). Cost takes the
-                    // cleaning-type multiplier; duration does NOT — no duration anywhere in the
-                    // quote is multiplier-scaled, and Deep Cleaning contributes its own minutes
-                    // through its ExtraService row.
+                    // Generic zero-quantity rule (Studio is just bedrooms = 0). A home line: cost
+                    // takes the price multiplier, minutes the time multiplier.
                     line.Cost = (service.ZeroQuantityCost ?? 0m) * priceMultiplier;
-                    line.Duration = service.ZeroQuantityDuration ?? 0m;
+                    line.Duration = ScaleHomeMinutes(service.ZeroQuantityDuration ?? 0m, timeMultiplier);
                     subTotal += line.Cost;
                     if (!useExplicitHours)
                     {
@@ -420,7 +448,7 @@ namespace DreamCleaningBackend.Services
                     // are null, so a missing seed can't silently price a studio at $0.
 #pragma warning disable CS0618 // intentional fallback to the obsolete constants
                     line.Cost = StudioPrice * priceMultiplier;
-                    line.Duration = StudioDuration;
+                    line.Duration = ScaleHomeMinutes(StudioDuration, timeMultiplier);
 #pragma warning restore CS0618
                     subTotal += line.Cost;
                     if (!useExplicitHours)
@@ -432,7 +460,7 @@ namespace DreamCleaningBackend.Services
                 else
                 {
                     var (lineCost, lineDuration) =
-                        CalculateTieredLine(service, input.Services, priceMultiplier, result.Warnings);
+                        CalculateTieredLine(service, input.Services, priceMultiplier, result.Warnings, timeMultiplier);
                     line.Cost = lineCost;
                     line.Duration = lineDuration;
                     subTotal += line.Cost;
@@ -477,22 +505,22 @@ namespace DreamCleaningBackend.Services
                 }
                 else
                 {
-                    // Same Day Service is exempt from the cleaning-type multiplier.
-                    var currentMultiplier = extra.IsSameDayService ? 1m : priceMultiplier;
-
+                    // Extras keep their own price and minutes: neither cleaning-type multiplier
+                    // applies to them (2026-10 — before that the price multiplier did, Same Day
+                    // excepted).
                     if (extra.HasHours)
                     {
-                        line.Cost = extra.Price * extra.Hours * currentMultiplier;
+                        line.Cost = extra.Price * extra.Hours;
                         line.Duration = extra.Duration * extra.Hours;
                     }
                     else if (extra.HasQuantity)
                     {
-                        line.Cost = extra.Price * extra.Quantity * currentMultiplier;
+                        line.Cost = extra.Price * extra.Quantity;
                         line.Duration = extra.Duration * extra.Quantity;
                     }
                     else
                     {
-                        line.Cost = extra.Price * currentMultiplier;
+                        line.Cost = extra.Price;
                         line.Duration = extra.Duration;
                     }
 
@@ -626,13 +654,15 @@ namespace DreamCleaningBackend.Services
         /// <see cref="ServiceLineInput.TimeDuration"/> across the whole billable quantity, which
         /// is exactly the pre-refactor behaviour every other service still relies on.
         ///
-        /// Cost takes the cleaning-type multiplier; duration does not.
+        /// Cost takes the cleaning-type price multiplier, minutes its time multiplier
+        /// (<see cref="ScaleHomeMinutes"/>).
         /// </summary>
         private static (decimal Cost, decimal Duration) CalculateTieredLine(
             ServiceLineInput service,
             IReadOnlyList<ServiceLineInput> allServices,
             decimal priceMultiplier,
-            List<string> warnings)
+            List<string> warnings,
+            decimal timeMultiplier = 1m)
         {
             var included = ResolveIncludedQuantity(service, allServices, warnings);
             var billable = Math.Max(0m, service.Quantity - included);
@@ -665,7 +695,7 @@ namespace DreamCleaningBackend.Services
                 }
             }
 
-            return (cost * priceMultiplier, duration);
+            return (cost * priceMultiplier, ScaleHomeMinutes(duration, timeMultiplier));
         }
 
         /// <summary>

@@ -4626,6 +4626,11 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<int?>("ServiceTypeId")
                         .HasColumnType("int");
 
+                    b.Property<decimal>("TimeMultiplier")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("decimal(18,2)")
+                        .HasDefaultValue(1.0m);
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime(6)");
 
@@ -4653,7 +4658,8 @@ namespace DreamCleaningBackend.Migrations
                             IsSuperDeepCleaning = false,
                             Name = "Deep Cleaning",
                             Price = 50m,
-                            PriceMultiplier = 1.5m
+                            PriceMultiplier = 1.5m,
+                            TimeMultiplier = 1.0m
                         },
                         new
                         {
@@ -4672,7 +4678,8 @@ namespace DreamCleaningBackend.Migrations
                             IsSuperDeepCleaning = true,
                             Name = "Super Deep Cleaning",
                             Price = 100m,
-                            PriceMultiplier = 2.0m
+                            PriceMultiplier = 2.0m,
+                            TimeMultiplier = 1.0m
                         },
                         new
                         {
@@ -4691,7 +4698,8 @@ namespace DreamCleaningBackend.Migrations
                             IsSuperDeepCleaning = false,
                             Name = "Same Day Service",
                             Price = 75m,
-                            PriceMultiplier = 1.0m
+                            PriceMultiplier = 1.0m,
+                            TimeMultiplier = 1.0m
                         },
                         new
                         {
@@ -4710,7 +4718,8 @@ namespace DreamCleaningBackend.Migrations
                             IsSuperDeepCleaning = false,
                             Name = "Window Cleaning",
                             Price = 15m,
-                            PriceMultiplier = 1.0m
+                            PriceMultiplier = 1.0m,
+                            TimeMultiplier = 1.0m
                         },
                         new
                         {
@@ -4729,7 +4738,8 @@ namespace DreamCleaningBackend.Migrations
                             IsSuperDeepCleaning = false,
                             Name = "Wall Cleaning",
                             Price = 20m,
-                            PriceMultiplier = 1.0m
+                            PriceMultiplier = 1.0m,
+                            TimeMultiplier = 1.0m
                         },
                         new
                         {
@@ -4748,7 +4758,8 @@ namespace DreamCleaningBackend.Migrations
                             IsSuperDeepCleaning = false,
                             Name = "Organizing Service",
                             Price = 30m,
-                            PriceMultiplier = 1.0m
+                            PriceMultiplier = 1.0m,
+                            TimeMultiplier = 1.0m
                         },
                         new
                         {
@@ -4768,7 +4779,8 @@ namespace DreamCleaningBackend.Migrations
                             Name = "Laundry Service",
                             Price = 25m,
                             PriceMultiplier = 1.0m,
-                            ServiceTypeId = 1
+                            ServiceTypeId = 1,
+                            TimeMultiplier = 1.0m
                         },
                         new
                         {
@@ -4787,7 +4799,8 @@ namespace DreamCleaningBackend.Migrations
                             IsSuperDeepCleaning = false,
                             Name = "Refrigerator Cleaning",
                             Price = 35m,
-                            PriceMultiplier = 1.0m
+                            PriceMultiplier = 1.0m,
+                            TimeMultiplier = 1.0m
                         },
                         new
                         {
@@ -4806,7 +4819,8 @@ namespace DreamCleaningBackend.Migrations
                             IsSuperDeepCleaning = false,
                             Name = "Oven Cleaning",
                             Price = 40m,
-                            PriceMultiplier = 1.0m
+                            PriceMultiplier = 1.0m,
+                            TimeMultiplier = 1.0m
                         });
                 });
 

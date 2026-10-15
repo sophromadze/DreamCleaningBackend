@@ -1342,6 +1342,12 @@ namespace DreamCleaningBackend.Data
             modelBuilder.Entity<ExtraService>()
                 .HasIndex(es => new { es.ServiceTypeId, es.ExtraServiceKey });
 
+            // DB default 1.0 so every existing extra (production rows included) reads as "no time
+            // change" when the column is added; a 0 would wipe the home's minutes on a deep quote.
+            modelBuilder.Entity<ExtraService>()
+                .Property(es => es.TimeMultiplier)
+                .HasDefaultValue(1.0m);
+
             // OrderService configuration
             modelBuilder.Entity<OrderService>()
                 .HasOne(os => os.Order)

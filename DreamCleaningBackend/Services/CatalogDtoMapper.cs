@@ -118,6 +118,7 @@ namespace DreamCleaningBackend.Services
             IsSuperDeepCleaning = extraService.IsSuperDeepCleaning,
             IsSameDayService = extraService.IsSameDayService,
             PriceMultiplier = extraService.PriceMultiplier,
+            TimeMultiplier = extraService.TimeMultiplier,
             IsAvailableForAll = extraService.IsAvailableForAll,
             IsActive = extraService.IsActive,
             DisplayOrder = extraService.DisplayOrder

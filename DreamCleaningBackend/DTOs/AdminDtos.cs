@@ -128,6 +128,7 @@ namespace DreamCleaningBackend.DTOs
         public bool IsSuperDeepCleaning { get; set; }
         public bool IsSameDayService { get; set; }
         public decimal PriceMultiplier { get; set; }
+        public decimal TimeMultiplier { get; set; }
         public bool IsAvailableForAll { get; set; }
         public bool IsActive { get; set; }
         public int DisplayOrder { get; set; }
@@ -265,6 +266,8 @@ namespace DreamCleaningBackend.DTOs
         public bool IsSuperDeepCleaning { get; set; }
         public bool IsSameDayService { get; set; }
         public decimal PriceMultiplier { get; set; } = 1.0m;
+        /// <summary>Deep / Super Deep only: scales the home's minutes. 1.0 = no change.</summary>
+        public decimal TimeMultiplier { get; set; } = 1.0m;
         public int? ServiceTypeId { get; set; }
         public bool IsAvailableForAll { get; set; } = true;
         public int DisplayOrder { get; set; }
@@ -289,6 +292,11 @@ namespace DreamCleaningBackend.DTOs
         public bool IsSuperDeepCleaning { get; set; }
         public bool IsSameDayService { get; set; }
         public decimal PriceMultiplier { get; set; }
+        /// <summary>
+        /// See ExtraService.TimeMultiplier. Null (absent) keeps the stored value, so an admin page
+        /// loaded before the field existed cannot zero it.
+        /// </summary>
+        public decimal? TimeMultiplier { get; set; }
         public int? ServiceTypeId { get; set; }
         public bool IsAvailableForAll { get; set; }
         public int DisplayOrder { get; set; }
