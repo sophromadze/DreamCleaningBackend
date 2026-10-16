@@ -232,6 +232,7 @@ public class McpConnectorUnitTests
         var one = Describe("""{"section":"views","view":"agent_orders"}""")["views"]!.GetValue<string>();
         Assert.StartsWith("### agent_orders", one);
         Assert.DoesNotContain("### agent_staff", one);
+        Assert.Contains("- arranged_cleaning_kind (text): Cleaning kind chosen on the order (Regular, Deep, Move In/Out, Office, Custom, Heavy, Filthy, Post Construction); set mainly on Pre-arranged orders, NULL = not set.", one);
     }
 
     // ── Expense rules ───────────────────────────────────────────────────────────────────────────

@@ -85,6 +85,21 @@ public class AgentViewCatalogTests
     }
 
     [Fact]
+    public void AgentOrdersExposesTheArrangedCleaningKindAsTheDropdownLabel()
+    {
+        // Order.CustomServiceDisplayName stores the label picked in the order's "Change service
+        // type" dropdown; blank or missing reads as NULL ("Not set (Arranged)").
+        var orders = AgentViewCatalog.Views.Single(v => v.Name == "agent_orders");
+        var column = Assert.Single(orders.Columns, c => c.Name == "arranged_cleaning_kind");
+        Assert.Equal("NULLIF(TRIM(o.`CustomServiceDisplayName`), '')", column.Sql);
+        Assert.Equal("text", column.Type);
+        Assert.Equal(
+            "Cleaning kind chosen on the order (Regular, Deep, Move In/Out, Office, Custom, Heavy, Filthy, Post Construction); set mainly on Pre-arranged orders, NULL = not set.",
+            column.Meaning);
+        Assert.Contains("- arranged_cleaning_kind (text): Cleaning kind chosen on the order", AgentViewCatalog.PromptSchema());
+    }
+
+    [Fact]
     public void ThePromptDescribesEveryViewAndKeepsTheBusinessDefinitionsSection()
     {
         var prompt = AdminAgentSystemPrompt.Build();

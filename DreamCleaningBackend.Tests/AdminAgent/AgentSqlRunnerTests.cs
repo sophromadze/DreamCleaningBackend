@@ -135,6 +135,37 @@ public class AgentSqlRunnerMariaDbTests : IClassFixture<MariaDbDatabase>, IAsync
     }
 
     [MariaDbFact]
+    public async Task ArrangedCleaningKindIsTheStoredLabel_AndNullWhenNotSet()
+    {
+        await using var ctx = _db.CreateContext();
+        var user = new User
+        {
+            FirstName = "Agent", LastName = "Kind", Email = $"agent.kind.{Guid.NewGuid():N}@example.com",
+            Role = UserRole.Customer, IsActive = true, CreatedAt = DateTime.UtcNow
+        };
+        ctx.Users.Add(user);
+        await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+        var typeId = await ctx.ServiceTypes.Where(t => t.ServiceKey == "agent-it-type").Select(t => t.Id).SingleAsync(TestContext.Current.CancellationToken);
+
+        Order NewOrder(string? kind) => new()
+        {
+            UserId = user.Id, ServiceTypeId = typeId, OrderDate = DateTime.UtcNow, ServiceDate = DateTime.UtcNow.Date,
+            ServiceTime = TimeSpan.FromHours(10), ContactFirstName = "A", ContactLastName = "K", ContactEmail = "k@example.com",
+            ContactPhone = "2125550100", ServiceAddress = "1 Test St", City = "Manhattan", State = "New York", ZipCode = "10001",
+            Status = "Pending", TotalDuration = 120, CreatedAt = DateTime.UtcNow, CustomServiceDisplayName = kind
+        };
+        var orders = new[] { NewOrder("Move In/Out"), NewOrder(" Deep "), NewOrder(null), NewOrder("  ") };
+        ctx.Orders.AddRange(orders);
+        await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var result = await Runner(ctx).RunAsync(
+            $"SELECT order_id, arranged_cleaning_kind FROM agent_orders WHERE customer_id = {user.Id} ORDER BY order_id",
+            1, 1, null, TestContext.Current.CancellationToken);
+        Assert.True(result.Ok, result.Error);
+        Assert.Equal(new string?[] { "Move In/Out", "Deep", null, null }, result.Rows.Select(r => (string?)r[1]));
+    }
+
+    [MariaDbFact]
     public async Task TheDatabaseItselfRefusesTheTablesBehindTheViews()
     {
         await using var ctx = _db.CreateContext();

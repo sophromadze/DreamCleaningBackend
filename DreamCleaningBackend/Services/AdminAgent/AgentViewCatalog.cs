@@ -129,6 +129,9 @@ namespace DreamCleaningBackend.Services.AdminAgent
                         C("service_type_key", "st.`ServiceKey`", "text", "Stable service-type KEY. Always match service types by this key, never by id or name. May be NULL on types nobody has keyed yet."),
                         C("service_type_name", "st.`Name`", "text", "Service type display name (for labels only)."),
                         C("is_custom_service_type", "st.`IsCustom`", "bool", "Pre-Arranged / custom-priced type (admin-entered total)."),
+                        // Order.CustomServiceDisplayName stores the bare label the admin picked in the
+                        // order's "Change service type" dropdown, so the stored text IS the display name.
+                        C("arranged_cleaning_kind", "NULLIF(TRIM(o.`CustomServiceDisplayName`), '')", "text", "Cleaning kind chosen on the order (Regular, Deep, Move In/Out, Office, Custom, Heavy, Filthy, Post Construction); set mainly on Pre-arranged orders, NULL = not set."),
                         C("subscription_id", "o.`SubscriptionId`", "int", "Plan tier the order was booked on (One Time is a tier too)."),
                         C("subscription_name", "sub.`Name`", "text", "Plan tier name: One Time, Weekly, Bi-Weekly, Monthly ..."),
                         C("subscription_days", "sub.`SubscriptionDays`", "int", "Days between visits of the tier; 0 = one-time."),
