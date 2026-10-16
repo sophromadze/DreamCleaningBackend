@@ -11,7 +11,8 @@ namespace DreamCleaningBackend.Models
 
         /// <summary>
         /// The order's net: price without tips, minus sales tax, minus the cleaners' wages, minus
-        /// the order's fixed per-order staff bonuses. See <see cref="Helpers.AdminOrderEarnings"/>.
+        /// the order's Stripe fees — no staff bonus taken off (2026-10-16; it used to take the fixed
+        /// bonuses off). See <see cref="Helpers.AdminOrderEarnings"/>.
         /// </summary>
         NetIncome = 1
     }

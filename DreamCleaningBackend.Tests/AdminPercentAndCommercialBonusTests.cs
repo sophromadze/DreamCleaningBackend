@@ -17,8 +17,10 @@ namespace DreamCleaningBackend.Tests
     /// salary, and the cleaners-dashboard full-name search.
     ///
     /// Worked order used throughout (USD): subtotal 200, tax 17.75, tips 30, cleaners' wages 100,
-    /// returning customer booked by an administrator (fixed bonus 10 GEL at 0.37 = $3.70).
-    ///   order total (no tips) = 217.75;  net before the % bonus = 200 − 100 − 3.70 = 96.30.
+    /// paid by card (total 247.75), returning customer booked by an administrator (fixed bonus
+    /// 10 GEL at 0.37 = $3.70).
+    ///   order total (no tips) = 217.75;  Stripe fee = 247.75 × 2.9% + 0.30 = 7.48;
+    ///   net = 200 − 100 − 7.48 = 92.52 (staff bonuses are NOT taken off — owner's rule, 2026-10-16).
     /// </summary>
     public class AdminPercentAndCommercialBonusTests : IDisposable
     {
@@ -61,13 +63,13 @@ namespace DreamCleaningBackend.Tests
         // ── Pure rules ─────────────────────────────────────────────────────────────
 
         [Fact]
-        public void OrderTotalIsThePriceWithoutTips_AndNetTakesOffTaxWagesAndBonuses()
+        public void OrderTotalIsThePriceWithoutTips_AndNetTakesOffTaxWagesAndStripeFees()
         {
             var f = AdminOrderEarnings.Figures(200m, 0m, 0m, 0m, 17.75m, 30m, 0m, 0m);
             Assert.Equal(217.75m, f.OrderTotal);
             Assert.Equal(200m, f.Revenue);
             Assert.Equal(17.75m, f.Tax);
-            Assert.Equal(96.30m, AdminOrderEarnings.Net(f.Revenue, 100m, 3.70m));
+            Assert.Equal(92.52m, AdminOrderEarnings.Net(f.Revenue, 100m, 7.48m));
         }
 
         [Fact]
@@ -165,7 +167,7 @@ namespace DreamCleaningBackend.Tests
         }
 
         [Fact]
-        public async Task ThePercentageOfNetTakesOffTaxWagesAndTheFixedBonus()
+        public async Task ThePercentageOfNetTakesOffTaxWagesAndStripeFees_NotTheFixedBonus()
         {
             AddOrder(1, new DateTime(2026, 10, 12));
             var service = Bonuses();
@@ -174,7 +176,7 @@ namespace DreamCleaningBackend.Tests
                 Owner);
 
             var row = (await service.GetBonusesAsync(new DateTime(2026, 10, 1), new DateTime(2026, 11, 1), Owner, true)).Single();
-            Assert.Equal(9.63m, row.PercentBonusUsd);   // 10% of (200 − 100 − 3.70)
+            Assert.Equal(9.25m, row.PercentBonusUsd);   // 10% of (200 − 100 − 7.48 Stripe fee); the fixed bonus stays on
         }
 
         [Fact]
@@ -226,16 +228,19 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(435.50m, ana.OrdersTotal);
             Assert.Equal(35.50m, ana.SalesTax);
             Assert.Equal(200m, ana.CleanerWages);
-            Assert.Equal(7.40m, ana.StaffBonuses);     // 2 × 10 GEL (the new-customer rate is 10 too)
-            Assert.Equal(192.60m, ana.NetIncome);
+            Assert.Equal(14.96m, ana.StripeFees);      // 2 × 7.48, both paid by card
+            Assert.Equal(185.04m, ana.NetIncome);      // 400 − 200 − 14.96: bonuses NOT taken off
+            Assert.Equal(7.40m, ana.StaffBonuses);     // 2 × 10 GEL (the new-customer rate is 10 too), shown beside
+            Assert.Equal(3.70m, ana.StaffBonusesNew);
+            Assert.Equal(3.70m, ana.StaffBonusesReturning);
 
             // Split by whether the customer was new — the halves re-add to the totals.
             Assert.Equal(1, ana.NewCustomerOrders);
             Assert.Equal(1, ana.ReturningCustomerOrders);
             Assert.Equal(217.75m, ana.OrdersTotalNew);
             Assert.Equal(217.75m, ana.OrdersTotalReturning);
-            Assert.Equal(96.30m, ana.NetIncomeNew);
-            Assert.Equal(96.30m, ana.NetIncomeReturning);
+            Assert.Equal(92.52m, ana.NetIncomeNew);
+            Assert.Equal(92.52m, ana.NetIncomeReturning);
 
             var allTime = await service.GetAsync(null, null);
             Assert.Equal(3, allTime.Admins.Single(a => a.AdminId == Ana).CompletedOrders);
@@ -266,6 +271,101 @@ namespace DreamCleaningBackend.Tests
             Assert.Equal(ana.StaffBonuses, decimal.Round(rows.Sum(r => r.StaffBonusesUsd), 2));
             Assert.Equal(ana.NetIncome, decimal.Round(rows.Sum(r => r.Net), 2));
             Assert.All(rows, r => Assert.Equal(r.OrderTotal - r.SalesTax, r.Revenue));
+            Assert.Equal(ana.StripeFees, rows.Sum(r => r.StripeFee));
+        }
+
+        [Fact]
+        public async Task AnOrderPaidOutsideStripeCostsNoStripeFee()
+        {
+            var cash = AddOrder(1, new DateTime(2026, 10, 5));
+            cash.PaymentMethod = PaymentMethod.Cash;
+            _context.SaveChanges();
+
+            var service = new AdminPerformanceService(_context, Bonuses(), new FixedRateService(Rate));
+            var ana = (await service.GetAsync(new DateTime(2026, 10, 1), new DateTime(2026, 10, 31))).Admins.Single(a => a.AdminId == Ana);
+            Assert.Equal(0m, ana.StripeFees);
+            Assert.Equal(100m, ana.NetIncome);   // 200 − 100
+        }
+
+        // ── Shifts → one admin's orders ─────────────────────────────────────────────
+
+        private void AddCatalogue()
+        {
+            _context.ServiceTypes.Add(new ServiceType { Id = 901, Name = "Residential Cleaning" });
+            _context.Services.Add(new Service { Id = 901, Name = "Bedrooms", ServiceKey = "bedrooms", ServiceTypeId = 901 });
+            _context.ExtraServices.Add(new ExtraService { Id = 901, Name = "Inside Fridge" });
+            _context.SaveChanges();
+        }
+
+        [Fact]
+        public async Task TheShiftsOrdersViewListsTheJobWithItsPrices_AndNothingAboutTheCustomer()
+        {
+            AddCatalogue();
+            var o = AddOrder(1, new DateTime(2026, 10, 5));
+            o.ServiceTypeId = 901;
+            o.ContactFirstName = "Secret"; o.ContactLastName = "Customer";
+            o.ContactEmail = "secret@example.invalid"; o.ServiceAddress = "1 Hidden St";
+            o.OrderServices.Add(new DreamCleaningBackend.Models.OrderService { ServiceId = 901, Quantity = 2, Cost = 150m });
+            o.OrderExtraServices.Add(new OrderExtraService { ExtraServiceId = 901, Quantity = 1, Cost = 50m });
+            var fresh = AddOrder(2, new DateTime(2026, 10, 7));
+            fresh.ServiceTypeId = 901;
+            fresh.IsNewCustomerOrder = true;
+            fresh.PaymentMethod = PaymentMethod.Zelle;
+            fresh.SubTotal = 100m; fresh.Tax = 8.88m; fresh.Tips = 0m; fresh.Total = 108.88m; fresh.CleanerTotalSalary = 50m;
+            AddOrder(3, new DateTime(2026, 10, 9), status: OrderStatuses.Active);   // not completed
+            _context.SaveChanges();
+
+            var service = new AdminPerformanceService(_context, Bonuses(), new FixedRateService(Rate));
+            var view = await service.GetAdminOrdersAsync(Ana, new DateTime(2026, 10, 1), new DateTime(2026, 10, 31));
+
+            Assert.NotNull(view);
+            Assert.Equal(new[] { 2, 1 }, view!.Orders.Select(l => l.OrderId));   // newest first
+            var card = view.Orders.Single(l => l.OrderId == 1);
+            Assert.Equal("Residential Cleaning", card.ServiceType);
+            Assert.Equal("Card", card.PaymentMethod);
+            Assert.Equal("Bedrooms", card.Services.Single().Name);
+            Assert.Equal(150m, card.Services.Single().Cost);
+            Assert.Equal("Inside Fridge", card.ExtraServices.Single().Name);
+            Assert.Equal(217.75m, card.OrderTotal);
+            Assert.Equal(7.48m, card.StripeFee);
+            Assert.Equal(92.52m, card.Net);
+            var zelle = view.Orders.Single(l => l.OrderId == 2);
+            Assert.Equal(0m, zelle.StripeFee);
+            Assert.Equal(50m, zelle.Net);   // 100 − 50
+
+            Assert.Equal(2, view.Summary.Orders);
+            Assert.Equal(1, view.Summary.NewCustomerOrders);
+            Assert.Equal(326.63m, view.Summary.OrdersTotal);
+            Assert.Equal(108.88m, view.Summary.AveragePriceNew);
+            Assert.Equal(217.75m, view.Summary.AveragePriceReturning);
+            Assert.Equal(163.32m, view.Summary.AveragePrice);   // 326.63 / 2, half-up
+            Assert.Equal(142.52m, view.Summary.NetIncome);
+
+            // Nothing that names, reaches or identifies the customer is in the payload.
+            var json = System.Text.Json.JsonSerializer.Serialize(view);
+            foreach (var leak in new[] { "Secret", "secret@", "Hidden St", "UserId", "Email", "Address" })
+                Assert.DoesNotContain(leak, json);
+        }
+
+        [Fact]
+        public async Task TheShiftsOrdersViewIsOnlyForAdminRoleStaff()
+        {
+            var service = new AdminPerformanceService(_context, Bonuses(), new FixedRateService(Rate));
+            Assert.Null(await service.GetAdminOrdersAsync(Owner, null, null));
+            Assert.Null(await service.GetAdminOrdersAsync(99999, null, null));
+        }
+
+        [Fact]
+        public void TheSummaryAveragesAreNullWhenThereIsNothingToAverage()
+        {
+            var s = AdminPerformanceService.Summarise(new List<AdminOrderLineDto>
+            {
+                new() { IsNewCustomerOrder = false, OrderTotal = 100m, Net = 40m }
+            });
+            Assert.Null(s.AveragePriceNew);
+            Assert.Null(s.AverageNetNew);
+            Assert.Equal(100m, s.AveragePriceReturning);
+            Assert.Equal(40m, s.AverageNetReturning);
         }
 
         // ── Commercial bonus ────────────────────────────────────────────────────────

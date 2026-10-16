@@ -262,6 +262,7 @@ builder.Services.AddScoped<IAdminPerformanceService, AdminPerformanceService>();
 // Statistics / Finances report (2026-10: moved out of AdminStatisticsController so the
 // SuperAdmin analytics agent reads the same figures the page shows).
 builder.Services.AddScoped<DreamCleaningBackend.Services.Reporting.IStatisticsReportService, DreamCleaningBackend.Services.Reporting.StatisticsReportService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Reporting.IStripeFeeEstimator, DreamCleaningBackend.Services.Reporting.StripeFeeEstimator>();
 builder.Services.AddScoped<IUserCleaningPhotoService, UserCleaningPhotoService>();
 builder.Services.AddHostedService<CleanerNotificationService>();
 builder.Services.AddHostedService<CustomerNotificationService>();

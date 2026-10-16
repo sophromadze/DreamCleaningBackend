@@ -191,7 +191,7 @@ namespace DreamCleaningBackend.Services.AdminAgent
                     }, "from", "to", "group_by"),
 
                 Tool("get_admin_performance",
-                    "Outgoing Payments -> Admins figures: per Admin-role staff member, the orders they BOOKED (Order.BonusBookerId) that are Done and paid, Order total (incl. tax, excl. tips), sales tax, cleaner wages, staff bonuses and 'Admins-tab net' (total - tax - wages - bonuses), with per-order averages and new/returning splits. Group by 'admin' (default) or break ONE admin down by period, service type or new/returning.",
+                    "Outgoing Payments -> Admins figures: per Admin-role staff member, the orders they BOOKED (Order.BonusBookerId) that are Done and paid, Order total (incl. tax, excl. tips), sales tax, cleaner wages, Stripe fees, 'Admins-tab net' (total - tax - wages - Stripe fees) and, separately, the staff bonuses (not subtracted), with per-order averages and new/returning splits. Group by 'admin' (default) or break ONE admin down by period, service type or new/returning.",
                     new JsonObject
                     {
                         ["from"] = Date("First service date"),
@@ -533,7 +533,7 @@ namespace DreamCleaningBackend.Services.AdminAgent
         // ── Outgoing Payments → Admins ───────────────────────────────────────────────────────────
 
         private const string AdminsDefinition =
-            "Admins-tab (Outgoing Payments -> Admins): orders whose BOOKING admin (Order.BonusBookerId, Admin role only) is the person, Done AND paid, by service date. Order total = price incl. sales tax, excl. tips, net of refunds. Admins-tab net = Order total - sales tax - cleaner wages - staff bonuses (all sales tax is subtracted here, unlike Statistics).";
+            "Admins-tab (Outgoing Payments -> Admins): orders whose BOOKING admin (Order.BonusBookerId, Admin role only) is the person, Done AND paid, by service date. Order total = price incl. sales tax, excl. tips, net of refunds. Admins-tab net = Order total - sales tax - cleaner wages - Stripe fees (all sales tax is subtracted here, unlike Statistics). Staff bonuses are reported separately and NOT subtracted.";
 
         private async Task<AgentToolResult> AdminPerformanceAsync(JsonElement input, AgentToolTrailEntry entry)
         {
@@ -567,8 +567,9 @@ namespace DreamCleaningBackend.Services.AdminAgent
                         sales_tax = a.SalesTax,
                         revenue_excl_tax = a.OrdersTotal - a.SalesTax,
                         cleaner_wages = a.CleanerWages,
-                        staff_bonuses_usd = a.StaffBonuses,
+                        stripe_fees = a.StripeFees,
                         admins_tab_net = a.NetIncome,
+                        staff_bonuses_usd_not_subtracted = a.StaffBonuses,
                         average_order_total_per_order = Avg(a.OrdersTotal, a.CompletedOrders),
                         average_cleaner_wages_per_order = Avg(a.CleanerWages, a.CompletedOrders),
                         average_sales_tax_per_order = Avg(a.SalesTax, a.CompletedOrders),
@@ -616,6 +617,7 @@ namespace DreamCleaningBackend.Services.AdminAgent
             var total = rows.Sum(r => r.OrderTotal);
             var tax = rows.Sum(r => r.SalesTax);
             var wages = rows.Sum(r => r.CleanerWages);
+            var fees = rows.Sum(r => r.StripeFee);
             var bonuses = decimal.Round(rows.Sum(r => r.StaffBonusesUsd), 2);
             var net = decimal.Round(rows.Sum(r => r.Net), 2);
             return new
@@ -625,8 +627,9 @@ namespace DreamCleaningBackend.Services.AdminAgent
                 sales_tax = tax,
                 revenue_excl_tax = total - tax,
                 cleaner_wages = wages,
-                staff_bonuses_usd = bonuses,
+                stripe_fees = fees,
                 admins_tab_net = net,
+                staff_bonuses_usd_not_subtracted = bonuses,
                 average_order_total_per_order = Avg(total, n),
                 average_sales_tax_per_order = Avg(tax, n),
                 average_cleaner_wages_per_order = Avg(wages, n),

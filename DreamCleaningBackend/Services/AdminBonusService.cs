@@ -3,6 +3,7 @@ using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Helpers;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.Interfaces;
+using DreamCleaningBackend.Services.Reporting;
 using Microsoft.EntityFrameworkCore;
 
 namespace DreamCleaningBackend.Services
@@ -17,17 +18,25 @@ namespace DreamCleaningBackend.Services
         // the other way round would be a cycle DI refuses to build.
         private readonly Func<int, int, Task<decimal>> _usdPerGel;
 
+        // The Stripe fee each order cost — the "% of net" basis takes it off (2026-10-16), from the
+        // same estimator Statistics and Outgoing Payments → Admins use.
+        private readonly IStripeFeeEstimator _stripeFees;
+
         public AdminBonusService(ApplicationDbContext context, IServiceProvider services)
             : this(context, async (year, month) =>
-                (await services.GetRequiredService<IFinancialRateService>().GetOrCreateAsync(year, month)).UsdPerGel)
+                (await services.GetRequiredService<IFinancialRateService>().GetOrCreateAsync(year, month)).UsdPerGel,
+                services.GetRequiredService<IStripeFeeEstimator>())
         {
         }
 
-        /// <summary>Tests: a fixed exchange rate instead of the snapshot table.</summary>
-        public AdminBonusService(ApplicationDbContext context, Func<int, int, Task<decimal>> usdPerGel)
+        /// <summary>Tests: a fixed exchange rate instead of the snapshot table, and Stripe's
+        /// standard rates unless an estimator is given.</summary>
+        public AdminBonusService(
+            ApplicationDbContext context, Func<int, int, Task<decimal>> usdPerGel, IStripeFeeEstimator? stripeFees = null)
         {
             _context = context;
             _usdPerGel = usdPerGel;
+            _stripeFees = stripeFees ?? new StripeFeeEstimator(context, null);
         }
 
         public async Task<OrderAssignedAdminDto> AssignAdminAsync(int orderId, int? adminId, int byUserId)
@@ -436,11 +445,9 @@ namespace DreamCleaningBackend.Services
             if (orders.Count == 0)
                 return new List<PercentBonusLine>();
 
-            // The "net" basis has the order's FIXED bonuses taken off (both slots, the manager's
-            // share included) — but not this percentage, which cannot be a share of itself.
-            var fixedGel = await FixedCostsGelAsync(orders
-                .Select(o => new FixedBonusInput(o.Id, o.BonusBookerId, o.BonusBookerPosition, o.BonusManagerId, o.IsNewCustomerOrder))
-                .ToList());
+            // The "net" basis is the net the admin screens show: wages and Stripe fees off, no bonus
+            // off (owner's rule, 2026-10-16 — it used to take the fixed bonuses off instead).
+            var stripeFees = await _stripeFees.ByOrderAsync(query);
 
             var fx = new Dictionary<int, decimal>();
             var lines = new List<PercentBonusLine>();
@@ -457,10 +464,10 @@ namespace DreamCleaningBackend.Services
                 var figures = AdminOrderEarnings.Figures(
                     o.SubTotal, o.DiscountAmount, o.SubscriptionDiscountAmount, o.LoyaltyDiscountAmount,
                     o.Tax, o.Tips, o.CompanyDevelopmentTips, o.TotalRefundedAmount);
-                var fixedUsd = (fixedGel.TryGetValue(o.Id, out var g) ? g : 0m) * usdPerGel;
-                var netBefore = AdminOrderEarnings.Net(figures.Revenue, o.CleanerTotalSalary, fixedUsd);
+                var net = AdminOrderEarnings.Net(
+                    figures.Revenue, o.CleanerTotalSalary, stripeFees.TryGetValue(o.Id, out var fee) ? fee : 0m);
 
-                var usd = AdminOrderEarnings.PercentBonusUsd(rule, o.IsNewCustomerOrder, figures.OrderTotal, netBefore);
+                var usd = AdminOrderEarnings.PercentBonusUsd(rule, o.IsNewCustomerOrder, figures.OrderTotal, net);
                 if (usd <= 0m) continue;
 
                 lines.Add(new PercentBonusLine(o.Id, o.BonusBookerId.Value, usd, usd / usdPerGel));

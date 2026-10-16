@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using DreamCleaningBackend.DTOs;
 using DreamCleaningBackend.Models;
+using DreamCleaningBackend.Services;
 using DreamCleaningBackend.Services.Interfaces;
 
 namespace DreamCleaningBackend.Controllers
@@ -14,11 +15,14 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly IAdminBonusService _bonusService;
         private readonly IAuditService _auditService;
+        private readonly IAdminPerformanceService _adminPerformance;
 
-        public AdminBonusController(IAdminBonusService bonusService, IAuditService auditService)
+        public AdminBonusController(
+            IAdminBonusService bonusService, IAuditService auditService, IAdminPerformanceService adminPerformance)
         {
             _bonusService = bonusService;
             _auditService = auditService;
+            _adminPerformance = adminPerformance;
         }
 
         private int GetUserId()
@@ -66,6 +70,33 @@ namespace DreamCleaningBackend.Controllers
             catch (InvalidOperationException ex)
             {
                 return NotFound(new { message = ex.Message });
+            }
+        }
+
+        // GET /api/admin-bonus/admin/{adminId}/orders?from=&to=  (inclusive service dates; defaults
+        // to the current month like the bonus panel). Shifts → "Orders" (2026-10): the completed
+        // orders this admin booked, with prices, extras, wages, Stripe fees and net — and NO
+        // customer details. SuperAdmin for anyone; an admin for themselves only (owner's call).
+        [HttpGet("admin/{adminId}/orders")]
+        public async Task<ActionResult<AdminOrdersViewDto>> GetAdminOrders(
+            int adminId,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to)
+        {
+            if (!IsSuperAdmin() && GetUserId() != adminId)
+                return Forbid();
+
+            var (fromDate, toExclusive) = ResolveMonthRange(from, to);
+            try
+            {
+                var view = await _adminPerformance.GetAdminOrdersAsync(adminId, fromDate, toExclusive.AddDays(-1));
+                return view == null
+                    ? NotFound(new { message = "Only administrators have orders here." })
+                    : Ok(view);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
             }
         }
 

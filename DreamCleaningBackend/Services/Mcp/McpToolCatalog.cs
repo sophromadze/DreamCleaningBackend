@@ -41,7 +41,7 @@ namespace DreamCleaningBackend.Services.Mcp
             ["get_revenue_breakdown"] = ("Revenue breakdown",
                 "Statistics figures grouped by 1-2 of: period, service type, booking admin, recurring plan, commercial, payment method, new customer. Optional filters."),
             ["get_admin_performance"] = ("Admin performance",
-                "Outgoing Payments -> Admins: per booking admin, Done+paid orders, order total, tax, wages, bonuses, Admins-tab net; or one admin by period/service type/new customer."),
+                "Outgoing Payments -> Admins: per booking admin, Done+paid orders, order total, tax, wages, Stripe fees, Admins-tab net (bonuses shown separately, not subtracted); or one admin by period/service type/new customer."),
             ["get_cleaner_payroll"] = ("Cleaner payroll",
                 "Outgoing Payments cleaner pay: hours, salary, tips, payout, paid and still owed, per cleaner or per order."),
             ["get_order_sources"] = ("Order sources",
