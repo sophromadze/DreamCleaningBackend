@@ -120,7 +120,7 @@ public class AdminAgentAccessTests
     private sealed class NoSql : IAgentSqlRunner
     {
         public bool IsConfigured => false;
-        public Task<AgentSqlResult> RunAsync(string sql, int userId, int sessionId, long? messageId, CancellationToken ct) =>
+        public Task<AgentSqlResult> RunAsync(string sql, int userId, int sessionId, long? messageId, CancellationToken ct, int? maxRows = null) =>
             Task.FromResult(new AgentSqlResult { Ok = false, Error = "not configured" });
     }
 

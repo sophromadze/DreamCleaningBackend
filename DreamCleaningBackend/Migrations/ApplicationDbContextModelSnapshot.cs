@@ -4592,6 +4592,10 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<int>("CreatedByUserId")
                         .HasColumnType("int");
 
+                    b.Property<string>("CreatedVia")
+                        .HasMaxLength(20)
+                        .HasColumnType("varchar(20)");
+
                     b.Property<string>("Currency")
                         .IsRequired()
                         .HasMaxLength(3)
@@ -4605,6 +4609,9 @@ namespace DreamCleaningBackend.Migrations
 
                     b.Property<bool>("IsRecurring")
                         .HasColumnType("tinyint(1)");
+
+                    b.Property<int?>("McpGrantId")
+                        .HasColumnType("int");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -5514,6 +5521,243 @@ namespace DreamCleaningBackend.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("MaintenanceModes");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.McpAuthorizationCode", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ClientId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("CodeChallenge")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("varchar(128)");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTime?>("ConsumedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("GrantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RedirectUri")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<string>("Scope")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CodeHash")
+                        .IsUnique()
+                        .HasDatabaseName("IX_McpAuthorizationCodes_CodeHash");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("IX_McpAuthorizationCodes_ExpiresAt");
+
+                    b.ToTable("McpAuthorizationCodes");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.McpGrant", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ClientId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("ClientName")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int?>("RevokedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RevokedReason")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("Scope")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<int>("TokenVersion")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "RevokedAt")
+                        .HasDatabaseName("IX_McpGrants_User_RevokedAt");
+
+                    b.ToTable("McpGrants");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.McpOAuthClient", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ClientId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("ClientName")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("RedirectUrisJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClientId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_McpOAuthClients_ClientId");
+
+                    b.ToTable("McpOAuthClients");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.McpToken", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime?>("ConsumedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("GrantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("varchar(10)");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("IX_McpTokens_ExpiresAt");
+
+                    b.HasIndex("GrantId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("IX_McpTokens_TokenHash");
+
+                    b.ToTable("McpTokens");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.McpToolCallLog", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ArgumentsSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("DurationMs")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<int>("GrantId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("Succeeded")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("Tool")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("IX_McpToolCallLogs_CreatedAt");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("IX_McpToolCallLogs_User_CreatedAt");
+
+                    b.ToTable("McpToolCallLogs");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.MonthlyFinancialSnapshot", b =>
@@ -9600,6 +9844,28 @@ namespace DreamCleaningBackend.Migrations
                     b.Navigation("Lead");
                 });
 
+            modelBuilder.Entity("DreamCleaningBackend.Models.McpGrant", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.McpToken", b =>
+                {
+                    b.HasOne("DreamCleaningBackend.Models.McpGrant", "Grant")
+                        .WithMany("Tokens")
+                        .HasForeignKey("GrantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Grant");
+                });
+
             modelBuilder.Entity("DreamCleaningBackend.Models.MonthlyFinancialSnapshot", b =>
                 {
                     b.HasOne("DreamCleaningBackend.Models.User", "UpdatedByUser")
@@ -10413,6 +10679,11 @@ namespace DreamCleaningBackend.Migrations
             modelBuilder.Entity("DreamCleaningBackend.Models.Lead", b =>
                 {
                     b.Navigation("Activities");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.McpGrant", b =>
+                {
+                    b.Navigation("Tokens");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.Order", b =>

@@ -163,6 +163,12 @@ namespace DreamCleaningBackend.Data
         public DbSet<AdminAgentSession> AdminAgentSessions { get; set; }
         public DbSet<AdminAgentMessage> AdminAgentMessages { get; set; }
         public DbSet<AdminAgentSqlLog> AdminAgentSqlLogs { get; set; }
+        // Claude connector (remote MCP server, 2026-10): OAuth clients, codes, sessions, tokens, audit
+        public DbSet<McpOAuthClient> McpOAuthClients { get; set; }
+        public DbSet<McpAuthorizationCode> McpAuthorizationCodes { get; set; }
+        public DbSet<McpGrant> McpGrants { get; set; }
+        public DbSet<McpToken> McpTokens { get; set; }
+        public DbSet<McpToolCallLog> McpToolCallLogs { get; set; }
         public DbSet<ChatAgentSettings> ChatAgentSettings { get; set; }
         // Admin-chosen visitor-facing names for Telegram agents (never from Telegram profiles)
         public DbSet<TelegramAgentDisplayName> TelegramAgentDisplayNames { get; set; }
@@ -270,6 +276,46 @@ namespace DreamCleaningBackend.Data
                 entity.HasIndex(e => e.CreatedAt).HasDatabaseName("IX_AdminAgentSqlLogs_CreatedAt");
                 entity.HasIndex(e => new { e.UserId, e.CreatedAt }).HasDatabaseName("IX_AdminAgentSqlLogs_User_CreatedAt");
                 entity.Property(e => e.Sql).HasColumnType("LONGTEXT");
+            });
+
+            // Claude connector (2026-10). Every secret is stored as a SHA-256 hash under a UNIQUE
+            // index, which is also how a token or code is looked up. Revoking a session keeps its
+            // rows (the sessions list shows it as revoked); McpMaintenanceService prunes them.
+            modelBuilder.Entity<McpOAuthClient>(entity =>
+            {
+                entity.HasIndex(e => e.ClientId).IsUnique().HasDatabaseName("IX_McpOAuthClients_ClientId");
+                entity.Property(e => e.RedirectUrisJson).HasColumnType("TEXT");
+            });
+
+            modelBuilder.Entity<McpAuthorizationCode>(entity =>
+            {
+                entity.HasIndex(e => e.CodeHash).IsUnique().HasDatabaseName("IX_McpAuthorizationCodes_CodeHash");
+                entity.HasIndex(e => e.ExpiresAt).HasDatabaseName("IX_McpAuthorizationCodes_ExpiresAt");
+            });
+
+            modelBuilder.Entity<McpGrant>(entity =>
+            {
+                entity.HasIndex(e => new { e.UserId, e.RevokedAt }).HasDatabaseName("IX_McpGrants_User_RevokedAt");
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<McpToken>(entity =>
+            {
+                entity.HasIndex(e => e.TokenHash).IsUnique().HasDatabaseName("IX_McpTokens_TokenHash");
+                entity.HasIndex(e => e.ExpiresAt).HasDatabaseName("IX_McpTokens_ExpiresAt");
+                entity.HasOne(e => e.Grant)
+                    .WithMany(g => g.Tokens)
+                    .HasForeignKey(e => e.GrantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<McpToolCallLog>(entity =>
+            {
+                entity.HasIndex(e => e.CreatedAt).HasDatabaseName("IX_McpToolCallLogs_CreatedAt");
+                entity.HasIndex(e => new { e.UserId, e.CreatedAt }).HasDatabaseName("IX_McpToolCallLogs_User_CreatedAt");
             });
 
             modelBuilder.Entity<TelegramAgentDisplayName>(entity =>

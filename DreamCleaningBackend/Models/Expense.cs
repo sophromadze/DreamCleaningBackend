@@ -104,6 +104,18 @@ namespace DreamCleaningBackend.Models
         [StringLength(100)]
         public string? SourceKey { get; set; }
 
+        // Where the row was entered, when not on the Expenses page (2026-10). "Claude" for an
+        // expense added through the Claude connector (MCP add_expense) — shown as a small badge on
+        // the page, and the only rows the connector's delete_expense may remove. NULL = the panel
+        // (or the Google Ads sync, which has its own SourceKey). Kept apart from SourceKey on
+        // purpose: that column is a UNIQUE idempotency key that means "synced from outside".
+        [StringLength(20)]
+        public string? CreatedVia { get; set; }
+
+        // The connector session (McpGrant) that created the row. Plain historical reference with
+        // no foreign key, so revoking and pruning sessions never touches an expense.
+        public int? McpGrantId { get; set; }
+
         public int CreatedByUserId { get; set; }
 
         [ForeignKey("CreatedByUserId")]

@@ -28,12 +28,29 @@ namespace DreamCleaningBackend.Services.AdminAgent
         public string? Error { get; set; }
     }
 
+    /// <summary>
+    /// Who reads a tool result. <see cref="Panel"/> is the in-panel analytics agent, whose output
+    /// never changes shape. <see cref="Compact"/> is the Claude connector (MCP): the same figures,
+    /// with the long definition text swapped for its short name, input echoes dropped and non-ASCII
+    /// left unescaped — see <see cref="AgentToolCompactFormatter"/>.
+    /// </summary>
+    public enum AgentToolFormat
+    {
+        Panel,
+        Compact
+    }
+
     /// <summary>State one agent turn's tool calls share.</summary>
     public sealed class AgentToolContext
     {
         public int UserId { get; init; }
         public int SessionId { get; init; }
         public long MessageId { get; init; }
+
+        public AgentToolFormat Format { get; init; } = AgentToolFormat.Panel;
+
+        /// <summary>run_sql row cap; null = <see cref="AgentSqlRunner.MaxRows"/>.</summary>
+        public int? MaxSqlRows { get; init; }
         public List<AgentToolTrailEntry> Trail { get; } = new();
 
         /// <summary>Charts and tables to show with the answer, in the order they were drawn.</summary>
@@ -322,6 +339,9 @@ namespace DreamCleaningBackend.Services.AdminAgent
             {
                 result = Error(ex.Message);
             }
+
+            if (ctx.Format == AgentToolFormat.Compact && !result.IsError)
+                result = new AgentToolResult(AgentToolCompactFormatter.Format(result.Content, entry.Definition), false);
 
             entry.DurationMs = (int)(DateTime.UtcNow - started).TotalMilliseconds;
             if (result.IsError)
@@ -804,7 +824,8 @@ namespace DreamCleaningBackend.Services.AdminAgent
             entry.Definition = "Ad-hoc SQL over agent_* views (raw, not reconciled with the panel)";
             if (!string.IsNullOrWhiteSpace(purpose)) entry.Filters.Add(purpose!);
 
-            var result = await _sql.RunAsync(sql, ctx.UserId, ctx.SessionId, ctx.MessageId, ct);
+            var maxRows = ctx.MaxSqlRows ?? AgentSqlRunner.MaxRows;
+            var result = await _sql.RunAsync(sql, ctx.UserId, ctx.SessionId, ctx.MessageId, ct, maxRows);
             entry.Sql = result.ExecutedSql ?? sql;
             if (!result.Ok)
                 return Error(result.Error ?? "The query failed.");
@@ -822,7 +843,7 @@ namespace DreamCleaningBackend.Services.AdminAgent
                 row_count = rows.Count,
                 truncated = result.Truncated || rows.Count < result.Rows.Count,
                 note = result.Truncated
-                    ? $"Only the first {AgentSqlRunner.MaxRows} rows were read - the result is INCOMPLETE. Aggregate in SQL instead of listing rows."
+                    ? $"Only the first {maxRows} rows were read - the result is INCOMPLETE. Aggregate in SQL instead of listing rows."
                     : rows.Count < result.Rows.Count
                         ? $"Only the first {rows.Count} of {result.Rows.Count} rows fit in the reply - aggregate in SQL instead of listing rows."
                         : null

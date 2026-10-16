@@ -87,7 +87,7 @@ public class AdminAgentTurnRunnerTests
         public Task<AdminPerformanceListDto> GetAsync(DateTime? f, DateTime? t) => throw new NotSupportedException();
         public Task<List<AdminPerformanceOrderRow>> GetOrderRowsAsync(DateTime? f, DateTime? t) => throw new NotSupportedException();
         public bool IsConfigured => false;
-        public Task<AgentSqlResult> RunAsync(string sql, int u, int s, long? m, CancellationToken ct) => throw new NotSupportedException();
+        public Task<AgentSqlResult> RunAsync(string sql, int u, int s, long? m, CancellationToken ct, int? maxRows = null) => throw new NotSupportedException();
     }
 
     // ── Rig ────────────────────────────────────────────────────────────────────────────────────

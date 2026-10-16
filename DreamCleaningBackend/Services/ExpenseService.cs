@@ -47,7 +47,22 @@ namespace DreamCleaningBackend.Services
             return ToDto(row, await LoadStaffNamesAsync(new[] { row }));
         }
 
-        public async Task<ExpenseDto> CreateAsync(CreateExpenseDto dto, int byUserId)
+        public async Task<List<ExpenseDto>> GetRecentlyCreatedAsync(int count, bool includeSynced)
+        {
+            var rows = await _context.Expenses
+                .Include(e => e.CreatedByUser)
+                .Include(e => e.Category)
+                .Where(e => includeSynced || e.SourceKey == null)
+                .OrderByDescending(e => e.CreatedAt)
+                .ThenByDescending(e => e.Id)
+                .Take(Math.Clamp(count, 1, 100))
+                .ToListAsync();
+
+            var staffNames = await LoadStaffNamesAsync(rows);
+            return rows.Select(e => ToDto(e, staffNames)).ToList();
+        }
+
+        public async Task<ExpenseDto> CreateAsync(CreateExpenseDto dto, int byUserId, ExpenseOrigin? origin = null)
         {
             await ValidateInputAsync(dto);
             var (staffUserId, name) = await ResolveSalaryIdentityAsync(dto);
@@ -66,6 +81,8 @@ namespace DreamCleaningBackend.Services
                 EndDate = dto.IsRecurring ? dto.EndDate?.Date : null,
                 ProrateByDay = dto.IsRecurring && dto.FrequencyMonths == 1 && dto.ProrateByDay,
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
+                CreatedVia = origin?.CreatedVia,
+                McpGrantId = origin?.McpGrantId,
                 CreatedByUserId = byUserId,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
@@ -868,6 +885,7 @@ namespace DreamCleaningBackend.Services
             CreatedByUserName = e.CreatedByUser != null
                 ? $"{e.CreatedByUser.FirstName} {e.CreatedByUser.LastName}".Trim()
                 : null,
+            CreatedVia = e.CreatedVia,
             CreatedAt = e.CreatedAt,
             UpdatedAt = e.UpdatedAt
         };

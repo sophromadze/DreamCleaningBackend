@@ -6,7 +6,13 @@ namespace DreamCleaningBackend.Services.Interfaces
     {
         Task<List<ExpenseDto>> GetAllAsync();
         Task<ExpenseDto?> GetByIdAsync(int id);
-        Task<ExpenseDto> CreateAsync(CreateExpenseDto dto, int byUserId);
+        // `origin` marks a row entered somewhere other than the Expenses page (the Claude connector);
+        // null for the page. Validation is the same either way — it is this one method.
+        Task<ExpenseDto> CreateAsync(CreateExpenseDto dto, int byUserId, ExpenseOrigin? origin = null);
+
+        // The most recently ENTERED rows (by CreatedAt), newest first. `includeSynced` = false leaves
+        // out the Google Ads daily rows, which would otherwise fill any short list.
+        Task<List<ExpenseDto>> GetRecentlyCreatedAsync(int count, bool includeSynced);
         Task<ExpenseDto> UpdateAsync(int id, UpdateExpenseDto dto);
         Task<bool> DeleteAsync(int id);
 

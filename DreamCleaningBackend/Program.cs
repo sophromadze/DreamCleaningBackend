@@ -458,6 +458,25 @@ builder.Services.AddScoped<DreamCleaningBackend.Services.AdminAgent.IAgentSqlRun
 builder.Services.AddScoped<DreamCleaningBackend.Services.AdminAgent.AdminAgentTools>();
 builder.Services.AddScoped<DreamCleaningBackend.Services.AdminAgent.AdminAgentTurnRunner>();
 builder.Services.AddScoped<DreamCleaningBackend.Services.AdminAgent.IAdminAgentService, DreamCleaningBackend.Services.AdminAgent.AdminAgentService>();
+
+// Claude connector (2026-10): a remote MCP server at /api/mcp that Claude's apps add as a custom
+// connector. It exposes the analytics agent's own tools (AdminAgentTools, compact format) plus
+// expense tools over ExpenseService, behind a small OAuth server (McpOAuthService). Stateless
+// Streamable HTTP: every call is one POST, no session to lose on restart and no long-lived stream
+// through Cloudflare/Apache. It makes no outbound calls and no Anthropic API calls.
+builder.Services.AddSingleton<DreamCleaningBackend.Services.Mcp.McpRateLimiter>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Mcp.IMcpOAuthService, DreamCleaningBackend.Services.Mcp.McpOAuthService>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Mcp.McpExpenseTools>();
+builder.Services.AddScoped<DreamCleaningBackend.Services.Mcp.McpToolExecutor>();
+builder.Services.AddHostedService<DreamCleaningBackend.Services.Mcp.McpMaintenanceService>();
+builder.Services.AddAuthentication()
+    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, DreamCleaningBackend.Services.Mcp.McpBearerHandler>(
+        DreamCleaningBackend.Services.Mcp.McpBearerHandler.SchemeName, null);
+builder.Services.AddAuthorization(options => options.AddPolicy(DreamCleaningBackend.Services.Mcp.McpServerSetup.Policy, policy => policy
+    .AddAuthenticationSchemes(DreamCleaningBackend.Services.Mcp.McpBearerHandler.SchemeName)
+    .RequireAuthenticatedUser()
+    .RequireClaim(DreamCleaningBackend.Services.Mcp.McpBearerHandler.GrantIdClaim)));
+DreamCleaningBackend.Services.Mcp.McpServerSetup.AddConnectorMcpServer(builder.Services);
 builder.Services.AddScoped<IChatAgentService, ChatAgentService>();
 builder.Services.AddHostedService<ChatImageCleanupService>(); // daily 30-day photo retention sweep
 builder.Services.AddSingleton<IWebsitePageContentService, WebsitePageContentService>(); // get_page_content tool cache
@@ -562,6 +581,18 @@ builder.Services.AddCors(options =>
                 .AllowCredentials() // Important for cookies
                 .WithExposedHeaders(TokenVersionService.RevokedHeader);
         });
+
+    // Claude connector endpoints that take no cookie: OAuth discovery/register/token/revoke and
+    // /api/mcp (bearer token in a header). Open to any origin WITHOUT credentials, so a browser
+    // client (MCP Inspector) can run the flow; no ambient credential is ever accepted there.
+    options.AddPolicy(McpOAuthController.CorsPolicy,
+        policy =>
+        {
+            policy.AllowAnyOrigin()
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .WithExposedHeaders("WWW-Authenticate", "Mcp-Session-Id", "Mcp-Protocol-Version");
+        });
 });
 
 // Rate limiting — first limiter in the app (2026-07). Only the named policy below
@@ -604,6 +635,38 @@ builder.Services.AddRateLimiter(options =>
         return RateLimitPartition.GetFixedWindowLimiter("agent:" + clientIp, _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 20,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        });
+    });
+
+    // Claude connector OAuth (McpOAuthController). Claude's servers register once per new
+    // connection and refresh about hourly; these only cap abuse of the anonymous endpoints.
+    // Tool calls are limited per USER inside the MCP pipeline (McpRateLimiter), not here.
+    options.AddPolicy(McpOAuthController.RegisterRateLimitPolicy, httpContext =>
+    {
+        var clientIp = httpContext.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+            ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
+        if (string.IsNullOrEmpty(clientIp))
+            clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter("mcp-register:" + clientIp, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 20,
+            Window = TimeSpan.FromHours(1),
+            QueueLimit = 0
+        });
+    });
+    options.AddPolicy(McpOAuthController.TokenRateLimitPolicy, httpContext =>
+    {
+        var clientIp = httpContext.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+            ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
+        if (string.IsNullOrEmpty(clientIp))
+            clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter("mcp-token:" + clientIp, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         });
@@ -848,6 +911,9 @@ app.Use(async (context, next) =>
 });
 
 app.MapControllers();
+
+// Claude connector (see McpServerSetup): bearer-only, SuperAdmin re-checked on every request.
+DreamCleaningBackend.Services.Mcp.McpServerSetup.MapConnector(app);
 
 // Map SignalR Hub
 app.MapHub<UserManagementHub>("/userManagementHub");

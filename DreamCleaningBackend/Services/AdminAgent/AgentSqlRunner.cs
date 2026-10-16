@@ -26,7 +26,9 @@ namespace DreamCleaningBackend.Services.AdminAgent
         /// Validates and runs one read-only statement for the analytics agent, and writes an
         /// <see cref="AdminAgentSqlLog"/> row whatever the outcome.
         /// </summary>
-        Task<AgentSqlResult> RunAsync(string sql, int userId, int sessionId, long? messageId, CancellationToken ct);
+        /// <param name="maxRows">Row cap; null = <see cref="AgentSqlRunner.MaxRows"/> (the panel agent).
+        /// The Claude connector passes its smaller cap.</param>
+        Task<AgentSqlResult> RunAsync(string sql, int userId, int sessionId, long? messageId, CancellationToken ct, int? maxRows = null);
     }
 
     /// <summary>
@@ -61,8 +63,9 @@ namespace DreamCleaningBackend.Services.AdminAgent
 
         public bool IsConfigured => !string.IsNullOrWhiteSpace(_connectionString);
 
-        public async Task<AgentSqlResult> RunAsync(string sql, int userId, int sessionId, long? messageId, CancellationToken ct)
+        public async Task<AgentSqlResult> RunAsync(string sql, int userId, int sessionId, long? messageId, CancellationToken ct, int? maxRows = null)
         {
+            var rowCap = Math.Clamp(maxRows ?? MaxRows, 1, MaxRows);
             var (normalized, refusal) = AgentSqlValidator.Normalize(sql);
             if (refusal != null)
             {
@@ -103,7 +106,7 @@ namespace DreamCleaningBackend.Services.AdminAgent
 
                     while (await reader.ReadAsync(ct))
                     {
-                        if (rows.Count >= MaxRows)
+                        if (rows.Count >= rowCap)
                         {
                             truncated = true;
                             break;

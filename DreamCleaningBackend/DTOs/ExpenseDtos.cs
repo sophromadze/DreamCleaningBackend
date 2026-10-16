@@ -37,6 +37,9 @@ namespace DreamCleaningBackend.DTOs
         public string? Notes { get; set; }
         public int CreatedByUserId { get; set; }
         public string? CreatedByUserName { get; set; }
+
+        /// <summary>"Claude" when added through the Claude connector; null for the Expenses page.</summary>
+        public string? CreatedVia { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
     }
@@ -87,6 +90,18 @@ namespace DreamCleaningBackend.DTOs
 
         [StringLength(1000)]
         public string? Notes { get; set; }
+    }
+
+    /// <summary>
+    /// Where a new expense was entered when it was not the Expenses page (2026-10). Passed by the
+    /// server only — never part of a request body, so the page cannot mark its own rows.
+    /// </summary>
+    public sealed record ExpenseOrigin(string CreatedVia, int? McpGrantId);
+
+    public static class ExpenseOrigins
+    {
+        /// <summary>Added through the Claude connector (MCP add_expense).</summary>
+        public const string Claude = "Claude";
     }
 
     public class UpdateExpenseDto : CreateExpenseDto
