@@ -27,11 +27,17 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IAuditService _auditService;
+        private readonly CatalogAdminOperations _operations;
 
-        public AdminPollsController(ApplicationDbContext context, IAuditService auditService)
+        public AdminPollsController(ApplicationDbContext context, IAuditService auditService,
+            CatalogAdminOperations? operations = null)
         {
             _context = context;
             _auditService = auditService;
+            // Create/update/delete live in CatalogAdminOperations (2026-10) so the Claude connector
+            // runs the same code; DI supplies it, the fallback serves hand-built test controllers.
+            _operations = operations ?? new CatalogAdminOperations(context, auditService,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
         }
 
         [HttpGet("poll-questions")]
@@ -90,80 +96,21 @@ namespace DreamCleaningBackend.Controllers
         [RequirePermission(Permission.Create)]
         public async Task<ActionResult<PollQuestionDto>> CreatePollQuestion(CreatePollQuestionDto dto)
         {
-            var question = new PollQuestion
-            {
-                Question = dto.Question,
-                QuestionType = dto.QuestionType,
-                Options = dto.Options,
-                IsRequired = dto.IsRequired,
-                DisplayOrder = dto.DisplayOrder,
-                ServiceTypeId = dto.ServiceTypeId,
-                IsActive = true,
-                CreatedAt = DateTime.UtcNow
-            };
-
-            _context.PollQuestions.Add(question);
-            await _context.SaveChangesAsync();
-
-            await _auditService.LogCreateAsync(question);
-
-            var result = new PollQuestionDto
-            {
-                Id = question.Id,
-                Question = question.Question,
-                QuestionType = question.QuestionType,
-                Options = question.Options,
-                IsRequired = question.IsRequired,
-                DisplayOrder = question.DisplayOrder,
-                IsActive = question.IsActive,
-                ServiceTypeId = question.ServiceTypeId
-            };
-
-            return Ok(result);
+            return await _operations.CreatePollQuestion(dto);
         }
 
         [HttpPut("poll-questions/{id}")]
         [RequirePermission(Permission.Update)]
         public async Task<ActionResult> UpdatePollQuestion(int id, PollQuestionDto dto)
         {
-            var question = await _context.PollQuestions.FindAsync(id);
-            if (question == null)
-            {
-                return NotFound();
-            }
-
-            var before = AuditSnapshot.Of(question);
-
-            question.Question = dto.Question;
-            question.QuestionType = dto.QuestionType;
-            question.Options = dto.Options;
-            question.IsRequired = dto.IsRequired;
-            question.DisplayOrder = dto.DisplayOrder;
-            question.IsActive = dto.IsActive;
-            question.UpdatedAt = DateTime.UtcNow;
-
-            await _context.SaveChangesAsync();
-
-            await _auditService.LogUpdateAsync(before, question);
-
-            return Ok();
+            return await _operations.UpdatePollQuestion(id, dto);
         }
 
         [HttpDelete("poll-questions/{id}")]
         [RequirePermission(Permission.Delete)]
         public async Task<ActionResult> DeletePollQuestion(int id)
         {
-            var question = await _context.PollQuestions.FindAsync(id);
-            if (question == null)
-            {
-                return NotFound();
-            }
-
-            await _auditService.LogDeleteAsync(question);
-
-            _context.PollQuestions.Remove(question);
-            await _context.SaveChangesAsync();
-            return Ok();
+            return await _operations.DeletePollQuestion(id);
         }
 
         [HttpGet("poll-submissions")]

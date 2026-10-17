@@ -22,6 +22,21 @@ namespace DreamCleaningBackend.Data
         {
         }
 
+        /// <summary>
+        /// Change-history capture for the Services catalogue, subscriptions and expenses (2026-10).
+        /// Added here rather than only in Program.cs so EVERY context gets it — the test suites build
+        /// their own — and a write to one of those tables can never skip its history row. See
+        /// <see cref="DreamCleaningBackend.Services.ChangeSets.AuditCaptureInterceptor"/>.
+        /// </summary>
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        {
+            optionsBuilder.AddInterceptors(DreamCleaningBackend.Services.ChangeSets.AuditCaptureInterceptor.Instance);
+            base.OnConfiguring(optionsBuilder);
+        }
+
+        /// <summary>Per-context settings the capture reads: source/actor overrides, batch id, note, revert links.</summary>
+        public DreamCleaningBackend.Services.ChangeSets.AuditWriteState AuditWrite { get; } = new();
+
         // This also covers the few audit writers outside AuditService. Existing rows are not
         // rewritten in bulk; new/changed snapshots never persist credentials.
         private void SanitizeAuditWrites()
@@ -61,6 +76,7 @@ namespace DreamCleaningBackend.Data
         public DbSet<GiftCard> GiftCards { get; set; }
         public DbSet<GiftCardUsage> GiftCardUsages { get; set; }
         public DbSet<AuditLog> AuditLogs { get; set; }
+        public DbSet<PendingChangeSet> PendingChangeSets { get; set; }
 		public DbSet<SpecialOffer> SpecialOffers { get; set; }
         public DbSet<UserSpecialOffer> UserSpecialOffers { get; set; }
         public DbSet<GiftCardConfig> GiftCardConfigs { get; set; }
@@ -719,6 +735,23 @@ namespace DreamCleaningBackend.Data
 
                 entity.HasIndex(e => e.UserId)
                     .HasDatabaseName("IX_AuditLogs_UserId");
+
+                // Change history (2026-10): a batch is read as a unit, and a row is looked up by
+                // what reverted it.
+                entity.HasIndex(e => e.BatchId)
+                    .HasDatabaseName("IX_AuditLogs_BatchId");
+
+                entity.HasIndex(e => e.RevertOfId)
+                    .HasDatabaseName("IX_AuditLogs_RevertOfId");
+
+                entity.HasIndex(e => e.Source)
+                    .HasDatabaseName("IX_AuditLogs_Source");
+            });
+
+            modelBuilder.Entity<PendingChangeSet>(entity =>
+            {
+                entity.HasIndex(e => e.TokenHash).IsUnique();
+                entity.HasIndex(e => e.ExpiresAt);
             });
 
             // BlockedTimeSlot configuration

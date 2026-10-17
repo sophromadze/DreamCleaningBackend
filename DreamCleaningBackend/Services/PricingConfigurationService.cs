@@ -529,7 +529,8 @@ namespace DreamCleaningBackend.Services
 
             var result = new ApplyPricingConfigurationResultDto { Success = true };
 
-            await using var transaction = await _context.Database.BeginTransactionAsync();
+            // Joins the caller's transaction when there is one (a change-set apply), else its own.
+            await using var transaction = await ChangeSets.CatalogTransaction.BeginAsync(_context);
             try
             {
                 var targets = await _context.ServiceTypes

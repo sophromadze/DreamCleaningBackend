@@ -85,21 +85,27 @@ public class McpConnectorUnitTests
                  {
                      "get_company_statistics", "get_revenue_breakdown", "get_admin_performance", "get_cleaner_payroll",
                      "get_order_sources", "get_customer_statistics", "lookup", "run_sql", "describe_data",
-                     "list_expense_categories", "add_expense", "list_recent_expenses", "delete_expense"
+                     "list_expense_categories", "add_expense", "list_recent_expenses", "delete_expense",
+                     "get_services_catalog", "preview_catalog_changes", "apply_change", "get_change_history",
+                     "get_change_detail", "preview_revert"
                  })
             Assert.Contains(expected, names);
     }
 
     [Fact]
-    public void AnnotationsMarkReadsReadOnlyAndTheDeleteDestructive()
+    public void AnnotationsMarkReadsReadOnly_AndOnlyApplyDestructive()
     {
+        // Since 2026-10 every write is a preview (writes nothing but a pending token) followed by
+        // apply_change, which is the one tool that changes data.
+        var previews = new[] { "add_expense", "delete_expense", "preview_catalog_changes", "preview_revert" };
         foreach (var tool in McpToolCatalog.Tools)
         {
-            var isWrite = tool.Name is "add_expense" or "delete_expense";
+            var isWrite = previews.Contains(tool.Name) || tool.Name == "apply_change";
             Assert.Equal(!isWrite, tool.Annotations?.ReadOnlyHint);
         }
-        Assert.True(McpToolCatalog.Tools.Single(t => t.Name == "delete_expense").Annotations!.DestructiveHint);
-        Assert.False(McpToolCatalog.Tools.Single(t => t.Name == "add_expense").Annotations!.DestructiveHint);
+        Assert.True(McpToolCatalog.Tools.Single(t => t.Name == "apply_change").Annotations!.DestructiveHint);
+        foreach (var name in previews)
+            Assert.False(McpToolCatalog.Tools.Single(t => t.Name == name).Annotations!.DestructiveHint);
     }
 
     [Fact]
@@ -111,8 +117,10 @@ public class McpConnectorUnitTests
             Assert.True(tool.Description!.Length <= 300, $"{tool.Name}: {tool.Description!.Length} chars");
 
         var total = JsonSerializer.Serialize(McpToolCatalog.Tools).Length;
-        // About 2.5k tokens, loaded into every Claude conversation that has the connector on.
-        Assert.True(total < 11_000, $"tools/list is {total} chars");
+        // About 3.7k tokens, loaded into every Claude conversation that has the connector on. Was
+        // 11k (2.5k tokens) before the Services write, change-set and history tools (2026-10);
+        // keep new tools to one-line descriptions and put detail in the schema or the result.
+        Assert.True(total < 16_000, $"tools/list is {total} chars");
     }
 
     [Fact]

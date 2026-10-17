@@ -71,6 +71,11 @@ namespace DreamCleaningBackend.Services.Mcp
             await db.McpAuthorizationCodes.Where(c => c.ExpiresAt < dayAgo).ExecuteDeleteAsync(ct);
             await db.McpTokens.Where(t => t.ExpiresAt < dayAgo || (t.ConsumedAt != null && t.ConsumedAt < dayAgo)).ExecuteDeleteAsync(ct);
 
+            // Previewed change sets (connector and panel): kept 30 days for their outcome, then
+            // dropped. The changes themselves live in the audit log, not here.
+            var changeSetCutoff = nowUtc.AddDays(-30);
+            await db.PendingChangeSets.Where(p => p.ExpiresAt < changeSetCutoff).ExecuteDeleteAsync(ct);
+
             // Ended a month ago: revoked, or no refresh token left (they were deleted above).
             var monthAgo = nowUtc.AddDays(-30);
             await db.McpGrants

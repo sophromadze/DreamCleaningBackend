@@ -229,14 +229,35 @@ namespace DreamCleaningBackend.Tests
         {
             var reason = AuditEntityTypes.ResolveUndoBlockedReason(new AuditLog
             {
+                EntityType = "PromoCode",
+                Action = "Update",
+                ChangedFields = JsonConvert.SerializeObject(new[] { "DiscountValue" }),
+                OldValues = JsonConvert.SerializeObject(new { DiscountValue = 50m }),
+                NewValues = JsonConvert.SerializeObject(new { DiscountValue = 60m }),
+            });
+
+            Assert.Null(reason);
+        }
+
+        [Fact]
+        public void ChangeHistoryTypes_AreRevertedWithRevert_ButLegacyUndoneRowsKeepRedo()
+        {
+            // Since 2026-10 an Expense (like the Services catalogue and plans) is reverted through
+            // the previewed Revert flow, so Undo is refused with that explanation...
+            AuditLog Row(DateTime? undoneAt) => new()
+            {
                 EntityType = "Expense",
                 Action = "Update",
                 ChangedFields = JsonConvert.SerializeObject(new[] { "Amount" }),
                 OldValues = JsonConvert.SerializeObject(new { Amount = 50m }),
                 NewValues = JsonConvert.SerializeObject(new { Amount = 60m }),
-            });
+                UndoneAt = undoneAt
+            };
+            Assert.Equal(DreamCleaningBackend.Services.ChangeSets.AuditCaptureScope.UndoReplacedMessage,
+                AuditEntityTypes.ResolveUndoBlockedReason(Row(null)));
 
-            Assert.Null(reason);
+            // ...while a row the old Undo already reverted can still be re-applied with Redo.
+            Assert.Null(AuditEntityTypes.ResolveUndoBlockedReason(Row(DateTime.UtcNow)));
         }
 
         [Fact]

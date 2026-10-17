@@ -76,7 +76,8 @@ public sealed class McpTestHost : IAsyncDisposable
                     apm.FeatureProviders.Remove(p);
                 apm.FeatureProviders.Add(new OnlyTheseControllers(new[]
                 {
-                    typeof(McpOAuthController), typeof(AdminMcpSessionsController), typeof(ExpensesController)
+                    typeof(McpOAuthController), typeof(AdminMcpSessionsController), typeof(ExpensesController),
+                    typeof(AdminCatalogController), typeof(AdminAuditController), typeof(AdminPollsController)
                 }));
             });
 
@@ -87,6 +88,7 @@ public sealed class McpTestHost : IAsyncDisposable
         builder.Services.AddScoped<IPageAccessService, PageAccessService>();
         builder.Services.AddScoped<IAuditService, AuditService>();
         builder.Services.AddScoped<IAdminBonusService, AdminBonusService>();
+        builder.Services.AddScoped<IStripeFeeEstimator, StripeFeeEstimator>();
         builder.Services.AddScoped<IFinancialRateService, FinancialRateService>();
         builder.Services.AddScoped<IExpenseService, ExpenseService>();
         builder.Services.AddScoped<ICleanerPayrollEditService, CleanerPayrollEditService>();
@@ -101,6 +103,8 @@ public sealed class McpTestHost : IAsyncDisposable
         builder.Services.AddScoped<IMcpOAuthService, McpOAuthService>();
         builder.Services.AddScoped<McpExpenseTools>();
         builder.Services.AddScoped<McpToolExecutor>();
+        builder.Services.AddScoped<IPricingConfigurationService, PricingConfigurationService>();
+        DreamCleaningBackend.Services.ChangeSets.ChangeSetSetup.AddChangeSets(builder.Services);
 
         builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options => options.TokenValidationParameters = new TokenValidationParameters

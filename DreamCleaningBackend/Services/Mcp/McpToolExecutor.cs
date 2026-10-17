@@ -6,6 +6,7 @@ using System.Threading.RateLimiting;
 using DreamCleaningBackend.Data;
 using DreamCleaningBackend.Models;
 using DreamCleaningBackend.Services.AdminAgent;
+using DreamCleaningBackend.Services.ChangeSets;
 using ModelContextProtocol.Protocol;
 
 namespace DreamCleaningBackend.Services.Mcp
@@ -44,6 +45,10 @@ namespace DreamCleaningBackend.Services.Mcp
     /// The analytics tools are <see cref="AdminAgentTools"/> — the panel agent's own code — run in
     /// <see cref="AgentToolFormat.Compact"/> with a <see cref="McpToolCatalog.MaxSqlRows"/> row cap.
     /// The expense tools are <see cref="McpExpenseTools"/> over the panel's ExpenseService.
+    ///
+    /// Every write (2026-10) is a <see cref="ChangeSetService"/> preview that returns a token, and
+    /// apply_change is the only tool that changes data. The Services tools run the panel's own
+    /// <see cref="CatalogAdminOperations"/>; history and revert read the shared audit log.
     /// </summary>
     public sealed class McpToolExecutor
     {
@@ -56,16 +61,23 @@ namespace DreamCleaningBackend.Services.Mcp
 
         private readonly AdminAgentTools _tools;
         private readonly McpExpenseTools _expenses;
+        private readonly ChangeSetService _changeSets;
+        private readonly CatalogSnapshotReader _catalog;
+        private readonly ChangeHistoryReader _history;
         private readonly IMcpOAuthService _oauth;
         private readonly McpRateLimiter _rateLimiter;
         private readonly ApplicationDbContext _context;
         private readonly ILogger<McpToolExecutor> _logger;
 
         public McpToolExecutor(AdminAgentTools tools, McpExpenseTools expenses, IMcpOAuthService oauth,
-            McpRateLimiter rateLimiter, ApplicationDbContext context, ILogger<McpToolExecutor> logger)
+            McpRateLimiter rateLimiter, ApplicationDbContext context, ILogger<McpToolExecutor> logger,
+            ChangeSetService changeSets, CatalogSnapshotReader catalog, ChangeHistoryReader history)
         {
             _tools = tools;
             _expenses = expenses;
+            _changeSets = changeSets;
+            _catalog = catalog;
+            _history = history;
             _oauth = oauth;
             _rateLimiter = rateLimiter;
             _context = context;
@@ -96,6 +108,10 @@ namespace DreamCleaningBackend.Services.Mcp
                 error = ex.Message;
             }
             catch (ToolInputException ex)
+            {
+                error = ex.Message;
+            }
+            catch (ChangeSetException ex)
             {
                 error = ex.Message;
             }
@@ -131,16 +147,60 @@ namespace DreamCleaningBackend.Services.Mcp
                 return result.Content;
             }
 
+            var changeCaller = ChangeSetCaller.Connector(caller.UserId, caller.GrantId);
             object payload = name switch
             {
                 "describe_data" => DescribeData(args),
                 "list_expense_categories" => await _expenses.ListCategoriesAsync(),
-                "add_expense" => await _expenses.AddAsync(args, caller.UserId, caller.GrantId),
+                "add_expense" => await _changeSets.PreviewAsync(changeCaller, ChangeSetKinds.AddExpense, args, ct),
                 "list_recent_expenses" => await _expenses.ListRecentAsync(args, caller.UserId),
-                "delete_expense" => await _expenses.DeleteAsync(args, caller.UserId),
+                "delete_expense" => await _changeSets.PreviewAsync(changeCaller, ChangeSetKinds.DeleteExpense, args, ct),
+                "get_services_catalog" => await _catalog.ReadAsync(Bool(args, "include_inactive") ?? true, ct),
+                "preview_catalog_changes" => await _changeSets.PreviewAsync(changeCaller, ChangeSetKinds.Catalog, args, ct),
+                "preview_revert" => await _changeSets.PreviewAsync(changeCaller, ChangeSetKinds.Revert, args, ct),
+                "apply_change" => await _changeSets.ApplyAsync(changeCaller, Text(args, "token"), Text(args, "note"), ct),
+                "get_change_history" => await _history.ListAsync(HistoryFilter(args), ct),
+                "get_change_detail" => await _history.DetailAsync(Long(args, "entry_id") ?? throw new McpToolException("entry_id is required."), ct),
                 _ => throw new McpToolException($"Unknown tool: {name}")
             };
             return JsonSerializer.Serialize(payload, Json);
+        }
+
+        private static ChangeHistoryFilter HistoryFilter(JsonElement args) => new()
+        {
+            EntityType = Text(args, "entity_type"),
+            EntityId = Long(args, "entity_id"),
+            Action = Text(args, "action"),
+            Source = Text(args, "source"),
+            Actor = Text(args, "actor"),
+            ActorUserId = (int?)Long(args, "actor_user_id"),
+            BatchId = Text(args, "batch_id"),
+            From = Date(args, "from"),
+            To = Date(args, "to"),
+            Search = Text(args, "search"),
+            Page = (int)(Long(args, "page") ?? 1),
+            PageSize = (int)(Long(args, "page_size") ?? 20)
+        };
+
+        private static string? Text(JsonElement a, string n) =>
+            a.ValueKind == JsonValueKind.Object && a.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString())
+                ? v.GetString() : null;
+
+        private static long? Long(JsonElement a, string n) =>
+            a.ValueKind == JsonValueKind.Object && a.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var l)
+                ? l : null;
+
+        private static bool? Bool(JsonElement a, string n) =>
+            a.ValueKind == JsonValueKind.Object && a.TryGetProperty(n, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? v.GetBoolean() : null;
+
+        private static DateTime? Date(JsonElement a, string n)
+        {
+            var text = Text(a, n);
+            if (text == null) return null;
+            if (!DateTime.TryParseExact(text, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d))
+                throw new McpToolException($"{n} must be YYYY-MM-DD.");
+            return d;
         }
 
         // ── describe_data ───────────────────────────────────────────────────────────────────────
@@ -206,6 +266,8 @@ namespace DreamCleaningBackend.Services.Mcp
             if (args.ValueKind != JsonValueKind.Object) return "{}";
             var node = JsonNode.Parse(args.GetRawText()) as JsonObject ?? new JsonObject();
             if (node.ContainsKey("notes")) node["notes"] = "[omitted]";
+            // A change token is single-use, but it is still a credential until it is used.
+            if (node.ContainsKey("token")) node["token"] = "[omitted]";
             if (node["sql"] is JsonValue sql && sql.TryGetValue<string>(out var text) && text.Length > 500)
                 node["sql"] = text[..500] + "…";
             var json = node.ToJsonString(new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });

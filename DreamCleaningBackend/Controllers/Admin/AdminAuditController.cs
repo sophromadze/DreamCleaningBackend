@@ -9,6 +9,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using DreamCleaningBackend.Services;
+using DreamCleaningBackend.Services.ChangeSets;
 
 namespace DreamCleaningBackend.Controllers
 {
@@ -21,12 +22,15 @@ namespace DreamCleaningBackend.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IAuditService _auditService;
+        private readonly ChangeSetService? _changeSets;
 
         public AdminAuditController(ApplicationDbContext context,
-            IAuditService auditService)
+            IAuditService auditService,
+            ChangeSetService? changeSets = null)
         {
             _context = context;
             _auditService = auditService;
+            _changeSets = changeSets;
         }
 
         /// <summary>
@@ -126,7 +130,9 @@ namespace DreamCleaningBackend.Controllers
             [FromQuery] int? changedByUserId = null,
             [FromQuery] string? search = null,
             [FromQuery] int page = 1,
-            [FromQuery] int pageSize = 20)
+            [FromQuery] int pageSize = 20,
+            [FromQuery] string? source = null,
+            [FromQuery] string? batchId = null)
         {
             page = Math.Max(1, page);
             pageSize = Math.Clamp(pageSize, 1, 200);
@@ -156,6 +162,13 @@ namespace DreamCleaningBackend.Controllers
             if (changedByUserId.HasValue && changedByUserId.Value > 0)
                 query = query.Where(a => a.UserId == changedByUserId.Value);
 
+            // Change history (2026-10). "unknown" = rows written before the source was recorded.
+            if (!string.IsNullOrWhiteSpace(source) && source != "all")
+                query = source == "unknown" ? query.Where(a => a.Source == null) : query.Where(a => a.Source == source);
+
+            if (!string.IsNullOrWhiteSpace(batchId))
+                query = query.Where(a => a.BatchId == batchId);
+
             query = ApplySearch(query, search);
 
             var totalCount = await query.CountAsync();
@@ -169,6 +182,16 @@ namespace DreamCleaningBackend.Controllers
                 .ToListAsync();
 
             var display = await AuditDisplayProjection.BuildAsync(_context, logs);
+            var logIds = logs.Select(l => l.Id).ToList();
+            var revertedBy = (await _context.AuditLogs.AsNoTracking()
+                    .Where(a => a.RevertOfId != null && logIds.Contains(a.RevertOfId.Value))
+                    .Select(a => new { a.Id, Of = a.RevertOfId!.Value }).ToListAsync())
+                .GroupBy(x => x.Of).ToDictionary(g => g.Key, g => g.Select(x => x.Id).ToList());
+            var batchIds = logs.Where(l => l.BatchId != null).Select(l => l.BatchId!).Distinct().ToList();
+            var batchSizes = await _context.AuditLogs.AsNoTracking()
+                .Where(a => a.BatchId != null && batchIds.Contains(a.BatchId))
+                .GroupBy(a => a.BatchId!).Select(g => new { g.Key, N = g.Count() })
+                .ToDictionaryAsync(x => x.Key, x => x.N);
             var items = logs.Select(log => new
             {
                 id = log.Id,
@@ -176,7 +199,8 @@ namespace DreamCleaningBackend.Controllers
                 entityId = log.EntityId,
                 action = log.Action,
                 createdAt = log.CreatedAt,
-                changedBy = log.User == null ? null : (log.User.FirstName + " " + log.User.LastName).Trim(),
+                // The name as it was when the change was made wins over the account name now.
+                changedBy = log.ActorName ?? (log.User == null ? null : (log.User.FirstName + " " + log.User.LastName).Trim()),
                 changedByEmail = log.User?.Email,
                 changedByUserId = log.UserId,
                 oldValues = display[log.Id].OldValues,
@@ -185,7 +209,16 @@ namespace DreamCleaningBackend.Controllers
                 undoneAt = log.UndoneAt,
                 // Server-side authority for the Undo button. Null = the row can be reverted; a
                 // string is both "disabled" and the tooltip explaining why.
-                undoBlockedReason = AuditEntityTypes.ResolveUndoBlockedReason(log)
+                undoBlockedReason = AuditEntityTypes.ResolveUndoBlockedReason(log),
+                // Change history (2026-10). A captured row is reverted with Revert (preview +
+                // confirm), never Undo; a legacy one undone before then keeps its Redo.
+                captured = AuditCaptureScope.IsCaptured(log.EntityType),
+                source = log.Source,
+                batchId = log.BatchId,
+                batchSize = log.BatchId == null ? 1 : batchSizes.GetValueOrDefault(log.BatchId, 1),
+                revertOfId = log.RevertOfId,
+                revertedBy = revertedBy.GetValueOrDefault(log.Id),
+                note = log.Note
             }).ToList();
 
             return Ok(new
@@ -284,7 +317,9 @@ namespace DreamCleaningBackend.Controllers
                 admins,
                 // Shipped so the component has no copy of the block list. See AuditEntityTypes.
                 undoBlockedEntityTypes = AuditEntityTypes.UndoBlockedEntityTypes.ToList(),
-                undoBlockedReasons = AuditEntityTypes.UndoBlockedReasons
+                undoBlockedReasons = AuditEntityTypes.UndoBlockedReasons,
+                capturedEntityTypes = AuditCaptureScope.EntityTypeNames.OrderBy(t => t).ToList(),
+                sources = new[] { AuditSources.Admin, AuditSources.Mcp, AuditSources.System, "unknown" }
             });
         }
 
@@ -306,6 +341,63 @@ namespace DreamCleaningBackend.Controllers
             catch (Exception ex)
             {
                 return BadRequest(new { message = "Failed to undo change: " + ex.Message });
+            }
+        }
+
+        // ── Revert (2026-10) ────────────────────────────────────────────────────────────────
+        // The Services catalogue, subscription plans and expenses are reverted through the same
+        // preview -> confirm change set the Claude connector uses: the preview shows every record
+        // it would write and any conflict with later changes, and the confirm applies exactly that
+        // or nothing. The panel keeps full SuperAdmin access (no connector-only refusals).
+
+        public sealed class RevertPreviewRequest
+        {
+            public long? EntryId { get; set; }
+            public string? BatchId { get; set; }
+            public bool OverrideConflicts { get; set; }
+            public bool UseDeactivateAlternative { get; set; }
+        }
+
+        public sealed class RevertApplyRequest
+        {
+            public string? Token { get; set; }
+            public string? Note { get; set; }
+        }
+
+        [HttpPost("audit-logs/revert/preview")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<IActionResult> PreviewRevert([FromBody] RevertPreviewRequest body, CancellationToken ct)
+        {
+            if (_changeSets == null) return StatusCode(503, new { message = "Revert is not available." });
+            var request = System.Text.Json.JsonSerializer.SerializeToElement(new
+            {
+                entry_id = body.EntryId,
+                batch_id = body.BatchId,
+                override_conflicts = body.OverrideConflicts,
+                use_deactivate_alternative = body.UseDeactivateAlternative
+            });
+            try
+            {
+                return Ok(await _changeSets.PreviewAsync(ChangeSetCaller.AdminPanel(GetCurrentUserId()), ChangeSetKinds.Revert, request, ct));
+            }
+            catch (ChangeSetException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("audit-logs/revert/apply")]
+        [Authorize(Roles = "SuperAdmin")]
+        public async Task<IActionResult> ApplyRevert([FromBody] RevertApplyRequest body, CancellationToken ct)
+        {
+            if (_changeSets == null) return StatusCode(503, new { message = "Revert is not available." });
+            try
+            {
+                return Ok(await _changeSets.ApplyAsync(ChangeSetCaller.AdminPanel(GetCurrentUserId()), body.Token, body.Note, ct));
+            }
+            catch (ChangeSetException ex)
+            {
+                return BadRequest(new { message = ex.Message });
             }
         }
 

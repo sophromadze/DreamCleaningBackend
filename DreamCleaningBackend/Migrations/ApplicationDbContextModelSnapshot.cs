@@ -720,6 +720,14 @@ namespace DreamCleaningBackend.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("varchar(128)");
 
+                    b.Property<string>("ActorName")
+                        .HasMaxLength(200)
+                        .HasColumnType("varchar(200)");
+
+                    b.Property<string>("BatchId")
+                        .HasMaxLength(36)
+                        .HasColumnType("varchar(36)");
+
                     b.Property<string>("ChangedFields")
                         .HasColumnType("LONGTEXT");
 
@@ -741,8 +749,19 @@ namespace DreamCleaningBackend.Migrations
                     b.Property<string>("NewValues")
                         .HasColumnType("LONGTEXT");
 
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
                     b.Property<string>("OldValues")
                         .HasColumnType("LONGTEXT");
+
+                    b.Property<long?>("RevertOfId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(16)
+                        .HasColumnType("varchar(16)");
 
                     b.Property<DateTime?>("UndoneAt")
                         .HasColumnType("datetime(6)");
@@ -756,8 +775,17 @@ namespace DreamCleaningBackend.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("BatchId")
+                        .HasDatabaseName("IX_AuditLogs_BatchId");
+
                     b.HasIndex("CreatedAt")
                         .HasDatabaseName("IX_AuditLogs_CreatedAt");
+
+                    b.HasIndex("RevertOfId")
+                        .HasDatabaseName("IX_AuditLogs_RevertOfId");
+
+                    b.HasIndex("Source")
+                        .HasDatabaseName("IX_AuditLogs_Source");
 
                     b.HasIndex("UserId")
                         .HasDatabaseName("IX_AuditLogs_UserId");
@@ -6913,6 +6941,66 @@ namespace DreamCleaningBackend.Migrations
                     b.HasIndex("UpdatedByUserId");
 
                     b.ToTable("OrderUpdateHistories");
+                });
+
+            modelBuilder.Entity("DreamCleaningBackend.Models.PendingChangeSet", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("BatchId")
+                        .IsRequired()
+                        .HasMaxLength(36)
+                        .HasColumnType("varchar(36)");
+
+                    b.Property<DateTime?>("ConsumedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<int?>("McpGrantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)");
+
+                    b.Property<string>("PreviewJson")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<string>("RequestJson")
+                        .IsRequired()
+                        .HasColumnType("LONGTEXT");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.ToTable("PendingChangeSets");
                 });
 
             modelBuilder.Entity("DreamCleaningBackend.Models.PendingOrderEdit", b =>

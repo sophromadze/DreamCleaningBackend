@@ -43,5 +43,37 @@ namespace DreamCleaningBackend.Models
         // is currently applied. Redo simply re-applies the change and clears UndoneAt. Stored as
         // a single nullable timestamp rather than a state enum because it doubles as "when".
         public DateTime? UndoneAt { get; set; }
+
+        // ── Change history (2026-10) ─────────────────────────────────────────────────────────
+        // Written by AuditCaptureInterceptor for the entity types in AuditCaptureScope (the
+        // Services catalogue, subscriptions and expenses). Rows written before 2026-10 leave all
+        // five null, and every reader treats null as "not recorded" rather than guessing.
+
+        /// <summary>Where the change came from: <see cref="AuditSources"/> (mcp / admin / system).</summary>
+        [StringLength(16)]
+        public string? Source { get; set; }
+
+        /// <summary>The actor's name AS IT WAS when the change was made (UserId still links the account).</summary>
+        [StringLength(200)]
+        public string? ActorName { get; set; }
+
+        /// <summary>Groups the rows one confirmed change wrote (a batch of price edits, a cascade delete).</summary>
+        [StringLength(36)]
+        public string? BatchId { get; set; }
+
+        /// <summary>On a "Revert" row: the history row whose change it reverted.</summary>
+        public long? RevertOfId { get; set; }
+
+        /// <summary>Optional note the person typed when confirming the change.</summary>
+        [StringLength(500)]
+        public string? Note { get; set; }
+    }
+
+    /// <summary>The values <see cref="AuditLog.Source"/> takes.</summary>
+    public static class AuditSources
+    {
+        public const string Mcp = "mcp";
+        public const string Admin = "admin";
+        public const string System = "system";
     }
 }

@@ -331,6 +331,11 @@ namespace DreamCleaningBackend.Services
             if (UndoBlockedReasons.TryGetValue(log.EntityType ?? string.Empty, out var reason))
                 return reason;
 
+            // The change-history types (2026-10) are reverted with Revert. A legacy row undone
+            // before then still offers Redo, so the answer depends on which button it is for.
+            if (ChangeSets.AuditCaptureScope.IsCaptured(log.EntityType) && log.UndoneAt == null)
+                return ChangeSets.AuditCaptureScope.UndoReplacedMessage;
+
             // The Phase 1 refusal: replaying a partial before-image would write zeroes over live
             // data. It used to be server-side only, so the button looked enabled and failed on
             // click.

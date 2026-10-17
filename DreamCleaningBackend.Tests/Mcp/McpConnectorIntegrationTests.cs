@@ -95,7 +95,7 @@ public class McpConnectorIntegrationTests : IClassFixture<MariaDbDatabase>, IAsy
 
         var list = await Host.McpAsync(tokens.Access, "tools/list");
         Assert.Equal(200, list.Status);
-        Assert.Equal(13, list.Result!["tools"]!.AsArray().Count);
+        Assert.Equal(19, list.Result!["tools"]!.AsArray().Count);
 
         var stored = await Host.WithDbAsync(db => db.McpTokens.Select(t => t.TokenHash).ToListAsync(Ct));
         Assert.DoesNotContain(tokens.Access, stored);
@@ -313,6 +313,8 @@ public class McpConnectorIntegrationTests : IClassFixture<MariaDbDatabase>, IAsy
             prorate_by_day = true, start_date = "2026-10-01", notes = "n", confirm_duplicate = true
         });
         Assert.False(mcp.IsToolError, mcp.Text);
+        Assert.Equal(1, await Host.WithDbAsync(db => db.Expenses.CountAsync(e => e.Name == "Cloud host", Ct))); // previewed only
+        await ApplyAsync(tokens.Access, mcp);
 
         var rows = await Host.WithDbAsync(db => db.Expenses.Where(e => e.Name == "Cloud host").OrderBy(e => e.Id).ToListAsync(Ct));
         Assert.Equal(2, rows.Count);
@@ -352,7 +354,7 @@ public class McpConnectorIntegrationTests : IClassFixture<MariaDbDatabase>, IAsy
         Assert.DoesNotContain(categories, c => c!["id"]!.GetValue<int>() is 4 or 90);
 
         var args = new { name = "Gloves", amount = 9.5, category_id = 1, type = "one_time", start_date = "2026-10-02" };
-        Assert.False((await Host.CallAsync(tokens.Access, "add_expense", args)).IsToolError);
+        await ApplyAsync(tokens.Access, await Host.CallAsync(tokens.Access, "add_expense", args));
         var dup = await Host.CallAsync(tokens.Access, "add_expense", args);
         Assert.True(dup.IsToolError);
         Assert.Contains("confirm_duplicate", dup.Text);
@@ -366,8 +368,8 @@ public class McpConnectorIntegrationTests : IClassFixture<MariaDbDatabase>, IAsy
         var other = await Host.AddUserAsync(UserRole.SuperAdmin);
         var tokens = await Host.ConnectAsync(super);
 
-        var mine = (await Host.CallAsync(tokens.Access, "add_expense", new { name = "Mine", amount = 1, category_id = 1, type = "one_time", start_date = "2026-10-02" }))
-            .Json!["added"]!["id"]!.GetValue<int>();
+        await ApplyAsync(tokens.Access, await Host.CallAsync(tokens.Access, "add_expense", new { name = "Mine", amount = 1, category_id = 1, type = "one_time", start_date = "2026-10-02" }));
+        var mine = await Host.WithDbAsync(db => db.Expenses.Where(e => e.Name == "Mine" && e.CreatedByUserId == super.Id).Select(e => e.Id).SingleAsync(Ct));
         var ids = await Host.WithDbAsync(async db =>
         {
             Expense Row(string name, string? via, int by, DateTime at) => new()
@@ -390,6 +392,8 @@ public class McpConnectorIntegrationTests : IClassFixture<MariaDbDatabase>, IAsy
 
         var deleted = await Host.CallAsync(tokens.Access, "delete_expense", new { expense_id = mine });
         Assert.False(deleted.IsToolError, deleted.Text);
+        Assert.Contains(mine, await Host.WithDbAsync(db => db.Expenses.Select(e => e.Id).ToListAsync(Ct))); // previewed only
+        await ApplyAsync(tokens.Access, deleted);
         var left = await Host.WithDbAsync(db => db.Expenses.Select(e => e.Id).ToListAsync(Ct));
         Assert.DoesNotContain(mine, left);
         Assert.Contains(ids.Item1, left);
@@ -410,6 +414,15 @@ public class McpConnectorIntegrationTests : IClassFixture<MariaDbDatabase>, IAsy
         Assert.True(logs[0].Succeeded);
         Assert.False(logs[1].Succeeded);
         Assert.Contains("no expense", logs[1].Error);
+    }
+
+    /// <summary>Every connector write is a preview; this confirms it.</summary>
+    private async Task ApplyAsync(string access, McpTestHost.McpReply preview)
+    {
+        Assert.False(preview.IsToolError, preview.Text);
+        var token = preview.Json!["token"]!.GetValue<string>();
+        var applied = await Host.CallAsync(access, "apply_change", new { token });
+        Assert.False(applied.IsToolError, applied.Text);
     }
 
     [MariaDbFact]

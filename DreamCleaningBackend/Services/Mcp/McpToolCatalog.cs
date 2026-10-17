@@ -26,7 +26,8 @@ namespace DreamCleaningBackend.Services.Mcp
             "Dream Cleaning (NYC) business data for a SuperAdmin. Dates are New York calendar days; " +
             "describe_data and list_expense_categories return today's date. Prefer the get_* tools (they match the admin panel); " +
             "call describe_data before run_sql. Every money figure must name the result's definition field. " +
-            "For add_expense, ask the user when the category or one-time vs recurring is unclear.";
+            "For add_expense, ask the user when the category or one-time vs recurring is unclear. " +
+            "Every write is two steps: a preview tool returns the exact changes and a token; show them to the user and call apply_change only after they confirm.";
 
         public static readonly IReadOnlySet<string> AnalyticsTools = new HashSet<string>
         {
@@ -102,7 +103,7 @@ namespace DreamCleaningBackend.Services.Mcp
             {
                 Name = "add_expense",
                 Title = "Add expense",
-                Description = "Add a company expense with the Expenses page's own validation. Call list_expense_categories first. If the category or one-time vs recurring is unclear, ask the user; never guess. Salaries and Google Ads are not accepted.",
+                Description = "Preview adding a company expense (Expenses page validation); returns a token for apply_change, writes nothing. Call list_expense_categories first. If the category or one-time vs recurring is unclear, ask the user; never guess. Salaries and Google Ads are not accepted.",
                 InputSchema = Schema("""
                     {"type":"object","properties":{
                       "name":{"type":"string","description":"What it is, e.g. 'Mops and buckets'."},
@@ -116,7 +117,7 @@ namespace DreamCleaningBackend.Services.Mcp
                       "confirm_duplicate":{"type":"boolean","description":"Only after the user confirms a second identical entry."}},
                      "required":["name","category_id","amount","type","start_date"]}
                     """),
-                Annotations = new ToolAnnotations { ReadOnlyHint = false, DestructiveHint = false }
+                Annotations = Preview()
             });
 
             tools.Add(new Tool
@@ -136,15 +137,118 @@ namespace DreamCleaningBackend.Services.Mcp
             {
                 Name = "delete_expense",
                 Title = "Delete expense",
-                Description = "Delete an expense the same user added through this connector in the last 24 hours. Anything else is changed on the Expenses page.",
+                Description = "Preview deleting an expense the same user added through this connector in the last 24 hours; returns a token for apply_change. Anything else is changed on the Expenses page.",
                 InputSchema = Schema("""
                     {"type":"object","properties":{"expense_id":{"type":"integer"}},"required":["expense_id"]}
+                    """),
+                Annotations = Preview()
+            });
+
+            // ── Services catalogue, change sets, history (2026-10) ─────────────────────────
+
+            tools.Add(new Tool
+            {
+                Name = "get_services_catalog",
+                Title = "Services catalogue",
+                Description = "Whole Services configuration in one call: service types with services (included amounts, rate tiers), poll questions and configured extras; all extras; subscription plans. Every column, the ids the write tool takes, and per row the orders, future orders and active recurring plans using it.",
+                InputSchema = Schema("""
+                    {"type":"object","properties":{
+                      "include_inactive":{"type":"boolean","description":"Default true."}}}
+                    """),
+                Annotations = Read("Services catalogue")
+            });
+
+            tools.Add(new Tool
+            {
+                Name = "preview_catalog_changes",
+                Title = "Preview Services changes",
+                Description =
+                    "Preview Services-tab changes (all or none); writes nothing, returns each affected record old -> new and a token for apply_change. " +
+                    "Operations {entity, op, id?, fields?}; fields use get_services_catalog column names, an update needs only the changed ones, \"@n\" = the record operation n creates.",
+                InputSchema = Schema("""
+                    {"type":"object","properties":{
+                      "operations":{"type":"array","maxItems":50,"items":{"type":"object","properties":{
+                        "entity":{"type":"string","enum":["service_type","service","included_amount","rate_tier","extra_service","subscription","poll_question","pricing_configuration"]},
+                        "op":{"type":"string","enum":["create","update","copy","activate","deactivate","delete","import"],"description":"service_type/service/extra_service/subscription: create, update, activate, deactivate, delete (service and extra_service also copy). included_amount/rate_tier/poll_question: create, update, delete. pricing_configuration: import."},
+                        "id":{"description":"Record id, or \"@n\". For copy: the source record."},
+                        "service_id":{"description":"included_amount/rate_tier create: the owning service id or \"@n\"."},
+                        "target_service_type_id":{"description":"copy: the service type to copy into."},
+                        "fields":{"type":"object","description":"Column values, e.g. {\"cost\": 25, \"time_duration\": 30}."},
+                        "payload":{"type":"object","description":"pricing_configuration import: the exported configuration."}},
+                       "required":["entity","op"]}}},
+                     "required":["operations"]}
+                    """),
+                Annotations = Preview()
+            });
+
+            tools.Add(new Tool
+            {
+                Name = "apply_change",
+                Title = "Apply previewed change",
+                Description = "Apply a change previewed by preview_catalog_changes, add_expense, delete_expense or preview_revert, ONLY after the user confirmed it. One transaction; refused if any record changed since the preview. Tokens are single-use and expire after 15 minutes.",
+                InputSchema = Schema("""
+                    {"type":"object","properties":{
+                      "token":{"type":"string"},
+                      "note":{"type":"string","description":"Optional note stored with the history entries (max 500)."}},
+                     "required":["token"]}
                     """),
                 Annotations = new ToolAnnotations { ReadOnlyHint = false, DestructiveHint = true }
             });
 
+            tools.Add(new Tool
+            {
+                Name = "get_change_history",
+                Title = "Change history",
+                Description = "History of the Services catalogue, subscription plans and expenses (admin panel, Claude and system changes), newest first, paginated. Filters are optional.",
+                InputSchema = Schema("""
+                    {"type":"object","properties":{
+                      "entity_type":{"type":"string","description":"ServiceType, Service, ServiceThreshold (included_amount), ServiceRateTier, ExtraService, PollQuestion, Subscription, Expense, ExpenseCategory."},
+                      "entity_id":{"type":"integer"},
+                      "action":{"type":"string","enum":["create","update","delete","revert"]},
+                      "source":{"type":"string","enum":["mcp","admin","system","unknown"]},
+                      "actor":{"type":"string","description":"Name, or part of it."},
+                      "actor_user_id":{"type":"integer"},
+                      "batch_id":{"type":"string"},
+                      "from":{"type":"string","description":"YYYY-MM-DD"},
+                      "to":{"type":"string","description":"YYYY-MM-DD, inclusive"},
+                      "search":{"type":"string","description":"Text in the values or the note."},
+                      "page":{"type":"integer"},
+                      "page_size":{"type":"integer","description":"1-50, default 20."}}}
+                    """),
+                Annotations = Read("Change history")
+            });
+
+            tools.Add(new Tool
+            {
+                Name = "get_change_detail",
+                Title = "Change detail",
+                Description = "One history entry in full: every field before and after, which changed, its batch, and what reverted it.",
+                InputSchema = Schema("""
+                    {"type":"object","properties":{"entry_id":{"type":"integer"}},"required":["entry_id"]}
+                    """),
+                Annotations = Read("Change detail")
+            });
+
+            tools.Add(new Tool
+            {
+                Name = "preview_revert",
+                Title = "Preview revert",
+                Description = "Preview reverting one history entry (entry_id) or a whole change (batch_id); returns a token for apply_change. Later changes to the same records show as conflicts and block it unless override_conflicts; a created record that orders use can be deactivated instead.",
+                InputSchema = Schema("""
+                    {"type":"object","properties":{
+                      "entry_id":{"type":"integer"},
+                      "batch_id":{"type":"string"},
+                      "override_conflicts":{"type":"boolean","description":"Only after the user chose to overwrite the later changes shown."},
+                      "use_deactivate_alternative":{"type":"boolean","description":"Only after the user chose deactivating over deleting."}}}
+                    """),
+                Annotations = Preview()
+            });
+
             return tools;
         }
+
+        /// <summary>A preview: writes no business data (only a pending, single-use token).</summary>
+        private static ToolAnnotations Preview() => new() { ReadOnlyHint = false, DestructiveHint = false, IdempotentHint = true };
 
         /// <summary>The panel's from/to descriptions repeat the date rules the instructions state once.</summary>
         private static JsonNode ShortenDates(JsonNode schema)

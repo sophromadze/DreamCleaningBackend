@@ -240,6 +240,9 @@ builder.Services.AddSingleton<RecurringOrderGenerationService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<RecurringOrderGenerationService>());
 builder.Services.AddScoped<IOrderReorderPreviewService, OrderReorderPreviewService>();
 builder.Services.AddScoped<IPricingConfigurationService, PricingConfigurationService>();
+// Services-tab logic shared by the panel and the Claude connector, preview -> apply change sets,
+// revert and change history (2026-10). See Services/ChangeSets.
+DreamCleaningBackend.Services.ChangeSets.ChangeSetSetup.AddChangeSets(builder.Services);
 // Scoped so it shares the caller's ApplicationDbContext — it persists what the caller staged
 // before checking for remaining unpaid amounts (see IOrderPaymentStatusReconciler).
 builder.Services.AddScoped<IOrderPaymentStatusReconciler, OrderPaymentStatusReconciler>();

@@ -67,6 +67,17 @@ namespace DreamCleaningBackend.Services
             _logger.LogInformation("AuditLogCleanupService stopped");
         }
 
+        /// <summary>
+        /// The rows the cleanup deletes: older than the cutoff, EXCEPT the change history of the
+        /// Services catalogue, plans and expenses, which is kept forever (2026-10) — it is what
+        /// Revert restores from, and a deleted row's only copy lives there.
+        /// </summary>
+        public static IQueryable<Models.AuditLog> Prunable(IQueryable<Models.AuditLog> logs, DateTime cutoffUtc)
+        {
+            var keptForever = ChangeSets.AuditCaptureScope.EntityTypeNames.ToList();
+            return logs.Where(a => a.CreatedAt < cutoffUtc && !keptForever.Contains(a.EntityType));
+        }
+
         private async Task CleanupOldAuditLogs()
         {
             using var scope = _serviceProvider.CreateScope();
@@ -76,9 +87,7 @@ namespace DreamCleaningBackend.Services
             var cutoffDate = DateTime.UtcNow.Subtract(_retentionPeriod);
 
             // First, count how many logs will be deleted (for logging purposes)
-            var countToDelete = await context.AuditLogs
-                .Where(a => a.CreatedAt < cutoffDate)
-                .CountAsync();
+            var countToDelete = await Prunable(context.AuditLogs, cutoffDate).CountAsync();
 
             if (countToDelete > 0)
             {
@@ -92,8 +101,7 @@ namespace DreamCleaningBackend.Services
                 while (true)
                 {
                     // Get a batch of logs to delete (only load what we need)
-                    var batch = await context.AuditLogs
-                        .Where(a => a.CreatedAt < cutoffDate)
+                    var batch = await Prunable(context.AuditLogs, cutoffDate)
                         .OrderBy(a => a.Id)
                         .Take(batchSize)
                         .ToListAsync();

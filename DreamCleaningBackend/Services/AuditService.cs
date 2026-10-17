@@ -47,6 +47,15 @@ namespace DreamCleaningBackend.Services
         {
             try
             {
+                // Captured at the data layer since 2026-10 (AuditCaptureInterceptor writes the row in
+                // the same transaction as the change). Still SAVE, exactly as before: several callers
+                // rely on this call to flush the change they made just above it.
+                if (ChangeSets.AuditCaptureScope.IsCaptured(entity.GetType()))
+                {
+                    await SaveAuditChangesAsync();
+                    return;
+                }
+
                 var entityType = typeof(T).Name;
                 var entityId = GetEntityId(entity);
                 var userId = GetCurrentUserId();
@@ -92,6 +101,15 @@ namespace DreamCleaningBackend.Services
         {
             try
             {
+                // Captured at the data layer since 2026-10 (AuditCaptureInterceptor writes the row in
+                // the same transaction as the change). Still SAVE, exactly as before: several callers
+                // rely on this call to flush the change they made just above it.
+                if (ChangeSets.AuditCaptureScope.IsCaptured(currentEntity.GetType()))
+                {
+                    await SaveAuditChangesAsync();
+                    return;
+                }
+
                 var entityType = typeof(T).Name;
                 var entityId = GetEntityId(currentEntity);
                 var userId = GetCurrentUserId();
@@ -176,6 +194,15 @@ namespace DreamCleaningBackend.Services
         {
             try
             {
+                // Captured at the data layer since 2026-10 (AuditCaptureInterceptor writes the row in
+                // the same transaction as the change). Still SAVE, exactly as before: several callers
+                // rely on this call to flush the change they made just above it.
+                if (ChangeSets.AuditCaptureScope.IsCaptured(entity.GetType()))
+                {
+                    await SaveAuditChangesAsync();
+                    return;
+                }
+
                 var entityType = typeof(T).Name;
                 var entityId = GetEntityId(entity);
                 var userId = GetCurrentUserId();
@@ -616,6 +643,11 @@ namespace DreamCleaningBackend.Services
                 ?? throw new InvalidOperationException("Audit log not found");
             if (log.UndoneAt.HasValue)
                 throw new InvalidOperationException("This change has already been undone");
+            // The change-history types are reverted through the Revert flow (preview, conflict
+            // check, logged as a new row) — never by flipping UndoneAt on the old row. Redo below
+            // stays available for their LEGACY rows that were undone before 2026-10.
+            if (ChangeSets.AuditCaptureScope.IsCaptured(log.EntityType))
+                throw new InvalidOperationException(ChangeSets.AuditCaptureScope.UndoReplacedMessage);
             if (UndoBlockedEntityTypes.Contains(log.EntityType))
                 throw new InvalidOperationException($"'{log.EntityType}' changes cannot be undone (side-effect or audit-only entity)");
             if (AuditSnapshot.HasFabricatedBeforeImage(log))
