@@ -117,16 +117,28 @@ namespace DreamCleaningBackend.Services
                     .Where(o => ids.Contains(o.Id))
                     .Select(o => new
                     {
-                        o.Id, TypeName = o.ServiceType.Name, o.CustomServiceDisplayName, o.PaymentMethod,
+                        o.Id, TypeName = o.ServiceType.Name, TypeKey = o.ServiceType.ServiceKey,
+                        IsCustom = o.ServiceType.IsCustom, o.CustomServiceDisplayName, o.PaymentMethod,
                         o.SubTotal, Discounts = o.DiscountAmount + o.SubscriptionDiscountAmount + o.LoyaltyDiscountAmount,
                         o.TotalRefundedAmount,
                         Services = o.OrderServices
                             .OrderBy(s => s.Id)
-                            .Select(s => new AdminOrderItemDto { Name = s.Service.Name, Quantity = s.Quantity, Cost = s.Cost })
+                            .Select(s => new AdminOrderItemDto { Name = s.Service.Name, Key = s.Service.ServiceKey, Quantity = s.Quantity, Cost = s.Cost })
                             .ToList(),
                         Extras = o.OrderExtraServices
                             .OrderBy(e => e.Id)
-                            .Select(e => new AdminOrderItemDto { Name = e.ExtraService.Name, Quantity = e.Quantity, Hours = e.Hours, Cost = e.Cost })
+                            .Select(e => new AdminOrderItemDto { Name = e.ExtraService.Name, Key = e.ExtraService.ExtraServiceKey, Quantity = e.Quantity, Hours = e.Hours, Cost = e.Cost })
+                            .ToList(),
+                        // Deep vs Regular, by the admin Orders list rule (ResidentialCleaningVariant).
+                        DeepExtras = o.OrderExtraServices
+                            .Select(e => new ResidentialCleaningVariant.Line
+                            {
+                                IsExtra = true,
+                                Key = e.ExtraService.ExtraServiceKey,
+                                Name = e.ExtraService.Name,
+                                IsDeepCleaning = e.ExtraService.IsDeepCleaning,
+                                IsSuperDeepCleaning = e.ExtraService.IsSuperDeepCleaning
+                            })
                             .ToList()
                     })
                     .AsSplitQuery()
@@ -146,6 +158,12 @@ namespace DreamCleaningBackend.Services
                         OrderId = r.OrderId,
                         ServiceDate = r.ServiceDate,
                         ServiceType = string.IsNullOrEmpty(custom) || custom == d.TypeName ? d.TypeName : $"{d.TypeName} — {custom}",
+                        RawServiceTypeName = d.TypeName,
+                        ServiceTypeKey = d.IsCustom || string.IsNullOrWhiteSpace(d.TypeKey) ? null : d.TypeKey.Trim(),
+                        IsCustomServiceType = d.IsCustom,
+                        CustomServiceDisplayName = d.IsCustom && !string.IsNullOrEmpty(custom) ? custom : null,
+                        IsDeepCleaning = d.DeepExtras.Any(ResidentialCleaningVariant.LineMakesDeep)
+                            || d.Services.Any(s => ResidentialCleaningVariant.ServiceLineMakesDeep(s.Key, s.Name)),
                         IsNewCustomerOrder = r.IsNewCustomerOrder,
                         PaymentMethod = PaymentMethodLabel(d.PaymentMethod),
                         Services = d.Services,

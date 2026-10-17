@@ -348,6 +348,38 @@ namespace DreamCleaningBackend.Tests
         }
 
         [Fact]
+        public async Task TheShiftsOrdersViewShipsWhatTheShortTypeLabelNeeds()
+        {
+            AddCatalogue();
+            _context.ServiceTypes.Add(new ServiceType { Id = 902, Name = "Pre-Arranged Cleaning", IsCustom = true, ServiceKey = "custom" });
+            _context.ExtraServices.Add(new ExtraService { Id = 902, Name = "Deep Cleaning", IsDeepCleaning = true });
+            _context.SaveChanges();
+            var deep = AddOrder(1, new DateTime(2026, 10, 5));
+            deep.ServiceTypeId = 901;
+            deep.OrderServices.Add(new DreamCleaningBackend.Models.OrderService { ServiceId = 901, Quantity = 2, Cost = 50m });
+            deep.OrderExtraServices.Add(new OrderExtraService { ExtraServiceId = 902, Quantity = 1, Cost = 90m });
+            var arranged = AddOrder(2, new DateTime(2026, 10, 7));
+            arranged.ServiceTypeId = 902;
+            arranged.CustomServiceDisplayName = " Move In/Out ";
+            _context.SaveChanges();
+
+            var service = new AdminPerformanceService(_context, Bonuses(), new FixedRateService(Rate));
+            var view = await service.GetAdminOrdersAsync(Ana, new DateTime(2026, 10, 1), new DateTime(2026, 10, 31));
+
+            var d = view!.Orders.Single(l => l.OrderId == 1);
+            Assert.Equal("Residential Cleaning", d.RawServiceTypeName);
+            Assert.False(d.IsCustomServiceType);
+            Assert.True(d.IsDeepCleaning);
+            Assert.Equal("bedrooms", d.Services.Single().Key);
+
+            var a = view.Orders.Single(l => l.OrderId == 2);
+            Assert.True(a.IsCustomServiceType);
+            Assert.Equal("Move In/Out", a.CustomServiceDisplayName);
+            Assert.Null(a.ServiceTypeKey);   // a custom order is named by its label, never its key
+            Assert.False(a.IsDeepCleaning);
+        }
+
+        [Fact]
         public async Task TheShiftsOrdersViewIsOnlyForAdminRoleStaff()
         {
             var service = new AdminPerformanceService(_context, Bonuses(), new FixedRateService(Rate));

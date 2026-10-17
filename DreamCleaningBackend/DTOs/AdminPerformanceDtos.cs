@@ -104,6 +104,22 @@ namespace DreamCleaningBackend.DTOs
         public int OrderId { get; set; }
         public DateTime ServiceDate { get; set; }
         public string ServiceType { get; set; } = string.Empty;
+
+        // The ingredients of the SHORT label ("Regular", "Deep", "Move In/Out", the label of a
+        // Pre-arranged order). The rule lives once, in the frontend's
+        // shared/admin/service-type-short-label.ts, so this view names a type exactly as the admin
+        // Orders tab does — same arrangement as OutgoingPaymentOrderDto.
+
+        /// <summary>The RAW ServiceType.Name, before a custom label is folded in.</summary>
+        public string RawServiceTypeName { get; set; } = string.Empty;
+        /// <summary>ServiceType.ServiceKey of a non-custom type; null for custom / unkeyed.</summary>
+        public string? ServiceTypeKey { get; set; }
+        public bool IsCustomServiceType { get; set; }
+        /// <summary>The per-order label an admin chose for a custom ("Pre-Arranged") order.</summary>
+        public string? CustomServiceDisplayName { get; set; }
+        /// <summary>Residential only: whether the deep-cleaning extra is on this order.</summary>
+        public bool IsDeepCleaning { get; set; }
+
         public bool IsNewCustomerOrder { get; set; }
         /// <summary>"Card", "Cash", "Zelle", "Check", "Invoice", "Bank transfer", "Other".</summary>
         public string PaymentMethod { get; set; } = string.Empty;
@@ -127,6 +143,8 @@ namespace DreamCleaningBackend.DTOs
     public class AdminOrderItemDto
     {
         public string Name { get; set; } = string.Empty;
+        /// <summary>Service.ServiceKey ("bedrooms", "bathrooms", "sqft", …) or the extra's key; null when unkeyed.</summary>
+        public string? Key { get; set; }
         public int Quantity { get; set; }
         /// <summary>Hours on an hourly extra; 0 otherwise.</summary>
         public decimal Hours { get; set; }
